@@ -11,7 +11,11 @@ export async function buildWorkspaceAiContext(
   activeProductId: string | null = null,
 ): Promise<AiContext> {
   const [aiSettings, settings, products, training] = await Promise.all([
-    supabase.from("ai_settings").select("system_instruction").eq("workspace_id", workspaceId).maybeSingle(),
+    supabase
+      .from("ai_settings")
+      .select("system_instruction, gemini_api_key, model, autodetect_model")
+      .eq("workspace_id", workspaceId)
+      .maybeSingle(),
     supabase
       .from("user_settings")
       .select("business_name, currency")
@@ -33,6 +37,8 @@ export async function buildWorkspaceAiContext(
 
   return {
     systemInstruction: aiSettings.data?.system_instruction ?? "",
+    geminiApiKey: aiSettings.data?.gemini_api_key ?? null,
+    model: aiSettings.data?.autodetect_model ? null : (aiSettings.data?.model ?? null),
     businessName: settings.data?.business_name ?? "",
     currency: settings.data?.currency ?? "PYG",
     products: (products.data ?? []).map((p) => ({
