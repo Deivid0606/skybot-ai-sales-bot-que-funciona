@@ -270,12 +270,37 @@ function SettingsPage() {
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <Label>Verify Token</Label>
-                  <Input
-                    value={wa.verify_token}
-                    onChange={(e) => setWa({ ...wa, verify_token: e.target.value })}
-                  />
+                  <Label>Token de verificación (se genera automáticamente)</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      value={wa.verify_token}
+                      onChange={(e) => setWa({ ...wa, verify_token: e.target.value })}
+                    />
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      aria-label="Copiar token"
+                      onClick={() => {
+                        navigator.clipboard.writeText(wa.verify_token);
+                        toast.success("Token copiado");
+                      }}
+                    >
+                      <Copy className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      aria-label="Generar token"
+                      onClick={() => setWa({ ...wa, verify_token: generateVerifyToken() })}
+                    >
+                      <RefreshCw className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Pegá este mismo token en Meta al configurar el webhook. Es único para tu cuenta.
+                  </p>
                 </div>
+
                 <div className="space-y-1.5">
                   <Label>Número visible</Label>
                   <Input
