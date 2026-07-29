@@ -159,7 +159,7 @@ function ComplaintsPage() {
 
                 <div className="flex flex-wrap gap-2">
                   <Button asChild variant="outline" size="sm">
-                    <Link to="/inbox">
+                    <Link to="/inbox" search={{ c: c.conversation_id ?? "" }}>
                       <MessageSquare className="mr-1 h-4 w-4" /> Ver chat
                     </Link>
                   </Button>
