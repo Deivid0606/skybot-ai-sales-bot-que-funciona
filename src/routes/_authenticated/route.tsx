@@ -13,12 +13,21 @@ import { useAuth } from "@/lib/auth";
 export const Route = createFileRoute("/_authenticated")({
   ssr: false,
   beforeLoad: async () => {
-    const { data, error } = await supabase.auth.getUser();
-    if (error || !data.user) throw redirect({ to: "/auth" });
-    return { user: data.user };
+    const session = await getSessionFast();
+    if (!session?.user) throw redirect({ to: "/auth" });
+    return { user: session.user };
   },
+  pendingComponent: LoadingScreen,
   component: AuthenticatedLayout,
 });
+
+function LoadingScreen() {
+  return (
+    <div className="flex min-h-screen items-center justify-center">
+      <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+    </div>
+  );
+}
 
 function AuthenticatedLayout() {
   const { profile, loading, signOut, isAdmin } = useAuth();
