@@ -158,13 +158,11 @@ function ComplaintsPage() {
                 <p className="rounded-md bg-muted/50 p-3 text-sm break-words">{c.body}</p>
 
                 <div className="flex flex-wrap gap-2">
-                  {c.conversation_id && (
-                    <Button asChild variant="outline" size="sm">
-                      <Link to="/inbox" search={{ c: c.conversation_id }}>
-                        <MessageSquare className="mr-1 h-4 w-4" /> Ver chat
-                      </Link>
-                    </Button>
-                  )}
+                  <Button asChild variant="outline" size="sm">
+                    <Link to="/inbox">
+                      <MessageSquare className="mr-1 h-4 w-4" /> Ver chat
+                    </Link>
+                  </Button>
                   {c.status !== "revision" && c.status !== "resuelto" && (
                     <Button
                       variant="outline"
