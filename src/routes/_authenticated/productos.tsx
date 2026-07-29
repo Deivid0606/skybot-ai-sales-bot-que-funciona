@@ -300,6 +300,8 @@ function ProductsPage() {
           <Button
             onClick={() => {
               setForm(emptyForm);
+              setPendingFiles([]);
+              setEditingMedia([]);
               setOpen(true);
             }}
           >
@@ -322,6 +324,8 @@ function ProductsPage() {
             <Button
               onClick={() => {
                 setForm(emptyForm);
+                setPendingFiles([]);
+                setEditingMedia([]);
                 setOpen(true);
               }}
             >
