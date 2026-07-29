@@ -1,14 +1,12 @@
 import { useState } from "react";
-import { formatDate, formatDateTime, formatGs } from "@/lib/format";
+import { formatDateTime } from "@/lib/format";
 import { createFileRoute } from "@tanstack/react-router";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Download, Search } from "lucide-react";
-import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { PageHeader, PageShell, EmptyState } from "@/components/page-shell";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -17,15 +15,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { useWorkspaceId } from "@/lib/auth";
+import { OrderCard } from "@/components/order-card";
+import { ORDER_STATES, orderStateLabel } from "@/lib/orders";
 
 export const Route = createFileRoute("/_authenticated/pedidos")({
   head: () => ({
@@ -39,18 +31,8 @@ export const Route = createFileRoute("/_authenticated/pedidos")({
   component: OrdersPage,
 });
 
-const statuses = ["nuevo", "confirmado", "enviado", "entregado", "cancelado"] as const;
-const statusVariant: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
-  nuevo: "secondary",
-  confirmado: "default",
-  enviado: "default",
-  entregado: "default",
-  cancelado: "destructive",
-};
-
 function OrdersPage() {
   const workspaceId = useWorkspaceId();
-  const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("todos");
 
@@ -66,21 +48,6 @@ function OrdersPage() {
       if (error) throw error;
       return data;
     },
-  });
-
-  const updateStatus = useMutation({
-    mutationFn: async ({ id, value }: { id: string; value: string }) => {
-      const { error } = await supabase
-        .from("orders")
-        .update({ status: value as (typeof statuses)[number] })
-        .eq("id", id);
-      if (error) throw error;
-    },
-    onSuccess: () => {
-      toast.success("Estado actualizado");
-      queryClient.invalidateQueries({ queryKey: ["orders"] });
-    },
-    onError: (e: Error) => toast.error(e.message),
   });
 
   const filtered = (orders ?? []).filter((o) => {
@@ -163,9 +130,9 @@ function OrdersPage() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="todos">Todos los estados</SelectItem>
-              {statuses.map((s) => (
+              {ORDER_STATES.map((s) => (
                 <SelectItem key={s} value={s}>
-                  {s}
+                  {orderStateLabel(s)}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -179,71 +146,11 @@ function OrdersPage() {
           description="Cuando la IA cierre una venta con datos completos, el pedido aparecerá aquí."
         />
       ) : (
-        <Card>
-          <CardContent className="overflow-x-auto p-0">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Pedido</TableHead>
-                  <TableHead>Cliente</TableHead>
-                  <TableHead>Producto</TableHead>
-                  <TableHead className="text-right">Total</TableHead>
-                  <TableHead>Pago</TableHead>
-                  <TableHead>Estado</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filtered.map((o) => (
-                  <TableRow key={o.id}>
-                    <TableCell className="whitespace-nowrap">
-                      <div className="font-medium">{o.order_number}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {formatDate(o.created_at)}
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <div className="font-medium">{o.customer_name}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {o.phone} · {o.city ?? "—"}
-                      </div>
-                    </TableCell>
-                    <TableCell className="max-w-48 truncate">
-                      {o.product_title ?? "—"} × {o.quantity}
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap text-right font-medium">
-                      {formatGs(o.total)}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant={o.payment_status === "pagado" ? "default" : "outline"}>
-                        {o.payment_status}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      <Select
-                        value={o.status}
-                        onValueChange={(value) => updateStatus.mutate({ id: o.id, value })}
-                      >
-                        <SelectTrigger className="w-36">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {statuses.map((s) => (
-                            <SelectItem key={s} value={s}>
-                              {s}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <Badge variant={statusVariant[o.status]} className="sr-only">
-                        {o.status}
-                      </Badge>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
+        <div className="grid gap-4 xl:grid-cols-2">
+          {filtered.map((o) => (
+            <OrderCard key={o.id} order={o} />
+          ))}
+        </div>
       )}
     </PageShell>
   );
