@@ -23,6 +23,10 @@ import { Route as AuthenticatedEntrenamientoRouteImport } from './routes/_authen
 import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
 import { Route as AuthenticatedConfiguracionesRouteImport } from './routes/_authenticated/configuraciones'
 import { Route as AuthenticatedChatIaRouteImport } from './routes/_authenticated/chat-ia'
+import { Route as AuthenticatedAdminUsuariosRouteImport } from './routes/_authenticated/admin/usuarios'
+import { Route as AuthenticatedAdminRegistrosRouteImport } from './routes/_authenticated/admin/registros'
+import { Route as AuthenticatedAdminPagosRouteImport } from './routes/_authenticated/admin/pagos'
+import { Route as AuthenticatedAdminMetricasRouteImport } from './routes/_authenticated/admin/metricas'
 import { Route as ApiPublicWhatsappWebhookRouteImport } from './routes/api/public/whatsapp/webhook'
 
 const PendienteRoute = PendienteRouteImport.update({
@@ -97,6 +101,29 @@ const AuthenticatedChatIaRoute = AuthenticatedChatIaRouteImport.update({
   path: '/chat-ia',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedAdminUsuariosRoute =
+  AuthenticatedAdminUsuariosRouteImport.update({
+    id: '/admin/usuarios',
+    path: '/admin/usuarios',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedAdminRegistrosRoute =
+  AuthenticatedAdminRegistrosRouteImport.update({
+    id: '/admin/registros',
+    path: '/admin/registros',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedAdminPagosRoute = AuthenticatedAdminPagosRouteImport.update({
+  id: '/admin/pagos',
+  path: '/admin/pagos',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedAdminMetricasRoute =
+  AuthenticatedAdminMetricasRouteImport.update({
+    id: '/admin/metricas',
+    path: '/admin/metricas',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const ApiPublicWhatsappWebhookRoute =
   ApiPublicWhatsappWebhookRouteImport.update({
     id: '/api/public/whatsapp/webhook',
@@ -118,6 +145,10 @@ export interface FileRoutesByFullPath {
   '/pedidos': typeof AuthenticatedPedidosRoute
   '/planes': typeof AuthenticatedPlanesRoute
   '/productos': typeof AuthenticatedProductosRoute
+  '/admin/metricas': typeof AuthenticatedAdminMetricasRoute
+  '/admin/pagos': typeof AuthenticatedAdminPagosRoute
+  '/admin/registros': typeof AuthenticatedAdminRegistrosRoute
+  '/admin/usuarios': typeof AuthenticatedAdminUsuariosRoute
   '/api/public/whatsapp/webhook': typeof ApiPublicWhatsappWebhookRoute
 }
 export interface FileRoutesByTo {
@@ -134,6 +165,10 @@ export interface FileRoutesByTo {
   '/pedidos': typeof AuthenticatedPedidosRoute
   '/planes': typeof AuthenticatedPlanesRoute
   '/productos': typeof AuthenticatedProductosRoute
+  '/admin/metricas': typeof AuthenticatedAdminMetricasRoute
+  '/admin/pagos': typeof AuthenticatedAdminPagosRoute
+  '/admin/registros': typeof AuthenticatedAdminRegistrosRoute
+  '/admin/usuarios': typeof AuthenticatedAdminUsuariosRoute
   '/api/public/whatsapp/webhook': typeof ApiPublicWhatsappWebhookRoute
 }
 export interface FileRoutesById {
@@ -152,6 +187,10 @@ export interface FileRoutesById {
   '/_authenticated/pedidos': typeof AuthenticatedPedidosRoute
   '/_authenticated/planes': typeof AuthenticatedPlanesRoute
   '/_authenticated/productos': typeof AuthenticatedProductosRoute
+  '/_authenticated/admin/metricas': typeof AuthenticatedAdminMetricasRoute
+  '/_authenticated/admin/pagos': typeof AuthenticatedAdminPagosRoute
+  '/_authenticated/admin/registros': typeof AuthenticatedAdminRegistrosRoute
+  '/_authenticated/admin/usuarios': typeof AuthenticatedAdminUsuariosRoute
   '/api/public/whatsapp/webhook': typeof ApiPublicWhatsappWebhookRoute
 }
 export interface FileRouteTypes {
@@ -170,6 +209,10 @@ export interface FileRouteTypes {
     | '/pedidos'
     | '/planes'
     | '/productos'
+    | '/admin/metricas'
+    | '/admin/pagos'
+    | '/admin/registros'
+    | '/admin/usuarios'
     | '/api/public/whatsapp/webhook'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -186,6 +229,10 @@ export interface FileRouteTypes {
     | '/pedidos'
     | '/planes'
     | '/productos'
+    | '/admin/metricas'
+    | '/admin/pagos'
+    | '/admin/registros'
+    | '/admin/usuarios'
     | '/api/public/whatsapp/webhook'
   id:
     | '__root__'
@@ -203,6 +250,10 @@ export interface FileRouteTypes {
     | '/_authenticated/pedidos'
     | '/_authenticated/planes'
     | '/_authenticated/productos'
+    | '/_authenticated/admin/metricas'
+    | '/_authenticated/admin/pagos'
+    | '/_authenticated/admin/registros'
+    | '/_authenticated/admin/usuarios'
     | '/api/public/whatsapp/webhook'
   fileRoutesById: FileRoutesById
 }
@@ -314,6 +365,34 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedChatIaRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/admin/usuarios': {
+      id: '/_authenticated/admin/usuarios'
+      path: '/admin/usuarios'
+      fullPath: '/admin/usuarios'
+      preLoaderRoute: typeof AuthenticatedAdminUsuariosRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/admin/registros': {
+      id: '/_authenticated/admin/registros'
+      path: '/admin/registros'
+      fullPath: '/admin/registros'
+      preLoaderRoute: typeof AuthenticatedAdminRegistrosRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/admin/pagos': {
+      id: '/_authenticated/admin/pagos'
+      path: '/admin/pagos'
+      fullPath: '/admin/pagos'
+      preLoaderRoute: typeof AuthenticatedAdminPagosRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/admin/metricas': {
+      id: '/_authenticated/admin/metricas'
+      path: '/admin/metricas'
+      fullPath: '/admin/metricas'
+      preLoaderRoute: typeof AuthenticatedAdminMetricasRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/api/public/whatsapp/webhook': {
       id: '/api/public/whatsapp/webhook'
       path: '/api/public/whatsapp/webhook'
@@ -335,6 +414,10 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedPedidosRoute: typeof AuthenticatedPedidosRoute
   AuthenticatedPlanesRoute: typeof AuthenticatedPlanesRoute
   AuthenticatedProductosRoute: typeof AuthenticatedProductosRoute
+  AuthenticatedAdminMetricasRoute: typeof AuthenticatedAdminMetricasRoute
+  AuthenticatedAdminPagosRoute: typeof AuthenticatedAdminPagosRoute
+  AuthenticatedAdminRegistrosRoute: typeof AuthenticatedAdminRegistrosRoute
+  AuthenticatedAdminUsuariosRoute: typeof AuthenticatedAdminUsuariosRoute
 }
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
@@ -348,6 +431,10 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedPedidosRoute: AuthenticatedPedidosRoute,
   AuthenticatedPlanesRoute: AuthenticatedPlanesRoute,
   AuthenticatedProductosRoute: AuthenticatedProductosRoute,
+  AuthenticatedAdminMetricasRoute: AuthenticatedAdminMetricasRoute,
+  AuthenticatedAdminPagosRoute: AuthenticatedAdminPagosRoute,
+  AuthenticatedAdminRegistrosRoute: AuthenticatedAdminRegistrosRoute,
+  AuthenticatedAdminUsuariosRoute: AuthenticatedAdminUsuariosRoute,
 }
 
 const AuthenticatedRouteRouteWithChildren =
