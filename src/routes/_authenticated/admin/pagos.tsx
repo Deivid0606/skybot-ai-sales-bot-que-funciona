@@ -1,9 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { formatDateTime, formatGs } from "@/lib/format";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, X } from "lucide-react";
+import { Check, X, FileText, Mail } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
+import { getSignedUrl } from "@/lib/storage";
 import { PageHeader, PageShell, EmptyState } from "@/components/page-shell";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -33,9 +34,31 @@ function AdminPaymentsPage() {
         .select("*")
         .order("created_at", { ascending: false });
       if (error) throw error;
-      return data;
+
+      const ids = Array.from(new Set((data ?? []).map((p) => p.user_id).filter(Boolean)));
+      let profiles: { id: string; email: string | null; full_name: string | null }[] = [];
+      if (ids.length) {
+        const { data: profs } = await supabase
+          .from("profiles")
+          .select("id, email, full_name")
+          .in("id", ids);
+        profiles = profs ?? [];
+      }
+      return (data ?? []).map((p) => ({
+        ...p,
+        profile: profiles.find((pr) => pr.id === p.user_id) ?? null,
+      }));
     },
   });
+
+  const openReceipt = async (path: string) => {
+    try {
+      const url = path.startsWith("http") ? path : await getSignedUrl("receipts", path);
+      window.open(url, "_blank", "noopener");
+    } catch (e) {
+      toast.error((e as Error).message);
+    }
+  };
 
   const review = useMutation({
     mutationFn: async ({ purchaseId, approve }: { purchaseId: string; approve: boolean }) =>
@@ -46,6 +69,7 @@ function AdminPaymentsPage() {
     },
     onError: (e: Error) => toast.error(e.message),
   });
+
 
   return (
     <PageShell>
