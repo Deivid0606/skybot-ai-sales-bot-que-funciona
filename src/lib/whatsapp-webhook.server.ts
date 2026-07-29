@@ -1,4 +1,5 @@
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
+import { formatGs } from "@/lib/format";
 import { buildWorkspaceAiContext } from "@/lib/ai-context.server";
 import { generateAiReply } from "@/lib/ai.server";
 import { sendWhatsAppText } from "@/lib/whatsapp.server";
@@ -311,7 +312,7 @@ async function createOrderFromAi(args: {
     user_id: args.ownerId,
     type: "venta",
     title: `Nueva venta ${created.order_number}`,
-    body: `${created.customer_name} · $${Number(created.total).toLocaleString("es-CO")}`,
+    body: `${created.customer_name} · ${formatGs(created.total)}`,
     link: "/pedidos",
     audience: "user",
   });

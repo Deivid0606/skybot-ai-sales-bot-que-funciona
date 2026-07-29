@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { formatGs } from "@/lib/format";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, Pencil, Plus, Trash2, Upload, X } from "lucide-react";
@@ -299,11 +300,11 @@ function ProductsPage() {
                 </div>
                 <div className="flex items-baseline gap-2">
                   <span className="text-lg font-semibold">
-                    ${Number(p.promo_price ?? p.price).toLocaleString("es-CO")}
+                    {formatGs(p.promo_price ?? p.price)}
                   </span>
                   {p.promo_price && (
                     <span className="text-xs text-muted-foreground line-through">
-                      ${Number(p.price).toLocaleString("es-CO")}
+                      {formatGs(p.price)}
                     </span>
                   )}
                   <span className="ml-auto text-xs text-muted-foreground">Stock {p.stock}</span>
@@ -384,7 +385,7 @@ function ProductsPage() {
               />
             </div>
             <div className="space-y-1.5">
-              <Label>Precio</Label>
+              <Label>Precio (₲)</Label>
               <Input
                 type="number"
                 value={form.price}
@@ -392,7 +393,7 @@ function ProductsPage() {
               />
             </div>
             <div className="space-y-1.5">
-              <Label>Precio promocional</Label>
+              <Label>Precio promocional (₲)</Label>
               <Input
                 type="number"
                 value={form.promo_price}

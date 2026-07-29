@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { formatDateTime, formatGs } from "@/lib/format";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, X } from "lucide-react";
 import { toast } from "sonner";
@@ -59,8 +60,8 @@ function AdminPaymentsPage() {
                 <div className="min-w-0 flex-1">
                   <p className="font-medium">{p.plan_name}</p>
                   <p className="text-xs text-muted-foreground">
-                    ${Number(p.amount).toLocaleString("es-CO")} · {p.conversations} conversaciones ·{" "}
-                    {new Date(p.created_at).toLocaleString("es-CO")}
+                    {formatGs(p.amount)} · {p.conversations} conversaciones ·{" "}
+                    {formatDateTime(p.created_at)}
                   </p>
                 </div>
                 <Badge

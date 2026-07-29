@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { formatGs } from "@/lib/format";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Edit, Loader2, Plus, Trash2 } from "lucide-react";
@@ -156,7 +157,7 @@ function AdminPlansPage() {
                   <div>
                     <h3 className="font-display text-lg font-bold">{plan.name}</h3>
                     <p className="font-display text-2xl font-bold text-primary">
-                      ${Number(plan.price).toLocaleString("es-CO")}
+                      {formatGs(plan.price)}
                     </p>
                   </div>
                   <Badge variant={plan.is_active ? "default" : "secondary"}>
@@ -216,7 +217,7 @@ function AdminPlansPage() {
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
-                <Label htmlFor="price">Precio</Label>
+                <Label htmlFor="price">Precio (₲)</Label>
                 <Input
                   id="price"
                   type="number"

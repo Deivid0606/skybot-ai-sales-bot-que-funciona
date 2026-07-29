@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { formatDate, formatGs } from "@/lib/format";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Loader2, Upload } from "lucide-react";
@@ -140,7 +141,7 @@ function PlansPage() {
             <CardContent className="flex flex-1 flex-col gap-3 p-6">
               <h3 className="font-display text-lg font-bold">{p.name}</h3>
               <p className="font-display text-3xl font-bold text-primary">
-                ${Number(p.price).toLocaleString("es-CO")}
+                {formatGs(p.price)}
               </p>
               <p className="text-sm text-muted-foreground">
                 {p.conversations} conversaciones · {p.duration_days} días
@@ -185,10 +186,10 @@ function PlansPage() {
               >
                 <span className="font-medium">{p.plan_name}</span>
                 <span className="text-muted-foreground">
-                  ${Number(p.amount).toLocaleString("es-CO")} · {p.conversations} conv.
+                  {formatGs(p.amount)} · {p.conversations} conv.
                 </span>
                 <span className="text-xs text-muted-foreground">
-                  {new Date(p.created_at).toLocaleDateString("es-CO")}
+                  {formatDate(p.created_at)}
                 </span>
                 <Badge
                   className="ml-auto"

@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { formatDateTime } from "@/lib/format";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCheck } from "lucide-react";
@@ -93,7 +94,7 @@ function NotificationsPage() {
                   {n.body && <p className="mt-1 text-sm text-muted-foreground">{n.body}</p>}
                 </div>
                 <span className="shrink-0 text-xs text-muted-foreground">
-                  {new Date(n.created_at).toLocaleString("es-CO")}
+                  {formatDateTime(n.created_at)}
                 </span>
               </CardContent>
             </Card>
