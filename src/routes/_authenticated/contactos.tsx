@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { Search, Users } from "lucide-react";
+import { Search } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { PageHeader, PageShell, EmptyState } from "@/components/page-shell";
 import { Card, CardContent } from "@/components/ui/card";
@@ -136,7 +136,6 @@ function ContactsPage() {
 
       {filtered.length === 0 ? (
         <EmptyState
-          icon={Users}
           title="Sin contactos"
           description="Los contactos se crean automáticamente cuando un cliente te escribe."
         />
