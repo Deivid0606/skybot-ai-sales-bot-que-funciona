@@ -340,6 +340,19 @@ function InboxPage() {
                   </PopoverContent>
                 </Popover>
                 <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => aiNow.mutate()}
+                  disabled={aiNow.isPending}
+                >
+                  {aiNow.isPending ? (
+                    <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Sparkles className="mr-1 h-4 w-4" />
+                  )}
+                  Responder IA
+                </Button>
+                <Button
                   variant={active.ai_paused ? "default" : "outline"}
                   size="sm"
                   onClick={() => toggleAi.mutate(!active.ai_paused)}
@@ -362,31 +375,92 @@ function InboxPage() {
               </div>
             </header>
 
+            {selected.length > 0 && (
+              <div className="flex items-center gap-2 border-b border-border bg-accent/50 px-4 py-2">
+                <Button variant="ghost" size="sm" onClick={() => setSelected([])}>
+                  <X className="mr-1 h-4 w-4" /> Cancelar
+                </Button>
+                <span className="text-sm text-muted-foreground">
+                  {selected.length} seleccionado{selected.length > 1 ? "s" : ""}
+                </span>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  className="ml-auto"
+                  disabled={removeMessages.isPending}
+                  onClick={() => removeMessages.mutate(selected)}
+                >
+                  <Trash2 className="mr-1 h-4 w-4" /> Eliminar
+                </Button>
+              </div>
+            )}
+
             <ScrollArea className="flex-1 bg-muted/30 p-4">
               <div className="mx-auto flex max-w-3xl flex-col gap-2">
-                {messages?.map((m) => (
-                  <div
-                    key={m.id}
-                    className={cn(
-                      "max-w-[80%] rounded-2xl px-3 py-2 text-sm shadow-sm",
-                      m.direction === "inbound"
-                        ? "self-start rounded-bl-sm bg-card"
-                        : "self-end rounded-br-sm bg-primary text-primary-foreground",
-                    )}
-                  >
-                    {m.media_url && (
-                      <p className="mb-1 text-xs opacity-80">[{m.media_type ?? "archivo"}]</p>
-                    )}
-                    <p className="whitespace-pre-wrap break-words">{m.body}</p>
-                    <p className="mt-1 text-[10px] opacity-70">
-                      {m.sender === "ai" ? "IA · " : m.sender === "agent" ? "Tú · " : ""}
-                      {formatTime(m.created_at)}
-                    </p>
-                  </div>
-                ))}
+                {messages?.map((m) => {
+                  const isSelected = selected.includes(m.id);
+                  const toggleSelect = () =>
+                    setSelected((prev) =>
+                      prev.includes(m.id) ? prev.filter((id) => id !== m.id) : [...prev, m.id],
+                    );
+                  return (
+                    <div
+                      key={m.id}
+                      className={cn(
+                        "group flex items-center gap-2",
+                        m.direction === "inbound" ? "self-start" : "flex-row-reverse self-end",
+                        "max-w-[90%]",
+                      )}
+                    >
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => selected.length > 0 && toggleSelect()}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          toggleSelect();
+                        }}
+                        className={cn(
+                          "cursor-pointer rounded-2xl px-3 py-2 text-sm shadow-sm",
+                          m.direction === "inbound"
+                            ? "rounded-bl-sm bg-card"
+                            : "rounded-br-sm bg-primary text-primary-foreground",
+                          isSelected && "ring-2 ring-destructive",
+                        )}
+                      >
+                        {m.media_url && (
+                          <p className="mb-1 text-xs opacity-80">[{m.media_type ?? "archivo"}]</p>
+                        )}
+                        <p className="whitespace-pre-wrap break-words">{m.body}</p>
+                        <p className="mt-1 text-[10px] opacity-70">
+                          {m.sender === "ai" ? "IA · " : m.sender === "agent" ? "Tú · " : ""}
+                          {formatTime(m.created_at)}
+                        </p>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                        <button
+                          aria-label="Seleccionar mensaje"
+                          onClick={toggleSelect}
+                          className={cn(
+                            "h-4 w-4 rounded-full border border-muted-foreground",
+                            isSelected && "border-destructive bg-destructive",
+                          )}
+                        />
+                        <button
+                          aria-label="Eliminar mensaje"
+                          onClick={() => removeMessages.mutate([m.id])}
+                          className="text-muted-foreground hover:text-destructive"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
                 <div ref={bottomRef} />
               </div>
             </ScrollArea>
+
 
             <footer className="flex items-end gap-2 border-t border-border p-3">
               <Textarea
