@@ -142,31 +142,47 @@ export function resolveDepartamento(departamento?: string | null, city?: string 
   return CITY_TO_DEPT[cityKey] ?? "";
 }
 
-/** Genera la URL de carga directa en la plataforma externa con todos los datos del pedido. */
+/**
+ * Genera la URL de carga directa en la plataforma externa.
+ * La plataforma sólo procesa los parámetros si `origen=seller-skyline`
+ * y usa las claves: nombre, telefono, ciudad, calle, producto, cantidad, total, pago.
+ */
 export function buildEcommerceUrl(order: Tables<"orders">) {
   const departamento = resolveDepartamento(order.departamento, order.city);
+  const observacion = [
+    order.observations ?? "",
+    order.district ? `Barrio: ${order.district}` : "",
+    order.reference ? `Referencia: ${order.reference}` : "",
+    order.sku ? `SKU: ${order.sku}` : "",
+    order.order_number ? `Pedido: ${order.order_number}` : "",
+  ]
+    .filter(Boolean)
+    .join(" | ");
+
   const entries: Record<string, string> = {
-    origen: "bot-sky",
-    pedido: order.order_number ?? "",
+    // clave requerida por la app externa para prellenar el formulario
+    origen: "seller-skyline",
     nombre: order.customer_name ?? "",
     telefono: order.phone ?? "",
     ciudad: order.city ?? "",
-    departamento,
-    depto: departamento,
     calle: order.street ?? "",
-    direccion: [order.street, order.district, order.city, departamento].filter(Boolean).join(", "),
-    barrio: order.district ?? "",
-    referencia: order.reference ?? "",
     producto: order.product_title ?? "",
-    sku: order.sku ?? "",
     cantidad: String(order.quantity ?? 1),
-    precio: String(order.price ?? 0),
     total: String(order.total ?? 0),
     pago: order.payment_method ?? "",
+    // extras (ignorados si la plataforma no los usa)
+    departamento,
+    depto: departamento,
+    barrio: order.district ?? "",
+    referencia: order.reference ?? "",
+    email: "",
+    sku: order.sku ?? "",
+    precio: String(order.price ?? 0),
+    pedido: order.order_number ?? "",
     estado_pago: order.payment_status ?? "",
-    estado: order.status ?? "",
     anuncio: order.ad_id ?? "",
-    observacion: order.observations ?? "",
+    obs: observacion,
+    observacion,
   };
   const params = new URLSearchParams();
   for (const [k, v] of Object.entries(entries)) if (v) params.set(k, v);
