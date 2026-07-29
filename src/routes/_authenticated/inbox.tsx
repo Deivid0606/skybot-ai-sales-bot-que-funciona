@@ -13,6 +13,7 @@ import {
   Sparkles,
   Tag,
   Trash2,
+  User,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -30,6 +31,8 @@ import {
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
 import { aiReplyNow, deleteMessages, sendManualMessage } from "@/lib/chat.functions";
+import { AdOriginCard } from "@/components/ad-origin-card";
+import { ContactInfoDialog } from "@/components/contact-info-dialog";
 
 
 export const Route = createFileRoute("/_authenticated/inbox")({
@@ -53,6 +56,9 @@ function InboxPage() {
   const [draft, setDraft] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const [selected, setSelected] = useState<string[]>([]);
+  const [infoOpen, setInfoOpen] = useState(false);
+
+
 
 
   const { data: conversations } = useQuery({
@@ -62,7 +68,7 @@ function InboxPage() {
       const { data, error } = await supabase
         .from("conversations")
         .select(
-          "*, contacts(name, phone, city), products(name), conversation_labels(label_id, labels(name, color))",
+          "*, contacts(name, phone, city), products(name, sales_copy), conversation_labels(label_id, labels(name, color))",
         )
         .eq("workspace_id", workspaceId!)
         .order("last_message_at", { ascending: false, nullsFirst: false })
@@ -121,6 +127,21 @@ function InboxPage() {
   }, [messages?.length]);
 
   const active = conversations?.find((c) => c.id === activeId) ?? null;
+
+  const { data: ad } = useQuery({
+    queryKey: ["ad", workspaceId, active?.ad_id],
+    enabled: Boolean(workspaceId && active?.ad_id),
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("ads")
+        .select("*, products(name, sales_copy)")
+        .eq("workspace_id", workspaceId!)
+        .eq("ad_id", active!.ad_id!)
+        .maybeSingle();
+      if (error) throw error;
+      return data;
+    },
+  });
 
   const send = useMutation({
     mutationFn: async () => {
@@ -261,6 +282,11 @@ function InboxPage() {
                     venta
                   </Badge>
                 )}
+                {c.ad_id && (
+                  <Badge variant="secondary" className="text-[10px]">
+                    anuncio
+                  </Badge>
+                )}
                 {c.ai_paused && (
                   <Badge variant="outline" className="text-[10px]">
                     IA pausada
@@ -304,11 +330,16 @@ function InboxPage() {
                 </p>
                 <p className="text-xs text-muted-foreground">
                   {active.contacts?.phone}
+                  {active.contacts?.city ? ` · ${active.contacts.city}` : ""}
                   {active.products?.name ? ` · ${active.products.name}` : ""}
                 </p>
               </div>
               <div className="ml-auto flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={() => setInfoOpen(true)}>
+                  <User className="mr-1 h-4 w-4" /> Info
+                </Button>
                 <Popover>
+
                   <PopoverTrigger asChild>
                     <Button variant="outline" size="sm">
                       <Tag className="mr-1 h-4 w-4" /> Etiquetas
@@ -397,6 +428,16 @@ function InboxPage() {
 
             <ScrollArea className="flex-1 bg-muted/30 p-4">
               <div className="mx-auto flex max-w-3xl flex-col gap-2">
+                {active.ad_id && (
+                  <AdOriginCard
+                    adId={active.ad_id}
+                    mediaUrl={active.ad_media_url ?? ad?.media_url}
+                    title={ad?.name ?? ad?.products?.name ?? active.products?.name}
+                    copy={ad?.products?.sales_copy ?? active.products?.sales_copy}
+                    date={active.created_at}
+                  />
+                )}
+
                 {messages?.map((m) => {
                   const isSelected = selected.includes(m.id);
                   const toggleSelect = () =>
@@ -484,7 +525,14 @@ function InboxPage() {
                 )}
               </Button>
             </footer>
+
+            <ContactInfoDialog
+              contactId={active.contact_id}
+              open={infoOpen}
+              onOpenChange={setInfoOpen}
+            />
           </>
+
         )}
       </section>
     </div>

@@ -22,6 +22,7 @@ import { Route as AuthenticatedInboxRouteImport } from './routes/_authenticated/
 import { Route as AuthenticatedEtiquetasRouteImport } from './routes/_authenticated/etiquetas'
 import { Route as AuthenticatedEntrenamientoRouteImport } from './routes/_authenticated/entrenamiento'
 import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
+import { Route as AuthenticatedContactosRouteImport } from './routes/_authenticated/contactos'
 import { Route as AuthenticatedConfiguracionesRouteImport } from './routes/_authenticated/configuraciones'
 import { Route as AuthenticatedChatIaRouteImport } from './routes/_authenticated/chat-ia'
 import { Route as AuthenticatedAdminUsuariosRouteImport } from './routes/_authenticated/admin/usuarios'
@@ -97,6 +98,11 @@ const AuthenticatedDashboardRoute = AuthenticatedDashboardRouteImport.update({
   path: '/dashboard',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedContactosRoute = AuthenticatedContactosRouteImport.update({
+  id: '/contactos',
+  path: '/contactos',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
 const AuthenticatedConfiguracionesRoute =
   AuthenticatedConfiguracionesRouteImport.update({
     id: '/configuraciones',
@@ -150,6 +156,7 @@ export interface FileRoutesByFullPath {
   '/pendiente': typeof PendienteRoute
   '/chat-ia': typeof AuthenticatedChatIaRoute
   '/configuraciones': typeof AuthenticatedConfiguracionesRoute
+  '/contactos': typeof AuthenticatedContactosRoute
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/entrenamiento': typeof AuthenticatedEntrenamientoRoute
   '/etiquetas': typeof AuthenticatedEtiquetasRoute
@@ -172,6 +179,7 @@ export interface FileRoutesByTo {
   '/pendiente': typeof PendienteRoute
   '/chat-ia': typeof AuthenticatedChatIaRoute
   '/configuraciones': typeof AuthenticatedConfiguracionesRoute
+  '/contactos': typeof AuthenticatedContactosRoute
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/entrenamiento': typeof AuthenticatedEntrenamientoRoute
   '/etiquetas': typeof AuthenticatedEtiquetasRoute
@@ -196,6 +204,7 @@ export interface FileRoutesById {
   '/pendiente': typeof PendienteRoute
   '/_authenticated/chat-ia': typeof AuthenticatedChatIaRoute
   '/_authenticated/configuraciones': typeof AuthenticatedConfiguracionesRoute
+  '/_authenticated/contactos': typeof AuthenticatedContactosRoute
   '/_authenticated/dashboard': typeof AuthenticatedDashboardRoute
   '/_authenticated/entrenamiento': typeof AuthenticatedEntrenamientoRoute
   '/_authenticated/etiquetas': typeof AuthenticatedEtiquetasRoute
@@ -220,6 +229,7 @@ export interface FileRouteTypes {
     | '/pendiente'
     | '/chat-ia'
     | '/configuraciones'
+    | '/contactos'
     | '/dashboard'
     | '/entrenamiento'
     | '/etiquetas'
@@ -242,6 +252,7 @@ export interface FileRouteTypes {
     | '/pendiente'
     | '/chat-ia'
     | '/configuraciones'
+    | '/contactos'
     | '/dashboard'
     | '/entrenamiento'
     | '/etiquetas'
@@ -265,6 +276,7 @@ export interface FileRouteTypes {
     | '/pendiente'
     | '/_authenticated/chat-ia'
     | '/_authenticated/configuraciones'
+    | '/_authenticated/contactos'
     | '/_authenticated/dashboard'
     | '/_authenticated/entrenamiento'
     | '/_authenticated/etiquetas'
@@ -383,6 +395,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedDashboardRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/contactos': {
+      id: '/_authenticated/contactos'
+      path: '/contactos'
+      fullPath: '/contactos'
+      preLoaderRoute: typeof AuthenticatedContactosRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/configuraciones': {
       id: '/_authenticated/configuraciones'
       path: '/configuraciones'
@@ -445,6 +464,7 @@ declare module '@tanstack/react-router' {
 interface AuthenticatedRouteRouteChildren {
   AuthenticatedChatIaRoute: typeof AuthenticatedChatIaRoute
   AuthenticatedConfiguracionesRoute: typeof AuthenticatedConfiguracionesRoute
+  AuthenticatedContactosRoute: typeof AuthenticatedContactosRoute
   AuthenticatedDashboardRoute: typeof AuthenticatedDashboardRoute
   AuthenticatedEntrenamientoRoute: typeof AuthenticatedEntrenamientoRoute
   AuthenticatedEtiquetasRoute: typeof AuthenticatedEtiquetasRoute
@@ -464,6 +484,7 @@ interface AuthenticatedRouteRouteChildren {
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedChatIaRoute: AuthenticatedChatIaRoute,
   AuthenticatedConfiguracionesRoute: AuthenticatedConfiguracionesRoute,
+  AuthenticatedContactosRoute: AuthenticatedContactosRoute,
   AuthenticatedDashboardRoute: AuthenticatedDashboardRoute,
   AuthenticatedEntrenamientoRoute: AuthenticatedEntrenamientoRoute,
   AuthenticatedEtiquetasRoute: AuthenticatedEtiquetasRoute,
