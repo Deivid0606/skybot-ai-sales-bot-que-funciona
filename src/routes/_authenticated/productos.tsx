@@ -34,6 +34,13 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useAuth } from "@/lib/auth";
 import { guessMediaType, MAX_FILE_BYTES, uploadWorkspaceFile } from "@/lib/storage";
+import {
+  MEDIA_LIMITS,
+  ProductMediaManager,
+  type ExistingMedia,
+  type MediaKind,
+} from "@/components/product-media-manager";
+import { ProductPreview } from "@/components/product-preview";
 
 export const Route = createFileRoute("/_authenticated/productos")({
   head: () => ({
