@@ -127,6 +127,21 @@ function InboxPage() {
 
   const active = conversations?.find((c) => c.id === activeId) ?? null;
 
+  const { data: ad } = useQuery({
+    queryKey: ["ad", workspaceId, active?.ad_id],
+    enabled: Boolean(workspaceId && active?.ad_id),
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("ads")
+        .select("*, products(name, sales_copy)")
+        .eq("workspace_id", workspaceId!)
+        .eq("ad_id", active!.ad_id!)
+        .maybeSingle();
+      if (error) throw error;
+      return data;
+    },
+  });
+
   const send = useMutation({
     mutationFn: async () => {
       if (!activeId || !draft.trim()) return;
