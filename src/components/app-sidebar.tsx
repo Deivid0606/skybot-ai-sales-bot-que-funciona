@@ -14,6 +14,7 @@ import {
   Bell,
   Users,
   Wallet,
+  Receipt,
 } from "lucide-react";
 import {
   Sidebar,
@@ -45,6 +46,7 @@ const sellerItems = [
 const adminItems = [
   { title: "Usuarios", url: "/admin/usuarios", icon: Users },
   { title: "Métricas globales", url: "/admin/metricas", icon: BarChart3 },
+  { title: "Planes", url: "/admin/planes", icon: Receipt },
   { title: "Planes y pagos", url: "/admin/pagos", icon: Wallet },
   { title: "Registros", url: "/admin/registros", icon: FileClock },
 ] as const;
