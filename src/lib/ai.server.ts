@@ -3,6 +3,8 @@ const MODEL = "google/gemini-3.6-flash";
 
 export type AiContext = {
   systemInstruction: string;
+  geminiApiKey?: string | null;
+  model?: string | null;
   businessName: string;
   currency: string;
   products: {
