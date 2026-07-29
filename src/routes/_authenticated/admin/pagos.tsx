@@ -53,6 +53,7 @@ type Purchase = {
   conversations: number;
   status: string;
   created_at: string;
+  expires_at: string | null;
   receipt_url: string | null;
   profile: { id: string; email: string | null; full_name: string | null } | null;
 };
@@ -85,6 +86,87 @@ function AdminPaymentsPage() {
       })) as Purchase[];
     },
   });
+
+  const { data: balances } = useQuery({
+    queryKey: ["admin-balances"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("conversation_balances")
+        .select("user_id, available, purchased, consumed, expires_at");
+      if (error) throw error;
+      return data ?? [];
+    },
+  });
+
+  const clients = useMemo(() => {
+    const all = purchases ?? [];
+    const approved = all.filter((p) => p.status === "aprobado");
+    const now = Date.now();
+    const map = new Map<
+      string,
+      {
+        userId: string;
+        email: string;
+        name: string;
+        plan: string;
+        planDate: string | null;
+        expiresAt: string | null;
+        available: number;
+        purchased: number;
+        consumed: number;
+      }
+    >();
+
+    for (const b of balances ?? []) {
+      map.set(b.user_id, {
+        userId: b.user_id,
+        email: "Sin correo",
+        name: "",
+        plan: "Sin plan",
+        planDate: null,
+        expiresAt: b.expires_at ?? null,
+        available: Number(b.available || 0),
+        purchased: Number(b.purchased || 0),
+        consumed: Number(b.consumed || 0),
+      });
+    }
+
+    for (const p of approved) {
+      const cur = map.get(p.user_id) ?? {
+        userId: p.user_id,
+        email: "Sin correo",
+        name: "",
+        plan: "Sin plan",
+        planDate: null,
+        expiresAt: null,
+        available: 0,
+        purchased: 0,
+        consumed: 0,
+      };
+      cur.email = p.profile?.email ?? cur.email;
+      cur.name = p.profile?.full_name ?? cur.name;
+      if (!cur.planDate || new Date(p.created_at) > new Date(cur.planDate)) {
+        cur.plan = p.plan_name ?? "Sin nombre";
+        cur.planDate = p.created_at;
+        if (p.expires_at) cur.expiresAt = p.expires_at;
+      }
+      map.set(p.user_id, cur);
+    }
+
+    return [...map.values()]
+      .map((c) => {
+        const expMs = c.expiresAt ? new Date(c.expiresAt).getTime() : null;
+        const daysLeft = expMs ? Math.ceil((expMs - now) / 86400000) : null;
+        const usedPct = c.purchased ? Math.min(100, (c.consumed / c.purchased) * 100) : 0;
+        return {
+          ...c,
+          daysLeft,
+          expired: daysLeft !== null && daysLeft <= 0,
+          usedPct,
+        };
+      })
+      .sort((a, b) => b.available - a.available);
+  }, [purchases, balances]);
 
   const stats = useMemo(() => {
     const all = purchases ?? [];
@@ -192,7 +274,46 @@ function AdminPaymentsPage() {
             Solicitudes{stats.pending ? ` (${stats.pending})` : ""}
           </TabsTrigger>
           <TabsTrigger value="compradores">Compradores</TabsTrigger>
+          <TabsTrigger value="clientes">Clientes</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="clientes">
+          {!clients.length ? (
+            <EmptyState title="Sin clientes con plan" />
+          ) : (
+            <div className="space-y-2">
+              {clients.map((c) => (
+                <Card key={c.userId}>
+                  <CardContent className="space-y-2 p-4">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="min-w-0 flex-1">
+                        <p className="break-all font-medium">{c.email}</p>
+                        {c.name && <p className="text-xs text-muted-foreground">{c.name}</p>}
+                      </div>
+                      <Badge variant={c.expired ? "destructive" : "default"}>{c.plan}</Badge>
+                    </div>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                      <span className="flex items-center gap-1">
+                        <MessageSquare className="h-3.5 w-3.5 text-primary" />
+                        {c.available} disponibles de {c.purchased}
+                      </span>
+                      <span>{c.consumed} usados</span>
+                      <span>
+                        {c.expiresAt
+                          ? c.expired
+                            ? `Vencido el ${formatDateTime(c.expiresAt)}`
+                            : `Vence en ${c.daysLeft} días (${formatDateTime(c.expiresAt)})`
+                          : "Sin vencimiento"}
+                      </span>
+                    </div>
+                    <Progress value={c.usedPct} />
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          )}
+        </TabsContent>
+
 
         <TabsContent value="dashboard" className="space-y-4">
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
