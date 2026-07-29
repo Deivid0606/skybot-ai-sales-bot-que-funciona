@@ -405,14 +405,25 @@ function ProductsPage() {
       )}
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-5xl">
           <DialogHeader>
             <DialogTitle>{form.id ? "Editar producto" : "Nuevo producto"}</DialogTitle>
             <DialogDescription>
-              La IA usará este contenido para responder y cerrar ventas.
+              La IA usará este contenido para responder y cerrar ventas. Puedes adjuntar hasta{" "}
+              {MEDIA_LIMITS.image} imágenes, {MEDIA_LIMITS.video} videos y {MEDIA_LIMITS.audio}{" "}
+              audios.
             </DialogDescription>
           </DialogHeader>
+          <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
           <div className="grid gap-4 sm:grid-cols-2">
+            <div className="sm:col-span-2">
+              <ProductMediaManager
+                existing={editingMedia}
+                pending={pendingFiles}
+                onPendingChange={setPendingFiles}
+                onRemoveExisting={removeMedia}
+              />
+            </div>
             <div className="space-y-1.5 sm:col-span-2">
               <Label>Nombre</Label>
               <Input
