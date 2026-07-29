@@ -13,6 +13,7 @@ import {
   Sparkles,
   Tag,
   Trash2,
+  User,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
