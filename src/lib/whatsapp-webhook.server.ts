@@ -3,6 +3,7 @@ import { formatGs } from "@/lib/format";
 import { buildWorkspaceAiContext } from "@/lib/ai-context.server";
 import { generateAiReply } from "@/lib/ai.server";
 import { sendWhatsAppText } from "@/lib/whatsapp.server";
+import { detectComplaint, COMPLAINT_REASON_LABELS } from "@/lib/complaints";
 
 type IncomingMessage = {
   from: string;
