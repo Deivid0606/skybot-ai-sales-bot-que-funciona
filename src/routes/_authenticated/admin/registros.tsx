@@ -28,7 +28,17 @@ function AdminLogsPage() {
         .order("created_at", { ascending: false })
         .limit(200);
       if (error) throw error;
-      return data;
+
+      const ids = Array.from(new Set((data ?? []).map((l) => l.user_id).filter(Boolean))) as string[];
+      let profiles: { id: string; email: string | null }[] = [];
+      if (ids.length) {
+        const { data: profs } = await supabase.from("profiles").select("id, email").in("id", ids);
+        profiles = profs ?? [];
+      }
+      return (data ?? []).map((l) => ({
+        ...l,
+        email: profiles.find((p) => p.id === l.user_id)?.email ?? null,
+      }));
     },
   });
 
@@ -45,6 +55,9 @@ function AdminLogsPage() {
                 <Badge variant={l.level === "error" ? "destructive" : "secondary"}>{l.level}</Badge>
                 <Badge variant="outline">{l.integration}</Badge>
                 <span className="min-w-0 flex-1 break-words">{l.message}</span>
+                {l.email && (
+                  <span className="text-xs text-muted-foreground break-all">{l.email}</span>
+                )}
                 <span className="text-xs text-muted-foreground">
                   {formatDateTime(l.created_at)}
                 </span>
@@ -53,6 +66,7 @@ function AdminLogsPage() {
           ))}
         </div>
       )}
+
     </PageShell>
   );
 }
