@@ -38,7 +38,6 @@ import {
   MEDIA_LIMITS,
   ProductMediaManager,
   type ExistingMedia,
-  type MediaKind,
 } from "@/components/product-media-manager";
 import { ProductPreview } from "@/components/product-preview";
 
