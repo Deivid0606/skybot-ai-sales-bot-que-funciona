@@ -318,41 +318,103 @@ function SettingsPage() {
 
         <TabsContent value="ia" className="mt-4">
           <Card>
-            <CardContent className="space-y-4 p-5">
-              <div className="flex items-center gap-2">
-                <Switch
-                  checked={ai.ai_enabled}
-                  onCheckedChange={(v) => setAi({ ...ai, ai_enabled: v })}
-                />
-                <Label>IA activa (responde automáticamente)</Label>
-              </div>
+            <CardContent className="space-y-5 p-5">
               <div className="space-y-1.5">
-                <Label>Personalidad e instrucciones del vendedor</Label>
-                <Textarea
-                  rows={8}
-                  value={ai.system_instruction}
-                  onChange={(e) => setAi({ ...ai, system_instruction: e.target.value })}
-                />
-              </div>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div className="space-y-1.5">
-                  <Label>Retraso de respuesta (segundos)</Label>
+                <Label>Tiempo de respuesta del bot</Label>
+                <div className="flex items-center gap-2">
                   <Input
                     type="number"
+                    min={0}
+                    className="max-w-32"
                     value={ai.reply_delay_seconds}
                     onChange={(e) =>
                       setAi({ ...ai, reply_delay_seconds: Number(e.target.value) || 0 })
                     }
                   />
-                </div>
-                <div className="flex items-center gap-2 pt-6">
-                  <Switch
-                    checked={ai.autodetect_model}
-                    onCheckedChange={(v) => setAi({ ...ai, autodetect_model: v })}
-                  />
-                  <Label>Detectar producto automáticamente</Label>
+                  <span className="text-sm text-muted-foreground">seg</span>
                 </div>
               </div>
+
+              <div className="space-y-3 rounded-lg border p-4">
+                <p className="text-sm font-semibold">IA (Gemini)</p>
+                <div className="space-y-1.5">
+                  <Label>API Key de Gemini</Label>
+                  <Input
+                    type="password"
+                    placeholder="AIza..."
+                    value={ai.gemini_api_key}
+                    onChange={(e) => setAi({ ...ai, gemini_api_key: e.target.value })}
+                  />
+                  {ai.gemini_api_key.trim() ? (
+                    <p className="flex items-center gap-1 text-xs text-primary">
+                      <CheckCircle2 className="h-3.5 w-3.5" /> API Key configurada
+                    </p>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">Aún no cargaste tu API Key.</p>
+                  )}
+                  <a
+                    href="https://aistudio.google.com/app/apikey"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-xs underline text-muted-foreground hover:text-foreground"
+                  >
+                    Obtené tu API Key en Google AI Studio
+                  </a>
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label>Modelo preferido</Label>
+                  <select
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                    value={ai.autodetect_model ? "auto" : ai.model}
+                    onChange={(e) =>
+                      e.target.value === "auto"
+                        ? setAi({ ...ai, autodetect_model: true })
+                        : setAi({ ...ai, autodetect_model: false, model: e.target.value })
+                    }
+                  >
+                    <option value="auto">Auto-detectar</option>
+                    <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+                    <option value="gemini-2.5-pro">gemini-2.5-pro</option>
+                    <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+                    <option value="google/gemini-3.6-flash">google/gemini-3.6-flash</option>
+                  </select>
+                  <p className="text-xs text-muted-foreground">
+                    Seleccioná "Auto-detectar" para que el sistema encuentre el modelo disponible
+                    automáticamente.
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label>Instrucción del sistema</Label>
+                <Textarea
+                  rows={8}
+                  placeholder="Eres un asistente de ventas para una tienda online. Responde en español, de forma amable y profesional. Ayuda a cerrar ventas sin perder el contexto."
+                  value={ai.system_instruction}
+                  onChange={(e) => setAi({ ...ai, system_instruction: e.target.value })}
+                />
+              </div>
+
+              <div className="flex items-center gap-3 rounded-lg border p-4">
+                <Switch
+                  checked={ai.ai_enabled}
+                  onCheckedChange={(v) => setAi({ ...ai, ai_enabled: v })}
+                />
+                <div>
+                  <p className="text-sm font-medium">Activar IA</p>
+                  <p className="text-xs text-muted-foreground">
+                    Responde automáticamente a los mensajes
+                  </p>
+                </div>
+              </div>
+
+              {ai.ai_enabled && ai.gemini_api_key.trim() && (
+                <p className="flex items-center gap-1 text-sm text-primary">
+                  <CheckCircle2 className="h-4 w-4" /> IA activa y configurada correctamente
+                </p>
+              )}
+
               <Button onClick={() => handleSave("ai")} disabled={saving}>
                 <Save className="mr-1 h-4 w-4" /> Guardar IA
               </Button>
