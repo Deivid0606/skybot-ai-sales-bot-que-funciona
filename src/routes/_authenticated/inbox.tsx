@@ -282,6 +282,11 @@ function InboxPage() {
                     venta
                   </Badge>
                 )}
+                {c.ad_id && (
+                  <Badge variant="secondary" className="text-[10px]">
+                    anuncio
+                  </Badge>
+                )}
                 {c.ai_paused && (
                   <Badge variant="outline" className="text-[10px]">
                     IA pausada
