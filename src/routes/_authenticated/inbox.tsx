@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { formatTime } from "@/lib/format";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -342,10 +343,7 @@ function InboxPage() {
                     <p className="whitespace-pre-wrap break-words">{m.body}</p>
                     <p className="mt-1 text-[10px] opacity-70">
                       {m.sender === "ai" ? "IA · " : m.sender === "agent" ? "Tú · " : ""}
-                      {new Date(m.created_at).toLocaleTimeString("es-CO", {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
+                      {formatTime(m.created_at)}
                     </p>
                   </div>
                 ))}

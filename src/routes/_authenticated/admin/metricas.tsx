@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { formatGs } from "@/lib/format";
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { PageHeader, PageShell } from "@/components/page-shell";
@@ -42,8 +43,8 @@ function AdminMetricsPage() {
     { label: "Cuentas", value: data?.users ?? 0 },
     { label: "Conversaciones", value: data?.conversations ?? 0 },
     { label: "Pedidos", value: data?.orders ?? 0 },
-    { label: "Ventas ($)", value: `${formatGs(data?.revenue ?? 0)}` },
-    { label: "Ingresos por planes ($)", value: `${formatGs(data?.income ?? 0)}` },
+    { label: "Ventas (₲)", value: `${formatGs(data?.revenue ?? 0)}` },
+    { label: "Ingresos por planes (₲)", value: `${formatGs(data?.income ?? 0)}` },
   ];
 
   return (

@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { formatGs } from "@/lib/format";
 import { useQuery } from "@tanstack/react-query";
 import {
   Bot,

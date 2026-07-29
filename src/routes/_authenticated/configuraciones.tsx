@@ -51,8 +51,8 @@ function SettingsPage() {
   });
   const [biz, setBiz] = useState({
     business_name: "",
-    currency: "COP",
-    timezone: "America/Bogota",
+    currency: "PYG",
+    timezone: "America/Asuncion",
     google_sheets_url: "",
     apps_script_url: "",
     notify_numbers: "",

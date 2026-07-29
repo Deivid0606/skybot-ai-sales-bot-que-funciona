@@ -34,7 +34,7 @@ export async function buildWorkspaceAiContext(
   return {
     systemInstruction: aiSettings.data?.system_instruction ?? "",
     businessName: settings.data?.business_name ?? "",
-    currency: settings.data?.currency ?? "COP",
+    currency: settings.data?.currency ?? "PYG",
     products: (products.data ?? []).map((p) => ({
       id: p.id,
       name: p.name,
