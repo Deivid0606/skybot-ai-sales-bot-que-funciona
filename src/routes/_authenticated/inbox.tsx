@@ -67,7 +67,7 @@ function InboxPage() {
       const { data, error } = await supabase
         .from("conversations")
         .select(
-          "*, contacts(name, phone, city), products(name), conversation_labels(label_id, labels(name, color))",
+          "*, contacts(name, phone, city), products(name, sales_copy), conversation_labels(label_id, labels(name, color))",
         )
         .eq("workspace_id", workspaceId!)
         .order("last_message_at", { ascending: false, nullsFirst: false })
