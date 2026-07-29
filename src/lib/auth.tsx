@@ -25,6 +25,40 @@ type AuthContextValue = {
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
+const STORAGE_KEY = `sb-${import.meta.env.VITE_SUPABASE_PROJECT_ID}-auth-token`;
+
+function readStoredSession(): Session | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Session & { expires_at?: number };
+    if (!parsed?.access_token) return null;
+    if (parsed.expires_at && parsed.expires_at * 1000 < Date.now()) return null;
+    return parsed as Session;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * supabase-js serializes auth calls behind a Web Lock. If another tab/iframe
+ * holds a stale lock, getSession() never resolves and the whole app renders
+ * blank. Race it against a short timeout and fall back to the stored session.
+ */
+export async function getSessionFast(timeoutMs = 2000): Promise<Session | null> {
+  const stored = readStoredSession();
+  try {
+    const result = await Promise.race([
+      supabase.auth.getSession().then(({ data }) => data.session),
+      new Promise<Session | null>((resolve) => setTimeout(() => resolve(stored), timeoutMs)),
+    ]);
+    return result ?? stored;
+  } catch {
+    return stored;
+  }
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
