@@ -423,6 +423,16 @@ function InboxPage() {
 
             <ScrollArea className="flex-1 bg-muted/30 p-4">
               <div className="mx-auto flex max-w-3xl flex-col gap-2">
+                {active.ad_id && (
+                  <AdOriginCard
+                    adId={active.ad_id}
+                    mediaUrl={active.ad_media_url ?? ad?.media_url}
+                    title={ad?.name ?? ad?.products?.name ?? active.products?.name}
+                    copy={ad?.products?.sales_copy ?? active.products?.sales_copy}
+                    date={active.created_at}
+                  />
+                )}
+
                 {messages?.map((m) => {
                   const isSelected = selected.includes(m.id);
                   const toggleSelect = () =>
