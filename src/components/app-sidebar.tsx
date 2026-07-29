@@ -34,6 +34,7 @@ const sellerItems = [
   { title: "Dashboard", url: "/dashboard", icon: LayoutDashboard },
   { title: "Inbox", url: "/inbox", icon: Inbox },
   { title: "Chat IA", url: "/chat-ia", icon: MessageSquareCode },
+  { title: "Reclamos", url: "/reclamos", icon: AlertTriangle },
   { title: "Entrenamiento", url: "/entrenamiento", icon: Bot },
   { title: "Notificaciones", url: "/notificaciones", icon: Bell },
   { title: "Pedidos", url: "/pedidos", icon: ShoppingCart },
