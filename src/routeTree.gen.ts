@@ -20,6 +20,7 @@ import { Route as AuthenticatedNotificacionesRouteImport } from './routes/_authe
 import { Route as AuthenticatedEtiquetasRouteImport } from './routes/_authenticated/etiquetas'
 import { Route as AuthenticatedEntrenamientoRouteImport } from './routes/_authenticated/entrenamiento'
 import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
+import { Route as AuthenticatedConfiguracionesRouteImport } from './routes/_authenticated/configuraciones'
 
 const PendienteRoute = PendienteRouteImport.update({
   id: '/pendiente',
@@ -77,11 +78,18 @@ const AuthenticatedDashboardRoute = AuthenticatedDashboardRouteImport.update({
   path: '/dashboard',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedConfiguracionesRoute =
+  AuthenticatedConfiguracionesRouteImport.update({
+    id: '/configuraciones',
+    path: '/configuraciones',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
   '/pendiente': typeof PendienteRoute
+  '/configuraciones': typeof AuthenticatedConfiguracionesRoute
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/entrenamiento': typeof AuthenticatedEntrenamientoRoute
   '/etiquetas': typeof AuthenticatedEtiquetasRoute
@@ -94,6 +102,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
   '/pendiente': typeof PendienteRoute
+  '/configuraciones': typeof AuthenticatedConfiguracionesRoute
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/entrenamiento': typeof AuthenticatedEntrenamientoRoute
   '/etiquetas': typeof AuthenticatedEtiquetasRoute
@@ -108,6 +117,7 @@ export interface FileRoutesById {
   '/_authenticated': typeof AuthenticatedRouteRouteWithChildren
   '/auth': typeof AuthRoute
   '/pendiente': typeof PendienteRoute
+  '/_authenticated/configuraciones': typeof AuthenticatedConfiguracionesRoute
   '/_authenticated/dashboard': typeof AuthenticatedDashboardRoute
   '/_authenticated/entrenamiento': typeof AuthenticatedEntrenamientoRoute
   '/_authenticated/etiquetas': typeof AuthenticatedEtiquetasRoute
@@ -122,6 +132,7 @@ export interface FileRouteTypes {
     | '/'
     | '/auth'
     | '/pendiente'
+    | '/configuraciones'
     | '/dashboard'
     | '/entrenamiento'
     | '/etiquetas'
@@ -134,6 +145,7 @@ export interface FileRouteTypes {
     | '/'
     | '/auth'
     | '/pendiente'
+    | '/configuraciones'
     | '/dashboard'
     | '/entrenamiento'
     | '/etiquetas'
@@ -147,6 +159,7 @@ export interface FileRouteTypes {
     | '/_authenticated'
     | '/auth'
     | '/pendiente'
+    | '/_authenticated/configuraciones'
     | '/_authenticated/dashboard'
     | '/_authenticated/entrenamiento'
     | '/_authenticated/etiquetas'
@@ -242,10 +255,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedDashboardRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/configuraciones': {
+      id: '/_authenticated/configuraciones'
+      path: '/configuraciones'
+      fullPath: '/configuraciones'
+      preLoaderRoute: typeof AuthenticatedConfiguracionesRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
   }
 }
 
 interface AuthenticatedRouteRouteChildren {
+  AuthenticatedConfiguracionesRoute: typeof AuthenticatedConfiguracionesRoute
   AuthenticatedDashboardRoute: typeof AuthenticatedDashboardRoute
   AuthenticatedEntrenamientoRoute: typeof AuthenticatedEntrenamientoRoute
   AuthenticatedEtiquetasRoute: typeof AuthenticatedEtiquetasRoute
@@ -256,6 +277,7 @@ interface AuthenticatedRouteRouteChildren {
 }
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
+  AuthenticatedConfiguracionesRoute: AuthenticatedConfiguracionesRoute,
   AuthenticatedDashboardRoute: AuthenticatedDashboardRoute,
   AuthenticatedEntrenamientoRoute: AuthenticatedEntrenamientoRoute,
   AuthenticatedEtiquetasRoute: AuthenticatedEtiquetasRoute,
