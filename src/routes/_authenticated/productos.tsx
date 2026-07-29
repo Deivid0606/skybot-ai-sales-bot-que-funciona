@@ -34,6 +34,12 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useAuth } from "@/lib/auth";
 import { guessMediaType, MAX_FILE_BYTES, uploadWorkspaceFile } from "@/lib/storage";
+import {
+  MEDIA_LIMITS,
+  ProductMediaManager,
+  type ExistingMedia,
+} from "@/components/product-media-manager";
+import { ProductPreview } from "@/components/product-preview";
 
 export const Route = createFileRoute("/_authenticated/productos")({
   head: () => ({
@@ -92,6 +98,8 @@ function ProductsPage() {
   const [form, setForm] = useState<ProductForm>(emptyForm);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [uploadingFor, setUploadingFor] = useState<string | null>(null);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [editingMedia, setEditingMedia] = useState<ExistingMedia[]>([]);
 
   const { data: products, isLoading } = useQuery({
     queryKey: ["products", workspaceId],
@@ -155,16 +163,48 @@ function ProductsPage() {
         );
         if (error) throw error;
       }
+      if (pendingFiles.length) {
+        for (const file of pendingFiles) {
+          const path = await uploadWorkspaceFile("product-media", workspaceId, file, productId!);
+          const { error } = await supabase.from("product_media").insert({
+            workspace_id: workspaceId,
+            user_id: user.id,
+            product_id: productId!,
+            media_type: guessMediaType(file),
+            url: path,
+            storage_path: path,
+          });
+          if (error) throw error;
+        }
+      }
       return productId;
     },
     onSuccess: () => {
       toast.success("Producto guardado");
       setOpen(false);
       setForm(emptyForm);
+      setPendingFiles([]);
+      setEditingMedia([]);
       queryClient.invalidateQueries({ queryKey: ["products"] });
     },
     onError: (e: Error) => toast.error(e.message),
   });
+
+  async function removeMedia(media: ExistingMedia) {
+    try {
+      if (media.storage_path) {
+        await supabase.storage.from("product-media").remove([media.storage_path]);
+      }
+      const { error } = await supabase.from("product_media").delete().eq("id", media.id);
+      if (error) throw error;
+      setEditingMedia((prev) => prev.filter((m) => m.id !== media.id));
+      queryClient.invalidateQueries({ queryKey: ["products"] });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "No se pudo eliminar el archivo");
+    }
+  }
+
+
 
   const remove = useMutation({
     mutationFn: async (id: string) => {
@@ -224,6 +264,7 @@ function ProductsPage() {
     followup_enabled: boolean;
     no_repeat_template: boolean;
     product_keywords: { keyword: string }[];
+    product_media: ExistingMedia[];
   }) {
     setForm({
       id: p.id,
@@ -243,8 +284,11 @@ function ProductsPage() {
       no_repeat_template: p.no_repeat_template,
       keywords: p.product_keywords.map((k) => k.keyword).join(", "),
     });
+    setPendingFiles([]);
+    setEditingMedia(p.product_media ?? []);
     setOpen(true);
   }
+
 
   return (
     <PageShell>
@@ -255,6 +299,8 @@ function ProductsPage() {
           <Button
             onClick={() => {
               setForm(emptyForm);
+              setPendingFiles([]);
+              setEditingMedia([]);
               setOpen(true);
             }}
           >
@@ -277,6 +323,8 @@ function ProductsPage() {
             <Button
               onClick={() => {
                 setForm(emptyForm);
+                setPendingFiles([]);
+                setEditingMedia([]);
                 setOpen(true);
               }}
             >
@@ -356,14 +404,25 @@ function ProductsPage() {
       )}
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-5xl">
           <DialogHeader>
             <DialogTitle>{form.id ? "Editar producto" : "Nuevo producto"}</DialogTitle>
             <DialogDescription>
-              La IA usará este contenido para responder y cerrar ventas.
+              La IA usará este contenido para responder y cerrar ventas. Puedes adjuntar hasta{" "}
+              {MEDIA_LIMITS.image} imágenes, {MEDIA_LIMITS.video} videos y {MEDIA_LIMITS.audio}{" "}
+              audios.
             </DialogDescription>
           </DialogHeader>
+          <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
           <div className="grid gap-4 sm:grid-cols-2">
+            <div className="sm:col-span-2">
+              <ProductMediaManager
+                existing={editingMedia}
+                pending={pendingFiles}
+                onPendingChange={setPendingFiles}
+                onRemoveExisting={removeMedia}
+              />
+            </div>
             <div className="space-y-1.5 sm:col-span-2">
               <Label>Nombre</Label>
               <Input
@@ -478,6 +537,20 @@ function ProductsPage() {
                 />
                 <Label className="text-sm">Producto activo</Label>
               </div>
+            </div>
+          </div>
+            <div className="lg:sticky lg:top-0 lg:self-start">
+              <ProductPreview
+                name={form.name}
+                salesCopy={form.sales_copy}
+                description={form.description}
+                price={form.price}
+                promoPrice={form.promo_price}
+                deliveryInfo={form.delivery_info}
+                keywords={form.keywords}
+                existing={editingMedia}
+                pending={pendingFiles}
+              />
             </div>
           </div>
           <DialogFooter>
