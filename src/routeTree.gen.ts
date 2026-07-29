@@ -9,38 +9,285 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as PendienteRouteImport } from './routes/pendiente'
+import { Route as AuthRouteImport } from './routes/auth'
+import { Route as AuthenticatedRouteRouteImport } from './routes/_authenticated/route'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AuthenticatedProductosRouteImport } from './routes/_authenticated/productos'
+import { Route as AuthenticatedPlanesRouteImport } from './routes/_authenticated/planes'
+import { Route as AuthenticatedPedidosRouteImport } from './routes/_authenticated/pedidos'
+import { Route as AuthenticatedNotificacionesRouteImport } from './routes/_authenticated/notificaciones'
+import { Route as AuthenticatedInboxRouteImport } from './routes/_authenticated/inbox'
+import { Route as AuthenticatedEtiquetasRouteImport } from './routes/_authenticated/etiquetas'
+import { Route as AuthenticatedEntrenamientoRouteImport } from './routes/_authenticated/entrenamiento'
+import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
+import { Route as AuthenticatedConfiguracionesRouteImport } from './routes/_authenticated/configuraciones'
+import { Route as AuthenticatedChatIaRouteImport } from './routes/_authenticated/chat-ia'
+import { Route as AuthenticatedAdminUsuariosRouteImport } from './routes/_authenticated/admin/usuarios'
+import { Route as AuthenticatedAdminRegistrosRouteImport } from './routes/_authenticated/admin/registros'
+import { Route as AuthenticatedAdminPagosRouteImport } from './routes/_authenticated/admin/pagos'
+import { Route as AuthenticatedAdminMetricasRouteImport } from './routes/_authenticated/admin/metricas'
+import { Route as ApiPublicWhatsappWebhookRouteImport } from './routes/api/public/whatsapp/webhook'
 
+const PendienteRoute = PendienteRouteImport.update({
+  id: '/pendiente',
+  path: '/pendiente',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AuthRoute = AuthRouteImport.update({
+  id: '/auth',
+  path: '/auth',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AuthenticatedRouteRoute = AuthenticatedRouteRouteImport.update({
+  id: '/_authenticated',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthenticatedProductosRoute = AuthenticatedProductosRouteImport.update({
+  id: '/productos',
+  path: '/productos',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedPlanesRoute = AuthenticatedPlanesRouteImport.update({
+  id: '/planes',
+  path: '/planes',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedPedidosRoute = AuthenticatedPedidosRouteImport.update({
+  id: '/pedidos',
+  path: '/pedidos',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedNotificacionesRoute =
+  AuthenticatedNotificacionesRouteImport.update({
+    id: '/notificaciones',
+    path: '/notificaciones',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedInboxRoute = AuthenticatedInboxRouteImport.update({
+  id: '/inbox',
+  path: '/inbox',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedEtiquetasRoute = AuthenticatedEtiquetasRouteImport.update({
+  id: '/etiquetas',
+  path: '/etiquetas',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedEntrenamientoRoute =
+  AuthenticatedEntrenamientoRouteImport.update({
+    id: '/entrenamiento',
+    path: '/entrenamiento',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedDashboardRoute = AuthenticatedDashboardRouteImport.update({
+  id: '/dashboard',
+  path: '/dashboard',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedConfiguracionesRoute =
+  AuthenticatedConfiguracionesRouteImport.update({
+    id: '/configuraciones',
+    path: '/configuraciones',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedChatIaRoute = AuthenticatedChatIaRouteImport.update({
+  id: '/chat-ia',
+  path: '/chat-ia',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedAdminUsuariosRoute =
+  AuthenticatedAdminUsuariosRouteImport.update({
+    id: '/admin/usuarios',
+    path: '/admin/usuarios',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedAdminRegistrosRoute =
+  AuthenticatedAdminRegistrosRouteImport.update({
+    id: '/admin/registros',
+    path: '/admin/registros',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedAdminPagosRoute = AuthenticatedAdminPagosRouteImport.update({
+  id: '/admin/pagos',
+  path: '/admin/pagos',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedAdminMetricasRoute =
+  AuthenticatedAdminMetricasRouteImport.update({
+    id: '/admin/metricas',
+    path: '/admin/metricas',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const ApiPublicWhatsappWebhookRoute =
+  ApiPublicWhatsappWebhookRouteImport.update({
+    id: '/api/public/whatsapp/webhook',
+    path: '/api/public/whatsapp/webhook',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/auth': typeof AuthRoute
+  '/pendiente': typeof PendienteRoute
+  '/chat-ia': typeof AuthenticatedChatIaRoute
+  '/configuraciones': typeof AuthenticatedConfiguracionesRoute
+  '/dashboard': typeof AuthenticatedDashboardRoute
+  '/entrenamiento': typeof AuthenticatedEntrenamientoRoute
+  '/etiquetas': typeof AuthenticatedEtiquetasRoute
+  '/inbox': typeof AuthenticatedInboxRoute
+  '/notificaciones': typeof AuthenticatedNotificacionesRoute
+  '/pedidos': typeof AuthenticatedPedidosRoute
+  '/planes': typeof AuthenticatedPlanesRoute
+  '/productos': typeof AuthenticatedProductosRoute
+  '/admin/metricas': typeof AuthenticatedAdminMetricasRoute
+  '/admin/pagos': typeof AuthenticatedAdminPagosRoute
+  '/admin/registros': typeof AuthenticatedAdminRegistrosRoute
+  '/admin/usuarios': typeof AuthenticatedAdminUsuariosRoute
+  '/api/public/whatsapp/webhook': typeof ApiPublicWhatsappWebhookRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/auth': typeof AuthRoute
+  '/pendiente': typeof PendienteRoute
+  '/chat-ia': typeof AuthenticatedChatIaRoute
+  '/configuraciones': typeof AuthenticatedConfiguracionesRoute
+  '/dashboard': typeof AuthenticatedDashboardRoute
+  '/entrenamiento': typeof AuthenticatedEntrenamientoRoute
+  '/etiquetas': typeof AuthenticatedEtiquetasRoute
+  '/inbox': typeof AuthenticatedInboxRoute
+  '/notificaciones': typeof AuthenticatedNotificacionesRoute
+  '/pedidos': typeof AuthenticatedPedidosRoute
+  '/planes': typeof AuthenticatedPlanesRoute
+  '/productos': typeof AuthenticatedProductosRoute
+  '/admin/metricas': typeof AuthenticatedAdminMetricasRoute
+  '/admin/pagos': typeof AuthenticatedAdminPagosRoute
+  '/admin/registros': typeof AuthenticatedAdminRegistrosRoute
+  '/admin/usuarios': typeof AuthenticatedAdminUsuariosRoute
+  '/api/public/whatsapp/webhook': typeof ApiPublicWhatsappWebhookRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/_authenticated': typeof AuthenticatedRouteRouteWithChildren
+  '/auth': typeof AuthRoute
+  '/pendiente': typeof PendienteRoute
+  '/_authenticated/chat-ia': typeof AuthenticatedChatIaRoute
+  '/_authenticated/configuraciones': typeof AuthenticatedConfiguracionesRoute
+  '/_authenticated/dashboard': typeof AuthenticatedDashboardRoute
+  '/_authenticated/entrenamiento': typeof AuthenticatedEntrenamientoRoute
+  '/_authenticated/etiquetas': typeof AuthenticatedEtiquetasRoute
+  '/_authenticated/inbox': typeof AuthenticatedInboxRoute
+  '/_authenticated/notificaciones': typeof AuthenticatedNotificacionesRoute
+  '/_authenticated/pedidos': typeof AuthenticatedPedidosRoute
+  '/_authenticated/planes': typeof AuthenticatedPlanesRoute
+  '/_authenticated/productos': typeof AuthenticatedProductosRoute
+  '/_authenticated/admin/metricas': typeof AuthenticatedAdminMetricasRoute
+  '/_authenticated/admin/pagos': typeof AuthenticatedAdminPagosRoute
+  '/_authenticated/admin/registros': typeof AuthenticatedAdminRegistrosRoute
+  '/_authenticated/admin/usuarios': typeof AuthenticatedAdminUsuariosRoute
+  '/api/public/whatsapp/webhook': typeof ApiPublicWhatsappWebhookRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/'
+  fullPaths:
+    | '/'
+    | '/auth'
+    | '/pendiente'
+    | '/chat-ia'
+    | '/configuraciones'
+    | '/dashboard'
+    | '/entrenamiento'
+    | '/etiquetas'
+    | '/inbox'
+    | '/notificaciones'
+    | '/pedidos'
+    | '/planes'
+    | '/productos'
+    | '/admin/metricas'
+    | '/admin/pagos'
+    | '/admin/registros'
+    | '/admin/usuarios'
+    | '/api/public/whatsapp/webhook'
   fileRoutesByTo: FileRoutesByTo
-  to: '/'
-  id: '__root__' | '/'
+  to:
+    | '/'
+    | '/auth'
+    | '/pendiente'
+    | '/chat-ia'
+    | '/configuraciones'
+    | '/dashboard'
+    | '/entrenamiento'
+    | '/etiquetas'
+    | '/inbox'
+    | '/notificaciones'
+    | '/pedidos'
+    | '/planes'
+    | '/productos'
+    | '/admin/metricas'
+    | '/admin/pagos'
+    | '/admin/registros'
+    | '/admin/usuarios'
+    | '/api/public/whatsapp/webhook'
+  id:
+    | '__root__'
+    | '/'
+    | '/_authenticated'
+    | '/auth'
+    | '/pendiente'
+    | '/_authenticated/chat-ia'
+    | '/_authenticated/configuraciones'
+    | '/_authenticated/dashboard'
+    | '/_authenticated/entrenamiento'
+    | '/_authenticated/etiquetas'
+    | '/_authenticated/inbox'
+    | '/_authenticated/notificaciones'
+    | '/_authenticated/pedidos'
+    | '/_authenticated/planes'
+    | '/_authenticated/productos'
+    | '/_authenticated/admin/metricas'
+    | '/_authenticated/admin/pagos'
+    | '/_authenticated/admin/registros'
+    | '/_authenticated/admin/usuarios'
+    | '/api/public/whatsapp/webhook'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AuthenticatedRouteRoute: typeof AuthenticatedRouteRouteWithChildren
+  AuthRoute: typeof AuthRoute
+  PendienteRoute: typeof PendienteRoute
+  ApiPublicWhatsappWebhookRoute: typeof ApiPublicWhatsappWebhookRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/pendiente': {
+      id: '/pendiente'
+      path: '/pendiente'
+      fullPath: '/pendiente'
+      preLoaderRoute: typeof PendienteRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/auth': {
+      id: '/auth'
+      path: '/auth'
+      fullPath: '/auth'
+      preLoaderRoute: typeof AuthRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_authenticated': {
+      id: '/_authenticated'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof AuthenticatedRouteRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -48,22 +295,158 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_authenticated/productos': {
+      id: '/_authenticated/productos'
+      path: '/productos'
+      fullPath: '/productos'
+      preLoaderRoute: typeof AuthenticatedProductosRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/planes': {
+      id: '/_authenticated/planes'
+      path: '/planes'
+      fullPath: '/planes'
+      preLoaderRoute: typeof AuthenticatedPlanesRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/pedidos': {
+      id: '/_authenticated/pedidos'
+      path: '/pedidos'
+      fullPath: '/pedidos'
+      preLoaderRoute: typeof AuthenticatedPedidosRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/notificaciones': {
+      id: '/_authenticated/notificaciones'
+      path: '/notificaciones'
+      fullPath: '/notificaciones'
+      preLoaderRoute: typeof AuthenticatedNotificacionesRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/inbox': {
+      id: '/_authenticated/inbox'
+      path: '/inbox'
+      fullPath: '/inbox'
+      preLoaderRoute: typeof AuthenticatedInboxRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/etiquetas': {
+      id: '/_authenticated/etiquetas'
+      path: '/etiquetas'
+      fullPath: '/etiquetas'
+      preLoaderRoute: typeof AuthenticatedEtiquetasRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/entrenamiento': {
+      id: '/_authenticated/entrenamiento'
+      path: '/entrenamiento'
+      fullPath: '/entrenamiento'
+      preLoaderRoute: typeof AuthenticatedEntrenamientoRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/dashboard': {
+      id: '/_authenticated/dashboard'
+      path: '/dashboard'
+      fullPath: '/dashboard'
+      preLoaderRoute: typeof AuthenticatedDashboardRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/configuraciones': {
+      id: '/_authenticated/configuraciones'
+      path: '/configuraciones'
+      fullPath: '/configuraciones'
+      preLoaderRoute: typeof AuthenticatedConfiguracionesRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/chat-ia': {
+      id: '/_authenticated/chat-ia'
+      path: '/chat-ia'
+      fullPath: '/chat-ia'
+      preLoaderRoute: typeof AuthenticatedChatIaRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/admin/usuarios': {
+      id: '/_authenticated/admin/usuarios'
+      path: '/admin/usuarios'
+      fullPath: '/admin/usuarios'
+      preLoaderRoute: typeof AuthenticatedAdminUsuariosRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/admin/registros': {
+      id: '/_authenticated/admin/registros'
+      path: '/admin/registros'
+      fullPath: '/admin/registros'
+      preLoaderRoute: typeof AuthenticatedAdminRegistrosRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/admin/pagos': {
+      id: '/_authenticated/admin/pagos'
+      path: '/admin/pagos'
+      fullPath: '/admin/pagos'
+      preLoaderRoute: typeof AuthenticatedAdminPagosRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/admin/metricas': {
+      id: '/_authenticated/admin/metricas'
+      path: '/admin/metricas'
+      fullPath: '/admin/metricas'
+      preLoaderRoute: typeof AuthenticatedAdminMetricasRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/api/public/whatsapp/webhook': {
+      id: '/api/public/whatsapp/webhook'
+      path: '/api/public/whatsapp/webhook'
+      fullPath: '/api/public/whatsapp/webhook'
+      preLoaderRoute: typeof ApiPublicWhatsappWebhookRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
+interface AuthenticatedRouteRouteChildren {
+  AuthenticatedChatIaRoute: typeof AuthenticatedChatIaRoute
+  AuthenticatedConfiguracionesRoute: typeof AuthenticatedConfiguracionesRoute
+  AuthenticatedDashboardRoute: typeof AuthenticatedDashboardRoute
+  AuthenticatedEntrenamientoRoute: typeof AuthenticatedEntrenamientoRoute
+  AuthenticatedEtiquetasRoute: typeof AuthenticatedEtiquetasRoute
+  AuthenticatedInboxRoute: typeof AuthenticatedInboxRoute
+  AuthenticatedNotificacionesRoute: typeof AuthenticatedNotificacionesRoute
+  AuthenticatedPedidosRoute: typeof AuthenticatedPedidosRoute
+  AuthenticatedPlanesRoute: typeof AuthenticatedPlanesRoute
+  AuthenticatedProductosRoute: typeof AuthenticatedProductosRoute
+  AuthenticatedAdminMetricasRoute: typeof AuthenticatedAdminMetricasRoute
+  AuthenticatedAdminPagosRoute: typeof AuthenticatedAdminPagosRoute
+  AuthenticatedAdminRegistrosRoute: typeof AuthenticatedAdminRegistrosRoute
+  AuthenticatedAdminUsuariosRoute: typeof AuthenticatedAdminUsuariosRoute
+}
+
+const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
+  AuthenticatedChatIaRoute: AuthenticatedChatIaRoute,
+  AuthenticatedConfiguracionesRoute: AuthenticatedConfiguracionesRoute,
+  AuthenticatedDashboardRoute: AuthenticatedDashboardRoute,
+  AuthenticatedEntrenamientoRoute: AuthenticatedEntrenamientoRoute,
+  AuthenticatedEtiquetasRoute: AuthenticatedEtiquetasRoute,
+  AuthenticatedInboxRoute: AuthenticatedInboxRoute,
+  AuthenticatedNotificacionesRoute: AuthenticatedNotificacionesRoute,
+  AuthenticatedPedidosRoute: AuthenticatedPedidosRoute,
+  AuthenticatedPlanesRoute: AuthenticatedPlanesRoute,
+  AuthenticatedProductosRoute: AuthenticatedProductosRoute,
+  AuthenticatedAdminMetricasRoute: AuthenticatedAdminMetricasRoute,
+  AuthenticatedAdminPagosRoute: AuthenticatedAdminPagosRoute,
+  AuthenticatedAdminRegistrosRoute: AuthenticatedAdminRegistrosRoute,
+  AuthenticatedAdminUsuariosRoute: AuthenticatedAdminUsuariosRoute,
+}
+
+const AuthenticatedRouteRouteWithChildren =
+  AuthenticatedRouteRoute._addFileChildren(AuthenticatedRouteRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AuthenticatedRouteRoute: AuthenticatedRouteRouteWithChildren,
+  AuthRoute: AuthRoute,
+  PendienteRoute: PendienteRoute,
+  ApiPublicWhatsappWebhookRoute: ApiPublicWhatsappWebhookRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { startInstance } from './start.ts'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-    config: Awaited<ReturnType<typeof startInstance.getOptions>>
-  }
-}
