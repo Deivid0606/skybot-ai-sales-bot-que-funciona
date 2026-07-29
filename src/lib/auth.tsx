@@ -95,10 +95,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     });
 
-    supabase.auth.getSession().then(async ({ data }) => {
+    getSessionFast().then(async (current) => {
       if (!active) return;
-      setSession(data.session);
-      await loadProfile(data.session?.user.id);
+      setSession(current);
+      await loadProfile(current?.user?.id);
       setLoading(false);
     });
 
