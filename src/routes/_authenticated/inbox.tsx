@@ -324,11 +324,16 @@ function InboxPage() {
                 </p>
                 <p className="text-xs text-muted-foreground">
                   {active.contacts?.phone}
+                  {active.contacts?.city ? ` · ${active.contacts.city}` : ""}
                   {active.products?.name ? ` · ${active.products.name}` : ""}
                 </p>
               </div>
               <div className="ml-auto flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={() => setInfoOpen(true)}>
+                  <User className="mr-1 h-4 w-4" /> Info
+                </Button>
                 <Popover>
+
                   <PopoverTrigger asChild>
                     <Button variant="outline" size="sm">
                       <Tag className="mr-1 h-4 w-4" /> Etiquetas
