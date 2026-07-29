@@ -1,5 +1,6 @@
 import { Link, useRouterState } from "@tanstack/react-router";
 import {
+  AlertTriangle,
   BarChart3,
   Bot,
   CreditCard,
