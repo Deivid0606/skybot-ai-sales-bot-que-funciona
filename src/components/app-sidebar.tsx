@@ -14,6 +14,7 @@ import {
   Bell,
   Users,
   Wallet,
+  Receipt,
 } from "lucide-react";
 import {
   Sidebar,
