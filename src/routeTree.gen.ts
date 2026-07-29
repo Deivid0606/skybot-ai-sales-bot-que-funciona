@@ -13,6 +13,7 @@ import { Route as PendienteRouteImport } from './routes/pendiente'
 import { Route as AuthRouteImport } from './routes/auth'
 import { Route as AuthenticatedRouteRouteImport } from './routes/_authenticated/route'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AuthenticatedReclamosRouteImport } from './routes/_authenticated/reclamos'
 import { Route as AuthenticatedProductosRouteImport } from './routes/_authenticated/productos'
 import { Route as AuthenticatedPlanesRouteImport } from './routes/_authenticated/planes'
 import { Route as AuthenticatedPedidosRouteImport } from './routes/_authenticated/pedidos'
@@ -48,6 +49,11 @@ const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
+} as any)
+const AuthenticatedReclamosRoute = AuthenticatedReclamosRouteImport.update({
+  id: '/reclamos',
+  path: '/reclamos',
+  getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
 const AuthenticatedProductosRoute = AuthenticatedProductosRouteImport.update({
   id: '/productos',
@@ -152,6 +158,7 @@ export interface FileRoutesByFullPath {
   '/pedidos': typeof AuthenticatedPedidosRoute
   '/planes': typeof AuthenticatedPlanesRoute
   '/productos': typeof AuthenticatedProductosRoute
+  '/reclamos': typeof AuthenticatedReclamosRoute
   '/admin/metricas': typeof AuthenticatedAdminMetricasRoute
   '/admin/pagos': typeof AuthenticatedAdminPagosRoute
   '/admin/planes': typeof AuthenticatedAdminPlanesRoute
@@ -173,6 +180,7 @@ export interface FileRoutesByTo {
   '/pedidos': typeof AuthenticatedPedidosRoute
   '/planes': typeof AuthenticatedPlanesRoute
   '/productos': typeof AuthenticatedProductosRoute
+  '/reclamos': typeof AuthenticatedReclamosRoute
   '/admin/metricas': typeof AuthenticatedAdminMetricasRoute
   '/admin/pagos': typeof AuthenticatedAdminPagosRoute
   '/admin/planes': typeof AuthenticatedAdminPlanesRoute
@@ -196,6 +204,7 @@ export interface FileRoutesById {
   '/_authenticated/pedidos': typeof AuthenticatedPedidosRoute
   '/_authenticated/planes': typeof AuthenticatedPlanesRoute
   '/_authenticated/productos': typeof AuthenticatedProductosRoute
+  '/_authenticated/reclamos': typeof AuthenticatedReclamosRoute
   '/_authenticated/admin/metricas': typeof AuthenticatedAdminMetricasRoute
   '/_authenticated/admin/pagos': typeof AuthenticatedAdminPagosRoute
   '/_authenticated/admin/planes': typeof AuthenticatedAdminPlanesRoute
@@ -219,6 +228,7 @@ export interface FileRouteTypes {
     | '/pedidos'
     | '/planes'
     | '/productos'
+    | '/reclamos'
     | '/admin/metricas'
     | '/admin/pagos'
     | '/admin/planes'
@@ -240,6 +250,7 @@ export interface FileRouteTypes {
     | '/pedidos'
     | '/planes'
     | '/productos'
+    | '/reclamos'
     | '/admin/metricas'
     | '/admin/pagos'
     | '/admin/planes'
@@ -262,6 +273,7 @@ export interface FileRouteTypes {
     | '/_authenticated/pedidos'
     | '/_authenticated/planes'
     | '/_authenticated/productos'
+    | '/_authenticated/reclamos'
     | '/_authenticated/admin/metricas'
     | '/_authenticated/admin/pagos'
     | '/_authenticated/admin/planes'
@@ -307,6 +319,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/_authenticated/reclamos': {
+      id: '/_authenticated/reclamos'
+      path: '/reclamos'
+      fullPath: '/reclamos'
+      preLoaderRoute: typeof AuthenticatedReclamosRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/productos': {
       id: '/_authenticated/productos'
@@ -434,6 +453,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedPedidosRoute: typeof AuthenticatedPedidosRoute
   AuthenticatedPlanesRoute: typeof AuthenticatedPlanesRoute
   AuthenticatedProductosRoute: typeof AuthenticatedProductosRoute
+  AuthenticatedReclamosRoute: typeof AuthenticatedReclamosRoute
   AuthenticatedAdminMetricasRoute: typeof AuthenticatedAdminMetricasRoute
   AuthenticatedAdminPagosRoute: typeof AuthenticatedAdminPagosRoute
   AuthenticatedAdminPlanesRoute: typeof AuthenticatedAdminPlanesRoute
@@ -452,6 +472,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedPedidosRoute: AuthenticatedPedidosRoute,
   AuthenticatedPlanesRoute: AuthenticatedPlanesRoute,
   AuthenticatedProductosRoute: AuthenticatedProductosRoute,
+  AuthenticatedReclamosRoute: AuthenticatedReclamosRoute,
   AuthenticatedAdminMetricasRoute: AuthenticatedAdminMetricasRoute,
   AuthenticatedAdminPagosRoute: AuthenticatedAdminPagosRoute,
   AuthenticatedAdminPlanesRoute: AuthenticatedAdminPlanesRoute,

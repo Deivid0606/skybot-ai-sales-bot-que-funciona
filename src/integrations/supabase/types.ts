@@ -159,6 +159,82 @@ export type Database = {
           },
         ]
       }
+      complaints: {
+        Row: {
+          body: string
+          contact_id: string | null
+          contact_name: string | null
+          conversation_id: string | null
+          created_at: string
+          id: string
+          message_id: string | null
+          note: string | null
+          phone: string
+          reason: string
+          severity: string
+          status: string
+          updated_at: string
+          user_id: string
+          workspace_id: string
+        }
+        Insert: {
+          body: string
+          contact_id?: string | null
+          contact_name?: string | null
+          conversation_id?: string | null
+          created_at?: string
+          id?: string
+          message_id?: string | null
+          note?: string | null
+          phone: string
+          reason?: string
+          severity?: string
+          status?: string
+          updated_at?: string
+          user_id: string
+          workspace_id: string
+        }
+        Update: {
+          body?: string
+          contact_id?: string | null
+          contact_name?: string | null
+          conversation_id?: string | null
+          created_at?: string
+          id?: string
+          message_id?: string | null
+          note?: string | null
+          phone?: string
+          reason?: string
+          severity?: string
+          status?: string
+          updated_at?: string
+          user_id?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "complaints_contact_id_fkey"
+            columns: ["contact_id"]
+            isOneToOne: false
+            referencedRelation: "contacts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "complaints_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "complaints_message_id_fkey"
+            columns: ["message_id"]
+            isOneToOne: false
+            referencedRelation: "messages"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       contacts: {
         Row: {
           city: string | null

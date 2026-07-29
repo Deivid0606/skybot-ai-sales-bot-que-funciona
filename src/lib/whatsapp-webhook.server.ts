@@ -3,6 +3,7 @@ import { formatGs } from "@/lib/format";
 import { buildWorkspaceAiContext } from "@/lib/ai-context.server";
 import { generateAiReply } from "@/lib/ai.server";
 import { sendWhatsAppText } from "@/lib/whatsapp.server";
+import { detectComplaint, COMPLAINT_REASON_LABELS } from "@/lib/complaints";
 
 type IncomingMessage = {
   from: string;
@@ -119,16 +120,20 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     isNewConversation = true;
   }
 
-  await supabaseAdmin.from("messages").insert({
-    workspace_id: workspaceId,
-    user_id: ownerId,
-    conversation_id: conversation.id,
-    direction: "inbound",
-    sender: "customer",
-    body,
-    wamid: message.id,
-    status: "received",
-  });
+  const { data: savedMessage } = await supabaseAdmin
+    .from("messages")
+    .insert({
+      workspace_id: workspaceId,
+      user_id: ownerId,
+      conversation_id: conversation.id,
+      direction: "inbound",
+      sender: "customer",
+      body,
+      wamid: message.id,
+      status: "received",
+    })
+    .select("id")
+    .single();
 
   await supabaseAdmin
     .from("conversations")
@@ -138,6 +143,33 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       unread_count: 1,
     })
     .eq("id", conversation.id);
+
+  const complaint = detectComplaint(body);
+  if (complaint) {
+    await supabaseAdmin.from("complaints").insert({
+      workspace_id: workspaceId,
+      user_id: ownerId,
+      conversation_id: conversation.id,
+      contact_id: contact.id,
+      message_id: savedMessage?.id ?? null,
+      phone,
+      contact_name: contact.name,
+      body,
+      reason: complaint.reason,
+      severity: complaint.severity,
+      status: "nuevo",
+    });
+
+    await supabaseAdmin.from("notifications").insert({
+      workspace_id: workspaceId,
+      user_id: ownerId,
+      type: "reclamo",
+      title: `Reclamo detectado · ${phone}`,
+      body: `${COMPLAINT_REASON_LABELS[complaint.reason] ?? "Reclamo"}: ${body.slice(0, 160)}`,
+      link: "/reclamos",
+      audience: "user",
+    });
+  }
 
   // Balance: one conversation credit per new conversation
   const { data: balance } = await supabaseAdmin
