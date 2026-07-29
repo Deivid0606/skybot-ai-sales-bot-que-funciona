@@ -8,7 +8,7 @@ import { NotificationsBell } from "@/components/notifications-bell";
 import { BalanceBadge } from "@/components/balance-badge";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
-import { useAuth } from "@/lib/auth";
+import { useAuth, getSessionFast } from "@/lib/auth";
 
 export const Route = createFileRoute("/_authenticated")({
   ssr: false,
