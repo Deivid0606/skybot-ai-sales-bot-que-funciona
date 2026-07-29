@@ -52,6 +52,8 @@ function InboxPage() {
   const [search, setSearch] = useState("");
   const [draft, setDraft] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
+  const [selected, setSelected] = useState<string[]>([]);
+
 
   const { data: conversations } = useQuery({
     queryKey: ["conversations", workspaceId],
