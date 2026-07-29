@@ -95,12 +95,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     });
 
-    getSessionFast().then(async (current) => {
-      if (!active) return;
-      setSession(current);
-      await loadProfile(current?.user?.id);
-      setLoading(false);
-    });
+    getSessionFast()
+      .then(async (current) => {
+        if (!active) return;
+        setSession(current);
+        await loadProfile(current?.user?.id);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (active) setLoading(false);
+      });
 
     return () => {
       active = false;
