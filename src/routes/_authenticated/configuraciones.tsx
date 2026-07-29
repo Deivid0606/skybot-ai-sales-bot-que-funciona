@@ -116,7 +116,8 @@ function SettingsPage() {
       .eq("workspace_id", workspaceId)
       .maybeSingle();
     if (existing) {
-      const { error } = await supabase.from(table).update(values).eq("id", existing.id);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { error } = await supabase.from(table).update(values as any).eq("id", existing.id);
       if (error) throw error;
     } else {
       const { error } = await supabase
