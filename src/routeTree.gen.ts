@@ -14,6 +14,10 @@ import { Route as AuthRouteImport } from './routes/auth'
 import { Route as AuthenticatedRouteRouteImport } from './routes/_authenticated/route'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthenticatedProductosRouteImport } from './routes/_authenticated/productos'
+import { Route as AuthenticatedNotificacionesRouteImport } from './routes/_authenticated/notificaciones'
+import { Route as AuthenticatedEtiquetasRouteImport } from './routes/_authenticated/etiquetas'
+import { Route as AuthenticatedEntrenamientoRouteImport } from './routes/_authenticated/entrenamiento'
+import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
 
 const PendienteRoute = PendienteRouteImport.update({
   id: '/pendiente',
@@ -39,17 +43,47 @@ const AuthenticatedProductosRoute = AuthenticatedProductosRouteImport.update({
   path: '/productos',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedNotificacionesRoute =
+  AuthenticatedNotificacionesRouteImport.update({
+    id: '/notificaciones',
+    path: '/notificaciones',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedEtiquetasRoute = AuthenticatedEtiquetasRouteImport.update({
+  id: '/etiquetas',
+  path: '/etiquetas',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedEntrenamientoRoute =
+  AuthenticatedEntrenamientoRouteImport.update({
+    id: '/entrenamiento',
+    path: '/entrenamiento',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedDashboardRoute = AuthenticatedDashboardRouteImport.update({
+  id: '/dashboard',
+  path: '/dashboard',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
   '/pendiente': typeof PendienteRoute
+  '/dashboard': typeof AuthenticatedDashboardRoute
+  '/entrenamiento': typeof AuthenticatedEntrenamientoRoute
+  '/etiquetas': typeof AuthenticatedEtiquetasRoute
+  '/notificaciones': typeof AuthenticatedNotificacionesRoute
   '/productos': typeof AuthenticatedProductosRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
   '/pendiente': typeof PendienteRoute
+  '/dashboard': typeof AuthenticatedDashboardRoute
+  '/entrenamiento': typeof AuthenticatedEntrenamientoRoute
+  '/etiquetas': typeof AuthenticatedEtiquetasRoute
+  '/notificaciones': typeof AuthenticatedNotificacionesRoute
   '/productos': typeof AuthenticatedProductosRoute
 }
 export interface FileRoutesById {
@@ -58,19 +92,43 @@ export interface FileRoutesById {
   '/_authenticated': typeof AuthenticatedRouteRouteWithChildren
   '/auth': typeof AuthRoute
   '/pendiente': typeof PendienteRoute
+  '/_authenticated/dashboard': typeof AuthenticatedDashboardRoute
+  '/_authenticated/entrenamiento': typeof AuthenticatedEntrenamientoRoute
+  '/_authenticated/etiquetas': typeof AuthenticatedEtiquetasRoute
+  '/_authenticated/notificaciones': typeof AuthenticatedNotificacionesRoute
   '/_authenticated/productos': typeof AuthenticatedProductosRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/auth' | '/pendiente' | '/productos'
+  fullPaths:
+    | '/'
+    | '/auth'
+    | '/pendiente'
+    | '/dashboard'
+    | '/entrenamiento'
+    | '/etiquetas'
+    | '/notificaciones'
+    | '/productos'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/auth' | '/pendiente' | '/productos'
+  to:
+    | '/'
+    | '/auth'
+    | '/pendiente'
+    | '/dashboard'
+    | '/entrenamiento'
+    | '/etiquetas'
+    | '/notificaciones'
+    | '/productos'
   id:
     | '__root__'
     | '/'
     | '/_authenticated'
     | '/auth'
     | '/pendiente'
+    | '/_authenticated/dashboard'
+    | '/_authenticated/entrenamiento'
+    | '/_authenticated/etiquetas'
+    | '/_authenticated/notificaciones'
     | '/_authenticated/productos'
   fileRoutesById: FileRoutesById
 }
@@ -118,14 +176,50 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedProductosRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/notificaciones': {
+      id: '/_authenticated/notificaciones'
+      path: '/notificaciones'
+      fullPath: '/notificaciones'
+      preLoaderRoute: typeof AuthenticatedNotificacionesRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/etiquetas': {
+      id: '/_authenticated/etiquetas'
+      path: '/etiquetas'
+      fullPath: '/etiquetas'
+      preLoaderRoute: typeof AuthenticatedEtiquetasRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/entrenamiento': {
+      id: '/_authenticated/entrenamiento'
+      path: '/entrenamiento'
+      fullPath: '/entrenamiento'
+      preLoaderRoute: typeof AuthenticatedEntrenamientoRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/dashboard': {
+      id: '/_authenticated/dashboard'
+      path: '/dashboard'
+      fullPath: '/dashboard'
+      preLoaderRoute: typeof AuthenticatedDashboardRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
   }
 }
 
 interface AuthenticatedRouteRouteChildren {
+  AuthenticatedDashboardRoute: typeof AuthenticatedDashboardRoute
+  AuthenticatedEntrenamientoRoute: typeof AuthenticatedEntrenamientoRoute
+  AuthenticatedEtiquetasRoute: typeof AuthenticatedEtiquetasRoute
+  AuthenticatedNotificacionesRoute: typeof AuthenticatedNotificacionesRoute
   AuthenticatedProductosRoute: typeof AuthenticatedProductosRoute
 }
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
+  AuthenticatedDashboardRoute: AuthenticatedDashboardRoute,
+  AuthenticatedEntrenamientoRoute: AuthenticatedEntrenamientoRoute,
+  AuthenticatedEtiquetasRoute: AuthenticatedEtiquetasRoute,
+  AuthenticatedNotificacionesRoute: AuthenticatedNotificacionesRoute,
   AuthenticatedProductosRoute: AuthenticatedProductosRoute,
 }
 
