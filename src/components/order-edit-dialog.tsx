@@ -22,7 +22,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { PAYMENT_STATES } from "@/lib/orders";
+import { PAYMENT_STATES, DEPARTAMENTOS_PY, resolveDepartamento } from "@/lib/orders";
 import type { Tables } from "@/integrations/supabase/types";
 
 type Order = Tables<"orders">;
@@ -101,7 +101,21 @@ export function OrderEditDialog({ order, open, onOpenChange }: Props) {
           </div>
           <div className="space-y-1.5">
             <Label>Departamento</Label>
-            <Input value={form.departamento ?? ""} onChange={(e) => set("departamento", e.target.value)} />
+            <Select
+              value={resolveDepartamento(form.departamento, form.city) || undefined}
+              onValueChange={(v) => set("departamento", v)}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Seleccioná el departamento" />
+              </SelectTrigger>
+              <SelectContent>
+                {DEPARTAMENTOS_PY.map((d) => (
+                  <SelectItem key={d} value={d}>
+                    {d}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <div className="space-y-1.5">
             <Label>Calle</Label>
