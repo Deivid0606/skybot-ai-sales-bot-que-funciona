@@ -3,6 +3,8 @@ const MODEL = "google/gemini-3.6-flash";
 
 export type AiContext = {
   systemInstruction: string;
+  geminiApiKey?: string | null;
+  model?: string | null;
   businessName: string;
   currency: string;
   products: {
@@ -100,9 +102,47 @@ function parseResult(raw: string): AiResult {
   }
 }
 
+async function generateWithGemini(ctx: AiContext, key: string): Promise<AiResult> {
+  const candidates = ctx.model
+    ? [ctx.model]
+    : ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-pro"];
+  let lastError = "";
+
+  for (const model of candidates) {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: buildSystemPrompt(ctx) }] },
+          contents: ctx.history.slice(-24).map((m) => ({
+            role: m.role === "assistant" ? "model" : "user",
+            parts: [{ text: m.content }],
+          })),
+        }),
+      },
+    );
+    if (res.ok) {
+      const json = (await res.json()) as {
+        candidates?: { content?: { parts?: { text?: string }[] } }[];
+      };
+      return parseResult(json.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "");
+    }
+    lastError = (await res.text()).slice(0, 300);
+    if (res.status === 429) throw new Error("rate_limited");
+  }
+  throw new Error(`gemini_error: ${lastError}`);
+}
+
 export async function generateAiReply(ctx: AiContext): Promise<AiResult> {
+  if (ctx.geminiApiKey?.trim()) {
+    return generateWithGemini(ctx, ctx.geminiApiKey.trim());
+  }
+
   const apiKey = process.env.LOVABLE_API_KEY;
   if (!apiKey) throw new Error("Falta LOVABLE_API_KEY");
+
 
   const res = await fetch(GATEWAY, {
     method: "POST",
