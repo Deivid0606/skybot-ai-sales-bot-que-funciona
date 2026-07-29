@@ -110,6 +110,18 @@ function SettingsPage() {
   const webhookUrl =
     typeof window !== "undefined" ? `${window.location.origin}/api/public/whatsapp/webhook` : "";
 
+  function generateVerifyToken() {
+    const rand = Math.random().toString(36).slice(2, 8).toUpperCase();
+    return `botsky_${rand}_${new Date().getFullYear()}`;
+  }
+
+  useEffect(() => {
+    if (!data) return;
+    if (!data.conn?.verify_token) {
+      setWa((prev) => (prev.verify_token ? prev : { ...prev, verify_token: generateVerifyToken() }));
+    }
+  }, [data]);
+
   async function upsert(table: "whatsapp_connections" | "ai_settings" | "user_settings", values: Record<string, unknown>) {
     if (!workspaceId || !user) throw new Error("Sesión no válida");
     const { data: existing } = await supabase
@@ -151,6 +163,7 @@ function SettingsPage() {
           system_instruction: ai.system_instruction,
           reply_delay_seconds: Number(ai.reply_delay_seconds) || 0,
           autodetect_model: ai.autodetect_model,
+          gemini_api_key: ai.gemini_api_key.trim() || null,
         });
       } else {
         await upsert("user_settings", {
