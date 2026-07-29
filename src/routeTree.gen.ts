@@ -22,6 +22,7 @@ import { Route as AuthenticatedEtiquetasRouteImport } from './routes/_authentica
 import { Route as AuthenticatedEntrenamientoRouteImport } from './routes/_authenticated/entrenamiento'
 import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
 import { Route as AuthenticatedConfiguracionesRouteImport } from './routes/_authenticated/configuraciones'
+import { Route as AuthenticatedChatIaRouteImport } from './routes/_authenticated/chat-ia'
 import { Route as ApiPublicWhatsappWebhookRouteImport } from './routes/api/public/whatsapp/webhook'
 
 const PendienteRoute = PendienteRouteImport.update({
@@ -91,6 +92,11 @@ const AuthenticatedConfiguracionesRoute =
     path: '/configuraciones',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
+const AuthenticatedChatIaRoute = AuthenticatedChatIaRouteImport.update({
+  id: '/chat-ia',
+  path: '/chat-ia',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
 const ApiPublicWhatsappWebhookRoute =
   ApiPublicWhatsappWebhookRouteImport.update({
     id: '/api/public/whatsapp/webhook',
@@ -102,6 +108,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
   '/pendiente': typeof PendienteRoute
+  '/chat-ia': typeof AuthenticatedChatIaRoute
   '/configuraciones': typeof AuthenticatedConfiguracionesRoute
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/entrenamiento': typeof AuthenticatedEntrenamientoRoute
@@ -117,6 +124,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
   '/pendiente': typeof PendienteRoute
+  '/chat-ia': typeof AuthenticatedChatIaRoute
   '/configuraciones': typeof AuthenticatedConfiguracionesRoute
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/entrenamiento': typeof AuthenticatedEntrenamientoRoute
@@ -134,6 +142,7 @@ export interface FileRoutesById {
   '/_authenticated': typeof AuthenticatedRouteRouteWithChildren
   '/auth': typeof AuthRoute
   '/pendiente': typeof PendienteRoute
+  '/_authenticated/chat-ia': typeof AuthenticatedChatIaRoute
   '/_authenticated/configuraciones': typeof AuthenticatedConfiguracionesRoute
   '/_authenticated/dashboard': typeof AuthenticatedDashboardRoute
   '/_authenticated/entrenamiento': typeof AuthenticatedEntrenamientoRoute
@@ -151,6 +160,7 @@ export interface FileRouteTypes {
     | '/'
     | '/auth'
     | '/pendiente'
+    | '/chat-ia'
     | '/configuraciones'
     | '/dashboard'
     | '/entrenamiento'
@@ -166,6 +176,7 @@ export interface FileRouteTypes {
     | '/'
     | '/auth'
     | '/pendiente'
+    | '/chat-ia'
     | '/configuraciones'
     | '/dashboard'
     | '/entrenamiento'
@@ -182,6 +193,7 @@ export interface FileRouteTypes {
     | '/_authenticated'
     | '/auth'
     | '/pendiente'
+    | '/_authenticated/chat-ia'
     | '/_authenticated/configuraciones'
     | '/_authenticated/dashboard'
     | '/_authenticated/entrenamiento'
@@ -295,6 +307,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedConfiguracionesRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/chat-ia': {
+      id: '/_authenticated/chat-ia'
+      path: '/chat-ia'
+      fullPath: '/chat-ia'
+      preLoaderRoute: typeof AuthenticatedChatIaRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/api/public/whatsapp/webhook': {
       id: '/api/public/whatsapp/webhook'
       path: '/api/public/whatsapp/webhook'
@@ -306,6 +325,7 @@ declare module '@tanstack/react-router' {
 }
 
 interface AuthenticatedRouteRouteChildren {
+  AuthenticatedChatIaRoute: typeof AuthenticatedChatIaRoute
   AuthenticatedConfiguracionesRoute: typeof AuthenticatedConfiguracionesRoute
   AuthenticatedDashboardRoute: typeof AuthenticatedDashboardRoute
   AuthenticatedEntrenamientoRoute: typeof AuthenticatedEntrenamientoRoute
@@ -318,6 +338,7 @@ interface AuthenticatedRouteRouteChildren {
 }
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
+  AuthenticatedChatIaRoute: AuthenticatedChatIaRoute,
   AuthenticatedConfiguracionesRoute: AuthenticatedConfiguracionesRoute,
   AuthenticatedDashboardRoute: AuthenticatedDashboardRoute,
   AuthenticatedEntrenamientoRoute: AuthenticatedEntrenamientoRoute,
