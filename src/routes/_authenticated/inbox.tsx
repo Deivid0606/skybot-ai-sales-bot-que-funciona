@@ -36,6 +36,9 @@ import { ContactInfoDialog } from "@/components/contact-info-dialog";
 
 
 export const Route = createFileRoute("/_authenticated/inbox")({
+  validateSearch: (search: Record<string, unknown>) => ({
+    c: typeof search.c === "string" ? search.c : undefined,
+  }),
   head: () => ({
     meta: [
       { title: "Inbox — BOT SKY" },
@@ -48,10 +51,11 @@ export const Route = createFileRoute("/_authenticated/inbox")({
 });
 
 function InboxPage() {
+  const { c: initialConversationId } = Route.useSearch();
   const { profile } = useAuth();
   const workspaceId = profile?.workspace_id ?? null;
   const queryClient = useQueryClient();
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const [activeId, setActiveId] = useState<string | null>(initialConversationId ?? null);
   const [search, setSearch] = useState("");
   const [draft, setDraft] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
