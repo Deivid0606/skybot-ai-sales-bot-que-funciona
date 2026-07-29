@@ -48,6 +48,7 @@ function SettingsPage() {
     system_instruction: "",
     reply_delay_seconds: 3,
     autodetect_model: true,
+    gemini_api_key: "",
   });
   const [biz, setBiz] = useState({
     business_name: "",
@@ -91,6 +92,7 @@ function SettingsPage() {
         system_instruction: data.ai.system_instruction,
         reply_delay_seconds: data.ai.reply_delay_seconds,
         autodetect_model: data.ai.autodetect_model,
+        gemini_api_key: data.ai.gemini_api_key ?? "",
       });
     }
     if (data.settings) {
