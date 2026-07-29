@@ -56,7 +56,7 @@ function AuthPage() {
     setLoading(true);
     try {
       if (mode === "signup") {
-        const { error } = await supabase.auth.signUp({
+        const { data, error } = await supabase.auth.signUp({
           email: parsed.data.email,
           password: parsed.data.password,
           options: {
@@ -65,7 +65,12 @@ function AuthPage() {
           },
         });
         if (error) throw error;
-        toast.success("Cuenta creada. Tu registro queda pendiente de aprobación.");
+        if (!data.session) {
+          toast.success("Cuenta creada. Revisa tu correo para confirmar y luego inicia sesión.");
+          setMode("signin");
+          return;
+        }
+        toast.success("¡Cuenta creada! Entrando a tu panel...");
       } else {
         const { error } = await supabase.auth.signInWithPassword({
           email: parsed.data.email,
@@ -75,6 +80,7 @@ function AuthPage() {
       }
       await refresh();
       navigate({ to: "/dashboard" });
+
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "No fue posible continuar");
     } finally {
