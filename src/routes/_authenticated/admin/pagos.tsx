@@ -53,6 +53,7 @@ type Purchase = {
   conversations: number;
   status: string;
   created_at: string;
+  expires_at: string | null;
   receipt_url: string | null;
   profile: { id: string; email: string | null; full_name: string | null } | null;
 };
