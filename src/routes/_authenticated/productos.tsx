@@ -540,6 +540,20 @@ function ProductsPage() {
               </div>
             </div>
           </div>
+            <div className="lg:sticky lg:top-0 lg:self-start">
+              <ProductPreview
+                name={form.name}
+                salesCopy={form.sales_copy}
+                description={form.description}
+                price={form.price}
+                promoPrice={form.promo_price}
+                deliveryInfo={form.delivery_info}
+                keywords={form.keywords}
+                existing={editingMedia}
+                pending={pendingFiles}
+              />
+            </div>
+          </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setOpen(false)}>
               <X className="mr-1 h-4 w-4" /> Cancelar
