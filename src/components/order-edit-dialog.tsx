@@ -22,7 +22,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { PAYMENT_STATES } from "@/lib/orders";
+import { PAYMENT_STATES, DEPARTAMENTOS_PY, resolveDepartamento } from "@/lib/orders";
 import type { Tables } from "@/integrations/supabase/types";
 
 type Order = Tables<"orders">;
