@@ -30,6 +30,8 @@ import {
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
 import { aiReplyNow, deleteMessages, sendManualMessage } from "@/lib/chat.functions";
+import { AdOriginCard } from "@/components/ad-origin-card";
+import { ContactInfoDialog } from "@/components/contact-info-dialog";
 
 
 export const Route = createFileRoute("/_authenticated/inbox")({
