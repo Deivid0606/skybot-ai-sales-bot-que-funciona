@@ -55,6 +55,9 @@ function InboxPage() {
   const [draft, setDraft] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const [selected, setSelected] = useState<string[]>([]);
+  const [infoOpen, setInfoOpen] = useState(false);
+
+
 
 
   const { data: conversations } = useQuery({
