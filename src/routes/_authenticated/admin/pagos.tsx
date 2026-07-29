@@ -83,10 +83,29 @@ function AdminPaymentsPage() {
               <CardContent className="flex flex-wrap items-center gap-3 p-4">
                 <div className="min-w-0 flex-1">
                   <p className="font-medium">{p.plan_name}</p>
+                  <p className="flex items-center gap-1 text-xs text-muted-foreground">
+                    <Mail className="h-3 w-3 shrink-0" />
+                    <span className="break-all">
+                      {p.profile?.email ?? "Sin correo"}
+                      {p.profile?.full_name ? ` · ${p.profile.full_name}` : ""}
+                    </span>
+                  </p>
                   <p className="text-xs text-muted-foreground">
                     {formatGs(p.amount)} · {p.conversations} conversaciones ·{" "}
                     {formatDateTime(p.created_at)}
                   </p>
+                  {p.receipt_url ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="mt-2"
+                      onClick={() => openReceipt(p.receipt_url!)}
+                    >
+                      <FileText className="mr-1 h-4 w-4" /> Ver comprobante
+                    </Button>
+                  ) : (
+                    <p className="mt-2 text-xs text-destructive">Sin comprobante adjunto</p>
+                  )}
                 </div>
                 <Badge
                   variant={
@@ -99,6 +118,7 @@ function AdminPaymentsPage() {
                 >
                   {p.status}
                 </Badge>
+
                 {p.status === "pendiente" && (
                   <div className="flex gap-2">
                     <Button
