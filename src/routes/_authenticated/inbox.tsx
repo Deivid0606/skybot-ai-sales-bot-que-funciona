@@ -10,7 +10,10 @@ import {
   MessageSquare,
   Search,
   Send,
+  Sparkles,
   Tag,
+  Trash2,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -26,7 +29,8 @@ import {
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
-import { sendManualMessage } from "@/lib/chat.functions";
+import { aiReplyNow, deleteMessages, sendManualMessage } from "@/lib/chat.functions";
+
 
 export const Route = createFileRoute("/_authenticated/inbox")({
   head: () => ({
