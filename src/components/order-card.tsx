@@ -148,7 +148,15 @@ export function OrderCard({ order }: { order: Order }) {
   }
 
   function sendToEcommerce() {
-    window.open(buildEcommerceUrl(order), "_blank", "noopener");
+    const url = buildEcommerceUrl(order);
+    const a = document.createElement("a");
+    a.href = url;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    toast.success("Abriendo Ecommerce con los datos del pedido");
     if (!order.tags.includes("Ecommerce")) toggleTag.mutate("Ecommerce");
   }
 
