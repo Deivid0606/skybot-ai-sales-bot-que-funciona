@@ -385,7 +385,7 @@ function ProductsPage() {
               />
             </div>
             <div className="space-y-1.5">
-              <Label>Precio</Label>
+              <Label>Precio (₲)</Label>
               <Input
                 type="number"
                 value={form.price}
@@ -393,7 +393,7 @@ function ProductsPage() {
               />
             </div>
             <div className="space-y-1.5">
-              <Label>Precio promocional</Label>
+              <Label>Precio promocional (₲)</Label>
               <Input
                 type="number"
                 value={form.promo_price}

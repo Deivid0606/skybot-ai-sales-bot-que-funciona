@@ -217,7 +217,7 @@ function AdminPlansPage() {
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
-                <Label htmlFor="price">Precio</Label>
+                <Label htmlFor="price">Precio (₲)</Label>
                 <Input
                   id="price"
                   type="number"
