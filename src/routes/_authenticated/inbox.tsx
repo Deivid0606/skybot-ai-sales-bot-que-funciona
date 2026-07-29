@@ -520,7 +520,14 @@ function InboxPage() {
                 )}
               </Button>
             </footer>
+
+            <ContactInfoDialog
+              contactId={active.contact_id}
+              open={infoOpen}
+              onOpenChange={setInfoOpen}
+            />
           </>
+
         )}
       </section>
     </div>
