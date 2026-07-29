@@ -265,6 +265,7 @@ function ProductsPage() {
     followup_enabled: boolean;
     no_repeat_template: boolean;
     product_keywords: { keyword: string }[];
+    product_media: ExistingMedia[];
   }) {
     setForm({
       id: p.id,
@@ -284,8 +285,11 @@ function ProductsPage() {
       no_repeat_template: p.no_repeat_template,
       keywords: p.product_keywords.map((k) => k.keyword).join(", "),
     });
+    setPendingFiles([]);
+    setEditingMedia(p.product_media ?? []);
     setOpen(true);
   }
+
 
   return (
     <PageShell>
