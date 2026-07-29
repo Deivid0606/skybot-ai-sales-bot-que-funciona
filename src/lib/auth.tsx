@@ -119,9 +119,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [session?.user.id, loadProfile]);
 
   const refresh = useCallback(async () => {
-    const { data } = await supabase.auth.getSession();
-    setSession(data.session);
-    await loadProfile(data.session?.user.id);
+    const current = await getSessionFast();
+    setSession(current);
+    await loadProfile(current?.user?.id);
   }, [loadProfile]);
 
   const signOut = useCallback(async () => {
