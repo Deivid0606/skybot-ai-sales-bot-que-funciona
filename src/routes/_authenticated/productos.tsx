@@ -99,6 +99,8 @@ function ProductsPage() {
   const [form, setForm] = useState<ProductForm>(emptyForm);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [uploadingFor, setUploadingFor] = useState<string | null>(null);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [editingMedia, setEditingMedia] = useState<ExistingMedia[]>([]);
 
   const { data: products, isLoading } = useQuery({
     queryKey: ["products", workspaceId],
