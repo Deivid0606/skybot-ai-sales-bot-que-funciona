@@ -45,7 +45,7 @@ function AdminLogsPage() {
                 <Badge variant="outline">{l.integration}</Badge>
                 <span className="min-w-0 flex-1 break-words">{l.message}</span>
                 <span className="text-xs text-muted-foreground">
-                  {new Date(l.created_at).toLocaleString("es-CO")}
+                  {formatDateTime(l.created_at)}
                 </span>
               </CardContent>
             </Card>

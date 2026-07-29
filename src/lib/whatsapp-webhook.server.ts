@@ -311,7 +311,7 @@ async function createOrderFromAi(args: {
     user_id: args.ownerId,
     type: "venta",
     title: `Nueva venta ${created.order_number}`,
-    body: `${created.customer_name} · $${Number(created.total).toLocaleString("es-CO")}`,
+    body: `${created.customer_name} · ${formatGs(created.total)}`,
     link: "/pedidos",
     audience: "user",
   });

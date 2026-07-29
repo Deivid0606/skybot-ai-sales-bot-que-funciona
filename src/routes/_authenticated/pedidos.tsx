@@ -110,7 +110,7 @@ function OrdersPage() {
       ],
       ...filtered.map((o) => [
         o.order_number,
-        new Date(o.created_at).toLocaleString("es-CO"),
+        formatDateTime(o.created_at),
         o.customer_name,
         o.phone,
         o.product_title ?? "",
@@ -197,7 +197,7 @@ function OrdersPage() {
                     <TableCell className="whitespace-nowrap">
                       <div className="font-medium">{o.order_number}</div>
                       <div className="text-xs text-muted-foreground">
-                        {new Date(o.created_at).toLocaleDateString("es-CO")}
+                        {formatDate(o.created_at)}
                       </div>
                     </TableCell>
                     <TableCell>
@@ -210,7 +210,7 @@ function OrdersPage() {
                       {o.product_title ?? "—"} × {o.quantity}
                     </TableCell>
                     <TableCell className="whitespace-nowrap text-right font-medium">
-                      ${Number(o.total).toLocaleString("es-CO")}
+                      {formatGs(o.total)}
                     </TableCell>
                     <TableCell>
                       <Badge variant={o.payment_status === "pagado" ? "default" : "outline"}>

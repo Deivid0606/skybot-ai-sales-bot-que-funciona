@@ -299,11 +299,11 @@ function ProductsPage() {
                 </div>
                 <div className="flex items-baseline gap-2">
                   <span className="text-lg font-semibold">
-                    ${Number(p.promo_price ?? p.price).toLocaleString("es-CO")}
+                    {formatGs(p.promo_price ?? p.price)}
                   </span>
                   {p.promo_price && (
                     <span className="text-xs text-muted-foreground line-through">
-                      ${Number(p.price).toLocaleString("es-CO")}
+                      {formatGs(p.price)}
                     </span>
                   )}
                   <span className="ml-auto text-xs text-muted-foreground">Stock {p.stock}</span>

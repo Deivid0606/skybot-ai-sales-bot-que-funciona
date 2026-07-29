@@ -93,7 +93,7 @@ function NotificationsPage() {
                   {n.body && <p className="mt-1 text-sm text-muted-foreground">{n.body}</p>}
                 </div>
                 <span className="shrink-0 text-xs text-muted-foreground">
-                  {new Date(n.created_at).toLocaleString("es-CO")}
+                  {formatDateTime(n.created_at)}
                 </span>
               </CardContent>
             </Card>

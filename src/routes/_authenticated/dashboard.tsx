@@ -101,7 +101,7 @@ function DashboardPage() {
     { label: "Conversaciones", value: totalConversations, icon: MessageSquare },
     { label: "Ventas cerradas", value: closed, icon: CheckCircle2 },
     { label: "Conversión", value: `${conversion}%`, icon: TrendingUp },
-    { label: "Ingresos", value: `$${revenue.toLocaleString("es-CO")}`, icon: ShoppingCart },
+    { label: "Ingresos", value: `${formatGs(revenue)}`, icon: ShoppingCart },
   ];
 
   return (

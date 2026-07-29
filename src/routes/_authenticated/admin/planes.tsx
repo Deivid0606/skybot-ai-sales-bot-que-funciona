@@ -156,7 +156,7 @@ function AdminPlansPage() {
                   <div>
                     <h3 className="font-display text-lg font-bold">{plan.name}</h3>
                     <p className="font-display text-2xl font-bold text-primary">
-                      ${Number(plan.price).toLocaleString("es-CO")}
+                      {formatGs(plan.price)}
                     </p>
                   </div>
                   <Badge variant={plan.is_active ? "default" : "secondary"}>
