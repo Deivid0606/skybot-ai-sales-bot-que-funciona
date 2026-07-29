@@ -151,7 +151,7 @@ function SettingsPage() {
           waba_id: wa.waba_id.trim() || null,
           access_token: wa.access_token.trim() || null,
           app_id: wa.app_id.trim() || null,
-          app_secret: wa.app_secret.trim() || null,
+          app_secret: null,
           verify_token: wa.verify_token.trim() || null,
           display_phone: wa.display_phone.trim() || null,
           connected: Boolean(wa.phone_number_id.trim() && wa.access_token.trim()),
@@ -220,7 +220,8 @@ function SettingsPage() {
               </div>
 
               <div className="space-y-1.5">
-                <Label>URL del webhook (pégala en Meta)</Label>
+                <p className="text-sm font-semibold">Configuración de Webhook</p>
+                <Label>URL Webhook</Label>
                 <div className="flex gap-2">
                   <Input readOnly value={webhookUrl} />
                   <Button
@@ -237,39 +238,51 @@ function SettingsPage() {
                 </div>
               </div>
 
+
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-1.5">
-                  <Label>Phone Number ID</Label>
+                  <Label>Id. Número de teléfono</Label>
                   <Input
                     value={wa.phone_number_id}
                     onChange={(e) => setWa({ ...wa, phone_number_id: e.target.value })}
                   />
+                  <p className="text-xs text-muted-foreground">
+                    Valor único asignado a cada número de teléfono registrado en la plataforma de
+                    WhatsApp Business API Cloud.
+                  </p>
                 </div>
                 <div className="space-y-1.5">
-                  <Label>WABA ID</Label>
+                  <Label>Id. cuenta de WhatsApp Business (Opcional)</Label>
                   <Input value={wa.waba_id} onChange={(e) => setWa({ ...wa, waba_id: e.target.value })} />
+                  <p className="text-xs text-muted-foreground">
+                    Identificador de la cuenta de WhatsApp Business.
+                  </p>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Id. de la aplicación de Meta (Opcional)</Label>
+                  <Input value={wa.app_id} onChange={(e) => setWa({ ...wa, app_id: e.target.value })} />
+                  <p className="text-xs text-muted-foreground">Identificador de la aplicación de Meta.</p>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Número visible</Label>
+                  <Input
+                    value={wa.display_phone}
+                    onChange={(e) => setWa({ ...wa, display_phone: e.target.value })}
+                  />
                 </div>
                 <div className="space-y-1.5 sm:col-span-2">
-                  <Label>Access Token permanente</Label>
+                  <Label>Token permanente</Label>
                   <Input
                     type="password"
                     value={wa.access_token}
                     onChange={(e) => setWa({ ...wa, access_token: e.target.value })}
                   />
+                  <p className="text-xs text-muted-foreground">
+                    Cadena de caracteres para acceder a servicios de Meta.
+                  </p>
                 </div>
-                <div className="space-y-1.5">
-                  <Label>App ID</Label>
-                  <Input value={wa.app_id} onChange={(e) => setWa({ ...wa, app_id: e.target.value })} />
-                </div>
-                <div className="space-y-1.5">
-                  <Label>App Secret</Label>
-                  <Input
-                    type="password"
-                    value={wa.app_secret}
-                    onChange={(e) => setWa({ ...wa, app_secret: e.target.value })}
-                  />
-                </div>
-                <div className="space-y-1.5">
+
+                <div className="space-y-1.5 sm:col-span-2">
                   <Label>Token de verificación (se genera automáticamente)</Label>
                   <div className="flex gap-2">
                     <Input
@@ -300,15 +313,8 @@ function SettingsPage() {
                     Pegá este mismo token en Meta al configurar el webhook. Es único para tu cuenta.
                   </p>
                 </div>
-
-                <div className="space-y-1.5">
-                  <Label>Número visible</Label>
-                  <Input
-                    value={wa.display_phone}
-                    onChange={(e) => setWa({ ...wa, display_phone: e.target.value })}
-                  />
-                </div>
               </div>
+
               <Button onClick={() => handleSave("wa")} disabled={saving}>
                 <Save className="mr-1 h-4 w-4" /> Guardar conexión
               </Button>
