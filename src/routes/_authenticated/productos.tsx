@@ -164,16 +164,48 @@ function ProductsPage() {
         );
         if (error) throw error;
       }
+      if (pendingFiles.length) {
+        for (const file of pendingFiles) {
+          const path = await uploadWorkspaceFile("product-media", workspaceId, file, productId!);
+          const { error } = await supabase.from("product_media").insert({
+            workspace_id: workspaceId,
+            user_id: user.id,
+            product_id: productId!,
+            media_type: guessMediaType(file),
+            url: path,
+            storage_path: path,
+          });
+          if (error) throw error;
+        }
+      }
       return productId;
     },
     onSuccess: () => {
       toast.success("Producto guardado");
       setOpen(false);
       setForm(emptyForm);
+      setPendingFiles([]);
+      setEditingMedia([]);
       queryClient.invalidateQueries({ queryKey: ["products"] });
     },
     onError: (e: Error) => toast.error(e.message),
   });
+
+  async function removeMedia(media: ExistingMedia) {
+    try {
+      if (media.storage_path) {
+        await supabase.storage.from("product-media").remove([media.storage_path]);
+      }
+      const { error } = await supabase.from("product_media").delete().eq("id", media.id);
+      if (error) throw error;
+      setEditingMedia((prev) => prev.filter((m) => m.id !== media.id));
+      queryClient.invalidateQueries({ queryKey: ["products"] });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "No se pudo eliminar el archivo");
+    }
+  }
+
+
 
   const remove = useMutation({
     mutationFn: async (id: string) => {
