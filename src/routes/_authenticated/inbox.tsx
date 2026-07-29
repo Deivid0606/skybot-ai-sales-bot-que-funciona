@@ -171,6 +171,37 @@ function InboxPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
+  const aiNow = useMutation({
+    mutationFn: async () => {
+      if (!activeId) return;
+      await aiReplyNow({ data: { conversationId: activeId } });
+    },
+    onSuccess: () => {
+      toast.success("Respuesta de IA enviada");
+      queryClient.invalidateQueries({ queryKey: ["messages"] });
+      queryClient.invalidateQueries({ queryKey: ["conversations"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const removeMessages = useMutation({
+    mutationFn: async (ids: string[]) => {
+      await deleteMessages({ data: { ids } });
+    },
+    onSuccess: (_d, ids) => {
+      setSelected([]);
+      toast.success(ids.length > 1 ? `${ids.length} mensajes eliminados` : "Mensaje eliminado");
+      queryClient.invalidateQueries({ queryKey: ["messages"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  useEffect(() => {
+    setSelected([]);
+  }, [activeId]);
+
+
+
   const filtered = (conversations ?? []).filter((c) => {
     const q = search.trim().toLowerCase();
     if (!q) return true;
