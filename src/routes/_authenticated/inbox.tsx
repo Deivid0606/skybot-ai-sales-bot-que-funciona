@@ -331,7 +331,7 @@ function InboxPage() {
                     key={m.id}
                     className={cn(
                       "max-w-[80%] rounded-2xl px-3 py-2 text-sm shadow-sm",
-                      m.direction === "in"
+                      m.direction === "inbound"
                         ? "self-start rounded-bl-sm bg-card"
                         : "self-end rounded-br-sm bg-primary text-primary-foreground",
                     )}

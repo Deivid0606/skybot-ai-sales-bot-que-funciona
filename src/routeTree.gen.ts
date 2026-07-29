@@ -17,6 +17,7 @@ import { Route as AuthenticatedProductosRouteImport } from './routes/_authentica
 import { Route as AuthenticatedPlanesRouteImport } from './routes/_authenticated/planes'
 import { Route as AuthenticatedPedidosRouteImport } from './routes/_authenticated/pedidos'
 import { Route as AuthenticatedNotificacionesRouteImport } from './routes/_authenticated/notificaciones'
+import { Route as AuthenticatedInboxRouteImport } from './routes/_authenticated/inbox'
 import { Route as AuthenticatedEtiquetasRouteImport } from './routes/_authenticated/etiquetas'
 import { Route as AuthenticatedEntrenamientoRouteImport } from './routes/_authenticated/entrenamiento'
 import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
@@ -62,6 +63,11 @@ const AuthenticatedNotificacionesRoute =
     path: '/notificaciones',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
+const AuthenticatedInboxRoute = AuthenticatedInboxRouteImport.update({
+  id: '/inbox',
+  path: '/inbox',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
 const AuthenticatedEtiquetasRoute = AuthenticatedEtiquetasRouteImport.update({
   id: '/etiquetas',
   path: '/etiquetas',
@@ -93,6 +99,7 @@ export interface FileRoutesByFullPath {
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/entrenamiento': typeof AuthenticatedEntrenamientoRoute
   '/etiquetas': typeof AuthenticatedEtiquetasRoute
+  '/inbox': typeof AuthenticatedInboxRoute
   '/notificaciones': typeof AuthenticatedNotificacionesRoute
   '/pedidos': typeof AuthenticatedPedidosRoute
   '/planes': typeof AuthenticatedPlanesRoute
@@ -106,6 +113,7 @@ export interface FileRoutesByTo {
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/entrenamiento': typeof AuthenticatedEntrenamientoRoute
   '/etiquetas': typeof AuthenticatedEtiquetasRoute
+  '/inbox': typeof AuthenticatedInboxRoute
   '/notificaciones': typeof AuthenticatedNotificacionesRoute
   '/pedidos': typeof AuthenticatedPedidosRoute
   '/planes': typeof AuthenticatedPlanesRoute
@@ -121,6 +129,7 @@ export interface FileRoutesById {
   '/_authenticated/dashboard': typeof AuthenticatedDashboardRoute
   '/_authenticated/entrenamiento': typeof AuthenticatedEntrenamientoRoute
   '/_authenticated/etiquetas': typeof AuthenticatedEtiquetasRoute
+  '/_authenticated/inbox': typeof AuthenticatedInboxRoute
   '/_authenticated/notificaciones': typeof AuthenticatedNotificacionesRoute
   '/_authenticated/pedidos': typeof AuthenticatedPedidosRoute
   '/_authenticated/planes': typeof AuthenticatedPlanesRoute
@@ -136,6 +145,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/entrenamiento'
     | '/etiquetas'
+    | '/inbox'
     | '/notificaciones'
     | '/pedidos'
     | '/planes'
@@ -149,6 +159,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/entrenamiento'
     | '/etiquetas'
+    | '/inbox'
     | '/notificaciones'
     | '/pedidos'
     | '/planes'
@@ -163,6 +174,7 @@ export interface FileRouteTypes {
     | '/_authenticated/dashboard'
     | '/_authenticated/entrenamiento'
     | '/_authenticated/etiquetas'
+    | '/_authenticated/inbox'
     | '/_authenticated/notificaciones'
     | '/_authenticated/pedidos'
     | '/_authenticated/planes'
@@ -234,6 +246,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedNotificacionesRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/inbox': {
+      id: '/_authenticated/inbox'
+      path: '/inbox'
+      fullPath: '/inbox'
+      preLoaderRoute: typeof AuthenticatedInboxRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/etiquetas': {
       id: '/_authenticated/etiquetas'
       path: '/etiquetas'
@@ -270,6 +289,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedDashboardRoute: typeof AuthenticatedDashboardRoute
   AuthenticatedEntrenamientoRoute: typeof AuthenticatedEntrenamientoRoute
   AuthenticatedEtiquetasRoute: typeof AuthenticatedEtiquetasRoute
+  AuthenticatedInboxRoute: typeof AuthenticatedInboxRoute
   AuthenticatedNotificacionesRoute: typeof AuthenticatedNotificacionesRoute
   AuthenticatedPedidosRoute: typeof AuthenticatedPedidosRoute
   AuthenticatedPlanesRoute: typeof AuthenticatedPlanesRoute
@@ -281,6 +301,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedDashboardRoute: AuthenticatedDashboardRoute,
   AuthenticatedEntrenamientoRoute: AuthenticatedEntrenamientoRoute,
   AuthenticatedEtiquetasRoute: AuthenticatedEtiquetasRoute,
+  AuthenticatedInboxRoute: AuthenticatedInboxRoute,
   AuthenticatedNotificacionesRoute: AuthenticatedNotificacionesRoute,
   AuthenticatedPedidosRoute: AuthenticatedPedidosRoute,
   AuthenticatedPlanesRoute: AuthenticatedPlanesRoute,
