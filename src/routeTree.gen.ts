@@ -14,6 +14,8 @@ import { Route as AuthRouteImport } from './routes/auth'
 import { Route as AuthenticatedRouteRouteImport } from './routes/_authenticated/route'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthenticatedProductosRouteImport } from './routes/_authenticated/productos'
+import { Route as AuthenticatedPlanesRouteImport } from './routes/_authenticated/planes'
+import { Route as AuthenticatedPedidosRouteImport } from './routes/_authenticated/pedidos'
 import { Route as AuthenticatedNotificacionesRouteImport } from './routes/_authenticated/notificaciones'
 import { Route as AuthenticatedEtiquetasRouteImport } from './routes/_authenticated/etiquetas'
 import { Route as AuthenticatedEntrenamientoRouteImport } from './routes/_authenticated/entrenamiento'
@@ -41,6 +43,16 @@ const IndexRoute = IndexRouteImport.update({
 const AuthenticatedProductosRoute = AuthenticatedProductosRouteImport.update({
   id: '/productos',
   path: '/productos',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedPlanesRoute = AuthenticatedPlanesRouteImport.update({
+  id: '/planes',
+  path: '/planes',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedPedidosRoute = AuthenticatedPedidosRouteImport.update({
+  id: '/pedidos',
+  path: '/pedidos',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
 const AuthenticatedNotificacionesRoute =
@@ -74,6 +86,8 @@ export interface FileRoutesByFullPath {
   '/entrenamiento': typeof AuthenticatedEntrenamientoRoute
   '/etiquetas': typeof AuthenticatedEtiquetasRoute
   '/notificaciones': typeof AuthenticatedNotificacionesRoute
+  '/pedidos': typeof AuthenticatedPedidosRoute
+  '/planes': typeof AuthenticatedPlanesRoute
   '/productos': typeof AuthenticatedProductosRoute
 }
 export interface FileRoutesByTo {
@@ -84,6 +98,8 @@ export interface FileRoutesByTo {
   '/entrenamiento': typeof AuthenticatedEntrenamientoRoute
   '/etiquetas': typeof AuthenticatedEtiquetasRoute
   '/notificaciones': typeof AuthenticatedNotificacionesRoute
+  '/pedidos': typeof AuthenticatedPedidosRoute
+  '/planes': typeof AuthenticatedPlanesRoute
   '/productos': typeof AuthenticatedProductosRoute
 }
 export interface FileRoutesById {
@@ -96,6 +112,8 @@ export interface FileRoutesById {
   '/_authenticated/entrenamiento': typeof AuthenticatedEntrenamientoRoute
   '/_authenticated/etiquetas': typeof AuthenticatedEtiquetasRoute
   '/_authenticated/notificaciones': typeof AuthenticatedNotificacionesRoute
+  '/_authenticated/pedidos': typeof AuthenticatedPedidosRoute
+  '/_authenticated/planes': typeof AuthenticatedPlanesRoute
   '/_authenticated/productos': typeof AuthenticatedProductosRoute
 }
 export interface FileRouteTypes {
@@ -108,6 +126,8 @@ export interface FileRouteTypes {
     | '/entrenamiento'
     | '/etiquetas'
     | '/notificaciones'
+    | '/pedidos'
+    | '/planes'
     | '/productos'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -118,6 +138,8 @@ export interface FileRouteTypes {
     | '/entrenamiento'
     | '/etiquetas'
     | '/notificaciones'
+    | '/pedidos'
+    | '/planes'
     | '/productos'
   id:
     | '__root__'
@@ -129,6 +151,8 @@ export interface FileRouteTypes {
     | '/_authenticated/entrenamiento'
     | '/_authenticated/etiquetas'
     | '/_authenticated/notificaciones'
+    | '/_authenticated/pedidos'
+    | '/_authenticated/planes'
     | '/_authenticated/productos'
   fileRoutesById: FileRoutesById
 }
@@ -176,6 +200,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedProductosRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/planes': {
+      id: '/_authenticated/planes'
+      path: '/planes'
+      fullPath: '/planes'
+      preLoaderRoute: typeof AuthenticatedPlanesRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/pedidos': {
+      id: '/_authenticated/pedidos'
+      path: '/pedidos'
+      fullPath: '/pedidos'
+      preLoaderRoute: typeof AuthenticatedPedidosRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/notificaciones': {
       id: '/_authenticated/notificaciones'
       path: '/notificaciones'
@@ -212,6 +250,8 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedEntrenamientoRoute: typeof AuthenticatedEntrenamientoRoute
   AuthenticatedEtiquetasRoute: typeof AuthenticatedEtiquetasRoute
   AuthenticatedNotificacionesRoute: typeof AuthenticatedNotificacionesRoute
+  AuthenticatedPedidosRoute: typeof AuthenticatedPedidosRoute
+  AuthenticatedPlanesRoute: typeof AuthenticatedPlanesRoute
   AuthenticatedProductosRoute: typeof AuthenticatedProductosRoute
 }
 
@@ -220,6 +260,8 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedEntrenamientoRoute: AuthenticatedEntrenamientoRoute,
   AuthenticatedEtiquetasRoute: AuthenticatedEtiquetasRoute,
   AuthenticatedNotificacionesRoute: AuthenticatedNotificacionesRoute,
+  AuthenticatedPedidosRoute: AuthenticatedPedidosRoute,
+  AuthenticatedPlanesRoute: AuthenticatedPlanesRoute,
   AuthenticatedProductosRoute: AuthenticatedProductosRoute,
 }
 
