@@ -274,7 +274,46 @@ function AdminPaymentsPage() {
             Solicitudes{stats.pending ? ` (${stats.pending})` : ""}
           </TabsTrigger>
           <TabsTrigger value="compradores">Compradores</TabsTrigger>
+          <TabsTrigger value="clientes">Clientes</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="clientes">
+          {!clients.length ? (
+            <EmptyState title="Sin clientes con plan" />
+          ) : (
+            <div className="space-y-2">
+              {clients.map((c) => (
+                <Card key={c.userId}>
+                  <CardContent className="space-y-2 p-4">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="min-w-0 flex-1">
+                        <p className="break-all font-medium">{c.email}</p>
+                        {c.name && <p className="text-xs text-muted-foreground">{c.name}</p>}
+                      </div>
+                      <Badge variant={c.expired ? "destructive" : "default"}>{c.plan}</Badge>
+                    </div>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                      <span className="flex items-center gap-1">
+                        <MessageSquare className="h-3.5 w-3.5 text-primary" />
+                        {c.available} disponibles de {c.purchased}
+                      </span>
+                      <span>{c.consumed} usados</span>
+                      <span>
+                        {c.expiresAt
+                          ? c.expired
+                            ? `Vencido el ${formatDateTime(c.expiresAt)}`
+                            : `Vence en ${c.daysLeft} días (${formatDateTime(c.expiresAt)})`
+                          : "Sin vencimiento"}
+                      </span>
+                    </div>
+                    <Progress value={c.usedPct} />
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          )}
+        </TabsContent>
+
 
         <TabsContent value="dashboard" className="space-y-4">
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
