@@ -86,6 +86,87 @@ function AdminPaymentsPage() {
     },
   });
 
+  const { data: balances } = useQuery({
+    queryKey: ["admin-balances"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("conversation_balances")
+        .select("user_id, available, purchased, consumed, expires_at");
+      if (error) throw error;
+      return data ?? [];
+    },
+  });
+
+  const clients = useMemo(() => {
+    const all = purchases ?? [];
+    const approved = all.filter((p) => p.status === "aprobado");
+    const now = Date.now();
+    const map = new Map<
+      string,
+      {
+        userId: string;
+        email: string;
+        name: string;
+        plan: string;
+        planDate: string | null;
+        expiresAt: string | null;
+        available: number;
+        purchased: number;
+        consumed: number;
+      }
+    >();
+
+    for (const b of balances ?? []) {
+      map.set(b.user_id, {
+        userId: b.user_id,
+        email: "Sin correo",
+        name: "",
+        plan: "Sin plan",
+        planDate: null,
+        expiresAt: b.expires_at ?? null,
+        available: Number(b.available || 0),
+        purchased: Number(b.purchased || 0),
+        consumed: Number(b.consumed || 0),
+      });
+    }
+
+    for (const p of approved) {
+      const cur = map.get(p.user_id) ?? {
+        userId: p.user_id,
+        email: "Sin correo",
+        name: "",
+        plan: "Sin plan",
+        planDate: null,
+        expiresAt: null,
+        available: 0,
+        purchased: 0,
+        consumed: 0,
+      };
+      cur.email = p.profile?.email ?? cur.email;
+      cur.name = p.profile?.full_name ?? cur.name;
+      if (!cur.planDate || new Date(p.created_at) > new Date(cur.planDate)) {
+        cur.plan = p.plan_name ?? "Sin nombre";
+        cur.planDate = p.created_at;
+        if (p.expires_at) cur.expiresAt = p.expires_at;
+      }
+      map.set(p.user_id, cur);
+    }
+
+    return [...map.values()]
+      .map((c) => {
+        const expMs = c.expiresAt ? new Date(c.expiresAt).getTime() : null;
+        const daysLeft = expMs ? Math.ceil((expMs - now) / 86400000) : null;
+        const usedPct = c.purchased ? Math.min(100, (c.consumed / c.purchased) * 100) : 0;
+        return {
+          ...c,
+          daysLeft,
+          expired: daysLeft !== null && daysLeft <= 0,
+          usedPct,
+        };
+      })
+      .sort((a, b) => b.available - a.available);
+  }, [purchases, balances]);
+
   const stats = useMemo(() => {
     const all = purchases ?? [];
     const approved = all.filter((p) => p.status === "aprobado");
