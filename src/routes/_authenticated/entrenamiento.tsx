@@ -314,23 +314,16 @@ function TrainingPage() {
                 </Select>
               </div>
             )}
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-1.5">
-                <Label>Palabras clave</Label>
-                <Input
-                  value={form.keywords}
-                  onChange={(e) => setForm({ ...form, keywords: e.target.value })}
-                  placeholder="envio, demora, garantia"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Prioridad</Label>
-                <Input
-                  type="number"
-                  value={form.priority}
-                  onChange={(e) => setForm({ ...form, priority: e.target.value })}
-                />
-              </div>
+            <div className="space-y-1.5">
+              <Label>Prioridad</Label>
+              <Input
+                type="number"
+                value={form.priority}
+                onChange={(e) => setForm({ ...form, priority: e.target.value })}
+              />
+              <p className="text-xs text-muted-foreground">
+                La IA usa todo este contenido para responder; no hacen falta palabras clave.
+              </p>
             </div>
             <div className="flex items-center gap-2">
               <Switch
