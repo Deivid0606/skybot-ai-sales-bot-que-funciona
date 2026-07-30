@@ -53,6 +53,7 @@ const adminItems = [
   { title: "Planes", url: "/admin/planes", icon: Receipt },
   { title: "Planes y pagos", url: "/admin/pagos", icon: Wallet },
   { title: "Registros", url: "/admin/registros", icon: FileClock },
+  { title: "Mensajes", url: "/admin/mensajes", icon: Bell },
 ] as const;
 
 export function AppSidebar() {
