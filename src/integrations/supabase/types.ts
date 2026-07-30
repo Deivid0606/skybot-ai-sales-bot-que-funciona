@@ -605,6 +605,7 @@ export type Database = {
       messages: {
         Row: {
           body: string | null
+          catalog_product_id: string | null
           conversation_id: string
           created_at: string
           direction: Database["public"]["Enums"]["msg_direction"]
@@ -621,6 +622,7 @@ export type Database = {
         }
         Insert: {
           body?: string | null
+          catalog_product_id?: string | null
           conversation_id: string
           created_at?: string
           direction: Database["public"]["Enums"]["msg_direction"]
@@ -637,6 +639,7 @@ export type Database = {
         }
         Update: {
           body?: string | null
+          catalog_product_id?: string | null
           conversation_id?: string
           created_at?: string
           direction?: Database["public"]["Enums"]["msg_direction"]
@@ -652,6 +655,13 @@ export type Database = {
           workspace_id?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "messages_catalog_product_id_fkey"
+            columns: ["catalog_product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "messages_conversation_id_fkey"
             columns: ["conversation_id"]
