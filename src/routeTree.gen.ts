@@ -27,6 +27,7 @@ import { Route as AuthenticatedContactosRouteImport } from './routes/_authentica
 import { Route as AuthenticatedConfiguracionesRouteImport } from './routes/_authenticated/configuraciones'
 import { Route as AuthenticatedChatIaRouteImport } from './routes/_authenticated/chat-ia'
 import { Route as CWorkspaceIdIndexRouteImport } from './routes/c.$workspaceId.index'
+import { Route as CWorkspaceIdProductIdRouteImport } from './routes/c.$workspaceId.$productId'
 import { Route as AuthenticatedAdminUsuariosRouteImport } from './routes/_authenticated/admin/usuarios'
 import { Route as AuthenticatedAdminRegistrosRouteImport } from './routes/_authenticated/admin/registros'
 import { Route as AuthenticatedAdminPlanesRouteImport } from './routes/_authenticated/admin/planes'
@@ -127,6 +128,11 @@ const CWorkspaceIdIndexRoute = CWorkspaceIdIndexRouteImport.update({
   path: '/',
   getParentRoute: () => CWorkspaceIdRoute,
 } as any)
+const CWorkspaceIdProductIdRoute = CWorkspaceIdProductIdRouteImport.update({
+  id: '/$productId',
+  path: '/$productId',
+  getParentRoute: () => CWorkspaceIdRoute,
+} as any)
 const AuthenticatedAdminUsuariosRoute =
   AuthenticatedAdminUsuariosRouteImport.update({
     id: '/admin/usuarios',
@@ -192,6 +198,7 @@ export interface FileRoutesByFullPath {
   '/admin/planes': typeof AuthenticatedAdminPlanesRoute
   '/admin/registros': typeof AuthenticatedAdminRegistrosRoute
   '/admin/usuarios': typeof AuthenticatedAdminUsuariosRoute
+  '/c/$workspaceId/$productId': typeof CWorkspaceIdProductIdRoute
   '/c/$workspaceId/': typeof CWorkspaceIdIndexRoute
   '/api/public/whatsapp/webhook': typeof ApiPublicWhatsappWebhookRoute
 }
@@ -217,6 +224,7 @@ export interface FileRoutesByTo {
   '/admin/planes': typeof AuthenticatedAdminPlanesRoute
   '/admin/registros': typeof AuthenticatedAdminRegistrosRoute
   '/admin/usuarios': typeof AuthenticatedAdminUsuariosRoute
+  '/c/$workspaceId/$productId': typeof CWorkspaceIdProductIdRoute
   '/c/$workspaceId': typeof CWorkspaceIdIndexRoute
   '/api/public/whatsapp/webhook': typeof ApiPublicWhatsappWebhookRoute
 }
@@ -245,6 +253,7 @@ export interface FileRoutesById {
   '/_authenticated/admin/planes': typeof AuthenticatedAdminPlanesRoute
   '/_authenticated/admin/registros': typeof AuthenticatedAdminRegistrosRoute
   '/_authenticated/admin/usuarios': typeof AuthenticatedAdminUsuariosRoute
+  '/c/$workspaceId/$productId': typeof CWorkspaceIdProductIdRoute
   '/c/$workspaceId/': typeof CWorkspaceIdIndexRoute
   '/api/public/whatsapp/webhook': typeof ApiPublicWhatsappWebhookRoute
 }
@@ -273,6 +282,7 @@ export interface FileRouteTypes {
     | '/admin/planes'
     | '/admin/registros'
     | '/admin/usuarios'
+    | '/c/$workspaceId/$productId'
     | '/c/$workspaceId/'
     | '/api/public/whatsapp/webhook'
   fileRoutesByTo: FileRoutesByTo
@@ -298,6 +308,7 @@ export interface FileRouteTypes {
     | '/admin/planes'
     | '/admin/registros'
     | '/admin/usuarios'
+    | '/c/$workspaceId/$productId'
     | '/c/$workspaceId'
     | '/api/public/whatsapp/webhook'
   id:
@@ -325,6 +336,7 @@ export interface FileRouteTypes {
     | '/_authenticated/admin/planes'
     | '/_authenticated/admin/registros'
     | '/_authenticated/admin/usuarios'
+    | '/c/$workspaceId/$productId'
     | '/c/$workspaceId/'
     | '/api/public/whatsapp/webhook'
   fileRoutesById: FileRoutesById
@@ -466,6 +478,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof CWorkspaceIdIndexRouteImport
       parentRoute: typeof CWorkspaceIdRoute
     }
+    '/c/$workspaceId/$productId': {
+      id: '/c/$workspaceId/$productId'
+      path: '/$productId'
+      fullPath: '/c/$workspaceId/$productId'
+      preLoaderRoute: typeof CWorkspaceIdProductIdRouteImport
+      parentRoute: typeof CWorkspaceIdRoute
+    }
     '/_authenticated/admin/usuarios': {
       id: '/_authenticated/admin/usuarios'
       path: '/admin/usuarios'
@@ -564,10 +583,12 @@ const AuthenticatedRouteRouteWithChildren =
   AuthenticatedRouteRoute._addFileChildren(AuthenticatedRouteRouteChildren)
 
 interface CWorkspaceIdRouteChildren {
+  CWorkspaceIdProductIdRoute: typeof CWorkspaceIdProductIdRoute
   CWorkspaceIdIndexRoute: typeof CWorkspaceIdIndexRoute
 }
 
 const CWorkspaceIdRouteChildren: CWorkspaceIdRouteChildren = {
+  CWorkspaceIdProductIdRoute: CWorkspaceIdProductIdRoute,
   CWorkspaceIdIndexRoute: CWorkspaceIdIndexRoute,
 }
 
