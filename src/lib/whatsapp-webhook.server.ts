@@ -182,6 +182,23 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     isNewConversation = true;
   }
 
+  if (media && conn.access_token) {
+    const ingested = await ingestMedia({
+      workspaceId,
+      accessToken: conn.access_token,
+      mediaId: media.part.id!,
+      type: media.type,
+    });
+    mediaPath = ingested.storagePath;
+    transcript = ingested.transcript;
+    if (transcript) {
+      body =
+        media.type === "audio"
+          ? transcript
+          : `${body && body !== `[${message.type}]` ? body + "\n" : ""}[imagen] ${transcript}`;
+    }
+  }
+
   const { data: savedMessage } = await supabaseAdmin
     .from("messages")
     .insert({
@@ -191,11 +208,15 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       direction: "inbound",
       sender: "customer",
       body,
+      transcript,
+      media_url: mediaPath,
+      media_type: media?.type ?? null,
       wamid: message.id,
       status: "received",
     })
     .select("id")
     .single();
+
 
   await supabaseAdmin
     .from("conversations")
