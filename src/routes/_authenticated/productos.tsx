@@ -342,6 +342,17 @@ function ProductsPage() {
         actions={
           <div className="flex flex-wrap gap-2">
             <Button
+              variant={catalogPhone ? "outline" : "default"}
+              disabled={!workspaceId}
+              onClick={() => {
+                setPhoneValue(catalogPhone);
+                setPhoneOpen(true);
+              }}
+            >
+              <Phone className="mr-1 h-4 w-4" />
+              {catalogPhone ? `WhatsApp: ${catalogPhone}` : "Agregar número de WhatsApp"}
+            </Button>
+            <Button
               variant="outline"
               disabled={!workspaceId}
               onClick={() => {
