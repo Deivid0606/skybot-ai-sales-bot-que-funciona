@@ -35,6 +35,7 @@ import { Route as AuthenticatedAdminPagosRouteImport } from './routes/_authentic
 import { Route as AuthenticatedAdminMetricasRouteImport } from './routes/_authenticated/admin/metricas'
 import { Route as AuthenticatedAdminMensajesRouteImport } from './routes/_authenticated/admin/mensajes'
 import { Route as ApiPublicWhatsappWebhookRouteImport } from './routes/api/public/whatsapp/webhook'
+import { Route as ApiPublicHooksFollowupsRouteImport } from './routes/api/public/hooks/followups'
 
 const PendienteRoute = PendienteRouteImport.update({
   id: '/pendiente',
@@ -174,6 +175,11 @@ const ApiPublicWhatsappWebhookRoute =
     path: '/api/public/whatsapp/webhook',
     getParentRoute: () => rootRouteImport,
   } as any)
+const ApiPublicHooksFollowupsRoute = ApiPublicHooksFollowupsRouteImport.update({
+  id: '/api/public/hooks/followups',
+  path: '/api/public/hooks/followups',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -200,6 +206,7 @@ export interface FileRoutesByFullPath {
   '/admin/usuarios': typeof AuthenticatedAdminUsuariosRoute
   '/c/$workspaceId/$productId': typeof CWorkspaceIdProductIdRoute
   '/c/$workspaceId/': typeof CWorkspaceIdIndexRoute
+  '/api/public/hooks/followups': typeof ApiPublicHooksFollowupsRoute
   '/api/public/whatsapp/webhook': typeof ApiPublicWhatsappWebhookRoute
 }
 export interface FileRoutesByTo {
@@ -226,6 +233,7 @@ export interface FileRoutesByTo {
   '/admin/usuarios': typeof AuthenticatedAdminUsuariosRoute
   '/c/$workspaceId/$productId': typeof CWorkspaceIdProductIdRoute
   '/c/$workspaceId': typeof CWorkspaceIdIndexRoute
+  '/api/public/hooks/followups': typeof ApiPublicHooksFollowupsRoute
   '/api/public/whatsapp/webhook': typeof ApiPublicWhatsappWebhookRoute
 }
 export interface FileRoutesById {
@@ -255,6 +263,7 @@ export interface FileRoutesById {
   '/_authenticated/admin/usuarios': typeof AuthenticatedAdminUsuariosRoute
   '/c/$workspaceId/$productId': typeof CWorkspaceIdProductIdRoute
   '/c/$workspaceId/': typeof CWorkspaceIdIndexRoute
+  '/api/public/hooks/followups': typeof ApiPublicHooksFollowupsRoute
   '/api/public/whatsapp/webhook': typeof ApiPublicWhatsappWebhookRoute
 }
 export interface FileRouteTypes {
@@ -284,6 +293,7 @@ export interface FileRouteTypes {
     | '/admin/usuarios'
     | '/c/$workspaceId/$productId'
     | '/c/$workspaceId/'
+    | '/api/public/hooks/followups'
     | '/api/public/whatsapp/webhook'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -310,6 +320,7 @@ export interface FileRouteTypes {
     | '/admin/usuarios'
     | '/c/$workspaceId/$productId'
     | '/c/$workspaceId'
+    | '/api/public/hooks/followups'
     | '/api/public/whatsapp/webhook'
   id:
     | '__root__'
@@ -338,6 +349,7 @@ export interface FileRouteTypes {
     | '/_authenticated/admin/usuarios'
     | '/c/$workspaceId/$productId'
     | '/c/$workspaceId/'
+    | '/api/public/hooks/followups'
     | '/api/public/whatsapp/webhook'
   fileRoutesById: FileRoutesById
 }
@@ -347,6 +359,7 @@ export interface RootRouteChildren {
   AuthRoute: typeof AuthRoute
   PendienteRoute: typeof PendienteRoute
   CWorkspaceIdRoute: typeof CWorkspaceIdRouteWithChildren
+  ApiPublicHooksFollowupsRoute: typeof ApiPublicHooksFollowupsRoute
   ApiPublicWhatsappWebhookRoute: typeof ApiPublicWhatsappWebhookRoute
 }
 
@@ -534,6 +547,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiPublicWhatsappWebhookRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/hooks/followups': {
+      id: '/api/public/hooks/followups'
+      path: '/api/public/hooks/followups'
+      fullPath: '/api/public/hooks/followups'
+      preLoaderRoute: typeof ApiPublicHooksFollowupsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -602,6 +622,7 @@ const rootRouteChildren: RootRouteChildren = {
   AuthRoute: AuthRoute,
   PendienteRoute: PendienteRoute,
   CWorkspaceIdRoute: CWorkspaceIdRouteWithChildren,
+  ApiPublicHooksFollowupsRoute: ApiPublicHooksFollowupsRoute,
   ApiPublicWhatsappWebhookRoute: ApiPublicWhatsappWebhookRoute,
 }
 export const routeTree = rootRouteImport
