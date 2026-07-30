@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { Bot, Loader2 } from "lucide-react";
 import { toast } from "sonner";
@@ -37,7 +37,7 @@ const credentialsSchema = z.object({
 function AuthPage() {
   const search = Route.useSearch();
   const navigate = useNavigate();
-  const { refresh } = useAuth();
+  const { refresh, session, loading: authLoading } = useAuth();
   const [mode, setMode] = useState<"signin" | "signup">(search.mode ?? "signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -45,6 +45,11 @@ function AuthPage() {
   const [company, setCompany] = useState("");
   const [phone, setPhone] = useState("");
   const [loading, setLoading] = useState(false);
+
+  // Si ya hay sesión activa, no dejar al usuario atrapado en la pantalla de login.
+  useEffect(() => {
+    if (!authLoading && session?.user) navigate({ to: "/dashboard", replace: true });
+  }, [authLoading, session, navigate]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -72,21 +77,25 @@ function AuthPage() {
         }
         toast.success("¡Cuenta creada! Entrando a tu panel...");
       } else {
-        const { error } = await supabase.auth.signInWithPassword({
+        const { data, error } = await supabase.auth.signInWithPassword({
           email: parsed.data.email,
           password: parsed.data.password,
         });
         if (error) throw error;
+        if (!data.session) throw new Error("No se pudo iniciar la sesión, intentá de nuevo");
+        toast.success("Bienvenido de nuevo");
       }
-      await refresh();
-      navigate({ to: "/dashboard" });
-
+      // El refresh no debe bloquear la navegación (los locks del navegador
+      // pueden demorar la lectura de sesión dentro del preview).
+      await Promise.race([refresh(), new Promise((r) => setTimeout(r, 1500))]);
+      navigate({ to: "/dashboard", replace: true });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "No fue posible continuar");
     } finally {
       setLoading(false);
     }
   }
+
 
   async function handleGoogle() {
     setLoading(true);
