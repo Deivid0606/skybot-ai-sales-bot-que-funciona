@@ -44,7 +44,11 @@ AS $function$
   );
 $function$;
 
--- Permisos de ejecucion
-GRANT EXECUTE ON FUNCTION public.has_role(uuid, public.app_role) TO authenticated, anon, service_role;
+-- Permisos de ejecucion (minimo necesario)
+REVOKE ALL ON FUNCTION public.has_role(uuid, public.app_role) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.is_workspace_member(uuid) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.current_workspace_id() FROM PUBLIC, anon, authenticated;
+
+GRANT EXECUTE ON FUNCTION public.has_role(uuid, public.app_role) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.is_workspace_member(uuid) TO authenticated, service_role;
-GRANT EXECUTE ON FUNCTION public.current_workspace_id() TO authenticated, anon, service_role;
+GRANT EXECUTE ON FUNCTION public.current_workspace_id() TO service_role;
