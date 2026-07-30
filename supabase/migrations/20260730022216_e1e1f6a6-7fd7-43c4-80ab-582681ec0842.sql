@@ -1,0 +1,2 @@
+ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS catalog_product_id uuid REFERENCES public.products(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS messages_catalog_product_idx ON public.messages(conversation_id, catalog_product_id);
