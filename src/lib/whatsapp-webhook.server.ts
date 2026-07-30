@@ -489,3 +489,129 @@ async function createOrderFromAi(args: {
     }
   }
 }
+
+/**
+ * Detecta palabras clave del catálogo en el mensaje del cliente y envía
+ * la plantilla del producto (multimedia + copy) una sola vez por conversación.
+ * Devuelve el id del producto detectado, o null.
+ */
+async function sendCatalogByKeyword(args: {
+  workspaceId: string;
+  ownerId: string;
+  conversationId: string;
+  conn: Conn;
+  phone: string;
+  text: string;
+}): Promise<string | null> {
+  const raw = (args.text ?? "").toLowerCase().trim();
+  if (!raw) return null;
+  const normalize = (s: string) =>
+    s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+  const haystack = normalize(raw);
+
+  const { data: keywords } = await supabaseAdmin
+    .from("product_keywords")
+    .select("keyword, product_id, products!inner(id, name, price, promo_price, sales_copy, description, is_active)")
+    .eq("workspace_id", args.workspaceId);
+
+  if (!keywords?.length) return null;
+
+  type Row = (typeof keywords)[number] & {
+    products: { id: string; name: string; sales_copy: string | null; description: string | null; is_active: boolean } | null;
+  };
+
+  let match: Row | null = null;
+  for (const row of keywords as Row[]) {
+    if (!row.products || row.products.is_active === false) continue;
+    const k = normalize(row.keyword ?? "");
+    if (!k) continue;
+    const re = new RegExp(`(^|[^\\p{L}\\p{N}])${k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^\\p{L}\\p{N}]|$)`, "u");
+    if (re.test(haystack)) {
+      if (!match || k.length > normalize(match.keyword ?? "").length) match = row;
+    }
+  }
+  if (!match?.products) return null;
+
+  const productId = match.products.id;
+
+  // No reenviar la plantilla si ya se envió en esta conversación
+  const { data: already } = await supabaseAdmin
+    .from("messages")
+    .select("id")
+    .eq("conversation_id", args.conversationId)
+    .eq("direction", "outbound")
+    .ilike("body", `%[catalogo:${productId}]%`)
+    .limit(1)
+    .maybeSingle();
+  if (already) return productId;
+
+  const { sendWhatsAppMedia } = await import("@/lib/whatsapp.server");
+
+  const { data: media } = await supabaseAdmin
+    .from("product_media")
+    .select("url, storage_path, media_type, position")
+    .eq("product_id", productId)
+    .order("position", { ascending: true });
+
+  for (const m of (media ?? []).slice(0, 8)) {
+    let link = m.url as string | null;
+    if (m.storage_path) {
+      const { data: signed } = await supabaseAdmin.storage
+        .from("product-media")
+        .createSignedUrl(m.storage_path, 60 * 60 * 24 * 7);
+      if (signed?.signedUrl) link = signed.signedUrl;
+    }
+    if (!link) continue;
+    const type = (["image", "video", "audio"].includes(m.media_type as string)
+      ? m.media_type
+      : "document") as "image" | "video" | "audio" | "document";
+    try {
+      const wamid = await sendWhatsAppMedia(args.conn, args.phone, link, type);
+      await supabaseAdmin.from("messages").insert({
+        workspace_id: args.workspaceId,
+        user_id: args.ownerId,
+        conversation_id: args.conversationId,
+        direction: "outbound",
+        sender: "ai",
+        body: `[${type}] ${match.products.name}`,
+        media_url: link,
+        media_type: type,
+        status: "sent",
+        wamid,
+      });
+    } catch {
+      /* si falla un archivo, continúa con el resto */
+    }
+  }
+
+  const copy =
+    match.products.sales_copy?.trim() ||
+    `${match.products.name}\n${match.products.description ?? ""}`.trim();
+
+  try {
+    const wamid = await sendWhatsAppText(args.conn, args.phone, copy);
+    await supabaseAdmin.from("messages").insert({
+      workspace_id: args.workspaceId,
+      user_id: args.ownerId,
+      conversation_id: args.conversationId,
+      direction: "outbound",
+      sender: "ai",
+      body: `${copy}\n[catalogo:${productId}]`,
+      status: "sent",
+      wamid,
+    });
+  } catch {
+    return productId;
+  }
+
+  await supabaseAdmin
+    .from("conversations")
+    .update({
+      product_id: productId,
+      last_message: copy,
+      last_message_at: new Date().toISOString(),
+    })
+    .eq("id", args.conversationId);
+
+  return productId;
+}
