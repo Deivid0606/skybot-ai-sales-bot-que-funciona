@@ -5,6 +5,8 @@ import { generateAiReply } from "@/lib/ai.server";
 import { sendWhatsAppText } from "@/lib/whatsapp.server";
 import { detectComplaint, COMPLAINT_REASON_LABELS } from "@/lib/complaints";
 
+type MediaPart = { id?: string; mime_type?: string; caption?: string; voice?: boolean };
+
 type IncomingMessage = {
   from: string;
   id: string;
@@ -12,6 +14,12 @@ type IncomingMessage = {
   text?: { body: string };
   interactive?: { button_reply?: { title: string }; list_reply?: { title: string } };
   referral?: { source_id?: string; image_url?: string; video_url?: string; headline?: string };
+  image?: MediaPart;
+  audio?: MediaPart;
+  voice?: MediaPart;
+  video?: MediaPart;
+  document?: MediaPart & { filename?: string };
+  sticker?: MediaPart;
 };
 
 type WebhookPayload = {
@@ -32,6 +40,56 @@ function textOf(message: IncomingMessage) {
   if (message.interactive?.list_reply?.title) return message.interactive.list_reply.title;
   return `[${message.type}]`;
 }
+
+function mediaOf(message: IncomingMessage) {
+  const map: [string, MediaPart | undefined][] = [
+    ["image", message.image ?? message.sticker],
+    ["audio", message.audio ?? message.voice],
+    ["video", message.video],
+    ["document", message.document],
+  ];
+  for (const [type, part] of map) {
+    if (part?.id) return { type: type as "image" | "audio" | "video" | "document", part };
+  }
+  return null;
+}
+
+/** Descarga el archivo de WhatsApp, lo guarda y deja que la IA lo interprete. */
+async function ingestMedia(args: {
+  workspaceId: string;
+  accessToken: string;
+  mediaId: string;
+  type: "image" | "audio" | "video" | "document";
+}) {
+  const { downloadWhatsAppMediaUrl } = await import("@/lib/whatsapp.server");
+  const { transcribeAudio, describeImage, toBase64 } = await import("@/lib/media-ai.server");
+
+  const url = await downloadWhatsAppMediaUrl(args.mediaId, args.accessToken);
+  if (!url) return { storagePath: null as string | null, transcript: null as string | null };
+
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${args.accessToken}` } });
+  if (!res.ok) return { storagePath: null, transcript: null };
+  const mime = res.headers.get("content-type") ?? "application/octet-stream";
+  const bytes = await res.arrayBuffer();
+
+  const ext = (mime.split(";")[0].split("/")[1] ?? "bin").replace(/[^a-z0-9]/gi, "");
+  const storagePath = `${args.workspaceId}/inbound/${Date.now()}-${args.mediaId}.${ext}`;
+  await supabaseAdmin.storage
+    .from("chat-media")
+    .upload(storagePath, bytes, { contentType: mime, upsert: false });
+
+  let transcript: string | null = null;
+  try {
+    const base64 = toBase64(bytes);
+    if (args.type === "audio") transcript = await transcribeAudio(base64, mime);
+    else if (args.type === "image") transcript = await describeImage(base64, mime);
+  } catch (e) {
+    console.error("media ai error", e);
+  }
+
+  return { storagePath, transcript };
+}
+
 
 export async function handleWhatsAppWebhook(payload: WebhookPayload) {
   for (const entry of payload.entry ?? []) {
