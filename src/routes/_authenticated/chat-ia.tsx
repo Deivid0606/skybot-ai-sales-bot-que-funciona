@@ -28,10 +28,19 @@ type Turn = { role: "user" | "assistant"; content: string; meta?: string };
 function ChatAiPage() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [draft, setDraft] = useState("");
+  const [activeProductId, setActiveProductId] = useState<string | null>(null);
 
   const ask = useMutation({
-    mutationFn: async (message: string) => testAiReply({ data: { message } }),
+    mutationFn: async (message: string) =>
+      testAiReply({
+        data: {
+          message,
+          history: turns.map((t) => ({ role: t.role, content: t.content })),
+          activeProductId,
+        },
+      }),
     onSuccess: (result) => {
+      if (result.product_id) setActiveProductId(result.product_id);
       setTurns((t) => [
         ...t,
         {
@@ -58,6 +67,7 @@ function ChatAiPage() {
     setDraft("");
     ask.mutate(message);
   }
+
 
   return (
     <PageShell>
