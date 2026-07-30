@@ -127,8 +127,12 @@ function ChatAiPage() {
                 Escribe como si fueras un cliente: “hola, cuánto cuesta el reloj?”
               </p>
             )}
-            {turns.map((t, i) => (
+            {turns.map((t, i) =>
+              t.template ? (
+                <TemplateBubble key={i} template={t.template} />
+              ) : (
               <div
+
                 key={i}
                 className={cn(
                   "flex max-w-[85%] gap-2 rounded-xl px-3 py-2 text-sm",
