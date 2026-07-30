@@ -212,7 +212,7 @@ function TrainingPage() {
                         category: e.category,
                         scope: e.scope,
                         product_id: e.product_id ?? "",
-                        keywords: (e.keywords ?? []).join(", "),
+                        keywords: "",
                         priority: String(e.priority),
                         is_active: e.is_active,
                       });
