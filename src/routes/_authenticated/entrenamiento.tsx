@@ -42,6 +42,7 @@ export const Route = createFileRoute("/_authenticated/entrenamiento")({
 });
 
 const categories = [
+  { value: "correccion", label: "Corrección / Regla de la IA" },
   { value: "general", label: "General" },
   { value: "objeciones", label: "Objeciones" },
   { value: "envios", label: "Envíos" },
@@ -49,6 +50,34 @@ const categories = [
   { value: "cierre", label: "Cierre de venta" },
   { value: "producto", label: "Producto" },
 ];
+
+const quickRules: { label: string; title: string; content: string }[] = [
+  {
+    label: "Cantidades exactas",
+    title: "Regla de cantidades",
+    content:
+      'Cuando el cliente escriba un número suelto (ej: "2" o "2 unidades"), la cantidad es EXACTAMENTE ese número. Nunca dupliques ni concatenes dígitos. Si repite la cantidad, no la sumes. Total = precio vigente × cantidad.',
+  },
+  {
+    label: "No inventar precios",
+    title: "Regla de precios",
+    content:
+      "Usa solo los precios del catálogo. Si no encontrás el precio, decí que lo consultás y no inventes montos ni descuentos.",
+  },
+  {
+    label: "Pedir ciudad primero",
+    title: "Regla de flujo de venta",
+    content:
+      "Antes de hablar de envío o pago, preguntá siempre la ciudad del cliente para verificar cobertura y costo.",
+  },
+  {
+    label: "Mensajes cortos",
+    title: "Regla de estilo",
+    content:
+      "Respondé en máximo 2 frases cortas, tono cercano paraguayo, sin listas largas ni textos formales.",
+  },
+];
+
 
 type Form = {
   id?: string;
