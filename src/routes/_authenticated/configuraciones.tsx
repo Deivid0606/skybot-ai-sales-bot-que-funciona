@@ -279,7 +279,21 @@ function SettingsPage() {
                     <Copy className="h-4 w-4" />
                   </Button>
                 </div>
+                <p className="text-xs text-muted-foreground">
+                  Pegá esta URL exacta (sin espacios ni barra final) en “URL de devolución de
+                  llamada”. Guardá primero la conexión: Meta valida el token contra lo guardado.
+                </p>
+                <Button variant="secondary" size="sm" onClick={testWebhook} disabled={testing}>
+                  {testing ? (
+                    <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                  ) : (
+                    <CheckCircle2 className="mr-1 h-4 w-4" />
+                  )}
+                  Probar verificación
+                </Button>
               </div>
+
+
 
 
               <div className="grid gap-4 sm:grid-cols-2">
