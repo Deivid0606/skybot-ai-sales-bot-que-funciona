@@ -671,6 +671,35 @@ function ProductsPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      <Dialog open={phoneOpen} onOpenChange={setPhoneOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Número de WhatsApp del catálogo</DialogTitle>
+            <DialogDescription>
+              A este número llegan los mensajes de compra desde el botón “Tocá aquí para comprar”.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="catalog-phone">Número con código de país</Label>
+            <Input
+              id="catalog-phone"
+              inputMode="numeric"
+              placeholder="595981123456"
+              value={phoneValue}
+              onChange={(e) => setPhoneValue(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">Solo números, sin + ni espacios.</p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPhoneOpen(false)}>
+              Cancelar
+            </Button>
+            <Button onClick={() => savePhone.mutate(phoneValue)} disabled={savePhone.isPending}>
+              {savePhone.isPending && <Loader2 className="mr-1 h-4 w-4 animate-spin" />} Guardar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </PageShell>
   );
 }
