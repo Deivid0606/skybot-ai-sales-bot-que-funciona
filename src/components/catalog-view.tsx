@@ -8,8 +8,8 @@ import type { CatalogData, CatalogProduct } from "@/lib/catalog.functions";
 
 export function buyMessage(product: CatalogProduct) {
   const keyword = product.keywords[0] ?? product.name;
-  const hasPromo = product.promo_price !== null && product.promo_price > 0;
-  const price = formatGs(hasPromo ? product.promo_price : product.price);
+  const promo = product.promo_price;
+  const price = formatGs(promo !== null && promo > 0 ? promo : product.price);
   return `Hola! Quiero comprar este producto: ${product.name} de ${price}. ¿Cómo lo puedo obtener?\n\n${keyword}`;
 }
 
