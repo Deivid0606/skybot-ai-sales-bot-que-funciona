@@ -40,7 +40,6 @@ const emptyPlan = {
   name: "",
   price: "",
   conversations: "",
-  duration_days: "",
   benefits: "",
   is_active: true,
 };
@@ -66,7 +65,7 @@ function AdminPlansPage() {
         name: form.name.trim(),
         price: Number(form.price),
         conversations: Number(form.conversations),
-        duration_days: Number(form.duration_days),
+        duration_days: 36500,
         benefits: form.benefits
           .split("\n")
           .map((b) => b.trim())
@@ -109,7 +108,6 @@ function AdminPlansPage() {
       name: plan.name,
       price: String(plan.price),
       conversations: String(plan.conversations),
-      duration_days: String(plan.duration_days),
       benefits: (plan.benefits ?? []).join("\n"),
       is_active: plan.is_active,
     });
@@ -119,8 +117,7 @@ function AdminPlansPage() {
   const isValid =
     form.name.trim() &&
     Number(form.price) >= 0 &&
-    Number(form.conversations) >= 1 &&
-    Number(form.duration_days) >= 1;
+    Number(form.conversations) >= 1;
 
   return (
     <PageShell>
@@ -165,7 +162,7 @@ function AdminPlansPage() {
                   </Badge>
                 </div>
                 <p className="text-sm text-muted-foreground">
-                  {plan.conversations} conversaciones · {plan.duration_days} días
+                  {plan.conversations} conversaciones · sin vencimiento
                 </p>
                 <ul className="space-y-1 text-sm">
                   {(plan.benefits ?? []).map((b) => (
@@ -238,17 +235,6 @@ function AdminPlansPage() {
                   placeholder="100"
                 />
               </div>
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="duration_days">Duración (días)</Label>
-              <Input
-                id="duration_days"
-                type="number"
-                min={1}
-                value={form.duration_days}
-                onChange={(e) => setForm({ ...form, duration_days: e.target.value })}
-                placeholder="30"
-              />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="benefits">Beneficios (uno por línea)</Label>
