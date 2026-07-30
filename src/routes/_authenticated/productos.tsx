@@ -2,7 +2,7 @@ import { useState } from "react";
 import { formatGs } from "@/lib/format";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ExternalLink, Link as LinkIcon, Loader2, Pencil, Plus, Trash2, Upload, X } from "lucide-react";
+import { ExternalLink, Link as LinkIcon, Loader2, Pencil, Phone, Plus, Trash2, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { PageHeader, PageShell, EmptyState } from "@/components/page-shell";
@@ -100,6 +100,50 @@ function ProductsPage() {
   const [uploadingFor, setUploadingFor] = useState<string | null>(null);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [editingMedia, setEditingMedia] = useState<ExistingMedia[]>([]);
+  const [phoneOpen, setPhoneOpen] = useState(false);
+  const [phoneValue, setPhoneValue] = useState("");
+
+  const { data: waConn } = useQuery({
+    queryKey: ["catalog-phone", workspaceId],
+    enabled: Boolean(workspaceId),
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("whatsapp_connections")
+        .select("id, display_phone")
+        .eq("workspace_id", workspaceId!)
+        .maybeSingle();
+      if (error) throw error;
+      return data;
+    },
+  });
+  const catalogPhone = (waConn?.display_phone ?? "").replace(/[^0-9]/g, "");
+
+  const savePhone = useMutation({
+    mutationFn: async (raw: string) => {
+      const digits = raw.replace(/[^0-9]/g, "");
+      if (digits.length < 8) throw new Error("Ingresá el número con código de país (ej. 595981123456)");
+      if (!workspaceId || !user) throw new Error("Sesión no válida");
+      if (waConn?.id) {
+        const { error } = await supabase
+          .from("whatsapp_connections")
+          .update({ display_phone: digits })
+          .eq("id", waConn.id);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from("whatsapp_connections")
+          .insert({ workspace_id: workspaceId, user_id: user.id, display_phone: digits });
+        if (error) throw error;
+      }
+      return digits;
+    },
+    onSuccess: () => {
+      toast.success("Número de WhatsApp guardado");
+      setPhoneOpen(false);
+      queryClient.invalidateQueries({ queryKey: ["catalog-phone", workspaceId] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
 
   const { data: products, isLoading } = useQuery({
     queryKey: ["products", workspaceId],
@@ -297,6 +341,17 @@ function ProductsPage() {
         description="Tu catálogo alimenta directamente las respuestas de la IA."
         actions={
           <div className="flex flex-wrap gap-2">
+            <Button
+              variant={catalogPhone ? "outline" : "default"}
+              disabled={!workspaceId}
+              onClick={() => {
+                setPhoneValue(catalogPhone);
+                setPhoneOpen(true);
+              }}
+            >
+              <Phone className="mr-1 h-4 w-4" />
+              {catalogPhone ? `WhatsApp: ${catalogPhone}` : "Agregar número de WhatsApp"}
+            </Button>
             <Button
               variant="outline"
               disabled={!workspaceId}
@@ -616,6 +671,35 @@ function ProductsPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      <Dialog open={phoneOpen} onOpenChange={setPhoneOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Número de WhatsApp del catálogo</DialogTitle>
+            <DialogDescription>
+              A este número llegan los mensajes de compra desde el botón “Tocá aquí para comprar”.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="catalog-phone">Número con código de país</Label>
+            <Input
+              id="catalog-phone"
+              inputMode="numeric"
+              placeholder="595981123456"
+              value={phoneValue}
+              onChange={(e) => setPhoneValue(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">Solo números, sin + ni espacios.</p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPhoneOpen(false)}>
+              Cancelar
+            </Button>
+            <Button onClick={() => savePhone.mutate(phoneValue)} disabled={savePhone.isPending}>
+              {savePhone.isPending && <Loader2 className="mr-1 h-4 w-4 animate-spin" />} Guardar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </PageShell>
   );
 }
