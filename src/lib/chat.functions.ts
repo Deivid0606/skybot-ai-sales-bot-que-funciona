@@ -67,7 +67,19 @@ export const sendManualMessage = createServerFn({ method: "POST" })
     return { ok: true, wamid };
   });
 
-const TestInput = z.object({ message: z.string().trim().min(1).max(2000) });
+const TestInput = z.object({
+  message: z.string().trim().min(1).max(2000),
+  history: z
+    .array(
+      z.object({
+        role: z.enum(["user", "assistant"]),
+        content: z.string().max(4000),
+      }),
+    )
+    .max(40)
+    .optional(),
+  activeProductId: z.string().uuid().nullable().optional(),
+});
 
 export const testAiReply = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
@@ -84,12 +96,16 @@ export const testAiReply = createServerFn({ method: "POST" })
       .single();
     if (!profile?.workspace_id) throw new Error("Sin workspace");
 
-    const ctx = await buildWorkspaceAiContext(supabase, profile.workspace_id, [
-      { role: "user", content: data.message },
-    ]);
+    const ctx = await buildWorkspaceAiContext(
+      supabase,
+      profile.workspace_id,
+      [...(data.history ?? []), { role: "user" as const, content: data.message }].slice(-24),
+      data.activeProductId ?? null,
+    );
     const result = await generateAiReply(ctx);
     return result;
   });
+
 
 const AiNowInput = z.object({ conversationId: z.string().uuid() });
 
