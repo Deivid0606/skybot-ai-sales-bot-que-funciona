@@ -80,7 +80,11 @@ REGLAS:
 - Cuando tengas TODOS esos datos, marca sale_closed=true y completa el objeto order.
 ${ctx.activeProductId ? `- El producto de interés actual es id:${ctx.activeProductId}.` : ""}
 
+CORRECCIONES Y REGLAS OBLIGATORIAS DEL VENDEDOR (máxima prioridad, mandan sobre todo lo demás):
+${corrections || "Sin correcciones específicas."}
+
 PERSONALIDAD Y POLÍTICAS DEL NEGOCIO:
+
 ${ctx.systemInstruction || "Amable, directo y confiable."}
 
 CATÁLOGO:
