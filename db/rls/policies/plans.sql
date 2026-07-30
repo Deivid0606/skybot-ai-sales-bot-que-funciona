@@ -10,7 +10,8 @@ CREATE POLICY "plans_admin" ON public.plans
   WITH CHECK (has_role(auth.uid(), 'admin'::app_role));
 
 DROP POLICY IF EXISTS "plans_read" ON public.plans;
-CREATE POLICY "plans_read" ON public.plans
+DROP POLICY IF EXISTS "plans_read_active" ON public.plans;
+CREATE POLICY "plans_read_active" ON public.plans
   FOR SELECT
   TO authenticated
-  USING (true);
+  USING (is_active OR has_role(auth.uid(), 'admin'::app_role));
