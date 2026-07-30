@@ -6,11 +6,16 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import type { CatalogData, CatalogProduct } from "@/lib/catalog.functions";
 
-export function buyLink(phone: string | null, product: CatalogProduct) {
+export function buyMessage(product: CatalogProduct) {
   const keyword = product.keywords[0] ?? product.name;
-  const text = `Hola, quiero comprar ${product.name}. ${keyword}`;
+  const hasPromo = product.promo_price !== null && product.promo_price > 0;
+  const price = formatGs(hasPromo ? product.promo_price : product.price);
+  return `Hola! Quiero comprar este producto: ${product.name} de ${price}. ¿Cómo lo puedo obtener?\n\n${keyword}`;
+}
+
+export function buyLink(phone: string | null, product: CatalogProduct) {
   if (!phone) return null;
-  return `https://wa.me/${phone}?text=${encodeURIComponent(text)}`;
+  return `https://wa.me/${phone}?text=${encodeURIComponent(buyMessage(product))}`;
 }
 
 function BuyButton({ phone, product }: { phone: string | null; product: CatalogProduct }) {
