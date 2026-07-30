@@ -9,7 +9,8 @@ DO $$ BEGIN CREATE TYPE public.msg_sender AS ENUM ('customer', 'ai', 'agent', 's
 DO $$ BEGIN CREATE TYPE public.order_state AS ENUM ('nuevo', 'confirmado', 'cargado', 'preparacion', 'enviado', 'entregado', 'cancelado'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN CREATE TYPE public.payment_state AS ENUM ('pendiente', 'anticipado', 'pagado', 'contraentrega', 'rechazado'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN CREATE TYPE public.purchase_state AS ENUM ('pendiente', 'aprobado', 'rechazado'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-DO $$ BEGIN CREATE TYPE public.user_status AS ENUM ('pending', 'approved', 'rejected', 'blocked', 'active', 'suspended'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE TYPE public.user_status AS ENUM ('pending', 'approved', 'rejected', 'blocked', 'active', 'suspended'
+); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- 2) Funciones SECURITY DEFINER usadas dentro de las politicas
 
