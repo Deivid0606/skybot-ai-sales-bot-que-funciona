@@ -32,7 +32,7 @@ function TemplateBubble({ template }: { template: Template }) {
   const videos = template.media.filter((m) => m.type === "video");
   const audios = template.media.filter((m) => m.type === "audio");
   return (
-    <div className="mr-auto flex max-w-[75%] flex-col gap-2 rounded-xl bg-muted p-2 text-sm md:max-w-[55%]">
+    <div className="mr-auto flex max-w-[75%] flex-col gap-2 rounded-xl bg-muted p-2 text-sm md:max-w-[50%]">
       {images.length > 0 && (
         <div className={cn("grid gap-1", images.length > 1 ? "grid-cols-2" : "grid-cols-1")}>
           {images.map((m, i) => (
@@ -41,13 +41,13 @@ function TemplateBubble({ template }: { template: Template }) {
               src={m.url}
               alt={template.name}
               loading="lazy"
-              className="aspect-square w-full max-h-44 rounded-lg object-cover"
+              className="w-full max-h-44 rounded-lg bg-card object-contain"
             />
           ))}
         </div>
       )}
       {videos.map((m, i) => (
-        <video key={i} src={m.url} controls preload="none" className="h-44 w-full rounded-lg" />
+        <video key={i} src={m.url} controls preload="none" className="max-h-44 w-full rounded-lg bg-card" />
       ))}
       {audios.map((m, i) => (
         <audio key={i} src={m.url} controls preload="none" className="w-full" />
