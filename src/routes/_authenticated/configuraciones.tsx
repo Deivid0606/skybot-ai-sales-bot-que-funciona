@@ -57,6 +57,7 @@ function SettingsPage() {
     google_sheets_url: "",
     apps_script_url: "",
     notify_numbers: "",
+    catalog_enabled: true,
   });
 
   const { data, isLoading } = useQuery({
@@ -103,6 +104,7 @@ function SettingsPage() {
         google_sheets_url: data.settings.google_sheets_url ?? "",
         apps_script_url: data.settings.apps_script_url ?? "",
         notify_numbers: (data.settings.notify_numbers ?? []).join(", "),
+        catalog_enabled: data.settings.catalog_enabled !== false,
       });
     }
   }, [data]);
@@ -176,6 +178,7 @@ function SettingsPage() {
             .split(",")
             .map((n) => n.trim())
             .filter(Boolean),
+          catalog_enabled: biz.catalog_enabled,
         });
       }
       toast.success("Configuración guardada");
@@ -474,6 +477,18 @@ function SettingsPage() {
                     onChange={(e) => setBiz({ ...biz, apps_script_url: e.target.value })}
                   />
                 </div>
+              </div>
+              <div className="flex items-center justify-between rounded-lg border border-border p-3">
+                <div>
+                  <Label>Catálogo público</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Publica tus productos activos en un link para compartir.
+                  </p>
+                </div>
+                <Switch
+                  checked={biz.catalog_enabled}
+                  onCheckedChange={(v) => setBiz({ ...biz, catalog_enabled: v })}
+                />
               </div>
               <Button onClick={() => handleSave("biz")} disabled={saving}>
                 <Save className="mr-1 h-4 w-4" /> Guardar negocio
