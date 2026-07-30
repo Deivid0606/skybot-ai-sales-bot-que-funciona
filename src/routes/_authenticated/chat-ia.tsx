@@ -23,12 +23,48 @@ export const Route = createFileRoute("/_authenticated/chat-ia")({
   component: ChatAiPage,
 });
 
-type Turn = { role: "user" | "assistant"; content: string; meta?: string };
+type TemplateMedia = { type: string; url: string };
+type Template = { productId: string; name: string; copy: string; media: TemplateMedia[] };
+type Turn = { role: "user" | "assistant"; content: string; meta?: string; template?: Template };
+
+function TemplateBubble({ template }: { template: Template }) {
+  const images = template.media.filter((m) => m.type === "image");
+  const videos = template.media.filter((m) => m.type === "video");
+  const audios = template.media.filter((m) => m.type === "audio");
+  return (
+    <div className="mr-auto flex max-w-[85%] flex-col gap-2 rounded-xl bg-muted p-2 text-sm">
+      {images.length > 0 && (
+        <div className={cn("grid gap-1", images.length > 1 ? "grid-cols-2" : "grid-cols-1")}>
+          {images.map((m, i) => (
+            <img
+              key={i}
+              src={m.url}
+              alt={template.name}
+              loading="lazy"
+              className="aspect-square w-full rounded-lg object-cover"
+            />
+          ))}
+        </div>
+      )}
+      {videos.map((m, i) => (
+        <video key={i} src={m.url} controls preload="none" className="w-full rounded-lg" />
+      ))}
+      {audios.map((m, i) => (
+        <audio key={i} src={m.url} controls preload="none" className="w-full" />
+      ))}
+      <p className="whitespace-pre-wrap px-1">{template.copy}</p>
+      <Badge variant="secondary" className="w-fit text-[10px]">
+        plantilla por palabra clave
+      </Badge>
+    </div>
+  );
+}
 
 function ChatAiPage() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [draft, setDraft] = useState("");
   const [activeProductId, setActiveProductId] = useState<string | null>(null);
+  const [sentTemplateIds, setSentTemplateIds] = useState<string[]>([]);
 
   const ask = useMutation({
     mutationFn: async (message: string) =>
@@ -37,10 +73,16 @@ function ChatAiPage() {
           message,
           history: turns.map((t) => ({ role: t.role, content: t.content })),
           activeProductId,
+          sentTemplateIds,
         },
       }),
     onSuccess: (result) => {
       if (result.product_id) setActiveProductId(result.product_id);
+      if (result.template) {
+        const tpl = result.template;
+        setSentTemplateIds((ids) => [...ids, tpl.productId]);
+        setTurns((t) => [...t, { role: "assistant", content: tpl.copy, template: tpl }]);
+      }
       setTurns((t) => [
         ...t,
         {
@@ -69,6 +111,7 @@ function ChatAiPage() {
   }
 
 
+
   return (
     <PageShell>
       <PageHeader
@@ -84,8 +127,12 @@ function ChatAiPage() {
                 Escribe como si fueras un cliente: “hola, cuánto cuesta el reloj?”
               </p>
             )}
-            {turns.map((t, i) => (
+            {turns.map((t, i) =>
+              t.template ? (
+                <TemplateBubble key={i} template={t.template} />
+              ) : (
               <div
+
                 key={i}
                 className={cn(
                   "flex max-w-[85%] gap-2 rounded-xl px-3 py-2 text-sm",
@@ -108,7 +155,9 @@ function ChatAiPage() {
                   )}
                 </div>
               </div>
-            ))}
+              ),
+            )}
+
             {ask.isPending && (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" /> Escribiendo...

@@ -79,6 +79,7 @@ const TestInput = z.object({
     .max(40)
     .optional(),
   activeProductId: z.string().uuid().nullable().optional(),
+  sentTemplateIds: z.array(z.string().uuid()).max(50).optional(),
 });
 
 export const testAiReply = createServerFn({ method: "POST" })
@@ -87,6 +88,7 @@ export const testAiReply = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     const { buildWorkspaceAiContext } = await import("@/lib/ai-context.server");
     const { generateAiReply } = await import("@/lib/ai.server");
+    const { buildKeywordTemplate } = await import("@/lib/catalog-template.server");
     const { supabase, userId } = context;
 
     const { data: profile } = await supabase
@@ -96,15 +98,24 @@ export const testAiReply = createServerFn({ method: "POST" })
       .single();
     if (!profile?.workspace_id) throw new Error("Sin workspace");
 
+    const template = await buildKeywordTemplate(
+      supabase as never,
+      profile.workspace_id,
+      data.message,
+    );
+    const showTemplate =
+      template && !(data.sentTemplateIds ?? []).includes(template.productId) ? template : null;
+
     const ctx = await buildWorkspaceAiContext(
       supabase,
       profile.workspace_id,
       [...(data.history ?? []), { role: "user" as const, content: data.message }].slice(-24),
-      data.activeProductId ?? null,
+      template?.productId ?? data.activeProductId ?? null,
     );
     const result = await generateAiReply(ctx);
-    return result;
+    return { ...result, product_id: result.product_id ?? template?.productId ?? null, template: showTemplate };
   });
+
 
 
 const AiNowInput = z.object({ conversationId: z.string().uuid() });
