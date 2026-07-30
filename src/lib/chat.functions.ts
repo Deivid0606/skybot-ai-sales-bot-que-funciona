@@ -189,3 +189,221 @@ export const deleteMessages = createServerFn({ method: "POST" })
     if (error) throw error;
     return { deleted: data.ids.length };
   });
+
+const MediaInput = z.object({
+  conversationId: z.string().uuid(),
+  storagePath: z.string().min(1),
+  mediaType: z.enum(["image", "video", "audio", "document"]),
+  caption: z.string().trim().max(1000).optional(),
+});
+
+async function getConversationAndConn(
+  supabase: {
+    from: (t: string) => any;
+    storage: { from: (b: string) => any };
+  },
+  conversationId: string,
+) {
+  const { data: conversation, error } = await supabase
+    .from("conversations")
+    .select("id, workspace_id, contact_id, contacts(phone)")
+    .eq("id", conversationId)
+    .single();
+  if (error || !conversation) throw new Error("Conversación no encontrada");
+  const { data: conn } = await supabase
+    .from("whatsapp_connections")
+    .select("phone_number_id, access_token")
+    .eq("workspace_id", conversation.workspace_id)
+    .maybeSingle();
+  return { conversation, conn };
+}
+
+/** Envía un archivo (imagen, video, audio o documento) al cliente. */
+export const sendMediaMessage = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input: unknown) => MediaInput.parse(input))
+  .handler(async ({ data, context }) => {
+    const { sendWhatsAppMedia } = await import("@/lib/whatsapp.server");
+    const { supabase, userId } = context;
+    const { conversation, conn } = await getConversationAndConn(supabase as never, data.conversationId);
+
+    const { data: signed, error: signError } = await supabase.storage
+      .from("chat-media")
+      .createSignedUrl(data.storagePath, 60 * 60 * 24 * 7);
+    if (signError || !signed?.signedUrl) throw new Error("No se pudo preparar el archivo");
+
+    let wamid: string | null = null;
+    let sendError: string | null = null;
+    const phone = conversation.contacts?.phone;
+
+    if (conn?.phone_number_id && conn.access_token && phone) {
+      try {
+        wamid = await sendWhatsAppMedia(conn, phone, signed.signedUrl, data.mediaType, data.caption);
+      } catch (e) {
+        sendError = e instanceof Error ? e.message : "Error de envío";
+      }
+    } else {
+      sendError = "WhatsApp no está conectado";
+    }
+
+    const label = data.caption?.trim() || `[${data.mediaType}]`;
+    const { error: insertError } = await supabase.from("messages").insert({
+      workspace_id: conversation.workspace_id,
+      user_id: userId,
+      conversation_id: conversation.id,
+      direction: "outbound",
+      sender: "agent",
+      body: label,
+      media_url: data.storagePath,
+      media_type: data.mediaType,
+      status: sendError ? "failed" : "sent",
+      error: sendError,
+      wamid,
+    });
+    if (insertError) throw insertError;
+
+    await supabase
+      .from("conversations")
+      .update({
+        last_message: label,
+        last_message_at: new Date().toISOString(),
+        ai_paused: true,
+      })
+      .eq("id", conversation.id);
+
+    if (sendError) throw new Error(sendError);
+    return { ok: true };
+  });
+
+const CatalogInput = z.object({
+  conversationId: z.string().uuid(),
+  productId: z.string().uuid(),
+});
+
+/** Envía el catálogo de un producto: copy de venta + su multimedia. */
+export const sendProductCatalog = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input: unknown) => CatalogInput.parse(input))
+  .handler(async ({ data, context }) => {
+    const { sendWhatsAppText, sendWhatsAppMedia } = await import("@/lib/whatsapp.server");
+    const { supabase, userId } = context;
+    const { conversation, conn } = await getConversationAndConn(supabase as never, data.conversationId);
+
+    const { data: product, error: prodError } = await supabase
+      .from("products")
+      .select("id, name, price, promo_price, sales_copy, description, product_media(url, storage_path, media_type, position)")
+      .eq("id", data.productId)
+      .single();
+    if (prodError || !product) throw new Error("Producto no encontrado");
+
+    const phone = conversation.contacts?.phone;
+    if (!conn?.phone_number_id || !conn.access_token || !phone) {
+      throw new Error("WhatsApp no está conectado");
+    }
+
+    const text =
+      product.sales_copy?.trim() ||
+      `${product.name}\n${product.description ?? ""}`.trim();
+
+    const media = [...(product.product_media ?? [])]
+      .sort((a: { position: number }, b: { position: number }) => a.position - b.position)
+      .slice(0, 8);
+
+    let sent = 0;
+    for (const m of media) {
+      let link = m.url as string;
+      if (m.storage_path) {
+        const { data: signed } = await supabase.storage
+          .from("product-media")
+          .createSignedUrl(m.storage_path, 60 * 60 * 24 * 7);
+        if (signed?.signedUrl) link = signed.signedUrl;
+      }
+      const type = (["image", "video", "audio"].includes(m.media_type) ? m.media_type : "document") as
+        | "image"
+        | "video"
+        | "audio"
+        | "document";
+      try {
+        const wamid = await sendWhatsAppMedia(conn, phone, link, type);
+        await supabase.from("messages").insert({
+          workspace_id: conversation.workspace_id,
+          user_id: userId,
+          conversation_id: conversation.id,
+          direction: "outbound",
+          sender: "agent",
+          body: `[${type}] ${product.name}`,
+          media_url: link,
+          media_type: type,
+          status: "sent",
+          wamid,
+        });
+        sent += 1;
+      } catch {
+        /* continua con el resto */
+      }
+    }
+
+    const wamid = await sendWhatsAppText(conn, phone, text);
+    await supabase.from("messages").insert({
+      workspace_id: conversation.workspace_id,
+      user_id: userId,
+      conversation_id: conversation.id,
+      direction: "outbound",
+      sender: "agent",
+      body: text,
+      status: "sent",
+      wamid,
+    });
+
+    await supabase
+      .from("conversations")
+      .update({
+        last_message: text,
+        last_message_at: new Date().toISOString(),
+        product_id: product.id,
+      })
+      .eq("id", conversation.id);
+
+    return { sent };
+  });
+
+const TranscribeInput = z.object({ messageId: z.string().uuid() });
+
+/** La IA transcribe un audio o interpreta una imagen de la conversación. */
+export const transcribeMessage = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input: unknown) => TranscribeInput.parse(input))
+  .handler(async ({ data, context }) => {
+    const { transcribeAudio, describeImage, toBase64 } = await import("@/lib/media-ai.server");
+    const { supabase } = context;
+
+    const { data: message, error } = await supabase
+      .from("messages")
+      .select("id, media_url, media_type, transcript")
+      .eq("id", data.messageId)
+      .single();
+    if (error || !message?.media_url) throw new Error("El mensaje no tiene archivo");
+    if (message.transcript) return { transcript: message.transcript };
+
+    let url = message.media_url;
+    if (!/^https?:\/\//.test(url)) {
+      const { data: signed } = await supabase.storage
+        .from("chat-media")
+        .createSignedUrl(url, 60 * 10);
+      if (!signed?.signedUrl) throw new Error("No se pudo leer el archivo");
+      url = signed.signedUrl;
+    }
+
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("No se pudo descargar el archivo");
+    const mime = res.headers.get("content-type") ?? "application/octet-stream";
+    const base64 = toBase64(await res.arrayBuffer());
+
+    const transcript =
+      message.media_type === "image"
+        ? await describeImage(base64, mime)
+        : await transcribeAudio(base64, mime);
+
+    await supabase.from("messages").update({ transcript }).eq("id", message.id);
+    return { transcript };
+  });

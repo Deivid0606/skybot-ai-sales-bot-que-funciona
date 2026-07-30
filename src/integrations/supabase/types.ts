@@ -614,6 +614,7 @@ export type Database = {
           media_url: string | null
           sender: Database["public"]["Enums"]["msg_sender"]
           status: string
+          transcript: string | null
           user_id: string
           wamid: string | null
           workspace_id: string
@@ -629,6 +630,7 @@ export type Database = {
           media_url?: string | null
           sender?: Database["public"]["Enums"]["msg_sender"]
           status?: string
+          transcript?: string | null
           user_id: string
           wamid?: string | null
           workspace_id: string
@@ -644,6 +646,7 @@ export type Database = {
           media_url?: string | null
           sender?: Database["public"]["Enums"]["msg_sender"]
           status?: string
+          transcript?: string | null
           user_id?: string
           wamid?: string | null
           workspace_id?: string

@@ -11,8 +11,11 @@ import {
   Search,
   Send,
   Sparkles,
+  Paperclip,
+  ShoppingBag,
   Tag,
   Trash2,
+  Wand2,
   User,
   X,
 } from "lucide-react";
@@ -30,7 +33,16 @@ import {
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
-import { aiReplyNow, deleteMessages, sendManualMessage } from "@/lib/chat.functions";
+import {
+  aiReplyNow,
+  deleteMessages,
+  sendManualMessage,
+  sendMediaMessage,
+  sendProductCatalog,
+  transcribeMessage,
+} from "@/lib/chat.functions";
+import { ChatMedia } from "@/components/chat-media";
+import { MAX_FILE_BYTES, guessMediaType, uploadWorkspaceFile } from "@/lib/storage";
 import { AdOriginCard } from "@/components/ad-origin-card";
 import { ContactInfoDialog } from "@/components/contact-info-dialog";
 
@@ -61,6 +73,7 @@ function InboxPage() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [infoOpen, setInfoOpen] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
 
 
 
@@ -90,6 +103,21 @@ function InboxPage() {
         .from("labels")
         .select("*")
         .eq("workspace_id", workspaceId!);
+      if (error) throw error;
+      return data;
+    },
+  });
+
+  const { data: products } = useQuery({
+    queryKey: ["catalog-products", workspaceId],
+    enabled: Boolean(workspaceId),
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("products")
+        .select("id, name, price, promo_price")
+        .eq("workspace_id", workspaceId!)
+        .eq("is_active", true)
+        .order("name");
       if (error) throw error;
       return data;
     },
@@ -221,6 +249,48 @@ function InboxPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
+  const sendFile = useMutation({
+    mutationFn: async (file: File) => {
+      if (!activeId || !workspaceId) return;
+      if (file.size > MAX_FILE_BYTES) throw new Error("El archivo supera los 25 MB");
+      const mediaType = guessMediaType(file) as "image" | "video" | "audio" | "document";
+      const path = await uploadWorkspaceFile("chat-media", workspaceId, file, "outbound");
+      await sendMediaMessage({
+        data: { conversationId: activeId, storagePath: path, mediaType },
+      });
+    },
+    onSuccess: () => {
+      toast.success("Archivo enviado");
+      queryClient.invalidateQueries({ queryKey: ["messages"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const sendCatalog = useMutation({
+    mutationFn: async (productId: string) => {
+      if (!activeId) return;
+      await sendProductCatalog({ data: { conversationId: activeId, productId } });
+    },
+    onSuccess: () => {
+      toast.success("Catálogo enviado");
+      queryClient.invalidateQueries({ queryKey: ["messages"] });
+      queryClient.invalidateQueries({ queryKey: ["conversations"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const transcribe = useMutation({
+    mutationFn: async (messageId: string) => {
+      const res = await transcribeMessage({ data: { messageId } });
+      return res.transcript;
+    },
+    onSuccess: () => {
+      toast.success("Transcripción lista");
+      queryClient.invalidateQueries({ queryKey: ["messages"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
   useEffect(() => {
     setSelected([]);
   }, [activeId]);
@@ -342,6 +412,32 @@ function InboxPage() {
                 <Button variant="outline" size="sm" onClick={() => setInfoOpen(true)}>
                   <User className="mr-1 h-4 w-4" /> Info
                 </Button>
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button variant="outline" size="sm" disabled={sendCatalog.isPending}>
+                      {sendCatalog.isPending ? (
+                        <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                      ) : (
+                        <ShoppingBag className="mr-1 h-4 w-4" />
+                      )}
+                      Catálogo
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-64 space-y-1">
+                    {!products?.length && (
+                      <p className="text-sm text-muted-foreground">Crea productos primero.</p>
+                    )}
+                    {products?.map((p) => (
+                      <button
+                        key={p.id}
+                        onClick={() => sendCatalog.mutate(p.id)}
+                        className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent"
+                      >
+                        <span className="truncate">{p.name}</span>
+                      </button>
+                    ))}
+                  </PopoverContent>
+                </Popover>
                 <Popover>
 
                   <PopoverTrigger asChild>
@@ -473,10 +569,28 @@ function InboxPage() {
                           isSelected && "ring-2 ring-destructive",
                         )}
                       >
-                        {m.media_url && (
-                          <p className="mb-1 text-xs opacity-80">[{m.media_type ?? "archivo"}]</p>
+                        {m.media_url && <ChatMedia path={m.media_url} type={m.media_type} />}
+                        {m.body && <p className="whitespace-pre-wrap break-words">{m.body}</p>}
+                        {m.transcript && m.transcript !== m.body && (
+                          <p className="mt-1 rounded-md bg-background/20 p-1.5 text-xs italic opacity-90">
+                            {m.transcript}
+                          </p>
                         )}
-                        <p className="whitespace-pre-wrap break-words">{m.body}</p>
+                        {m.media_url &&
+                          (m.media_type === "audio" || m.media_type === "image") &&
+                          !m.transcript && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                transcribe.mutate(m.id);
+                              }}
+                              disabled={transcribe.isPending}
+                              className="mt-1 flex items-center gap-1 text-[11px] underline opacity-80"
+                            >
+                              <Wand2 className="h-3 w-3" />
+                              {m.media_type === "audio" ? "Transcribir con IA" : "Interpretar con IA"}
+                            </button>
+                          )}
                         <p className="mt-1 text-[10px] opacity-70">
                           {m.sender === "ai" ? "IA · " : m.sender === "agent" ? "Tú · " : ""}
                           {formatTime(m.created_at)}
@@ -508,6 +622,30 @@ function InboxPage() {
 
 
             <footer className="flex items-end gap-2 border-t border-border p-3">
+              <input
+                ref={fileRef}
+                type="file"
+                className="hidden"
+                accept="image/*,video/*,audio/*,application/pdf"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) sendFile.mutate(file);
+                  e.target.value = "";
+                }}
+              />
+              <Button
+                variant="outline"
+                size="icon"
+                disabled={sendFile.isPending}
+                onClick={() => fileRef.current?.click()}
+                aria-label="Adjuntar archivo"
+              >
+                {sendFile.isPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Paperclip className="h-4 w-4" />
+                )}
+              </Button>
               <Textarea
                 rows={1}
                 value={draft}
