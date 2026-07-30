@@ -144,7 +144,7 @@ function PlansPage() {
                 {formatGs(p.price)}
               </p>
               <p className="text-sm text-muted-foreground">
-                {p.conversations} conversaciones · {p.duration_days} días
+                {p.conversations} conversaciones · sin vencimiento
               </p>
               <ul className="space-y-1.5 text-sm">
                 {(p.benefits ?? []).map((b) => (

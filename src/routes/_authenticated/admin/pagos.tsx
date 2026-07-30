@@ -101,7 +101,6 @@ function AdminPaymentsPage() {
   const clients = useMemo(() => {
     const all = purchases ?? [];
     const approved = all.filter((p) => p.status === "aprobado");
-    const now = Date.now();
     const map = new Map<
       string,
       {
@@ -155,13 +154,9 @@ function AdminPaymentsPage() {
 
     return [...map.values()]
       .map((c) => {
-        const expMs = c.expiresAt ? new Date(c.expiresAt).getTime() : null;
-        const daysLeft = expMs ? Math.ceil((expMs - now) / 86400000) : null;
         const usedPct = c.purchased ? Math.min(100, (c.consumed / c.purchased) * 100) : 0;
         return {
           ...c,
-          daysLeft,
-          expired: daysLeft !== null && daysLeft <= 0,
           usedPct,
         };
       })
@@ -290,7 +285,7 @@ function AdminPaymentsPage() {
                         <p className="break-all font-medium">{c.email}</p>
                         {c.name && <p className="text-xs text-muted-foreground">{c.name}</p>}
                       </div>
-                      <Badge variant={c.expired ? "destructive" : "default"}>{c.plan}</Badge>
+                      <Badge variant="default">{c.plan}</Badge>
                     </div>
                     <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
                       <span className="flex items-center gap-1">
@@ -298,13 +293,7 @@ function AdminPaymentsPage() {
                         {c.available} disponibles de {c.purchased}
                       </span>
                       <span>{c.consumed} usados</span>
-                      <span>
-                        {c.expiresAt
-                          ? c.expired
-                            ? `Vencido el ${formatDateTime(c.expiresAt)}`
-                            : `Vence en ${c.daysLeft} días (${formatDateTime(c.expiresAt)})`
-                          : "Sin vencimiento"}
-                      </span>
+                      <span>Sin vencimiento</span>
                     </div>
                     <Progress value={c.usedPct} />
                   </CardContent>
