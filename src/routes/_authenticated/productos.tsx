@@ -100,6 +100,50 @@ function ProductsPage() {
   const [uploadingFor, setUploadingFor] = useState<string | null>(null);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [editingMedia, setEditingMedia] = useState<ExistingMedia[]>([]);
+  const [phoneOpen, setPhoneOpen] = useState(false);
+  const [phoneValue, setPhoneValue] = useState("");
+
+  const { data: waConn } = useQuery({
+    queryKey: ["catalog-phone", workspaceId],
+    enabled: Boolean(workspaceId),
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("whatsapp_connections")
+        .select("id, display_phone")
+        .eq("workspace_id", workspaceId!)
+        .maybeSingle();
+      if (error) throw error;
+      return data;
+    },
+  });
+  const catalogPhone = (waConn?.display_phone ?? "").replace(/[^0-9]/g, "");
+
+  const savePhone = useMutation({
+    mutationFn: async (raw: string) => {
+      const digits = raw.replace(/[^0-9]/g, "");
+      if (digits.length < 8) throw new Error("Ingresá el número con código de país (ej. 595981123456)");
+      if (!workspaceId || !user) throw new Error("Sesión no válida");
+      if (waConn?.id) {
+        const { error } = await supabase
+          .from("whatsapp_connections")
+          .update({ display_phone: digits })
+          .eq("id", waConn.id);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from("whatsapp_connections")
+          .insert({ workspace_id: workspaceId, user_id: user.id, display_phone: digits });
+        if (error) throw error;
+      }
+      return digits;
+    },
+    onSuccess: () => {
+      toast.success("Número de WhatsApp guardado");
+      setPhoneOpen(false);
+      queryClient.invalidateQueries({ queryKey: ["catalog-phone", workspaceId] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
 
   const { data: products, isLoading } = useQuery({
     queryKey: ["products", workspaceId],
