@@ -121,10 +121,7 @@ function TrainingPage() {
         category: values.category,
         scope: values.scope,
         product_id: values.scope === "producto" && values.product_id ? values.product_id : null,
-        keywords: values.keywords
-          .split(",")
-          .map((k) => k.trim().toLowerCase())
-          .filter(Boolean),
+        keywords: [] as string[],
         priority: Number(values.priority) || 0,
         is_active: values.is_active,
       };
