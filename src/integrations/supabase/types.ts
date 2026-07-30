@@ -118,6 +118,27 @@ export type Database = {
           },
         ]
       }
+      app_messages: {
+        Row: {
+          body: string
+          key: string
+          title: string | null
+          updated_at: string
+        }
+        Insert: {
+          body?: string
+          key: string
+          title?: string | null
+          updated_at?: string
+        }
+        Update: {
+          body?: string
+          key?: string
+          title?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
       audit_logs: {
         Row: {
           action: string

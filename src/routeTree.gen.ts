@@ -30,6 +30,7 @@ import { Route as AuthenticatedAdminRegistrosRouteImport } from './routes/_authe
 import { Route as AuthenticatedAdminPlanesRouteImport } from './routes/_authenticated/admin/planes'
 import { Route as AuthenticatedAdminPagosRouteImport } from './routes/_authenticated/admin/pagos'
 import { Route as AuthenticatedAdminMetricasRouteImport } from './routes/_authenticated/admin/metricas'
+import { Route as AuthenticatedAdminMensajesRouteImport } from './routes/_authenticated/admin/mensajes'
 import { Route as ApiPublicWhatsappWebhookRouteImport } from './routes/api/public/whatsapp/webhook'
 
 const PendienteRoute = PendienteRouteImport.update({
@@ -143,6 +144,12 @@ const AuthenticatedAdminMetricasRoute =
     path: '/admin/metricas',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
+const AuthenticatedAdminMensajesRoute =
+  AuthenticatedAdminMensajesRouteImport.update({
+    id: '/admin/mensajes',
+    path: '/admin/mensajes',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const ApiPublicWhatsappWebhookRoute =
   ApiPublicWhatsappWebhookRouteImport.update({
     id: '/api/public/whatsapp/webhook',
@@ -166,6 +173,7 @@ export interface FileRoutesByFullPath {
   '/planes': typeof AuthenticatedPlanesRoute
   '/productos': typeof AuthenticatedProductosRoute
   '/reclamos': typeof AuthenticatedReclamosRoute
+  '/admin/mensajes': typeof AuthenticatedAdminMensajesRoute
   '/admin/metricas': typeof AuthenticatedAdminMetricasRoute
   '/admin/pagos': typeof AuthenticatedAdminPagosRoute
   '/admin/planes': typeof AuthenticatedAdminPlanesRoute
@@ -189,6 +197,7 @@ export interface FileRoutesByTo {
   '/planes': typeof AuthenticatedPlanesRoute
   '/productos': typeof AuthenticatedProductosRoute
   '/reclamos': typeof AuthenticatedReclamosRoute
+  '/admin/mensajes': typeof AuthenticatedAdminMensajesRoute
   '/admin/metricas': typeof AuthenticatedAdminMetricasRoute
   '/admin/pagos': typeof AuthenticatedAdminPagosRoute
   '/admin/planes': typeof AuthenticatedAdminPlanesRoute
@@ -214,6 +223,7 @@ export interface FileRoutesById {
   '/_authenticated/planes': typeof AuthenticatedPlanesRoute
   '/_authenticated/productos': typeof AuthenticatedProductosRoute
   '/_authenticated/reclamos': typeof AuthenticatedReclamosRoute
+  '/_authenticated/admin/mensajes': typeof AuthenticatedAdminMensajesRoute
   '/_authenticated/admin/metricas': typeof AuthenticatedAdminMetricasRoute
   '/_authenticated/admin/pagos': typeof AuthenticatedAdminPagosRoute
   '/_authenticated/admin/planes': typeof AuthenticatedAdminPlanesRoute
@@ -239,6 +249,7 @@ export interface FileRouteTypes {
     | '/planes'
     | '/productos'
     | '/reclamos'
+    | '/admin/mensajes'
     | '/admin/metricas'
     | '/admin/pagos'
     | '/admin/planes'
@@ -262,6 +273,7 @@ export interface FileRouteTypes {
     | '/planes'
     | '/productos'
     | '/reclamos'
+    | '/admin/mensajes'
     | '/admin/metricas'
     | '/admin/pagos'
     | '/admin/planes'
@@ -286,6 +298,7 @@ export interface FileRouteTypes {
     | '/_authenticated/planes'
     | '/_authenticated/productos'
     | '/_authenticated/reclamos'
+    | '/_authenticated/admin/mensajes'
     | '/_authenticated/admin/metricas'
     | '/_authenticated/admin/pagos'
     | '/_authenticated/admin/planes'
@@ -451,6 +464,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedAdminMetricasRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/admin/mensajes': {
+      id: '/_authenticated/admin/mensajes'
+      path: '/admin/mensajes'
+      fullPath: '/admin/mensajes'
+      preLoaderRoute: typeof AuthenticatedAdminMensajesRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/api/public/whatsapp/webhook': {
       id: '/api/public/whatsapp/webhook'
       path: '/api/public/whatsapp/webhook'
@@ -474,6 +494,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedPlanesRoute: typeof AuthenticatedPlanesRoute
   AuthenticatedProductosRoute: typeof AuthenticatedProductosRoute
   AuthenticatedReclamosRoute: typeof AuthenticatedReclamosRoute
+  AuthenticatedAdminMensajesRoute: typeof AuthenticatedAdminMensajesRoute
   AuthenticatedAdminMetricasRoute: typeof AuthenticatedAdminMetricasRoute
   AuthenticatedAdminPagosRoute: typeof AuthenticatedAdminPagosRoute
   AuthenticatedAdminPlanesRoute: typeof AuthenticatedAdminPlanesRoute
@@ -494,6 +515,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedPlanesRoute: AuthenticatedPlanesRoute,
   AuthenticatedProductosRoute: AuthenticatedProductosRoute,
   AuthenticatedReclamosRoute: AuthenticatedReclamosRoute,
+  AuthenticatedAdminMensajesRoute: AuthenticatedAdminMensajesRoute,
   AuthenticatedAdminMetricasRoute: AuthenticatedAdminMetricasRoute,
   AuthenticatedAdminPagosRoute: AuthenticatedAdminPagosRoute,
   AuthenticatedAdminPlanesRoute: AuthenticatedAdminPlanesRoute,

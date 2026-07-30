@@ -1,9 +1,11 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Clock, ShieldAlert, Bot } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAuth } from "@/lib/auth";
+import { fetchAppMessages, resolveMessage } from "@/lib/app-messages";
 
 export const Route = createFileRoute("/pendiente")({
   ssr: false,
@@ -33,6 +35,12 @@ function PendingPage() {
   const rejected = profile?.status === "rejected";
   const blocked = profile?.status === "blocked" || profile?.status === "suspended";
 
+  const { data: messages } = useQuery({
+    queryKey: ["app-messages"],
+    queryFn: fetchAppMessages,
+  });
+  const content = resolveMessage(messages, rejected ? "rejected" : blocked ? "blocked" : "pending");
+
   return (
     <div className="gradient-hero flex min-h-screen items-center justify-center px-4">
       <Card className="w-full max-w-lg surface-glow">
@@ -44,20 +52,8 @@ function PendingPage() {
               <Clock className="h-6 w-6" />
             )}
           </span>
-          <CardTitle>
-            {rejected
-              ? "Registro rechazado"
-              : blocked
-                ? "Cuenta bloqueada"
-                : "Pendiente de aprobación"}
-          </CardTitle>
-          <CardDescription>
-            {rejected
-              ? "El administrador rechazó tu solicitud de acceso."
-              : blocked
-                ? "Tu acceso fue bloqueado temporalmente."
-                : "Tu cuenta fue creada correctamente. Un administrador debe aprobarla antes de que puedas ingresar al panel."}
-          </CardDescription>
+          <CardTitle>{content.title}</CardTitle>
+          <CardDescription className="whitespace-pre-line">{content.body}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4 text-center">
           {profile?.status_message && (

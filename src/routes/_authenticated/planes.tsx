@@ -21,6 +21,8 @@ import {
 } from "@/components/ui/dialog";
 import { useAuth } from "@/lib/auth";
 import { MAX_FILE_BYTES, uploadWorkspaceFile } from "@/lib/storage";
+import { fetchAppMessages, resolveMessage } from "@/lib/app-messages";
+import { AlertTriangle } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/planes")({
   head: () => ({
@@ -113,12 +115,31 @@ function PlansPage() {
     onSettled: () => setUploading(false),
   });
 
+  const { data: appMessages } = useQuery({
+    queryKey: ["app-messages"],
+    queryFn: fetchAppMessages,
+  });
+  const noBalance = (balance?.available ?? 0) <= 0;
+  const noBalanceMsg = resolveMessage(appMessages, "no_balance");
+
   return (
     <PageShell>
       <PageHeader
         title="Planes y recargas"
         description="Tu saldo se descuenta por conversación nueva atendida por la IA."
       />
+
+      {noBalance && (
+        <div className="flex items-start gap-3 rounded-xl border border-destructive/40 bg-destructive/10 p-4">
+          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-destructive" />
+          <div>
+            <p className="font-medium">{noBalanceMsg.title}</p>
+            <p className="whitespace-pre-line text-sm text-muted-foreground">{noBalanceMsg.body}</p>
+          </div>
+        </div>
+      )}
+
+
 
       <div className="grid gap-4 sm:grid-cols-3">
         {[
