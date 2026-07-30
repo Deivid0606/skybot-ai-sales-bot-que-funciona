@@ -101,7 +101,6 @@ function AdminPaymentsPage() {
   const clients = useMemo(() => {
     const all = purchases ?? [];
     const approved = all.filter((p) => p.status === "aprobado");
-    const now = Date.now();
     const map = new Map<
       string,
       {
