@@ -124,7 +124,11 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
   const workspaceId = conn.workspace_id;
   const ownerId = conn.user_id;
   const phone = message.from;
-  const body = textOf(message);
+  const media = mediaOf(message);
+  let body = media?.part.caption?.trim() || textOf(message);
+  let mediaPath: string | null = null;
+  let transcript: string | null = null;
+
 
   const { data: existingMessage } = await supabaseAdmin
     .from("messages")
