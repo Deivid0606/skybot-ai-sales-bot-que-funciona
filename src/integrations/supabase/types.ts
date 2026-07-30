@@ -1476,6 +1476,7 @@ export type Database = {
         Row: {
           apps_script_url: string | null
           business_name: string | null
+          catalog_enabled: boolean
           created_at: string
           currency: string
           google_sheets_url: string | null
@@ -1490,6 +1491,7 @@ export type Database = {
         Insert: {
           apps_script_url?: string | null
           business_name?: string | null
+          catalog_enabled?: boolean
           created_at?: string
           currency?: string
           google_sheets_url?: string | null
@@ -1504,6 +1506,7 @@ export type Database = {
         Update: {
           apps_script_url?: string | null
           business_name?: string | null
+          catalog_enabled?: boolean
           created_at?: string
           currency?: string
           google_sheets_url?: string | null

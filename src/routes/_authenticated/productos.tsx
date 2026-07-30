@@ -2,7 +2,7 @@ import { useState } from "react";
 import { formatGs } from "@/lib/format";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Pencil, Plus, Trash2, Upload, X } from "lucide-react";
+import { ExternalLink, Link as LinkIcon, Loader2, Pencil, Plus, Trash2, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { PageHeader, PageShell, EmptyState } from "@/components/page-shell";
@@ -296,17 +296,38 @@ function ProductsPage() {
         title="Productos"
         description="Tu catálogo alimenta directamente las respuestas de la IA."
         actions={
-          <Button
-            onClick={() => {
-              setForm(emptyForm);
-              setPendingFiles([]);
-              setEditingMedia([]);
-              setOpen(true);
-            }}
-          >
-            <Plus className="mr-1 h-4 w-4" /> Nuevo producto
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              disabled={!workspaceId}
+              onClick={() => {
+                if (!workspaceId) return;
+                navigator.clipboard.writeText(`${window.location.origin}/c/${workspaceId}`);
+                toast.success("Link del catálogo copiado");
+              }}
+            >
+              <LinkIcon className="mr-1 h-4 w-4" /> Copiar link del catálogo
+            </Button>
+            <Button
+              variant="outline"
+              disabled={!workspaceId}
+              onClick={() => window.open(`/c/${workspaceId}`, "_blank", "noopener")}
+            >
+              <ExternalLink className="mr-1 h-4 w-4" /> Ver catálogo
+            </Button>
+            <Button
+              onClick={() => {
+                setForm(emptyForm);
+                setPendingFiles([]);
+                setEditingMedia([]);
+                setOpen(true);
+              }}
+            >
+              <Plus className="mr-1 h-4 w-4" /> Nuevo producto
+            </Button>
+          </div>
         }
+
       />
 
       {isLoading ? (
