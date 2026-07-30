@@ -26,6 +26,7 @@ import { Route as AuthenticatedDashboardRouteImport } from './routes/_authentica
 import { Route as AuthenticatedContactosRouteImport } from './routes/_authenticated/contactos'
 import { Route as AuthenticatedConfiguracionesRouteImport } from './routes/_authenticated/configuraciones'
 import { Route as AuthenticatedChatIaRouteImport } from './routes/_authenticated/chat-ia'
+import { Route as CWorkspaceIdIndexRouteImport } from './routes/c.$workspaceId.index'
 import { Route as AuthenticatedAdminUsuariosRouteImport } from './routes/_authenticated/admin/usuarios'
 import { Route as AuthenticatedAdminRegistrosRouteImport } from './routes/_authenticated/admin/registros'
 import { Route as AuthenticatedAdminPlanesRouteImport } from './routes/_authenticated/admin/planes'
@@ -121,6 +122,11 @@ const AuthenticatedChatIaRoute = AuthenticatedChatIaRouteImport.update({
   path: '/chat-ia',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const CWorkspaceIdIndexRoute = CWorkspaceIdIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => CWorkspaceIdRoute,
+} as any)
 const AuthenticatedAdminUsuariosRoute =
   AuthenticatedAdminUsuariosRouteImport.update({
     id: '/admin/usuarios',
@@ -179,13 +185,14 @@ export interface FileRoutesByFullPath {
   '/planes': typeof AuthenticatedPlanesRoute
   '/productos': typeof AuthenticatedProductosRoute
   '/reclamos': typeof AuthenticatedReclamosRoute
-  '/c/$workspaceId': typeof CWorkspaceIdRoute
+  '/c/$workspaceId': typeof CWorkspaceIdRouteWithChildren
   '/admin/mensajes': typeof AuthenticatedAdminMensajesRoute
   '/admin/metricas': typeof AuthenticatedAdminMetricasRoute
   '/admin/pagos': typeof AuthenticatedAdminPagosRoute
   '/admin/planes': typeof AuthenticatedAdminPlanesRoute
   '/admin/registros': typeof AuthenticatedAdminRegistrosRoute
   '/admin/usuarios': typeof AuthenticatedAdminUsuariosRoute
+  '/c/$workspaceId/': typeof CWorkspaceIdIndexRoute
   '/api/public/whatsapp/webhook': typeof ApiPublicWhatsappWebhookRoute
 }
 export interface FileRoutesByTo {
@@ -204,13 +211,13 @@ export interface FileRoutesByTo {
   '/planes': typeof AuthenticatedPlanesRoute
   '/productos': typeof AuthenticatedProductosRoute
   '/reclamos': typeof AuthenticatedReclamosRoute
-  '/c/$workspaceId': typeof CWorkspaceIdRoute
   '/admin/mensajes': typeof AuthenticatedAdminMensajesRoute
   '/admin/metricas': typeof AuthenticatedAdminMetricasRoute
   '/admin/pagos': typeof AuthenticatedAdminPagosRoute
   '/admin/planes': typeof AuthenticatedAdminPlanesRoute
   '/admin/registros': typeof AuthenticatedAdminRegistrosRoute
   '/admin/usuarios': typeof AuthenticatedAdminUsuariosRoute
+  '/c/$workspaceId': typeof CWorkspaceIdIndexRoute
   '/api/public/whatsapp/webhook': typeof ApiPublicWhatsappWebhookRoute
 }
 export interface FileRoutesById {
@@ -231,13 +238,14 @@ export interface FileRoutesById {
   '/_authenticated/planes': typeof AuthenticatedPlanesRoute
   '/_authenticated/productos': typeof AuthenticatedProductosRoute
   '/_authenticated/reclamos': typeof AuthenticatedReclamosRoute
-  '/c/$workspaceId': typeof CWorkspaceIdRoute
+  '/c/$workspaceId': typeof CWorkspaceIdRouteWithChildren
   '/_authenticated/admin/mensajes': typeof AuthenticatedAdminMensajesRoute
   '/_authenticated/admin/metricas': typeof AuthenticatedAdminMetricasRoute
   '/_authenticated/admin/pagos': typeof AuthenticatedAdminPagosRoute
   '/_authenticated/admin/planes': typeof AuthenticatedAdminPlanesRoute
   '/_authenticated/admin/registros': typeof AuthenticatedAdminRegistrosRoute
   '/_authenticated/admin/usuarios': typeof AuthenticatedAdminUsuariosRoute
+  '/c/$workspaceId/': typeof CWorkspaceIdIndexRoute
   '/api/public/whatsapp/webhook': typeof ApiPublicWhatsappWebhookRoute
 }
 export interface FileRouteTypes {
@@ -265,6 +273,7 @@ export interface FileRouteTypes {
     | '/admin/planes'
     | '/admin/registros'
     | '/admin/usuarios'
+    | '/c/$workspaceId/'
     | '/api/public/whatsapp/webhook'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -283,13 +292,13 @@ export interface FileRouteTypes {
     | '/planes'
     | '/productos'
     | '/reclamos'
-    | '/c/$workspaceId'
     | '/admin/mensajes'
     | '/admin/metricas'
     | '/admin/pagos'
     | '/admin/planes'
     | '/admin/registros'
     | '/admin/usuarios'
+    | '/c/$workspaceId'
     | '/api/public/whatsapp/webhook'
   id:
     | '__root__'
@@ -316,6 +325,7 @@ export interface FileRouteTypes {
     | '/_authenticated/admin/planes'
     | '/_authenticated/admin/registros'
     | '/_authenticated/admin/usuarios'
+    | '/c/$workspaceId/'
     | '/api/public/whatsapp/webhook'
   fileRoutesById: FileRoutesById
 }
@@ -324,7 +334,7 @@ export interface RootRouteChildren {
   AuthenticatedRouteRoute: typeof AuthenticatedRouteRouteWithChildren
   AuthRoute: typeof AuthRoute
   PendienteRoute: typeof PendienteRoute
-  CWorkspaceIdRoute: typeof CWorkspaceIdRoute
+  CWorkspaceIdRoute: typeof CWorkspaceIdRouteWithChildren
   ApiPublicWhatsappWebhookRoute: typeof ApiPublicWhatsappWebhookRoute
 }
 
@@ -449,6 +459,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedChatIaRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/c/$workspaceId/': {
+      id: '/c/$workspaceId/'
+      path: '/'
+      fullPath: '/c/$workspaceId/'
+      preLoaderRoute: typeof CWorkspaceIdIndexRouteImport
+      parentRoute: typeof CWorkspaceIdRoute
+    }
     '/_authenticated/admin/usuarios': {
       id: '/_authenticated/admin/usuarios'
       path: '/admin/usuarios'
@@ -546,12 +563,24 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
 const AuthenticatedRouteRouteWithChildren =
   AuthenticatedRouteRoute._addFileChildren(AuthenticatedRouteRouteChildren)
 
+interface CWorkspaceIdRouteChildren {
+  CWorkspaceIdIndexRoute: typeof CWorkspaceIdIndexRoute
+}
+
+const CWorkspaceIdRouteChildren: CWorkspaceIdRouteChildren = {
+  CWorkspaceIdIndexRoute: CWorkspaceIdIndexRoute,
+}
+
+const CWorkspaceIdRouteWithChildren = CWorkspaceIdRoute._addFileChildren(
+  CWorkspaceIdRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthenticatedRouteRoute: AuthenticatedRouteRouteWithChildren,
   AuthRoute: AuthRoute,
   PendienteRoute: PendienteRoute,
-  CWorkspaceIdRoute: CWorkspaceIdRoute,
+  CWorkspaceIdRoute: CWorkspaceIdRouteWithChildren,
   ApiPublicWhatsappWebhookRoute: ApiPublicWhatsappWebhookRoute,
 }
 export const routeTree = rootRouteImport
