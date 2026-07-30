@@ -540,7 +540,7 @@ async function sendCatalogByKeyword(args: {
     .select("id")
     .eq("conversation_id", args.conversationId)
     .eq("direction", "outbound")
-    .ilike("body", `%[catalogo:${productId}]%`)
+    .eq("catalog_product_id", productId)
     .limit(1)
     .maybeSingle();
   if (already) return productId;
@@ -596,7 +596,8 @@ async function sendCatalogByKeyword(args: {
       conversation_id: args.conversationId,
       direction: "outbound",
       sender: "ai",
-      body: `${copy}\n[catalogo:${productId}]`,
+      body: copy,
+      catalog_product_id: productId,
       status: "sent",
       wamid,
     });
