@@ -10,6 +10,9 @@ const textResponse = (
     headers: {
       "Content-Type": "text/plain; charset=utf-8",
       "Cache-Control": "no-store, no-cache, must-revalidate",
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
       ...extraHeaders,
     },
   });
@@ -17,6 +20,17 @@ const textResponse = (
 export const Route = createFileRoute("/api/public/whatsapp/webhook")({
   server: {
     handlers: {
+      OPTIONS: async () =>
+        new Response(null, {
+          status: 204,
+          headers: {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type",
+            "Access-Control-Max-Age": "86400",
+          },
+        }),
+
       /**
        * Meta utiliza GET para verificar el webhook.
        *

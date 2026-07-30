@@ -109,13 +109,53 @@ function SettingsPage() {
     }
   }, [data]);
 
-  const webhookUrl =
-    typeof window !== "undefined" ? `${window.location.origin}/api/public/whatsapp/webhook` : "";
+  // Meta solo acepta una URL pública y estable. La vista previa del editor
+  // (id-preview--<id>.lovable.app) no sirve, por eso la convertimos al dominio estable.
+  function buildWebhookBase() {
+    if (typeof window === "undefined") return "";
+    const host = window.location.hostname;
+    const preview = host.match(/^id-preview--([0-9a-f-]+)\.lovable\.app$/i);
+    if (preview) return `https://project--${preview[1]}-dev.lovable.app`;
+    if (host === "localhost" || host === "127.0.0.1") return window.location.origin;
+    return window.location.origin;
+  }
+
+  const webhookUrl = `${buildWebhookBase()}/api/public/whatsapp/webhook`;
+  const [testing, setTesting] = useState(false);
+
+  async function testWebhook() {
+    const token = wa.verify_token.trim();
+    if (!token) {
+      toast.error("Primero generá y guardá el token de verificación");
+      return;
+    }
+    setTesting(true);
+    try {
+      const challenge = `botsky${Date.now()}`;
+      const url = `${webhookUrl}?hub.mode=subscribe&hub.verify_token=${encodeURIComponent(
+        token,
+      )}&hub.challenge=${challenge}`;
+      const res = await fetch(url);
+      const body = (await res.text()).trim();
+      if (res.ok && body === challenge) {
+        toast.success("Webhook verificado. Ya podés pegar estos datos en Meta.");
+      } else if (res.status === 403) {
+        toast.error("El token no coincide con el guardado. Guardá la conexión y probá de nuevo.");
+      } else {
+        toast.error(`La URL respondió ${res.status}. Publicá la app e intentá otra vez.`);
+      }
+    } catch {
+      toast.error("No se pudo alcanzar la URL del webhook desde este navegador.");
+    } finally {
+      setTesting(false);
+    }
+  }
 
   function generateVerifyToken() {
     const rand = Math.random().toString(36).slice(2, 8).toUpperCase();
     return `botsky_${rand}_${new Date().getFullYear()}`;
   }
+
 
   useEffect(() => {
     if (!data) return;
@@ -239,7 +279,21 @@ function SettingsPage() {
                     <Copy className="h-4 w-4" />
                   </Button>
                 </div>
+                <p className="text-xs text-muted-foreground">
+                  Pegá esta URL exacta (sin espacios ni barra final) en “URL de devolución de
+                  llamada”. Guardá primero la conexión: Meta valida el token contra lo guardado.
+                </p>
+                <Button variant="secondary" size="sm" onClick={testWebhook} disabled={testing}>
+                  {testing ? (
+                    <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                  ) : (
+                    <CheckCircle2 className="mr-1 h-4 w-4" />
+                  )}
+                  Probar verificación
+                </Button>
               </div>
+
+
 
 
               <div className="grid gap-4 sm:grid-cols-2">
