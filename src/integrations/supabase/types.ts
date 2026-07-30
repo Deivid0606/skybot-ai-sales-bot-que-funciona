@@ -523,6 +523,33 @@ export type Database = {
           },
         ]
       }
+      followup_sends: {
+        Row: {
+          conversation_id: string
+          id: string
+          product_id: string | null
+          sent_at: string
+          step: number
+          workspace_id: string
+        }
+        Insert: {
+          conversation_id: string
+          id?: string
+          product_id?: string | null
+          sent_at?: string
+          step?: number
+          workspace_id: string
+        }
+        Update: {
+          conversation_id?: string
+          id?: string
+          product_id?: string | null
+          sent_at?: string
+          step?: number
+          workspace_id?: string
+        }
+        Relationships: []
+      }
       integration_logs: {
         Row: {
           created_at: string
