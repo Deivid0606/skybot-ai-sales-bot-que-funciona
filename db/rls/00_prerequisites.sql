@@ -23,25 +23,39 @@ AS $function$
   SELECT workspace_id FROM public.profiles WHERE id = auth.uid();
 $function$;
 
+-- Self-scoped: an authenticated caller can only evaluate its OWN roles.
 CREATE OR REPLACE FUNCTION public.has_role(_user_id uuid, _role app_role)
  RETURNS boolean
- LANGUAGE sql
+ LANGUAGE plpgsql
  STABLE SECURITY DEFINER
  SET search_path TO 'public'
 AS $function$
-  SELECT EXISTS (SELECT 1 FROM public.user_roles WHERE user_id = _user_id AND role = _role);
+BEGIN
+  IF auth.uid() IS NULL OR _user_id IS DISTINCT FROM auth.uid() THEN
+    IF current_user <> 'service_role' THEN
+      RETURN false;
+    END IF;
+  END IF;
+  RETURN EXISTS (SELECT 1 FROM public.user_roles WHERE user_id = _user_id AND role = _role);
+END;
 $function$;
 
+-- Self-scoped: always evaluated against auth.uid(), never another user.
 CREATE OR REPLACE FUNCTION public.is_workspace_member(_workspace_id uuid)
  RETURNS boolean
- LANGUAGE sql
+ LANGUAGE plpgsql
  STABLE SECURITY DEFINER
  SET search_path TO 'public'
 AS $function$
-  SELECT EXISTS (
+BEGIN
+  IF auth.uid() IS NULL AND current_user <> 'service_role' THEN
+    RETURN false;
+  END IF;
+  RETURN EXISTS (
     SELECT 1 FROM public.workspace_members
     WHERE workspace_id = _workspace_id AND user_id = auth.uid()
   );
+END;
 $function$;
 
 -- Permisos de ejecucion (minimo necesario)
