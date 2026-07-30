@@ -53,10 +53,17 @@ function buildSystemPrompt(ctx: AiContext) {
     )
     .join("\n");
 
-  const knowledge = ctx.training
-    .sort((a, b) => b.priority - a.priority)
+  const sorted = [...ctx.training].sort((a, b) => b.priority - a.priority);
+  const isRule = (c: string) => c === "correccion" || c === "reglas";
+  const corrections = sorted
+    .filter((t) => isRule(t.category))
+    .map((t) => `- ${t.title}: ${t.content}`)
+    .join("\n");
+  const knowledge = sorted
+    .filter((t) => !isRule(t.category))
     .map((t) => `- [${t.category}] ${t.title}: ${t.content}`)
     .join("\n");
+
 
   return `Eres un vendedor humano y cercano de ${ctx.businessName || "la tienda"}. Vendes por WhatsApp en español latino.
 
@@ -73,7 +80,11 @@ REGLAS:
 - Cuando tengas TODOS esos datos, marca sale_closed=true y completa el objeto order.
 ${ctx.activeProductId ? `- El producto de interés actual es id:${ctx.activeProductId}.` : ""}
 
+CORRECCIONES Y REGLAS OBLIGATORIAS DEL VENDEDOR (máxima prioridad, mandan sobre todo lo demás):
+${corrections || "Sin correcciones específicas."}
+
 PERSONALIDAD Y POLÍTICAS DEL NEGOCIO:
+
 ${ctx.systemInstruction || "Amable, directo y confiable."}
 
 CATÁLOGO:
