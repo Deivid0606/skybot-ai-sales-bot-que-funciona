@@ -273,6 +273,37 @@ function TrainingPage() {
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-1.5">
+              <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                Correcciones rápidas
+              </Label>
+              <div className="flex flex-wrap gap-2">
+                {quickRules.map((r) => (
+                  <Button
+                    key={r.label}
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      setForm((f) => ({
+                        ...f,
+                        title: r.title,
+                        content: r.content,
+                        category: "correccion",
+                        priority: "10",
+                      }))
+                    }
+                  >
+                    {r.label}
+                  </Button>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Las entradas con categoría "Corrección / Regla de la IA" se envían como reglas
+                obligatorias, por encima del resto del entrenamiento.
+              </p>
+            </div>
+
+            <div className="space-y-1.5">
               <Label>Título</Label>
               <Input
                 value={form.title}
