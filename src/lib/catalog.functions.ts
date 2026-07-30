@@ -1,6 +1,4 @@
 import { createServerFn } from "@tanstack/react-start";
-import { createClient } from "@supabase/supabase-js";
-import type { Database } from "@/integrations/supabase/types";
 
 export type CatalogMedia = { id: string; media_type: string; url: string };
 export type CatalogProduct = {
@@ -21,21 +19,6 @@ export type CatalogData = {
   products: CatalogProduct[];
 };
 
-function publicClient() {
-  const key = process.env.SUPABASE_PUBLISHABLE_KEY!;
-  return createClient<Database>(process.env.SUPABASE_URL!, key, {
-    auth: { persistSession: false, autoRefreshToken: false },
-    global: {
-      fetch: (input, init) => {
-        const h = new Headers(init?.headers);
-        if (key.startsWith("sb_") && h.get("Authorization") === `Bearer ${key}`) h.delete("Authorization");
-        h.set("apikey", key);
-        return fetch(input, { ...init, headers: h });
-      },
-    },
-  });
-}
-
 export const getPublicCatalog = createServerFn({ method: "GET" })
   .inputValidator((data: { workspaceId: string; productId?: string }) => data)
   .handler(async ({ data }): Promise<CatalogData> => {
@@ -44,7 +27,8 @@ export const getPublicCatalog = createServerFn({ method: "GET" })
       return { workspaceName: "", phone: null, enabled: false, products: [] };
     }
 
-    const sb = publicClient();
+    const { publicSupabase } = await import("@/lib/catalog.server");
+    const sb = publicSupabase();
     const { data: ws } = await sb
       .from("workspaces")
       .select("id, name")
