@@ -298,6 +298,19 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
 
   if (!aiSettings?.ai_enabled || conversation.ai_paused || conversation.is_closed) return;
 
+  // Palabra clave → envía la plantilla del producto (multimedia + copy)
+  const keywordProductId = await sendCatalogByKeyword({
+    workspaceId,
+    ownerId,
+    conversationId: conversation.id,
+    conn,
+    phone,
+    text: body,
+  });
+  if (keywordProductId) conversation.product_id = keywordProductId;
+
+
+
   const { data: history } = await supabaseAdmin
     .from("messages")
     .select("sender, body")
