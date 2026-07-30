@@ -22,11 +22,11 @@ export const Route = createFileRoute("/")({
         content:
           "BOT SKY conecta tu WhatsApp Business, entrena tu propia IA de ventas, atiende conversaciones en tiempo real y crea pedidos automáticamente.",
       },
-      { property: "og:title", content: "BOT SKY — Ventas automáticas por WhatsApp con IA" },
+      { property: "og:title", content: "BOT SKY — Vende por WhatsApp con inteligencia artificial" },
       {
         property: "og:description",
         content:
-          "Automatiza tus ventas por WhatsApp: catálogo, entrenamiento de IA, inbox en tiempo real, pedidos y métricas por anuncio.",
+          "BOT SKY conecta tu WhatsApp Business, entrena tu propia IA de ventas, atiende conversaciones en tiempo real y crea pedidos automáticamente.",
       },
     ],
   }),

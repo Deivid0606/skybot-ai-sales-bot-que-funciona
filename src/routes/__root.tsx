@@ -79,15 +79,21 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "BOT SKY — Ventas automáticas por WhatsApp con IA" },
+      { title: "BOT SKY — Vende por WhatsApp con inteligencia artificial" },
       {
         name: "description",
         content:
-          "Plataforma SaaS para automatizar ventas por WhatsApp con inteligencia artificial, catálogo, pedidos y métricas.",
+          "BOT SKY conecta tu WhatsApp Business, entrena tu propia IA de ventas, atiende conversaciones en tiempo real y crea pedidos automáticamente.",
       },
       { name: "author", content: "BOT SKY" },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
+      { property: "og:title", content: "BOT SKY — Vende por WhatsApp con inteligencia artificial" },
+      { name: "twitter:title", content: "BOT SKY — Vende por WhatsApp con inteligencia artificial" },
+      { property: "og:description", content: "BOT SKY conecta tu WhatsApp Business, entrena tu propia IA de ventas, atiende conversaciones en tiempo real y crea pedidos automáticamente." },
+      { name: "twitter:description", content: "BOT SKY conecta tu WhatsApp Business, entrena tu propia IA de ventas, atiende conversaciones en tiempo real y crea pedidos automáticamente." },
+      { property: "og:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/68038e60-f348-4a31-8c7b-857616687eee/id-preview-98694802--98ba0d38-38e8-4996-b806-e9d9b5bda379.lovable.app-1785438342297.png" },
+      { name: "twitter:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/68038e60-f348-4a31-8c7b-857616687eee/id-preview-98694802--98ba0d38-38e8-4996-b806-e9d9b5bda379.lovable.app-1785438342297.png" },
     ],
     links: [
       { rel: "stylesheet", href: appCss },
