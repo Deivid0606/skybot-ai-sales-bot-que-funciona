@@ -121,10 +121,7 @@ function TrainingPage() {
         category: values.category,
         scope: values.scope,
         product_id: values.scope === "producto" && values.product_id ? values.product_id : null,
-        keywords: values.keywords
-          .split(",")
-          .map((k) => k.trim().toLowerCase())
-          .filter(Boolean),
+        keywords: [] as string[],
         priority: Number(values.priority) || 0,
         is_active: values.is_active,
       };
@@ -212,7 +209,7 @@ function TrainingPage() {
                         category: e.category,
                         scope: e.scope,
                         product_id: e.product_id ?? "",
-                        keywords: (e.keywords ?? []).join(", "),
+                        keywords: "",
                         priority: String(e.priority),
                         is_active: e.is_active,
                       });
@@ -314,23 +311,16 @@ function TrainingPage() {
                 </Select>
               </div>
             )}
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-1.5">
-                <Label>Palabras clave</Label>
-                <Input
-                  value={form.keywords}
-                  onChange={(e) => setForm({ ...form, keywords: e.target.value })}
-                  placeholder="envio, demora, garantia"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Prioridad</Label>
-                <Input
-                  type="number"
-                  value={form.priority}
-                  onChange={(e) => setForm({ ...form, priority: e.target.value })}
-                />
-              </div>
+            <div className="space-y-1.5">
+              <Label>Prioridad</Label>
+              <Input
+                type="number"
+                value={form.priority}
+                onChange={(e) => setForm({ ...form, priority: e.target.value })}
+              />
+              <p className="text-xs text-muted-foreground">
+                La IA usa todo este contenido para responder; no hacen falta palabras clave.
+              </p>
             </div>
             <div className="flex items-center gap-2">
               <Switch
