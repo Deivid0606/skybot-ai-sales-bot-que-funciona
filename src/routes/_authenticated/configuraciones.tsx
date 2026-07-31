@@ -122,6 +122,8 @@ function SettingsPage() {
 
   const webhookUrl = `${buildWebhookBase()}/api/public/whatsapp/webhook`;
   const [testing, setTesting] = useState(false);
+  const [checks, setChecks] = useState<WebhookCheck[] | null>(null);
+  const runDiagnostics = useServerFn(runWebhookDiagnostics);
 
   async function testWebhook() {
     const token = wa.verify_token.trim();
@@ -129,23 +131,24 @@ function SettingsPage() {
       toast.error("Primero generá y guardá el token de verificación");
       return;
     }
+    if (!workspaceId) {
+      toast.error("Sesión no válida");
+      return;
+    }
     setTesting(true);
+    setChecks(null);
     try {
-      const challenge = `botsky${Date.now()}`;
-      const url = `${webhookUrl}?hub.mode=subscribe&hub.verify_token=${encodeURIComponent(
-        token,
-      )}&hub.challenge=${challenge}`;
-      const res = await fetch(url);
-      const body = (await res.text()).trim();
-      if (res.ok && body === challenge) {
+      const res = await runDiagnostics({
+        data: { url: webhookUrl, token, workspaceId },
+      });
+      setChecks(res.checks);
+      if (res.verified) {
         toast.success("Webhook verificado. Ya podés pegar estos datos en Meta.");
-      } else if (res.status === 403) {
-        toast.error("El token no coincide con el guardado. Guardá la conexión y probá de nuevo.");
       } else {
-        toast.error(`La URL respondió ${res.status}. Publicá la app e intentá otra vez.`);
+        toast.error("La verificación falló. Mirá el detalle debajo.");
       }
-    } catch {
-      toast.error("No se pudo alcanzar la URL del webhook desde este navegador.");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "No se pudo ejecutar el diagnóstico");
     } finally {
       setTesting(false);
     }
