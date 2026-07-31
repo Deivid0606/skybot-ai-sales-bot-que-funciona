@@ -523,7 +523,21 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       })
       .eq("id", conversation.id);
 
-    if (result.sale_closed && result.order && !conversation.sale_closed) {
+    const orderReady = isOrderReady(
+      result.order,
+      detectedProduct,
+    );
+
+    /*
+     * No dependemos solamente de sale_closed.
+     * Si Gemini entregó todos los datos obligatorios, el backend crea el
+     * pedido aunque el modelo haya olvidado marcar sale_closed=true.
+     */
+    if (
+      result.order &&
+      orderReady &&
+      !conversation.sale_closed
+    ) {
       const completedOrder = {
         ...result.order,
         phone,
@@ -539,6 +553,24 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         order: completedOrder,
         products: ctx.products,
       });
+    } else if (result.sale_closed && !result.order) {
+      await logOrderIssue({
+        workspaceId,
+        ownerId,
+        message:
+          `La IA marcó sale_closed=true pero devolvió order=null. ` +
+          `Conversación: ${conversation.id}. Producto: ${detectedProduct ?? "sin producto"}.`,
+      });
+    } else if (result.sale_closed && result.order && !orderReady) {
+      await logOrderIssue({
+        workspaceId,
+        ownerId,
+        message:
+          `La IA marcó la venta como cerrada, pero faltan datos obligatorios. ` +
+          `Conversación: ${conversation.id}. ` +
+          `Producto: ${detectedProduct ?? "sin producto"}. ` +
+          `Pedido recibido: ${JSON.stringify(result.order)}`,
+      });
     }
   } catch (e) {
     const messageText = e instanceof Error ? e.message : "error";
@@ -552,6 +584,56 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
   }
 }
 
+function cleanOrderText(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function isOrderReady(
+  order: Awaited<ReturnType<typeof generateAiReply>>["order"],
+  productId: string | null,
+): order is NonNullable<Awaited<ReturnType<typeof generateAiReply>>["order"]> {
+  if (!order || !productId) return false;
+
+  const customerName = cleanOrderText(order.customer_name);
+  const city = cleanOrderText(order.city);
+  const street = cleanOrderText(order.street);
+  const paymentMethod = cleanOrderText(order.payment_method);
+  const quantity = Number(order.quantity);
+
+  return Boolean(
+    customerName &&
+      city &&
+      street &&
+      paymentMethod &&
+      Number.isFinite(quantity) &&
+      quantity > 0,
+  );
+}
+
+async function logOrderIssue(args: {
+  workspaceId: string;
+  ownerId: string;
+  message: string;
+}) {
+  console.error("[Pedidos]", args.message);
+
+  const { error } = await supabaseAdmin
+    .from("integration_logs")
+    .insert({
+      workspace_id: args.workspaceId,
+      user_id: args.ownerId,
+      integration: "orders",
+      level: "error",
+      message: args.message.slice(0, 2000),
+    });
+
+  if (error) {
+    console.error("[Pedidos] No se pudo guardar integration_logs", {
+      error: error.message,
+    });
+  }
+}
+
 async function createOrderFromAi(args: {
   workspaceId: string;
   ownerId: string;
@@ -560,55 +642,224 @@ async function createOrderFromAi(args: {
   phone: string;
   productId: string | null;
   order: NonNullable<Awaited<ReturnType<typeof generateAiReply>>["order"]>;
-  products: { id: string; name: string; price: number; promo_price: number | null }[];
+  products: {
+    id: string;
+    name: string;
+    price: number;
+    promo_price: number | null;
+  }[];
 }) {
-  const product = args.products.find((p) => p.id === args.productId) ?? null;
-  const unitPrice = product ? (product.promo_price ?? product.price) : 0;
-  const quantity = Number(args.order.quantity) > 0 ? Number(args.order.quantity) : 1;
-  const orderNumber = `BS-${Date.now().toString(36).toUpperCase()}`;
+  /*
+   * Evita pedidos duplicados si Meta reintenta un webhook o llegan
+   * dos mensajes casi al mismo tiempo.
+   */
+  const { data: existingOrder, error: existingOrderError } =
+    await supabaseAdmin
+      .from("orders")
+      .select("id, order_number")
+      .eq("workspace_id", args.workspaceId)
+      .eq("conversation_id", args.conversationId)
+      .limit(1)
+      .maybeSingle();
+
+  if (existingOrderError) {
+    await logOrderIssue({
+      workspaceId: args.workspaceId,
+      ownerId: args.ownerId,
+      message:
+        `No se pudo comprobar si ya existía un pedido. ` +
+        `${existingOrderError.message} | ` +
+        `${existingOrderError.details ?? ""} | ` +
+        `${existingOrderError.hint ?? ""} | ` +
+        `${existingOrderError.code ?? ""}`,
+    });
+
+    throw existingOrderError;
+  }
+
+  if (existingOrder) {
+    await supabaseAdmin
+      .from("conversations")
+      .update({
+        sale_closed: true,
+        status: "vendida",
+      })
+      .eq("id", args.conversationId);
+
+    console.info("[Pedidos] Pedido ya existente", {
+      conversationId: args.conversationId,
+      orderId: existingOrder.id,
+      orderNumber: existingOrder.order_number,
+    });
+
+    return existingOrder;
+  }
+
+  const product =
+    args.products.find(
+      (candidate) => candidate.id === args.productId,
+    ) ?? null;
+
+  if (!product || !args.productId) {
+    const error = new Error(
+      "No se puede crear el pedido porque no hay un producto válido detectado",
+    );
+
+    await logOrderIssue({
+      workspaceId: args.workspaceId,
+      ownerId: args.ownerId,
+      message:
+        `${error.message}. Conversación: ${args.conversationId}. ` +
+        `productId recibido: ${args.productId ?? "null"}.`,
+    });
+
+    throw error;
+  }
+
+  const unitPrice = Number(
+    product.promo_price ?? product.price,
+  );
+
+  const parsedQuantity = Number(args.order.quantity);
+  const quantity =
+    Number.isFinite(parsedQuantity) && parsedQuantity > 0
+      ? Math.floor(parsedQuantity)
+      : 1;
+
+  const orderNumber =
+    `BS-${Date.now().toString(36).toUpperCase()}`;
+
+  const customerName =
+    cleanOrderText(args.order.customer_name) || "Cliente";
+
+  const city = cleanOrderText(args.order.city);
+  const departamento =
+    cleanOrderText(args.order.departamento) || null;
+  const district =
+    cleanOrderText(args.order.district) || null;
+  const street = cleanOrderText(args.order.street);
+  const observations =
+    cleanOrderText(args.order.observations) || null;
+  const paymentMethod =
+    cleanOrderText(args.order.payment_method);
+
+  const orderPayload = {
+    workspace_id: args.workspaceId,
+    user_id: args.ownerId,
+    conversation_id: args.conversationId,
+    contact_id: args.contactId,
+    order_number: orderNumber,
+    customer_name: customerName,
+    phone: args.phone,
+    city,
+    departamento,
+    district,
+    street,
+    observations,
+    payment_method: paymentMethod,
+    product_id: args.productId,
+    product_title: product.name,
+    quantity,
+    price: unitPrice,
+    total: unitPrice * quantity,
+    status: "nuevo",
+    payment_status: "pendiente",
+  };
 
   const { data: created, error } = await supabaseAdmin
     .from("orders")
-    .insert({
+    .insert(orderPayload)
+    .select(
+      "id, order_number, customer_name, phone, total",
+    )
+    .single();
+
+  if (error) {
+    await logOrderIssue({
+      workspaceId: args.workspaceId,
+      ownerId: args.ownerId,
+      message:
+        `No se pudo crear el pedido. ` +
+        `Mensaje: ${error.message}. ` +
+        `Detalles: ${error.details ?? "-"}. ` +
+        `Sugerencia: ${error.hint ?? "-"}. ` +
+        `Código: ${error.code ?? "-"}. ` +
+        `Payload: ${JSON.stringify(orderPayload)}`,
+    });
+
+    throw error;
+  }
+
+  const { error: conversationError } =
+    await supabaseAdmin
+      .from("conversations")
+      .update({
+        sale_closed: true,
+        status: "vendida",
+        product_id: args.productId,
+      })
+      .eq("id", args.conversationId);
+
+  if (conversationError) {
+    await logOrderIssue({
+      workspaceId: args.workspaceId,
+      ownerId: args.ownerId,
+      message:
+        `El pedido ${created.order_number} fue creado, pero no se pudo ` +
+        `marcar la conversación como vendida. ${conversationError.message}`,
+    });
+  }
+
+  const { error: notificationError } =
+    await supabaseAdmin.from("notifications").insert({
       workspace_id: args.workspaceId,
       user_id: args.ownerId,
-      conversation_id: args.conversationId,
-      contact_id: args.contactId,
-      order_number: orderNumber,
-      customer_name: args.order.customer_name ?? "Cliente",
-      phone: args.phone,
-      city: args.order.city ?? null,
-      departamento: args.order.departamento ?? null,
-      district: args.order.district ?? null,
-      street: args.order.street ?? null,
-      observations: args.order.observations ?? null,
-      payment_method: args.order.payment_method ?? null,
-      product_id: args.productId,
-      product_title: product?.name ?? null,
-      quantity,
-      price: unitPrice,
-      total: unitPrice * quantity,
-      status: "nuevo",
-      payment_status: "pendiente",
-    })
-    .select("id, order_number, customer_name, total")
-    .single();
-  if (error) throw error;
+      type: "venta",
+      title: `Nueva venta ${created.order_number}`,
+      body: `${created.customer_name} · ${formatGs(created.total)}`,
+      link: "/pedidos",
+      audience: "user",
+    });
 
-  await supabaseAdmin
-    .from("conversations")
-    .update({ sale_closed: true, status: "vendida" })
-    .eq("id", args.conversationId);
+  if (notificationError) {
+    console.error("[Pedidos] Error creando notificación", {
+      orderNumber: created.order_number,
+      error: notificationError.message,
+    });
+  }
 
-  await supabaseAdmin.from("notifications").insert({
-    workspace_id: args.workspaceId,
-    user_id: args.ownerId,
-    type: "venta",
-    title: `Nueva venta ${created.order_number}`,
-    body: `${created.customer_name} · ${formatGs(created.total)}`,
-    link: "/pedidos",
-    audience: "user",
-  });
+  /*
+   * Actualiza los datos básicos del contacto para que también aparezcan
+   * correctamente en Inbox y Contactos.
+   */
+  const contactUpdate: {
+    name?: string;
+    city?: string;
+  } = {};
+
+  if (customerName && customerName !== "Cliente") {
+    contactUpdate.name = customerName;
+  }
+
+  if (city) {
+    contactUpdate.city = city;
+  }
+
+  if (Object.keys(contactUpdate).length > 0) {
+    const { error: contactError } =
+      await supabaseAdmin
+        .from("contacts")
+        .update(contactUpdate)
+        .eq("id", args.contactId)
+        .eq("workspace_id", args.workspaceId);
+
+    if (contactError) {
+      console.error("[Pedidos] Error actualizando contacto", {
+        contactId: args.contactId,
+        error: contactError.message,
+      });
+    }
+  }
 
   const { data: settings } = await supabaseAdmin
     .from("user_settings")
@@ -618,41 +869,71 @@ async function createOrderFromAi(args: {
 
   if (settings?.apps_script_url) {
     try {
-      await fetch(settings.apps_script_url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          order_number: created.order_number,
-          customer_name: args.order.customer_name,
-          phone: args.order.phone ?? args.phone,
-          city: args.order.city,
-          departamento: args.order.departamento,
-          district: args.order.district,
-          street: args.order.street,
-          product: product?.name,
-          quantity,
-          total: unitPrice * quantity,
-          payment_method: args.order.payment_method,
-          observations: args.order.observations,
-        }),
-      });
-      await supabaseAdmin.from("integration_logs").insert({
-        workspace_id: args.workspaceId,
-        user_id: args.ownerId,
-        integration: "apps_script",
-        level: "info",
-        message: `Pedido ${created.order_number} enviado a Google Sheets`,
-      });
-    } catch (e) {
-      await supabaseAdmin.from("integration_logs").insert({
-        workspace_id: args.workspaceId,
-        user_id: args.ownerId,
-        integration: "apps_script",
-        level: "error",
-        message: e instanceof Error ? e.message : "Error enviando a Apps Script",
-      });
+      const response = await fetch(
+        settings.apps_script_url,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            order_number: created.order_number,
+            customer_name: customerName,
+            phone: args.phone,
+            city,
+            departamento,
+            district,
+            street,
+            product: product.name,
+            quantity,
+            total: unitPrice * quantity,
+            payment_method: paymentMethod,
+            observations,
+          }),
+        },
+      );
+
+      if (!response.ok) {
+        throw new Error(
+          `Apps Script respondió ${response.status}: ` +
+          `${(await response.text()).slice(0, 500)}`,
+        );
+      }
+
+      await supabaseAdmin
+        .from("integration_logs")
+        .insert({
+          workspace_id: args.workspaceId,
+          user_id: args.ownerId,
+          integration: "apps_script",
+          level: "info",
+          message:
+            `Pedido ${created.order_number} enviado a Google Sheets`,
+        });
+    } catch (error) {
+      await supabaseAdmin
+        .from("integration_logs")
+        .insert({
+          workspace_id: args.workspaceId,
+          user_id: args.ownerId,
+          integration: "apps_script",
+          level: "error",
+          message:
+            error instanceof Error
+              ? error.message
+              : "Error enviando a Apps Script",
+        });
     }
   }
+
+  console.info("[Pedidos] Pedido creado correctamente", {
+    id: created.id,
+    orderNumber: created.order_number,
+    conversationId: args.conversationId,
+    workspaceId: args.workspaceId,
+  });
+
+  return created;
 }
 
 /**
@@ -670,37 +951,79 @@ async function sendCatalogByKeyword(args: {
 }): Promise<string | null> {
   const raw = (args.text ?? "").toLowerCase().trim();
   if (!raw) return null;
-  const normalize = (s: string) =>
-    s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+
+  const normalize = (value: string) =>
+    value
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .trim();
+
   const haystack = normalize(raw);
 
-  const { data: keywords } = await supabaseAdmin
-    .from("product_keywords")
-    .select("keyword, product_id, products!inner(id, name, price, promo_price, sales_copy, description, is_active)")
-    .eq("workspace_id", args.workspaceId);
+  const { data: keywords, error: keywordsError } =
+    await supabaseAdmin
+      .from("product_keywords")
+      .select(
+        "keyword, product_id, products!inner(id, name, price, promo_price, sales_copy, description, is_active)",
+      )
+      .eq("workspace_id", args.workspaceId);
+
+  if (keywordsError) {
+    console.error("[Catálogo] Error leyendo palabras clave", {
+      workspaceId: args.workspaceId,
+      error: keywordsError.message,
+    });
+    return null;
+  }
 
   if (!keywords?.length) return null;
 
   type Row = (typeof keywords)[number] & {
-    products: { id: string; name: string; sales_copy: string | null; description: string | null; is_active: boolean } | null;
+    products: {
+      id: string;
+      name: string;
+      sales_copy: string | null;
+      description: string | null;
+      is_active: boolean;
+    } | null;
   };
 
   let match: Row | null = null;
+
   for (const row of keywords as Row[]) {
-    if (!row.products || row.products.is_active === false) continue;
-    const k = normalize(row.keyword ?? "");
-    if (!k) continue;
-    const re = new RegExp(`(^|[^\\p{L}\\p{N}])${k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^\\p{L}\\p{N}]|$)`, "u");
-    if (re.test(haystack)) {
-      if (!match || k.length > normalize(match.keyword ?? "").length) match = row;
+    if (!row.products || row.products.is_active === false) {
+      continue;
+    }
+
+    const keyword = normalize(row.keyword ?? "");
+    if (!keyword) continue;
+
+    const escaped = keyword.replace(
+      /[.*+?^${}()|[\]\\]/g,
+      "\\$&",
+    );
+
+    const expression = new RegExp(
+      `(^|[^\\p{L}\\p{N}])${escaped}([^\\p{L}\\p{N}]|$)`,
+      "u",
+    );
+
+    if (
+      expression.test(haystack) &&
+      (!match ||
+        keyword.length >
+          normalize(match.keyword ?? "").length)
+    ) {
+      match = row;
     }
   }
+
   if (!match?.products) return null;
 
   const productId = match.products.id;
 
-  // No reenviar la plantilla si ya se envió en esta conversación
-  const { data: already } = await supabaseAdmin
+  const { data: alreadySent } = await supabaseAdmin
     .from("messages")
     .select("id")
     .eq("conversation_id", args.conversationId)
@@ -708,66 +1031,183 @@ async function sendCatalogByKeyword(args: {
     .eq("catalog_product_id", productId)
     .limit(1)
     .maybeSingle();
-  if (already) return productId;
 
-  const { sendWhatsAppMedia } = await import("@/lib/whatsapp.server");
-
-  const { data: media } = await supabaseAdmin
-    .from("product_media")
-    .select("url, storage_path, media_type, position")
-    .eq("product_id", productId)
-    .order("position", { ascending: true });
-
-  for (const m of (media ?? []).slice(0, 8)) {
-    let link = m.url as string | null;
-    if (m.storage_path) {
-      const { data: signed } = await supabaseAdmin.storage
-        .from("product-media")
-        .createSignedUrl(m.storage_path, 60 * 60 * 24 * 7);
-      if (signed?.signedUrl) link = signed.signedUrl;
-    }
-    if (!link) continue;
-    const type = (["image", "video", "audio"].includes(m.media_type as string)
-      ? m.media_type
-      : "document") as "image" | "video" | "audio" | "document";
-    try {
-      const wamid = await sendWhatsAppMedia(args.conn, args.phone, link, type);
-      await supabaseAdmin.from("messages").insert({
-        workspace_id: args.workspaceId,
-        user_id: args.ownerId,
-        conversation_id: args.conversationId,
-        direction: "outbound",
-        sender: "ai",
-        body: `[${type}] ${match.products.name}`,
-        media_url: link,
-        media_type: type,
-        status: "sent",
-        wamid,
-      });
-    } catch {
-      /* si falla un archivo, continúa con el resto */
-    }
-  }
+  if (alreadySent) return productId;
 
   const copy =
     match.products.sales_copy?.trim() ||
-    `${match.products.name}\n${match.products.description ?? ""}`.trim();
+    `${match.products.name}
+${match.products.description ?? ""}`.trim();
 
-  try {
-    const wamid = await sendWhatsAppText(args.conn, args.phone, copy);
-    await supabaseAdmin.from("messages").insert({
-      workspace_id: args.workspaceId,
-      user_id: args.ownerId,
-      conversation_id: args.conversationId,
-      direction: "outbound",
-      sender: "ai",
-      body: copy,
-      catalog_product_id: productId,
-      status: "sent",
-      wamid,
+  const { sendWhatsAppMedia } = await import(
+    "@/lib/whatsapp.server"
+  );
+
+  const { data: mediaRows, error: mediaError } =
+    await supabaseAdmin
+      .from("product_media")
+      .select("url, storage_path, media_type, position")
+      .eq("product_id", productId)
+      .order("position", { ascending: true });
+
+  if (mediaError) {
+    console.error("[Catálogo] Error leyendo multimedia", {
+      productId,
+      error: mediaError.message,
     });
-  } catch {
-    return productId;
+  }
+
+  let copySentAsCaption = false;
+  let sentMediaCount = 0;
+
+  for (const media of (mediaRows ?? []).slice(0, 8)) {
+    let link =
+      typeof media.url === "string" && media.url.trim()
+        ? media.url.trim()
+        : null;
+
+    if (media.storage_path) {
+      const { data: signed, error: signedError } =
+        await supabaseAdmin.storage
+          .from("product-media")
+          .createSignedUrl(
+            media.storage_path,
+            60 * 60 * 24 * 7,
+          );
+
+      if (signedError) {
+        console.error("[Catálogo] Error creando URL firmada", {
+          productId,
+          storagePath: media.storage_path,
+          error: signedError.message,
+        });
+      }
+
+      if (signed?.signedUrl) {
+        link = signed.signedUrl;
+      }
+    }
+
+    if (!link) continue;
+
+    const rawType = String(
+      media.media_type ?? "",
+    ).toLowerCase();
+
+    const type:
+      | "image"
+      | "video"
+      | "audio"
+      | "document" =
+      rawType.startsWith("image")
+        ? "image"
+        : rawType.startsWith("video")
+          ? "video"
+          : rawType.startsWith("audio")
+            ? "audio"
+            : "document";
+
+    const caption =
+      !copySentAsCaption &&
+      (type === "image" || type === "video")
+        ? copy.slice(0, 1024)
+        : undefined;
+
+    try {
+      const wamid = await sendWhatsAppMedia(
+        args.conn,
+        args.phone,
+        link,
+        type,
+        caption,
+      );
+
+      sentMediaCount += 1;
+
+      if (caption) {
+        copySentAsCaption = true;
+      }
+
+      const { error: insertError } =
+        await supabaseAdmin.from("messages").insert({
+          workspace_id: args.workspaceId,
+          user_id: args.ownerId,
+          conversation_id: args.conversationId,
+          direction: "outbound",
+          sender: "ai",
+          body:
+            caption ||
+            `[${type}] ${match.products.name}`,
+          media_url: link,
+          media_type: type,
+          status: "sent",
+          wamid,
+          catalog_product_id:
+            caption ? productId : null,
+        });
+
+      if (insertError) {
+        console.error(
+          "[Catálogo] Error guardando multimedia",
+          {
+            productId,
+            error: insertError.message,
+          },
+        );
+      }
+    } catch (error) {
+      console.error("[Catálogo] Meta rechazó el archivo", {
+        productId,
+        type,
+        link,
+        error:
+          error instanceof Error
+            ? error.message
+            : String(error),
+      });
+    }
+  }
+
+  if (!copySentAsCaption) {
+    try {
+      const wamid = await sendWhatsAppText(
+        args.conn,
+        args.phone,
+        copy,
+      );
+
+      const { error: copyError } =
+        await supabaseAdmin.from("messages").insert({
+          workspace_id: args.workspaceId,
+          user_id: args.ownerId,
+          conversation_id: args.conversationId,
+          direction: "outbound",
+          sender: "ai",
+          body: copy,
+          catalog_product_id: productId,
+          status: "sent",
+          wamid,
+        });
+
+      if (copyError) {
+        console.error("[Catálogo] Error guardando copy", {
+          productId,
+          error: copyError.message,
+        });
+      }
+    } catch (error) {
+      console.error("[Catálogo] Error enviando copy", {
+        productId,
+        error:
+          error instanceof Error
+            ? error.message
+            : String(error),
+      });
+
+      if (sentMediaCount === 0) {
+        return null;
+      }
+    }
   }
 
   await supabaseAdmin
