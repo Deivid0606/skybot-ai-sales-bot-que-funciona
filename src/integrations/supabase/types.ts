@@ -1,1425 +1,2012 @@
-import { supabaseAdmin } from "@/integrations/supabase/client.server";
-import { formatGs } from "@/lib/format";
-import { buildWorkspaceAiContext } from "@/lib/ai-context.server";
-import { generateAiReply } from "@/lib/ai.server";
-import { sendWhatsAppText } from "@/lib/whatsapp.server";
-import { detectComplaint, COMPLAINT_REASON_LABELS } from "@/lib/complaints";
+export type Json =
+  | string
+  | number
+  | boolean
+  | null
+  | { [key: string]: Json | undefined }
+  | Json[]
 
-type MediaPart = { id?: string; mime_type?: string; caption?: string; voice?: boolean };
-
-type IncomingMessage = {
-  from: string;
-  id: string;
-  type: string;
-  text?: { body: string };
-  interactive?: { button_reply?: { title: string }; list_reply?: { title: string } };
-  referral?: { source_id?: string; image_url?: string; video_url?: string; headline?: string };
-  image?: MediaPart;
-  audio?: MediaPart;
-  voice?: MediaPart;
-  video?: MediaPart;
-  document?: MediaPart & { filename?: string };
-  sticker?: MediaPart;
-};
-
-type WebhookPayload = {
-  entry?: {
-    changes?: {
-      value?: {
-        metadata?: { phone_number_id?: string };
-        contacts?: { profile?: { name?: string }; wa_id?: string }[];
-        messages?: IncomingMessage[];
-      };
-    }[];
-  }[];
-};
-
-function textOf(message: IncomingMessage) {
-  if (message.text?.body) return message.text.body;
-  if (message.interactive?.button_reply?.title) return message.interactive.button_reply.title;
-  if (message.interactive?.list_reply?.title) return message.interactive.list_reply.title;
-  return `[${message.type}]`;
-}
-
-function mediaOf(message: IncomingMessage) {
-  const map: [string, MediaPart | undefined][] = [
-    ["image", message.image ?? message.sticker],
-    ["audio", message.audio ?? message.voice],
-    ["video", message.video],
-    ["document", message.document],
-  ];
-  for (const [type, part] of map) {
-    if (part?.id) return { type: type as "image" | "audio" | "video" | "document", part };
+export type Database = {
+  // Allows to automatically instantiate createClient with right options
+  // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
+  __InternalSupabase: {
+    PostgrestVersion: "14.5"
   }
-  return null;
-}
-
-/** Descarga el archivo de WhatsApp, lo guarda y deja que la IA lo interprete. */
-async function ingestMedia(args: {
-  workspaceId: string;
-  accessToken: string;
-  mediaId: string;
-  type: "image" | "audio" | "video" | "document";
-}) {
-  const { downloadWhatsAppMediaUrl } = await import("@/lib/whatsapp.server");
-  const { transcribeAudio, describeImage, toBase64 } = await import(
-    "@/lib/media-ai.server"
-  );
-
-  const emptyResult = {
-    storagePath: null as string | null,
-    transcript: null as string | null,
-  };
-
-  try {
-    const mediaUrl = await downloadWhatsAppMediaUrl(
-      args.mediaId,
-      args.accessToken,
-    );
-
-    if (!mediaUrl) {
-      console.error("[WhatsApp media] Meta no devolvió una URL", {
-        mediaId: args.mediaId,
-        type: args.type,
-      });
-
-      return emptyResult;
-    }
-
-    const response = await fetch(mediaUrl, {
-      headers: {
-        Authorization: `Bearer ${args.accessToken}`,
-      },
-    });
-
-    if (!response.ok) {
-      console.error("[WhatsApp media] Error descargando desde Meta", {
-        mediaId: args.mediaId,
-        type: args.type,
-        status: response.status,
-        statusText: response.statusText,
-      });
-
-      return emptyResult;
-    }
-
-    const rawMime =
-      response.headers.get("content-type") ||
-      "application/octet-stream";
-
-    const mime = rawMime.split(";")[0].trim().toLowerCase();
-    const bytes = await response.arrayBuffer();
-
-    if (bytes.byteLength === 0) {
-      console.error("[WhatsApp media] Meta devolvió un archivo vacío", {
-        mediaId: args.mediaId,
-        type: args.type,
-        mime,
-      });
-
-      return emptyResult;
-    }
-
-    const extensionByMime: Record<string, string> = {
-      "image/jpeg": "jpg",
-      "image/jpg": "jpg",
-      "image/png": "png",
-      "image/webp": "webp",
-      "image/gif": "gif",
-
-      "audio/ogg": "ogg",
-      "audio/opus": "ogg",
-      "audio/mpeg": "mp3",
-      "audio/mp3": "mp3",
-      "audio/mp4": "m4a",
-      "audio/aac": "aac",
-      "audio/wav": "wav",
-      "audio/x-wav": "wav",
-
-      "video/mp4": "mp4",
-      "video/3gpp": "3gp",
-      "video/webm": "webm",
-
-      "application/pdf": "pdf",
-      "application/msword": "doc",
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-        "docx",
-      "application/vnd.ms-excel": "xls",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
-        "xlsx",
-    };
-
-    const fallbackExtension =
-      mime.split("/")[1]?.replace(/[^a-z0-9]/gi, "") || "bin";
-
-    const extension = extensionByMime[mime] || fallbackExtension;
-    const safeMediaId = args.mediaId.replace(/[^a-zA-Z0-9_-]/g, "");
-
-    const storagePath =
-      `${args.workspaceId}/inbound/` +
-      `${Date.now()}-${safeMediaId}.${extension}`;
-
-    const { data: uploadedFile, error: uploadError } =
-      await supabaseAdmin.storage
-        .from("chat-media")
-        .upload(storagePath, bytes, {
-          contentType: mime,
-          upsert: false,
-        });
-
-    if (uploadError) {
-      console.error("[WhatsApp media] Error subiendo a chat-media", {
-        mediaId: args.mediaId,
-        type: args.type,
-        storagePath,
-        mime,
-        size: bytes.byteLength,
-        error: uploadError.message,
-      });
-
-      return emptyResult;
-    }
-
-    if (!uploadedFile?.path) {
-      console.error("[WhatsApp media] Supabase no devolvió la ruta subida", {
-        mediaId: args.mediaId,
-        type: args.type,
-        storagePath,
-      });
-
-      return emptyResult;
-    }
-
-    let transcript: string | null = null;
-
-    try {
-      const base64 = toBase64(bytes);
-
-      if (args.type === "audio") {
-        const result = await transcribeAudio(base64, mime);
-        transcript = result?.trim() || null;
-
-        if (!transcript) {
-          console.warn("[WhatsApp media] Audio sin transcripción", {
-            mediaId: args.mediaId,
-            mime,
-          });
+  public: {
+    Tables: {
+      ads: {
+        Row: {
+          ad_id: string
+          created_at: string
+          id: string
+          media_url: string | null
+          name: string | null
+          product_id: string | null
+          updated_at: string
+          user_id: string
+          workspace_id: string
         }
-      } else if (args.type === "image") {
-        const result = await describeImage(base64, mime);
-        transcript = result?.trim() || null;
-
-        if (!transcript) {
-          console.warn("[WhatsApp media] Imagen sin interpretación", {
-            mediaId: args.mediaId,
-            mime,
-          });
+        Insert: {
+          ad_id: string
+          created_at?: string
+          id?: string
+          media_url?: string | null
+          name?: string | null
+          product_id?: string | null
+          updated_at?: string
+          user_id: string
+          workspace_id: string
         }
-      }
-    } catch (error) {
-      console.error("[WhatsApp media] Error procesando archivo con IA", {
-        mediaId: args.mediaId,
-        type: args.type,
-        mime,
-        error,
-      });
-    }
-
-    return {
-      storagePath: uploadedFile.path,
-      transcript,
-    };
-  } catch (error) {
-    console.error("[WhatsApp media] Error inesperado procesando archivo", {
-      mediaId: args.mediaId,
-      type: args.type,
-      error,
-    });
-
-    return emptyResult;
-  }
-}
-
-export async function handleWhatsAppWebhook(payload: WebhookPayload) {
-  for (const entry of payload.entry ?? []) {
-    for (const change of entry.changes ?? []) {
-      const value = change.value;
-      const phoneNumberId = value?.metadata?.phone_number_id;
-      const messages = value?.messages ?? [];
-      if (!phoneNumberId || messages.length === 0) continue;
-
-      const { data: conn } = await supabaseAdmin
-        .from("whatsapp_connections")
-        .select("workspace_id, user_id, phone_number_id, access_token")
-        .eq("phone_number_id", phoneNumberId)
-        .maybeSingle();
-      if (!conn) continue;
-
-      for (const message of messages) {
-        await processMessage(conn, value?.contacts?.[0]?.profile?.name ?? null, message);
-      }
-    }
-  }
-}
-
-type Conn = {
-  workspace_id: string;
-  user_id: string;
-  phone_number_id: string | null;
-  access_token: string | null;
-};
-
-async function processMessage(conn: Conn, profileName: string | null, message: IncomingMessage) {
-  const workspaceId = conn.workspace_id;
-  const ownerId = conn.user_id;
-  const phone = message.from;
-  const media = mediaOf(message);
-  let body = media?.part.caption?.trim() || textOf(message);
-  let mediaPath: string | null = null;
-  let transcript: string | null = null;
-
-
-  const { data: existingMessage } = await supabaseAdmin
-    .from("messages")
-    .select("id")
-    .eq("wamid", message.id)
-    .maybeSingle();
-  if (existingMessage) return;
-
-  let { data: contact } = await supabaseAdmin
-    .from("contacts")
-    .select("id, name")
-    .eq("workspace_id", workspaceId)
-    .eq("phone", phone)
-    .maybeSingle();
-
-  if (!contact) {
-    const { data: created, error } = await supabaseAdmin
-      .from("contacts")
-      .insert({ workspace_id: workspaceId, user_id: ownerId, phone, name: profileName })
-      .select("id, name")
-      .single();
-    if (error) throw error;
-    contact = created;
-  }
-
-  let { data: conversation } = await supabaseAdmin
-    .from("conversations")
-    .select("id, ai_paused, product_id, is_closed, sale_closed")
-    .eq("workspace_id", workspaceId)
-    .eq("contact_id", contact.id)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  let isNewConversation = false;
-  if (!conversation) {
-    const { data: created, error } = await supabaseAdmin
-      .from("conversations")
-      .insert({
-        workspace_id: workspaceId,
-        user_id: ownerId,
-        contact_id: contact.id,
-        status: "abierta",
-        ad_id: message.referral?.source_id ?? null,
-        ad_media_url: message.referral?.image_url ?? message.referral?.video_url ?? null,
-      })
-      .select("id, ai_paused, product_id, is_closed, sale_closed")
-      .single();
-    if (error) throw error;
-    conversation = created;
-    isNewConversation = true;
-  }
-
-  if (media) {
-    if (!conn.access_token) {
-      console.error("[WhatsApp media] La conexión no tiene access_token", {
-        workspaceId,
-        mediaId: media.part.id,
-        type: media.type,
-      });
-    } else {
-      const ingested = await ingestMedia({
-        workspaceId,
-        accessToken: conn.access_token,
-        mediaId: media.part.id!,
-        type: media.type,
-      });
-
-      mediaPath = ingested.storagePath;
-      transcript = ingested.transcript;
-
-      if (transcript) {
-        body =
-          media.type === "audio"
-            ? transcript
-            : `${body && body !== `[${message.type}]` ? body + "\n" : ""}[imagen] ${transcript}`;
-      }
-    }
-  }
-
-  const { data: savedMessage } = await supabaseAdmin
-    .from("messages")
-    .insert({
-      workspace_id: workspaceId,
-      user_id: ownerId,
-      conversation_id: conversation.id,
-      direction: "inbound",
-      sender: "customer",
-      body,
-      transcript,
-      media_url: mediaPath,
-      media_type: media?.type ?? null,
-      wamid: message.id,
-      status: "received",
-    })
-    .select("id")
-    .single();
-
-
-  await supabaseAdmin
-    .from("conversations")
-    .update({
-      last_message: body,
-      last_message_at: new Date().toISOString(),
-      unread_count: 1,
-    })
-    .eq("id", conversation.id);
-
-  const complaint = detectComplaint(body);
-  if (complaint) {
-    await supabaseAdmin.from("complaints").insert({
-      workspace_id: workspaceId,
-      user_id: ownerId,
-      conversation_id: conversation.id,
-      contact_id: contact.id,
-      message_id: savedMessage?.id ?? null,
-      phone,
-      contact_name: contact.name,
-      body,
-      reason: complaint.reason,
-      severity: complaint.severity,
-      status: "nuevo",
-    });
-
-    await supabaseAdmin.from("notifications").insert({
-      workspace_id: workspaceId,
-      user_id: ownerId,
-      type: "reclamo",
-      title: `Reclamo detectado · ${phone}`,
-      body: `${COMPLAINT_REASON_LABELS[complaint.reason] ?? "Reclamo"}: ${body.slice(0, 160)}`,
-      link: "/reclamos",
-      audience: "user",
-    });
-  }
-
-  // Balance: one conversation credit per new conversation
-  const { data: balance } = await supabaseAdmin
-    .from("conversation_balances")
-    .select("id, available, consumed")
-    .eq("workspace_id", workspaceId)
-    .maybeSingle();
-
-  if (isNewConversation) {
-    if (!balance || balance.available <= 0) {
-      await supabaseAdmin.from("notifications").insert({
-        workspace_id: workspaceId,
-        user_id: ownerId,
-        type: "saldo",
-        title: "Sin conversaciones disponibles",
-        body: "Tu bot no respondió porque tu saldo se agotó. Recarga un plan para continuar.",
-        link: "/planes",
-        audience: "user",
-      });
-      return;
-    }
-    await supabaseAdmin
-      .from("conversation_balances")
-      .update({ available: balance.available - 1, consumed: balance.consumed + 1 })
-      .eq("id", balance.id);
-    await supabaseAdmin.from("conversation_usage").insert({
-      workspace_id: workspaceId,
-      user_id: ownerId,
-      conversation_id: conversation.id,
-      amount: 1,
-      reason: "nueva_conversacion",
-      wamid: message.id,
-    });
-  } else if (!balance || balance.available <= 0) {
-    return;
-  }
-
-  const { data: aiSettings } = await supabaseAdmin
-    .from("ai_settings")
-    .select("ai_enabled, reply_delay_seconds")
-    .eq("workspace_id", workspaceId)
-    .maybeSingle();
-
-  if (!aiSettings?.ai_enabled || conversation.ai_paused || conversation.is_closed) return;
-
-  // Palabra clave → envía la plantilla del producto (multimedia + copy)
-  const keywordProductId = await sendCatalogByKeyword({
-    workspaceId,
-    ownerId,
-    conversationId: conversation.id,
-    conn,
-    phone,
-    text: body,
-  });
-  if (keywordProductId) conversation.product_id = keywordProductId;
-
-
-
-  const { data: history } = await supabaseAdmin
-    .from("messages")
-    .select("sender, body")
-    .eq("conversation_id", conversation.id)
-    .order("created_at", { ascending: false })
-    .limit(24);
-
-  const chatHistory = (history ?? [])
-    .reverse()
-    .filter((m) => Boolean(m.body))
-    .map((m) => ({
-      role: m.sender === "customer" ? ("user" as const) : ("assistant" as const),
-      content: m.body as string,
-    }));
-
-  try {
-    const ctx = await buildWorkspaceAiContext(
-      supabaseAdmin,
-      workspaceId,
-      chatHistory,
-      conversation.product_id,
-      phone,
-    );
-    const result = await generateAiReply(ctx);
-
-    const wamid = await sendWhatsAppText(conn, phone, result.reply);
-
-    await supabaseAdmin.from("messages").insert({
-      workspace_id: workspaceId,
-      user_id: ownerId,
-      conversation_id: conversation.id,
-      direction: "outbound",
-      sender: "ai",
-      body: result.reply,
-      wamid,
-      status: "sent",
-    });
-
-    const detectedProduct =
-      result.product_id && ctx.products.some((p) => p.id === result.product_id)
-        ? result.product_id
-        : conversation.product_id;
-
-    await supabaseAdmin
-      .from("conversations")
-      .update({
-        last_message: result.reply,
-        last_message_at: new Date().toISOString(),
-        product_id: detectedProduct,
-        unread_count: 0,
-      })
-      .eq("id", conversation.id);
-
-    const replyConfirmsOrder =
-      /\b(pedido|compra|venta)\s+(confirmad[oa]|registrad[oa]|realizad[oa])\b/i.test(
-        result.reply,
-      ) ||
-      /\bconfirmamos\s+(tu|su)\s+(pedido|compra)\b/i.test(
-        result.reply,
-      );
-
-    /*
-     * Regla definitiva:
-     * - Si Gemini marca sale_closed=true, se crea el pedido.
-     * - Si el texto enviado al cliente confirma el pedido, también se crea.
-     * - No se exige que Gemini complete perfectamente todos los campos.
-     *   Los datos faltantes se completan con información segura del contacto.
-     */
-    const mustCreateOrder =
-      !conversation.sale_closed &&
-      Boolean(detectedProduct) &&
-      (result.sale_closed || replyConfirmsOrder);
-
-    if (mustCreateOrder) {
-      const completedOrder = {
-        customer_name:
-          cleanOrderText(result.order?.customer_name) ||
-          cleanOrderText(contact.name) ||
-          cleanOrderText(profileName) ||
-          "Cliente WhatsApp",
-        phone,
-        city:
-          cleanOrderText(result.order?.city) || undefined,
-        departamento:
-          cleanOrderText(result.order?.departamento) ||
-          undefined,
-        district:
-          cleanOrderText(result.order?.district) ||
-          undefined,
-        street:
-          cleanOrderText(result.order?.street) ||
-          undefined,
-        quantity:
-          Number(result.order?.quantity) > 0
-            ? Math.floor(Number(result.order?.quantity))
-            : 1,
-        payment_method:
-          cleanOrderText(result.order?.payment_method) ||
-          "pendiente de confirmar",
-        observations:
-          cleanOrderText(result.order?.observations) ||
-          (replyConfirmsOrder
-            ? "Pedido confirmado automáticamente desde WhatsApp."
-            : "Venta cerrada automáticamente por la IA."),
-      };
-
-      await createOrderFromAi({
-        workspaceId,
-        ownerId,
-        conversationId: conversation.id,
-        contactId: contact.id,
-        phone,
-        productId: detectedProduct,
-        order: completedOrder,
-        products: ctx.products,
-      });
-    } else if (
-      (result.sale_closed || replyConfirmsOrder) &&
-      !detectedProduct
-    ) {
-      await logOrderIssue({
-        workspaceId,
-        ownerId,
-        message:
-          `La venta fue confirmada, pero no existe un producto detectado. ` +
-          `Conversación: ${conversation.id}. ` +
-          `Respuesta: ${result.reply}`,
-      });
-    }
-  } catch (e) {
-    const messageText = e instanceof Error ? e.message : "error";
-    await supabaseAdmin.from("integration_logs").insert({
-      workspace_id: workspaceId,
-      user_id: ownerId,
-      integration: "ai",
-      level: "error",
-      message: messageText,
-    });
-  }
-}
-
-function cleanOrderText(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-async function logOrderIssue(args: {
-  workspaceId: string;
-  ownerId: string;
-  message: string;
-}) {
-  console.error("[Pedidos]", args.message);
-
-  const { error } = await supabaseAdmin
-    .from("integration_logs")
-    .insert({
-      workspace_id: args.workspaceId,
-      user_id: args.ownerId,
-      integration: "orders",
-      level: "error",
-      message: args.message.slice(0, 2000),
-    });
-
-  if (error) {
-    console.error("[Pedidos] No se pudo guardar integration_logs", {
-      error: error.message,
-    });
-  }
-}
-
-async function createOrderFromAi(args: {
-  workspaceId: string;
-  ownerId: string;
-  conversationId: string;
-  contactId: string;
-  phone: string;
-  productId: string | null;
-  order: NonNullable<Awaited<ReturnType<typeof generateAiReply>>["order"]>;
-  products: {
-    id: string;
-    name: string;
-    price: number;
-    promo_price: number | null;
-  }[];
-}) {
-  /*
-   * Evita pedidos duplicados si Meta reintenta un webhook o llegan
-   * dos mensajes casi al mismo tiempo.
-   */
-  const { data: existingOrder, error: existingOrderError } =
-    await supabaseAdmin
-      .from("orders")
-      .select("id, order_number")
-      .eq("workspace_id", args.workspaceId)
-      .eq("conversation_id", args.conversationId)
-      .limit(1)
-      .maybeSingle();
-
-  if (existingOrderError) {
-    await logOrderIssue({
-      workspaceId: args.workspaceId,
-      ownerId: args.ownerId,
-      message:
-        `No se pudo comprobar si ya existía un pedido. ` +
-        `${existingOrderError.message} | ` +
-        `${existingOrderError.details ?? ""} | ` +
-        `${existingOrderError.hint ?? ""} | ` +
-        `${existingOrderError.code ?? ""}`,
-    });
-
-    throw existingOrderError;
-  }
-
-  if (existingOrder) {
-    await supabaseAdmin
-      .from("conversations")
-      .update({
-        sale_closed: true,
-        status: "vendida",
-      })
-      .eq("id", args.conversationId);
-
-    console.info("[Pedidos] Pedido ya existente", {
-      conversationId: args.conversationId,
-      orderId: existingOrder.id,
-      orderNumber: existingOrder.order_number,
-    });
-
-    return existingOrder;
-  }
-
-  const product =
-    args.products.find(
-      (candidate) => candidate.id === args.productId,
-    ) ?? null;
-
-  if (!product || !args.productId) {
-    const error = new Error(
-      "No se puede crear el pedido porque no hay un producto válido detectado",
-    );
-
-    await logOrderIssue({
-      workspaceId: args.workspaceId,
-      ownerId: args.ownerId,
-      message:
-        `${error.message}. Conversación: ${args.conversationId}. ` +
-        `productId recibido: ${args.productId ?? "null"}.`,
-    });
-
-    throw error;
-  }
-
-  const unitPrice = Number(
-    product.promo_price ?? product.price,
-  );
-
-  const parsedQuantity = Number(args.order.quantity);
-  const quantity =
-    Number.isFinite(parsedQuantity) && parsedQuantity > 0
-      ? Math.floor(parsedQuantity)
-      : 1;
-
-  const orderNumber =
-    `BS-${Date.now().toString(36).toUpperCase()}`;
-
-  const customerName =
-    cleanOrderText(args.order.customer_name) || "Cliente";
-
-  const city = cleanOrderText(args.order.city);
-  const departamento =
-    cleanOrderText(args.order.departamento) || null;
-  const district =
-    cleanOrderText(args.order.district) || null;
-  const street = cleanOrderText(args.order.street);
-  const observations =
-    cleanOrderText(args.order.observations) || null;
-  const paymentMethod =
-    cleanOrderText(args.order.payment_method);
-
-  const orderPayload = {
-    workspace_id: args.workspaceId,
-    user_id: args.ownerId,
-    created_by: args.ownerId,
-    conversation_id: args.conversationId,
-    contact_id: args.contactId,
-    order_number: orderNumber,
-    customer_name: customerName,
-    phone: args.phone,
-    city,
-    departamento,
-    district,
-    street,
-    observations,
-    payment_method: paymentMethod,
-    product_id: args.productId,
-    product_title: product.name,
-    quantity,
-    price: unitPrice,
-    total: unitPrice * quantity,
-    status: "nuevo" as const,
-    payment_status:
-      /contra\s*entrega|al\s*recibir|efectivo/i.test(
-        paymentMethod,
-      )
-        ? ("contraentrega" as const)
-        : ("pendiente" as const),
-    tags: ["WhatsApp", "IA"],
-  };
-
-  const { data: created, error } = await supabaseAdmin
-    .from("orders")
-    .insert(orderPayload)
-    .select(
-      "id, order_number, customer_name, phone, total",
-    )
-    .single();
-
-  if (error) {
-    await logOrderIssue({
-      workspaceId: args.workspaceId,
-      ownerId: args.ownerId,
-      message:
-        `No se pudo crear el pedido. ` +
-        `Mensaje: ${error.message}. ` +
-        `Detalles: ${error.details ?? "-"}. ` +
-        `Sugerencia: ${error.hint ?? "-"}. ` +
-        `Código: ${error.code ?? "-"}. ` +
-        `Payload: ${JSON.stringify(orderPayload)}`,
-    });
-
-    throw error;
-  }
-
-  /*
-   * Registra también el artículo y el estado inicial.
-   * La pestaña principal usa orders, pero estas tablas mantienen
-   * consistente todo el módulo de pedidos.
-   */
-  const { error: itemError } = await supabaseAdmin
-    .from("order_items")
-    .insert({
-      workspace_id: args.workspaceId,
-      user_id: args.ownerId,
-      order_id: created.id,
-      product_id: args.productId,
-      title: product.name,
-      quantity,
-      price: unitPrice,
-      sku: null,
-    });
-
-  if (itemError) {
-    console.error("[Pedidos] Error creando order_items", {
-      orderId: created.id,
-      error: itemError.message,
-    });
-  }
-
-  const { error: historyError } = await supabaseAdmin
-    .from("order_status_history")
-    .insert({
-      workspace_id: args.workspaceId,
-      user_id: args.ownerId,
-      order_id: created.id,
-      status: "nuevo",
-      note: "Pedido creado automáticamente desde WhatsApp.",
-    });
-
-  if (historyError) {
-    console.error(
-      "[Pedidos] Error creando historial de estado",
-      {
-        orderId: created.id,
-        error: historyError.message,
-      },
-    );
-  }
-
-  const { error: conversationError } =
-    await supabaseAdmin
-      .from("conversations")
-      .update({
-        sale_closed: true,
-        status: "vendida",
-        product_id: args.productId,
-      })
-      .eq("id", args.conversationId);
-
-  if (conversationError) {
-    await logOrderIssue({
-      workspaceId: args.workspaceId,
-      ownerId: args.ownerId,
-      message:
-        `El pedido ${created.order_number} fue creado, pero no se pudo ` +
-        `marcar la conversación como vendida. ${conversationError.message}`,
-    });
-  }
-
-  const { error: notificationError } =
-    await supabaseAdmin.from("notifications").insert({
-      workspace_id: args.workspaceId,
-      user_id: args.ownerId,
-      type: "venta",
-      title: `Nueva venta ${created.order_number}`,
-      body: `${created.customer_name} · ${formatGs(created.total)}`,
-      link: "/pedidos",
-      audience: "user",
-    });
-
-  if (notificationError) {
-    console.error("[Pedidos] Error creando notificación", {
-      orderNumber: created.order_number,
-      error: notificationError.message,
-    });
-  }
-
-  /*
-   * Actualiza los datos básicos del contacto para que también aparezcan
-   * correctamente en Inbox y Contactos.
-   */
-  const contactUpdate: {
-    name?: string;
-    city?: string;
-  } = {};
-
-  if (customerName && customerName !== "Cliente") {
-    contactUpdate.name = customerName;
-  }
-
-  if (city) {
-    contactUpdate.city = city;
-  }
-
-  if (Object.keys(contactUpdate).length > 0) {
-    const { error: contactError } =
-      await supabaseAdmin
-        .from("contacts")
-        .update(contactUpdate)
-        .eq("id", args.contactId)
-        .eq("workspace_id", args.workspaceId);
-
-    if (contactError) {
-      console.error("[Pedidos] Error actualizando contacto", {
-        contactId: args.contactId,
-        error: contactError.message,
-      });
-    }
-  }
-
-  const { data: settings } = await supabaseAdmin
-    .from("user_settings")
-    .select("apps_script_url")
-    .eq("workspace_id", args.workspaceId)
-    .maybeSingle();
-
-  if (settings?.apps_script_url) {
-    try {
-      const response = await fetch(
-        settings.apps_script_url,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            order_number: created.order_number,
-            customer_name: customerName,
-            phone: args.phone,
-            city,
-            departamento,
-            district,
-            street,
-            product: product.name,
-            quantity,
-            total: unitPrice * quantity,
-            payment_method: paymentMethod,
-            observations,
-          }),
-        },
-      );
-
-      if (!response.ok) {
-        throw new Error(
-          `Apps Script respondió ${response.status}: ` +
-          `${(await response.text()).slice(0, 500)}`,
-        );
-      }
-
-      await supabaseAdmin
-        .from("integration_logs")
-        .insert({
-          workspace_id: args.workspaceId,
-          user_id: args.ownerId,
-          integration: "apps_script",
-          level: "info",
-          message:
-            `Pedido ${created.order_number} enviado a Google Sheets`,
-        });
-    } catch (error) {
-      await supabaseAdmin
-        .from("integration_logs")
-        .insert({
-          workspace_id: args.workspaceId,
-          user_id: args.ownerId,
-          integration: "apps_script",
-          level: "error",
-          message:
-            error instanceof Error
-              ? error.message
-              : "Error enviando a Apps Script",
-        });
-    }
-  }
-
-  console.info("[Pedidos] Pedido creado correctamente", {
-    id: created.id,
-    orderNumber: created.order_number,
-    conversationId: args.conversationId,
-    workspaceId: args.workspaceId,
-  });
-
-  return created;
-}
-
-/**
- * Detecta palabras clave del catálogo en el mensaje del cliente y envía
- * la plantilla del producto (multimedia + copy) una sola vez por conversación.
- * Devuelve el id del producto detectado, o null.
- */
-async function sendCatalogByKeyword(args: {
-  workspaceId: string;
-  ownerId: string;
-  conversationId: string;
-  conn: Conn;
-  phone: string;
-  text: string;
-}): Promise<string | null> {
-  const raw = (args.text ?? "").trim();
-  if (!raw) return null;
-
-  const normalize = (value: string) =>
-    value
-      .toLowerCase()
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .replace(/[^\p{L}\p{N}\s]/gu, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-
-  const singularize = (value: string) => {
-    if (value.length <= 4) return value;
-
-    if (value.endsWith("es")) {
-      return value.slice(0, -2);
-    }
-
-    if (value.endsWith("s")) {
-      return value.slice(0, -1);
-    }
-
-    return value;
-  };
-
-  const normalizedMessage = normalize(raw);
-  const messageWords = normalizedMessage
-    .split(" ")
-    .filter(Boolean);
-
-  const messageWordSet = new Set([
-    ...messageWords,
-    ...messageWords.map(singularize),
-  ]);
-
-  const matchesTerm = (termValue: string): boolean => {
-    const term = normalize(termValue);
-    if (!term) return false;
-
-    /*
-     * Coincidencia directa de frase completa.
-     * Ejemplo: "peladora de papas".
-     */
-    if (normalizedMessage.includes(term)) {
-      return true;
-    }
-
-    const termWords = term
-      .split(" ")
-      .filter(Boolean);
-
-    if (termWords.length === 1) {
-      const word = termWords[0];
-      const singularWord = singularize(word);
-
-      return (
-        messageWordSet.has(word) ||
-        messageWordSet.has(singularWord)
-      );
-    }
-
-    /*
-     * Para frases de varias palabras, acepta coincidencia cuando
-     * todas las palabras importantes aparecen en el mensaje.
-     */
-    const importantWords = termWords.filter(
-      (word) =>
-        ![
-          "de",
-          "del",
-          "la",
-          "las",
-          "el",
-          "los",
-          "para",
-          "con",
-          "y",
-        ].includes(word),
-    );
-
-    if (!importantWords.length) return false;
-
-    return importantWords.every((word) => {
-      const singularWord = singularize(word);
-
-      return (
-        messageWordSet.has(word) ||
-        messageWordSet.has(singularWord)
-      );
-    });
-  };
-
-  const { data: keywords, error: keywordsError } =
-    await supabaseAdmin
-      .from("product_keywords")
-      .select(
-        "keyword, product_id, products!inner(id, name, price, promo_price, sales_copy, description, is_active)",
-      )
-      .eq("workspace_id", args.workspaceId);
-
-  if (keywordsError) {
-    console.error("[Catálogo] Error leyendo palabras clave", {
-      workspaceId: args.workspaceId,
-      error: keywordsError.message,
-      details: keywordsError.details,
-      hint: keywordsError.hint,
-      code: keywordsError.code,
-    });
-
-    return null;
-  }
-
-  if (!keywords?.length) {
-    console.warn("[Catálogo] No existen palabras clave", {
-      workspaceId: args.workspaceId,
-      message: raw,
-    });
-
-    return null;
-  }
-
-  type Row = (typeof keywords)[number] & {
-    products: {
-      id: string;
-      name: string;
-      sales_copy: string | null;
-      description: string | null;
-      is_active: boolean;
-    } | null;
-  };
-
-  let match: Row | null = null;
-  let bestScore = 0;
-  let matchedTerm = "";
-
-  for (const row of keywords as Row[]) {
-    if (!row.products || row.products.is_active === false) {
-      continue;
-    }
-
-    /*
-     * Permite guardar:
-     * "peladora"
-     * "peladora, papas, máquina"
-     * "peladora; papas; procesadora"
-     * "peladora | papas | cocina"
-     */
-    const configuredTerms = String(row.keyword ?? "")
-      .split(/[,;|\n]+/)
-      .map((term) => term.trim())
-      .filter(Boolean);
-
-    /*
-     * El nombre del producto también funciona como palabra clave
-     * automática, aunque no esté repetido en product_keywords.
-     */
-    const candidateTerms = [
-      ...configuredTerms,
-      row.products.name,
-    ];
-
-    for (const term of candidateTerms) {
-      if (!matchesTerm(term)) continue;
-
-      const normalizedTerm = normalize(term);
-      const wordCount = normalizedTerm
-        .split(" ")
-        .filter(Boolean).length;
-
-      /*
-       * Prioriza frases más específicas sobre palabras genéricas.
-       */
-      const score =
-        normalizedTerm.length +
-        wordCount * 20;
-
-      if (score > bestScore) {
-        bestScore = score;
-        match = row;
-        matchedTerm = term;
-      }
-    }
-  }
-
-  if (!match?.products) {
-    console.info("[Catálogo] Sin coincidencia de palabra clave", {
-      workspaceId: args.workspaceId,
-      message: raw,
-      normalizedMessage,
-    });
-
-    return null;
-  }
-
-  const productId = match.products.id;
-
-  console.info("[Catálogo] Producto detectado", {
-    workspaceId: args.workspaceId,
-    productId,
-    productName: match.products.name,
-    matchedTerm,
-    customerMessage: raw,
-  });
-
-  const { data: alreadySent, error: alreadySentError } =
-    await supabaseAdmin
-      .from("messages")
-      .select("id")
-      .eq("conversation_id", args.conversationId)
-      .eq("direction", "outbound")
-      .eq("catalog_product_id", productId)
-      .limit(1)
-      .maybeSingle();
-
-  if (alreadySentError) {
-    console.error(
-      "[Catálogo] Error comprobando envío anterior",
-      {
-        conversationId: args.conversationId,
-        productId,
-        error: alreadySentError.message,
-      },
-    );
-  }
-
-  if (alreadySent) {
-    return productId;
-  }
-
-  const copy =
-    match.products.sales_copy?.trim() ||
-    `${match.products.name}
-${match.products.description ?? ""}`.trim();
-
-  const { sendWhatsAppMedia } = await import(
-    "@/lib/whatsapp.server"
-  );
-
-  const { data: mediaRows, error: mediaError } =
-    await supabaseAdmin
-      .from("product_media")
-      .select("url, storage_path, media_type, position")
-      .eq("product_id", productId)
-      .order("position", { ascending: true });
-
-  if (mediaError) {
-    console.error("[Catálogo] Error leyendo multimedia", {
-      productId,
-      error: mediaError.message,
-    });
-  }
-
-  let copySentAsCaption = false;
-  let sentMediaCount = 0;
-
-  for (const media of (mediaRows ?? []).slice(0, 8)) {
-    let link =
-      typeof media.url === "string" && media.url.trim()
-        ? media.url.trim()
-        : null;
-
-    if (media.storage_path) {
-      const { data: signed, error: signedError } =
-        await supabaseAdmin.storage
-          .from("product-media")
-          .createSignedUrl(
-            media.storage_path,
-            60 * 60 * 24 * 7,
-          );
-
-      if (signedError) {
-        console.error("[Catálogo] Error creando URL firmada", {
-          productId,
-          storagePath: media.storage_path,
-          error: signedError.message,
-        });
-      }
-
-      if (signed?.signedUrl) {
-        link = signed.signedUrl;
-      }
-    }
-
-    if (!link) continue;
-
-    const rawType = String(
-      media.media_type ?? "",
-    ).toLowerCase();
-
-    const type:
-      | "image"
-      | "video"
-      | "audio"
-      | "document" =
-      rawType.startsWith("image")
-        ? "image"
-        : rawType.startsWith("video")
-          ? "video"
-          : rawType.startsWith("audio")
-            ? "audio"
-            : "document";
-
-    const caption =
-      !copySentAsCaption &&
-      (type === "image" || type === "video")
-        ? copy.slice(0, 1024)
-        : undefined;
-
-    try {
-      const wamid = await sendWhatsAppMedia(
-        args.conn,
-        args.phone,
-        link,
-        type,
-        caption,
-      );
-
-      sentMediaCount += 1;
-
-      if (caption) {
-        copySentAsCaption = true;
-      }
-
-      const { error: insertError } =
-        await supabaseAdmin.from("messages").insert({
-          workspace_id: args.workspaceId,
-          user_id: args.ownerId,
-          conversation_id: args.conversationId,
-          direction: "outbound",
-          sender: "ai",
-          body:
-            caption ||
-            `[${type}] ${match.products.name}`,
-          media_url: link,
-          media_type: type,
-          status: "sent",
-          wamid,
-          catalog_product_id:
-            caption ? productId : null,
-        });
-
-      if (insertError) {
-        console.error(
-          "[Catálogo] Error guardando multimedia",
+        Update: {
+          ad_id?: string
+          created_at?: string
+          id?: string
+          media_url?: string | null
+          name?: string | null
+          product_id?: string | null
+          updated_at?: string
+          user_id?: string
+          workspace_id?: string
+        }
+        Relationships: [
           {
-            productId,
-            error: insertError.message,
+            foreignKeyName: "ads_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
+            referencedColumns: ["id"]
           },
-        );
+          {
+            foreignKeyName: "ads_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "public_catalog_products"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ads_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
       }
-    } catch (error) {
-      console.error("[Catálogo] Meta rechazó el archivo", {
-        productId,
-        type,
-        link,
-        error:
-          error instanceof Error
-            ? error.message
-            : String(error),
-      });
+      ai_settings: {
+        Row: {
+          ai_enabled: boolean
+          autodetect_model: boolean
+          created_at: string
+          gemini_api_key: string | null
+          id: string
+          last_error: string | null
+          model: string
+          reply_delay_seconds: number
+          system_instruction: string
+          updated_at: string
+          user_id: string
+          workspace_id: string
+        }
+        Insert: {
+          ai_enabled?: boolean
+          autodetect_model?: boolean
+          created_at?: string
+          gemini_api_key?: string | null
+          id?: string
+          last_error?: string | null
+          model?: string
+          reply_delay_seconds?: number
+          system_instruction?: string
+          updated_at?: string
+          user_id: string
+          workspace_id: string
+        }
+        Update: {
+          ai_enabled?: boolean
+          autodetect_model?: boolean
+          created_at?: string
+          gemini_api_key?: string | null
+          id?: string
+          last_error?: string | null
+          model?: string
+          reply_delay_seconds?: number
+          system_instruction?: string
+          updated_at?: string
+          user_id?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ai_settings_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: true
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      app_messages: {
+        Row: {
+          body: string
+          key: string
+          title: string | null
+          updated_at: string
+        }
+        Insert: {
+          body?: string
+          key: string
+          title?: string | null
+          updated_at?: string
+        }
+        Update: {
+          body?: string
+          key?: string
+          title?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      audit_logs: {
+        Row: {
+          action: string
+          created_at: string
+          details: Json | null
+          entity: string | null
+          entity_id: string | null
+          id: string
+          user_id: string | null
+          workspace_id: string | null
+        }
+        Insert: {
+          action: string
+          created_at?: string
+          details?: Json | null
+          entity?: string | null
+          entity_id?: string | null
+          id?: string
+          user_id?: string | null
+          workspace_id?: string | null
+        }
+        Update: {
+          action?: string
+          created_at?: string
+          details?: Json | null
+          entity?: string | null
+          entity_id?: string | null
+          id?: string
+          user_id?: string | null
+          workspace_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "audit_logs_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      complaints: {
+        Row: {
+          body: string
+          contact_id: string | null
+          contact_name: string | null
+          conversation_id: string | null
+          created_at: string
+          id: string
+          message_id: string | null
+          note: string | null
+          phone: string
+          reason: string
+          severity: string
+          status: string
+          updated_at: string
+          user_id: string
+          workspace_id: string
+        }
+        Insert: {
+          body: string
+          contact_id?: string | null
+          contact_name?: string | null
+          conversation_id?: string | null
+          created_at?: string
+          id?: string
+          message_id?: string | null
+          note?: string | null
+          phone: string
+          reason?: string
+          severity?: string
+          status?: string
+          updated_at?: string
+          user_id: string
+          workspace_id: string
+        }
+        Update: {
+          body?: string
+          contact_id?: string | null
+          contact_name?: string | null
+          conversation_id?: string | null
+          created_at?: string
+          id?: string
+          message_id?: string | null
+          note?: string | null
+          phone?: string
+          reason?: string
+          severity?: string
+          status?: string
+          updated_at?: string
+          user_id?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "complaints_contact_id_fkey"
+            columns: ["contact_id"]
+            isOneToOne: false
+            referencedRelation: "contacts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "complaints_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "complaints_message_id_fkey"
+            columns: ["message_id"]
+            isOneToOne: false
+            referencedRelation: "messages"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      contacts: {
+        Row: {
+          city: string | null
+          created_at: string
+          id: string
+          name: string | null
+          notes: string | null
+          phone: string
+          updated_at: string
+          user_id: string
+          workspace_id: string
+        }
+        Insert: {
+          city?: string | null
+          created_at?: string
+          id?: string
+          name?: string | null
+          notes?: string | null
+          phone: string
+          updated_at?: string
+          user_id: string
+          workspace_id: string
+        }
+        Update: {
+          city?: string | null
+          created_at?: string
+          id?: string
+          name?: string | null
+          notes?: string | null
+          phone?: string
+          updated_at?: string
+          user_id?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "contacts_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      conversation_balances: {
+        Row: {
+          available: number
+          consumed: number
+          created_at: string
+          expires_at: string | null
+          id: string
+          purchased: number
+          updated_at: string
+          user_id: string
+          workspace_id: string
+        }
+        Insert: {
+          available?: number
+          consumed?: number
+          created_at?: string
+          expires_at?: string | null
+          id?: string
+          purchased?: number
+          updated_at?: string
+          user_id: string
+          workspace_id: string
+        }
+        Update: {
+          available?: number
+          consumed?: number
+          created_at?: string
+          expires_at?: string | null
+          id?: string
+          purchased?: number
+          updated_at?: string
+          user_id?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "conversation_balances_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: true
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      conversation_labels: {
+        Row: {
+          conversation_id: string
+          created_at: string
+          id: string
+          label_id: string
+          user_id: string
+          workspace_id: string
+        }
+        Insert: {
+          conversation_id: string
+          created_at?: string
+          id?: string
+          label_id: string
+          user_id: string
+          workspace_id: string
+        }
+        Update: {
+          conversation_id?: string
+          created_at?: string
+          id?: string
+          label_id?: string
+          user_id?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "conversation_labels_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "conversation_labels_label_id_fkey"
+            columns: ["label_id"]
+            isOneToOne: false
+            referencedRelation: "labels"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "conversation_labels_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      conversation_usage: {
+        Row: {
+          amount: number
+          conversation_id: string | null
+          created_at: string
+          id: string
+          reason: string
+          user_id: string
+          wamid: string | null
+          workspace_id: string
+        }
+        Insert: {
+          amount?: number
+          conversation_id?: string | null
+          created_at?: string
+          id?: string
+          reason?: string
+          user_id: string
+          wamid?: string | null
+          workspace_id: string
+        }
+        Update: {
+          amount?: number
+          conversation_id?: string | null
+          created_at?: string
+          id?: string
+          reason?: string
+          user_id?: string
+          wamid?: string | null
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "conversation_usage_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "conversation_usage_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      conversations: {
+        Row: {
+          ad_id: string | null
+          ad_media_url: string | null
+          ai_paused: boolean
+          contact_id: string
+          created_at: string
+          followups_paused: boolean
+          id: string
+          is_closed: boolean
+          last_message: string | null
+          last_message_at: string | null
+          product_id: string | null
+          sale_closed: boolean
+          status: string
+          unread_count: number
+          updated_at: string
+          user_id: string
+          workspace_id: string
+        }
+        Insert: {
+          ad_id?: string | null
+          ad_media_url?: string | null
+          ai_paused?: boolean
+          contact_id: string
+          created_at?: string
+          followups_paused?: boolean
+          id?: string
+          is_closed?: boolean
+          last_message?: string | null
+          last_message_at?: string | null
+          product_id?: string | null
+          sale_closed?: boolean
+          status?: string
+          unread_count?: number
+          updated_at?: string
+          user_id: string
+          workspace_id: string
+        }
+        Update: {
+          ad_id?: string | null
+          ad_media_url?: string | null
+          ai_paused?: boolean
+          contact_id?: string
+          created_at?: string
+          followups_paused?: boolean
+          id?: string
+          is_closed?: boolean
+          last_message?: string | null
+          last_message_at?: string | null
+          product_id?: string | null
+          sale_closed?: boolean
+          status?: string
+          unread_count?: number
+          updated_at?: string
+          user_id?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "conversations_contact_id_fkey"
+            columns: ["contact_id"]
+            isOneToOne: false
+            referencedRelation: "contacts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "conversations_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "conversations_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "public_catalog_products"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "conversations_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      followup_sends: {
+        Row: {
+          conversation_id: string
+          id: string
+          product_id: string | null
+          sent_at: string
+          step: number
+          workspace_id: string
+        }
+        Insert: {
+          conversation_id: string
+          id?: string
+          product_id?: string | null
+          sent_at?: string
+          step?: number
+          workspace_id: string
+        }
+        Update: {
+          conversation_id?: string
+          id?: string
+          product_id?: string | null
+          sent_at?: string
+          step?: number
+          workspace_id?: string
+        }
+        Relationships: []
+      }
+      integration_logs: {
+        Row: {
+          created_at: string
+          details: Json | null
+          id: string
+          integration: string
+          level: string
+          message: string
+          user_id: string | null
+          workspace_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          details?: Json | null
+          id?: string
+          integration: string
+          level?: string
+          message: string
+          user_id?: string | null
+          workspace_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          details?: Json | null
+          id?: string
+          integration?: string
+          level?: string
+          message?: string
+          user_id?: string | null
+          workspace_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "integration_logs_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      labels: {
+        Row: {
+          color: string
+          created_at: string
+          id: string
+          name: string
+          updated_at: string
+          user_id: string
+          workspace_id: string
+        }
+        Insert: {
+          color?: string
+          created_at?: string
+          id?: string
+          name: string
+          updated_at?: string
+          user_id: string
+          workspace_id: string
+        }
+        Update: {
+          color?: string
+          created_at?: string
+          id?: string
+          name?: string
+          updated_at?: string
+          user_id?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "labels_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      messages: {
+        Row: {
+          body: string | null
+          catalog_product_id: string | null
+          conversation_id: string
+          created_at: string
+          direction: Database["public"]["Enums"]["msg_direction"]
+          error: string | null
+          id: string
+          media_type: string | null
+          media_url: string | null
+          sender: Database["public"]["Enums"]["msg_sender"]
+          status: string
+          transcript: string | null
+          user_id: string
+          wamid: string | null
+          workspace_id: string
+        }
+        Insert: {
+          body?: string | null
+          catalog_product_id?: string | null
+          conversation_id: string
+          created_at?: string
+          direction: Database["public"]["Enums"]["msg_direction"]
+          error?: string | null
+          id?: string
+          media_type?: string | null
+          media_url?: string | null
+          sender?: Database["public"]["Enums"]["msg_sender"]
+          status?: string
+          transcript?: string | null
+          user_id: string
+          wamid?: string | null
+          workspace_id: string
+        }
+        Update: {
+          body?: string | null
+          catalog_product_id?: string | null
+          conversation_id?: string
+          created_at?: string
+          direction?: Database["public"]["Enums"]["msg_direction"]
+          error?: string | null
+          id?: string
+          media_type?: string | null
+          media_url?: string | null
+          sender?: Database["public"]["Enums"]["msg_sender"]
+          status?: string
+          transcript?: string | null
+          user_id?: string
+          wamid?: string | null
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "messages_catalog_product_id_fkey"
+            columns: ["catalog_product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "messages_catalog_product_id_fkey"
+            columns: ["catalog_product_id"]
+            isOneToOne: false
+            referencedRelation: "public_catalog_products"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "messages_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "messages_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      notifications: {
+        Row: {
+          audience: string
+          body: string | null
+          created_at: string
+          id: string
+          link: string | null
+          read_at: string | null
+          title: string
+          type: string
+          user_id: string | null
+          workspace_id: string | null
+        }
+        Insert: {
+          audience?: string
+          body?: string | null
+          created_at?: string
+          id?: string
+          link?: string | null
+          read_at?: string | null
+          title: string
+          type?: string
+          user_id?: string | null
+          workspace_id?: string | null
+        }
+        Update: {
+          audience?: string
+          body?: string | null
+          created_at?: string
+          id?: string
+          link?: string | null
+          read_at?: string | null
+          title?: string
+          type?: string
+          user_id?: string | null
+          workspace_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "notifications_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      order_items: {
+        Row: {
+          created_at: string
+          id: string
+          order_id: string
+          price: number
+          product_id: string | null
+          quantity: number
+          sku: string | null
+          title: string
+          user_id: string
+          workspace_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          order_id: string
+          price?: number
+          product_id?: string | null
+          quantity?: number
+          sku?: string | null
+          title: string
+          user_id: string
+          workspace_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          order_id?: string
+          price?: number
+          product_id?: string | null
+          quantity?: number
+          sku?: string | null
+          title?: string
+          user_id?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "order_items_order_id_fkey"
+            columns: ["order_id"]
+            isOneToOne: false
+            referencedRelation: "orders"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "order_items_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "order_items_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "public_catalog_products"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "order_items_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      order_status_history: {
+        Row: {
+          created_at: string
+          id: string
+          note: string | null
+          order_id: string
+          status: Database["public"]["Enums"]["order_state"]
+          user_id: string | null
+          workspace_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          note?: string | null
+          order_id: string
+          status: Database["public"]["Enums"]["order_state"]
+          user_id?: string | null
+          workspace_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          note?: string | null
+          order_id?: string
+          status?: Database["public"]["Enums"]["order_state"]
+          user_id?: string | null
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "order_status_history_order_id_fkey"
+            columns: ["order_id"]
+            isOneToOne: false
+            referencedRelation: "orders"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "order_status_history_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      orders: {
+        Row: {
+          ad_id: string | null
+          city: string | null
+          contact_id: string | null
+          conversation_id: string | null
+          created_at: string
+          created_by: string | null
+          customer_name: string
+          departamento: string | null
+          district: string | null
+          id: string
+          observations: string | null
+          order_number: string
+          payment_method: string | null
+          payment_status: Database["public"]["Enums"]["payment_state"]
+          phone: string
+          price: number
+          product_id: string | null
+          product_title: string | null
+          quantity: number
+          receipt_url: string | null
+          reference: string | null
+          sku: string | null
+          status: Database["public"]["Enums"]["order_state"]
+          street: string | null
+          tags: string[]
+          total: number
+          updated_at: string
+          user_id: string
+          workspace_id: string
+        }
+        Insert: {
+          ad_id?: string | null
+          city?: string | null
+          contact_id?: string | null
+          conversation_id?: string | null
+          created_at?: string
+          created_by?: string | null
+          customer_name: string
+          departamento?: string | null
+          district?: string | null
+          id?: string
+          observations?: string | null
+          order_number: string
+          payment_method?: string | null
+          payment_status?: Database["public"]["Enums"]["payment_state"]
+          phone: string
+          price?: number
+          product_id?: string | null
+          product_title?: string | null
+          quantity?: number
+          receipt_url?: string | null
+          reference?: string | null
+          sku?: string | null
+          status?: Database["public"]["Enums"]["order_state"]
+          street?: string | null
+          tags?: string[]
+          total?: number
+          updated_at?: string
+          user_id: string
+          workspace_id: string
+        }
+        Update: {
+          ad_id?: string | null
+          city?: string | null
+          contact_id?: string | null
+          conversation_id?: string | null
+          created_at?: string
+          created_by?: string | null
+          customer_name?: string
+          departamento?: string | null
+          district?: string | null
+          id?: string
+          observations?: string | null
+          order_number?: string
+          payment_method?: string | null
+          payment_status?: Database["public"]["Enums"]["payment_state"]
+          phone?: string
+          price?: number
+          product_id?: string | null
+          product_title?: string | null
+          quantity?: number
+          receipt_url?: string | null
+          reference?: string | null
+          sku?: string | null
+          status?: Database["public"]["Enums"]["order_state"]
+          street?: string | null
+          tags?: string[]
+          total?: number
+          updated_at?: string
+          user_id?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "orders_contact_id_fkey"
+            columns: ["contact_id"]
+            isOneToOne: false
+            referencedRelation: "contacts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "orders_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "orders_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "orders_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "public_catalog_products"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "orders_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      payment_receipts: {
+        Row: {
+          amount: number | null
+          created_at: string
+          id: string
+          note: string | null
+          order_id: string | null
+          url: string
+          user_id: string
+          workspace_id: string
+        }
+        Insert: {
+          amount?: number | null
+          created_at?: string
+          id?: string
+          note?: string | null
+          order_id?: string | null
+          url: string
+          user_id: string
+          workspace_id: string
+        }
+        Update: {
+          amount?: number | null
+          created_at?: string
+          id?: string
+          note?: string | null
+          order_id?: string | null
+          url?: string
+          user_id?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "payment_receipts_order_id_fkey"
+            columns: ["order_id"]
+            isOneToOne: false
+            referencedRelation: "orders"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "payment_receipts_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      plan_purchases: {
+        Row: {
+          admin_note: string | null
+          amount: number
+          approved_at: string | null
+          conversations: number
+          created_at: string
+          expires_at: string | null
+          id: string
+          plan_id: string | null
+          plan_name: string | null
+          receipt_url: string | null
+          status: Database["public"]["Enums"]["purchase_state"]
+          updated_at: string
+          user_id: string
+          workspace_id: string
+        }
+        Insert: {
+          admin_note?: string | null
+          amount?: number
+          approved_at?: string | null
+          conversations?: number
+          created_at?: string
+          expires_at?: string | null
+          id?: string
+          plan_id?: string | null
+          plan_name?: string | null
+          receipt_url?: string | null
+          status?: Database["public"]["Enums"]["purchase_state"]
+          updated_at?: string
+          user_id: string
+          workspace_id: string
+        }
+        Update: {
+          admin_note?: string | null
+          amount?: number
+          approved_at?: string | null
+          conversations?: number
+          created_at?: string
+          expires_at?: string | null
+          id?: string
+          plan_id?: string | null
+          plan_name?: string | null
+          receipt_url?: string | null
+          status?: Database["public"]["Enums"]["purchase_state"]
+          updated_at?: string
+          user_id?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "plan_purchases_plan_id_fkey"
+            columns: ["plan_id"]
+            isOneToOne: false
+            referencedRelation: "plans"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "plan_purchases_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      plans: {
+        Row: {
+          benefits: string[]
+          conversations: number
+          created_at: string
+          duration_days: number
+          id: string
+          is_active: boolean
+          name: string
+          price: number
+          updated_at: string
+        }
+        Insert: {
+          benefits?: string[]
+          conversations?: number
+          created_at?: string
+          duration_days?: number
+          id?: string
+          is_active?: boolean
+          name: string
+          price?: number
+          updated_at?: string
+        }
+        Update: {
+          benefits?: string[]
+          conversations?: number
+          created_at?: string
+          duration_days?: number
+          id?: string
+          is_active?: boolean
+          name?: string
+          price?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      product_followups: {
+        Row: {
+          created_at: string
+          delay_minutes: number
+          id: string
+          is_active: boolean
+          message: string
+          product_id: string
+          skip_if_purchased: boolean
+          step: number
+          updated_at: string
+          user_id: string
+          workspace_id: string
+        }
+        Insert: {
+          created_at?: string
+          delay_minutes?: number
+          id?: string
+          is_active?: boolean
+          message: string
+          product_id: string
+          skip_if_purchased?: boolean
+          step?: number
+          updated_at?: string
+          user_id: string
+          workspace_id: string
+        }
+        Update: {
+          created_at?: string
+          delay_minutes?: number
+          id?: string
+          is_active?: boolean
+          message?: string
+          product_id?: string
+          skip_if_purchased?: boolean
+          step?: number
+          updated_at?: string
+          user_id?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "product_followups_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "product_followups_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "public_catalog_products"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "product_followups_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      product_keywords: {
+        Row: {
+          created_at: string
+          id: string
+          keyword: string
+          product_id: string
+          user_id: string
+          workspace_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          keyword: string
+          product_id: string
+          user_id: string
+          workspace_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          keyword?: string
+          product_id?: string
+          user_id?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "product_keywords_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "product_keywords_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "public_catalog_products"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "product_keywords_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      product_media: {
+        Row: {
+          created_at: string
+          id: string
+          media_type: string
+          position: number
+          product_id: string
+          storage_path: string | null
+          url: string
+          user_id: string
+          workspace_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          media_type: string
+          position?: number
+          product_id: string
+          storage_path?: string | null
+          url: string
+          user_id: string
+          workspace_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          media_type?: string
+          position?: number
+          product_id?: string
+          storage_path?: string | null
+          url?: string
+          user_id?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "product_media_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "product_media_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "public_catalog_products"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "product_media_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      products: {
+        Row: {
+          ai_instructions: string | null
+          created_at: string
+          created_by: string | null
+          delivery_info: string | null
+          description: string | null
+          followup_enabled: boolean
+          followup_message: string | null
+          followup_minutes: number
+          id: string
+          is_active: boolean
+          name: string
+          no_repeat_template: boolean
+          price: number
+          promo_price: number | null
+          sales_copy: string | null
+          sku: string | null
+          stock: number
+          updated_at: string
+          user_id: string
+          variants: Json
+          workspace_id: string
+        }
+        Insert: {
+          ai_instructions?: string | null
+          created_at?: string
+          created_by?: string | null
+          delivery_info?: string | null
+          description?: string | null
+          followup_enabled?: boolean
+          followup_message?: string | null
+          followup_minutes?: number
+          id?: string
+          is_active?: boolean
+          name: string
+          no_repeat_template?: boolean
+          price?: number
+          promo_price?: number | null
+          sales_copy?: string | null
+          sku?: string | null
+          stock?: number
+          updated_at?: string
+          user_id: string
+          variants?: Json
+          workspace_id: string
+        }
+        Update: {
+          ai_instructions?: string | null
+          created_at?: string
+          created_by?: string | null
+          delivery_info?: string | null
+          description?: string | null
+          followup_enabled?: boolean
+          followup_message?: string | null
+          followup_minutes?: number
+          id?: string
+          is_active?: boolean
+          name?: string
+          no_repeat_template?: boolean
+          price?: number
+          promo_price?: number | null
+          sales_copy?: string | null
+          sku?: string | null
+          stock?: number
+          updated_at?: string
+          user_id?: string
+          variants?: Json
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "products_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      profiles: {
+        Row: {
+          avatar_url: string | null
+          company: string | null
+          created_at: string
+          email: string | null
+          full_name: string | null
+          id: string
+          phone: string | null
+          status: Database["public"]["Enums"]["user_status"]
+          status_message: string | null
+          updated_at: string
+          workspace_id: string | null
+        }
+        Insert: {
+          avatar_url?: string | null
+          company?: string | null
+          created_at?: string
+          email?: string | null
+          full_name?: string | null
+          id: string
+          phone?: string | null
+          status?: Database["public"]["Enums"]["user_status"]
+          status_message?: string | null
+          updated_at?: string
+          workspace_id?: string | null
+        }
+        Update: {
+          avatar_url?: string | null
+          company?: string | null
+          created_at?: string
+          email?: string | null
+          full_name?: string | null
+          id?: string
+          phone?: string | null
+          status?: Database["public"]["Enums"]["user_status"]
+          status_message?: string | null
+          updated_at?: string
+          workspace_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "profiles_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      training_entries: {
+        Row: {
+          category: string
+          content: string
+          created_at: string
+          created_by: string | null
+          id: string
+          is_active: boolean
+          keywords: string[]
+          priority: number
+          product_id: string | null
+          schedule_from: string | null
+          schedule_to: string | null
+          scope: string
+          title: string
+          updated_at: string
+          user_id: string
+          workspace_id: string
+        }
+        Insert: {
+          category?: string
+          content: string
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          is_active?: boolean
+          keywords?: string[]
+          priority?: number
+          product_id?: string | null
+          schedule_from?: string | null
+          schedule_to?: string | null
+          scope?: string
+          title: string
+          updated_at?: string
+          user_id: string
+          workspace_id: string
+        }
+        Update: {
+          category?: string
+          content?: string
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          is_active?: boolean
+          keywords?: string[]
+          priority?: number
+          product_id?: string | null
+          schedule_from?: string | null
+          schedule_to?: string | null
+          scope?: string
+          title?: string
+          updated_at?: string
+          user_id?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "training_entries_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      user_roles: {
+        Row: {
+          created_at: string
+          id: string
+          role: Database["public"]["Enums"]["app_role"]
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          role: Database["public"]["Enums"]["app_role"]
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          role?: Database["public"]["Enums"]["app_role"]
+          user_id?: string
+        }
+        Relationships: []
+      }
+      user_settings: {
+        Row: {
+          apps_script_url: string | null
+          business_name: string | null
+          catalog_enabled: boolean
+          created_at: string
+          currency: string
+          google_sheets_url: string | null
+          id: string
+          last_sheet_sync: string | null
+          notify_numbers: string[]
+          timezone: string
+          updated_at: string
+          user_id: string
+          workspace_id: string
+        }
+        Insert: {
+          apps_script_url?: string | null
+          business_name?: string | null
+          catalog_enabled?: boolean
+          created_at?: string
+          currency?: string
+          google_sheets_url?: string | null
+          id?: string
+          last_sheet_sync?: string | null
+          notify_numbers?: string[]
+          timezone?: string
+          updated_at?: string
+          user_id: string
+          workspace_id: string
+        }
+        Update: {
+          apps_script_url?: string | null
+          business_name?: string | null
+          catalog_enabled?: boolean
+          created_at?: string
+          currency?: string
+          google_sheets_url?: string | null
+          id?: string
+          last_sheet_sync?: string | null
+          notify_numbers?: string[]
+          timezone?: string
+          updated_at?: string
+          user_id?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "user_settings_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: true
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      webhook_events: {
+        Row: {
+          created_at: string
+          error: string | null
+          event_id: string
+          id: string
+          payload: Json | null
+          processed: boolean
+          workspace_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          error?: string | null
+          event_id: string
+          id?: string
+          payload?: Json | null
+          processed?: boolean
+          workspace_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          error?: string | null
+          event_id?: string
+          id?: string
+          payload?: Json | null
+          processed?: boolean
+          workspace_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "webhook_events_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      whatsapp_connections: {
+        Row: {
+          access_token: string | null
+          app_id: string | null
+          app_secret: string | null
+          connected: boolean
+          created_at: string
+          display_phone: string | null
+          id: string
+          last_checked_at: string | null
+          last_error: string | null
+          phone_number_id: string | null
+          updated_at: string
+          user_id: string
+          verify_token: string | null
+          waba_id: string | null
+          workspace_id: string
+        }
+        Insert: {
+          access_token?: string | null
+          app_id?: string | null
+          app_secret?: string | null
+          connected?: boolean
+          created_at?: string
+          display_phone?: string | null
+          id?: string
+          last_checked_at?: string | null
+          last_error?: string | null
+          phone_number_id?: string | null
+          updated_at?: string
+          user_id: string
+          verify_token?: string | null
+          waba_id?: string | null
+          workspace_id: string
+        }
+        Update: {
+          access_token?: string | null
+          app_id?: string | null
+          app_secret?: string | null
+          connected?: boolean
+          created_at?: string
+          display_phone?: string | null
+          id?: string
+          last_checked_at?: string | null
+          last_error?: string | null
+          phone_number_id?: string | null
+          updated_at?: string
+          user_id?: string
+          verify_token?: string | null
+          waba_id?: string | null
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "whatsapp_connections_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: true
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      workspace_members: {
+        Row: {
+          created_at: string
+          id: string
+          user_id: string
+          workspace_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          user_id: string
+          workspace_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          user_id?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "workspace_members_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      workspaces: {
+        Row: {
+          created_at: string
+          id: string
+          name: string
+          owner_id: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          name: string
+          owner_id: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          name?: string
+          owner_id?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+    }
+    Views: {
+      public_catalog_products: {
+        Row: {
+          created_at: string | null
+          delivery_info: string | null
+          description: string | null
+          id: string | null
+          name: string | null
+          price: number | null
+          promo_price: number | null
+          sales_copy: string | null
+          workspace_id: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          delivery_info?: string | null
+          description?: string | null
+          id?: string | null
+          name?: string | null
+          price?: number | null
+          promo_price?: number | null
+          sales_copy?: string | null
+          workspace_id?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          delivery_info?: string | null
+          description?: string | null
+          id?: string | null
+          name?: string | null
+          price?: number | null
+          promo_price?: number | null
+          sales_copy?: string | null
+          workspace_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "products_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+    }
+    Functions: {
+      current_workspace_id: { Args: never; Returns: string }
+      has_role: {
+        Args: {
+          _role: Database["public"]["Enums"]["app_role"]
+          _user_id: string
+        }
+        Returns: boolean
+      }
+      is_public_catalog_product: {
+        Args: { _product_id: string }
+        Returns: boolean
+      }
+      is_workspace_member: { Args: { _workspace_id: string }; Returns: boolean }
+    }
+    Enums: {
+      app_role: "admin" | "seller"
+      msg_direction: "inbound" | "outbound"
+      msg_sender: "customer" | "ai" | "agent" | "system"
+      order_state:
+        | "nuevo"
+        | "confirmado"
+        | "cargado"
+        | "preparacion"
+        | "enviado"
+        | "entregado"
+        | "cancelado"
+      payment_state:
+        | "pendiente"
+        | "anticipado"
+        | "pagado"
+        | "contraentrega"
+        | "rechazado"
+      purchase_state: "pendiente" | "aprobado" | "rechazado"
+      user_status:
+        | "pending"
+        | "approved"
+        | "rejected"
+        | "blocked"
+        | "active"
+        | "suspended"
+    }
+    CompositeTypes: {
+      [_ in never]: never
     }
   }
-
-  if (!copySentAsCaption) {
-    try {
-      const wamid = await sendWhatsAppText(
-        args.conn,
-        args.phone,
-        copy,
-      );
-
-      const { error: copyError } =
-        await supabaseAdmin.from("messages").insert({
-          workspace_id: args.workspaceId,
-          user_id: args.ownerId,
-          conversation_id: args.conversationId,
-          direction: "outbound",
-          sender: "ai",
-          body: copy,
-          catalog_product_id: productId,
-          status: "sent",
-          wamid,
-        });
-
-      if (copyError) {
-        console.error("[Catálogo] Error guardando copy", {
-          productId,
-          error: copyError.message,
-        });
-      }
-    } catch (error) {
-      console.error("[Catálogo] Error enviando copy", {
-        productId,
-        error:
-          error instanceof Error
-            ? error.message
-            : String(error),
-      });
-
-      if (sentMediaCount === 0) {
-        return null;
-      }
-    }
-  }
-
-  await supabaseAdmin
-    .from("conversations")
-    .update({
-      product_id: productId,
-      last_message: copy,
-      last_message_at: new Date().toISOString(),
-    })
-    .eq("id", args.conversationId);
-
-  return productId;
 }
+
+type DatabaseWithoutInternals = Omit<Database, "__InternalSupabase">
+
+type DefaultSchema = DatabaseWithoutInternals[Extract<keyof Database, "public">]
+
+export type Tables<
+  DefaultSchemaTableNameOrOptions extends
+    | keyof (DefaultSchema["Tables"] & DefaultSchema["Views"])
+    | { schema: keyof DatabaseWithoutInternals },
+  TableName extends DefaultSchemaTableNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
+        DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])
+    : never = never,
+> = DefaultSchemaTableNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
+      DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])[TableName] extends {
+      Row: infer R
+    }
+    ? R
+    : never
+  : DefaultSchemaTableNameOrOptions extends keyof (DefaultSchema["Tables"] &
+        DefaultSchema["Views"])
+    ? (DefaultSchema["Tables"] &
+        DefaultSchema["Views"])[DefaultSchemaTableNameOrOptions] extends {
+        Row: infer R
+      }
+      ? R
+      : never
+    : never
+
+export type TablesInsert<
+  DefaultSchemaTableNameOrOptions extends
+    | keyof DefaultSchema["Tables"]
+    | { schema: keyof DatabaseWithoutInternals },
+  TableName extends DefaultSchemaTableNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
+    : never = never,
+> = DefaultSchemaTableNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"][TableName] extends {
+      Insert: infer I
+    }
+    ? I
+    : never
+  : DefaultSchemaTableNameOrOptions extends keyof DefaultSchema["Tables"]
+    ? DefaultSchema["Tables"][DefaultSchemaTableNameOrOptions] extends {
+        Insert: infer I
+      }
+      ? I
+      : never
+    : never
+
+export type TablesUpdate<
+  DefaultSchemaTableNameOrOptions extends
+    | keyof DefaultSchema["Tables"]
+    | { schema: keyof DatabaseWithoutInternals },
+  TableName extends DefaultSchemaTableNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
+    : never = never,
+> = DefaultSchemaTableNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"][TableName] extends {
+      Update: infer U
+    }
+    ? U
+    : never
+  : DefaultSchemaTableNameOrOptions extends keyof DefaultSchema["Tables"]
+    ? DefaultSchema["Tables"][DefaultSchemaTableNameOrOptions] extends {
+        Update: infer U
+      }
+      ? U
+      : never
+    : never
+
+export type Enums<
+  DefaultSchemaEnumNameOrOptions extends
+    | keyof DefaultSchema["Enums"]
+    | { schema: keyof DatabaseWithoutInternals },
+  EnumName extends DefaultSchemaEnumNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"]
+    : never = never,
+> = DefaultSchemaEnumNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"][EnumName]
+  : DefaultSchemaEnumNameOrOptions extends keyof DefaultSchema["Enums"]
+    ? DefaultSchema["Enums"][DefaultSchemaEnumNameOrOptions]
+    : never
+
+export type CompositeTypes<
+  PublicCompositeTypeNameOrOptions extends
+    | keyof DefaultSchema["CompositeTypes"]
+    | { schema: keyof DatabaseWithoutInternals },
+  CompositeTypeName extends PublicCompositeTypeNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"]
+    : never = never,
+> = PublicCompositeTypeNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"][CompositeTypeName]
+  : PublicCompositeTypeNameOrOptions extends keyof DefaultSchema["CompositeTypes"]
+    ? DefaultSchema["CompositeTypes"][PublicCompositeTypeNameOrOptions]
+    : never
+
+export const Constants = {
+  public: {
+    Enums: {
+      app_role: ["admin", "seller"],
+      msg_direction: ["inbound", "outbound"],
+      msg_sender: ["customer", "ai", "agent", "system"],
+      order_state: [
+        "nuevo",
+        "confirmado",
+        "cargado",
+        "preparacion",
+        "enviado",
+        "entregado",
+        "cancelado",
+      ],
+      payment_state: [
+        "pendiente",
+        "anticipado",
+        "pagado",
+        "contraentrega",
+        "rechazado",
+      ],
+      purchase_state: ["pendiente", "aprobado", "rechazado"],
+      user_status: [
+        "pending",
+        "approved",
+        "rejected",
+        "blocked",
+        "active",
+        "suspended",
+      ],
+    },
+  },
+} as const
