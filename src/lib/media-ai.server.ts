@@ -1,151 +1,113 @@
-const GATEWAY = "https://ai.gateway.lovable.dev/v1/chat/completions";
+const GEMINI_MODEL =
+  process.env.GEMINI_MEDIA_MODEL?.trim() || "gemini-2.5-flash";
 
-/**
- * Lovable documenta Gemini 3 Flash como modelo predeterminado.
- * Puedes sobrescribirlo con LOVABLE_MEDIA_MODEL sin modificar el código.
- */
-const MODEL =
-  process.env.LOVABLE_MEDIA_MODEL?.trim() || "google/gemini-3-flash";
-
-function requireKey(): string {
-  const key = process.env.LOVABLE_API_KEY?.trim();
+function requireGeminiKey(): string {
+  const key = process.env.GEMINI_API_KEY?.trim();
 
   if (!key) {
-    throw new Error("Falta la variable de entorno LOVABLE_API_KEY");
+    throw new Error("Falta la variable de entorno GEMINI_API_KEY");
   }
 
   return key;
 }
 
-type TextBlock = {
-  type: "text";
-  text: string;
-};
-
-type ImageBlock = {
-  type: "image_url";
-  image_url: {
-    url: string;
-  };
-};
-
-type AudioBlock = {
-  type: "input_audio";
-  input_audio: {
-    data: string;
-    format: string;
-  };
-};
-
-type Block = TextBlock | ImageBlock | AudioBlock;
-
-type GatewayContent =
-  | string
-  | Array<{
-      type?: string;
-      text?: string;
-    }>;
-
-type GatewayResponse = {
-  choices?: Array<{
-    message?: {
-      content?: GatewayContent;
-    };
-  }>;
-  error?: {
-    message?: string;
-    type?: string;
-    code?: string;
-  };
-};
-
-function extractContent(json: GatewayResponse): string {
-  const content = json.choices?.[0]?.message?.content;
-
-  if (typeof content === "string") {
-    return content.trim();
-  }
-
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => part.text?.trim() || "")
-      .filter(Boolean)
-      .join("\n")
-      .trim();
-  }
-
-  return "";
-}
-
-async function ask(blocks: Block[]): Promise<string> {
-  const response = await fetch(GATEWAY, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Lovable-API-Key": requireKey(),
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      messages: [
-        {
-          role: "user",
-          content: blocks,
-        },
-      ],
-      temperature: 0.1,
-    }),
-  });
-
-  const rawResponse = await response.text();
-
-  let json: GatewayResponse | null = null;
-
-  try {
-    json = JSON.parse(rawResponse) as GatewayResponse;
-  } catch {
-    json = null;
-  }
-
-  if (response.status === 429) {
-    throw new Error("Lovable AI alcanzó el límite de solicitudes");
-  }
-
-  if (response.status === 402) {
-    throw new Error("Los créditos de Lovable AI están agotados");
-  }
-
-  if (response.status === 401 || response.status === 403) {
-    throw new Error(
-      "LOVABLE_API_KEY inválida o sin permiso para usar Lovable AI",
-    );
-  }
-
-  if (!response.ok) {
-    const gatewayMessage =
-      json?.error?.message ||
-      rawResponse.slice(0, 500) ||
-      response.statusText;
-
-    throw new Error(
-      `media_ai_error (${response.status}): ${gatewayMessage}`,
-    );
-  }
-
-  if (!json) {
-    throw new Error("Lovable AI devolvió una respuesta que no es JSON válido");
-  }
-
-  const result = extractContent(json);
-
-  if (!result) {
-    throw new Error("Lovable AI no devolvió contenido");
-  }
-
-  return result;
-}
-
 function normalizeMime(mime: string): string {
   return mime.split(";")[0].trim().toLowerCase();
+}
+
+function clean(value: any): string {
+  return String(value || "").trim();
+}
+
+function isGeminiQuotaErrorPayload(data: any): boolean {
+  const raw = JSON.stringify(data || {}).toLowerCase();
+
+  return (
+    raw.includes("quota") ||
+    raw.includes("rate limit") ||
+    raw.includes("rate_limit") ||
+    raw.includes("resource_exhausted") ||
+    raw.includes("exceeded") ||
+    raw.includes("429")
+  );
+}
+
+type GeminiPart =
+  | { text: string }
+  | { inlineData: { mimeType: string; data: string } };
+
+type GeminiContent = {
+  role: "user" | "model";
+  parts: GeminiPart[];
+};
+
+async function callGemini({
+  apiKey,
+  model,
+  system,
+  contents,
+  temperature = 0.1,
+  maxTokens = 1024,
+}: {
+  apiKey: string;
+  model: string;
+  system?: string;
+  contents: GeminiContent[];
+  temperature?: number;
+  maxTokens?: number;
+}): Promise<string> {
+  const body: any = {
+    contents,
+    generationConfig: {
+      temperature,
+      maxOutputTokens: maxTokens,
+      topP: 0.95,
+      topK: 40,
+    },
+  };
+
+  if (clean(system)) {
+    body.systemInstruction = {
+      parts: [{ text: clean(system) }],
+    };
+  }
+
+  if (String(model).includes("2.5")) {
+    body.generationConfig.thinkingConfig = { thinkingBudget: 0 };
+  }
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    },
+  );
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    console.error("[Media AI] Gemini error:", JSON.stringify(data).slice(0, 1000));
+
+    if (response.status === 429 || isGeminiQuotaErrorPayload(data)) {
+      return "__GEMINI_QUOTA_EXCEEDED__";
+    }
+
+    throw new Error(
+      `Gemini error (${response.status}): ${JSON.stringify(data).slice(0, 500)}`,
+    );
+  }
+
+  const text = clean(
+    data?.candidates?.[0]?.content?.parts
+      ?.map((part: any) => part?.text || "")
+      .join(""),
+  );
+
+  return text;
 }
 
 export function audioFormatFromMime(mime: string): string {
@@ -188,6 +150,170 @@ export function toBase64(bytes: ArrayBuffer): string {
   return btoa(binary);
 }
 
+async function transcribeAudioWithGemini({
+  apiKey,
+  model,
+  audioBase64,
+  mime,
+}: {
+  apiKey: string;
+  model: string;
+  audioBase64: string;
+  mime: string;
+}): Promise<string> {
+  return callGemini({
+    apiKey,
+    model,
+    system: "Transcribí el audio al español. Devolvé solo texto plano.",
+    contents: [
+      {
+        role: "user",
+        parts: [
+          {
+            inlineData: {
+              mimeType: mime,
+              data: audioBase64,
+            },
+          },
+          {
+            text:
+              "Transcribí literalmente este audio enviado por un cliente de WhatsApp. " +
+              "Devolvé solamente la transcripción en español, sin comentarios ni comillas. " +
+              "Si no se entiende, devolvé AUDIO_INCOMPRENSIBLE.",
+          },
+        ],
+      },
+    ],
+    temperature: 0.1,
+    maxTokens: 1024,
+  });
+}
+
+async function transcribeAudioWithOpenAI({
+  audioBase64,
+  mime,
+}: {
+  audioBase64: string;
+  mime: string;
+}): Promise<string> {
+  const apiKey = clean(process.env.OPENAI_API_KEY || "");
+  if (!apiKey) return "";
+
+  try {
+    const ext = mime.includes("mpeg")
+      ? "mp3"
+      : mime.includes("mp4")
+        ? "mp4"
+        : mime.includes("wav")
+          ? "wav"
+          : mime.includes("webm")
+            ? "webm"
+            : "ogg";
+
+    const buffer = Buffer.from(audioBase64, "base64");
+
+    const form = new FormData();
+    form.append("model", "whisper-1");
+    form.append("language", "es");
+    form.append("response_format", "json");
+    form.append(
+      "file",
+      new Blob([buffer], { type: mime || "audio/ogg" }),
+      `audio.${ext}`,
+    );
+
+    const response = await fetch(
+      "https://api.openai.com/v1/audio/transcriptions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: form,
+      },
+    );
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      console.error(
+        "[Media AI] OpenAI Whisper error:",
+        JSON.stringify(data).slice(0, 1000),
+      );
+      return "";
+    }
+
+    return clean(data?.text || "");
+  } catch (error) {
+    console.error("[Media AI] OpenAI Whisper exception:", error);
+    return "";
+  }
+}
+
+async function transcribeAudioSmart({
+  apiKey,
+  model,
+  audioBase64,
+  mime,
+}: {
+  apiKey: string;
+  model: string;
+  audioBase64: string;
+  mime: string;
+}): Promise<{ text: string; reason: string }> {
+  try {
+    const geminiText = await transcribeAudioWithGemini({
+      apiKey,
+      model,
+      audioBase64,
+      mime,
+    });
+
+    if (
+      geminiText &&
+      geminiText !== "__GEMINI_QUOTA_EXCEEDED__" &&
+      geminiText.toUpperCase() !== "AUDIO_INCOMPRENSIBLE"
+    ) {
+      return {
+        text: clean(geminiText.replace(/^["']|["']$/g, "")),
+        reason: "gemini",
+      };
+    }
+
+    if (geminiText === "__GEMINI_QUOTA_EXCEEDED__") {
+      const openAiText = await transcribeAudioWithOpenAI({
+        audioBase64,
+        mime,
+      });
+
+      if (openAiText) {
+        return {
+          text: clean(openAiText),
+          reason: "openai_whisper",
+        };
+      }
+
+      return { text: "", reason: "gemini_quota" };
+    }
+  } catch (error) {
+    console.error("[Media AI] Gemini transcription exception:", error);
+  }
+
+  const openAiText = await transcribeAudioWithOpenAI({
+    audioBase64,
+    mime,
+  });
+
+  if (openAiText) {
+    return {
+      text: clean(openAiText),
+      reason: "openai_whisper",
+    };
+  }
+
+  return { text: "", reason: "transcription_failed" };
+}
+
 /**
  * Transcribe una nota de voz o audio recibido desde WhatsApp.
  */
@@ -199,62 +325,27 @@ export async function transcribeAudio(
     throw new Error("El audio no contiene datos");
   }
 
-  const format = audioFormatFromMime(mime);
+  const normalizedMime = normalizeMime(mime) || "audio/ogg";
+  const apiKey = requireGeminiKey();
 
   console.log("[Media AI] Transcribiendo audio", {
-    model: MODEL,
-    mime,
-    format,
+    model: GEMINI_MODEL,
+    mime: normalizedMime,
     base64Length: base64.length,
   });
 
-  try {
-    const transcript = await ask([
-      {
-        type: "text",
-        text:
-          "Escucha este audio enviado por un cliente mediante WhatsApp. " +
-          "Transcribe literalmente todo lo que dice en español. " +
-          "Devuelve únicamente la transcripción, sin títulos, comentarios, " +
-          "explicaciones ni comillas. Si no hay voz comprensible, devuelve AUDIO_INCOMPRENSIBLE.",
-      },
-      {
-        type: "input_audio",
-        input_audio: {
-          data: base64,
-          format,
-        },
-      },
-    ]);
+  const result = await transcribeAudioSmart({
+    apiKey,
+    model: GEMINI_MODEL,
+    audioBase64: base64,
+    mime: normalizedMime,
+  });
 
-    const cleanTranscript = transcript
-      .replace(/^["']|["']$/g, "")
-      .trim();
-
-    if (
-      !cleanTranscript ||
-      cleanTranscript.toUpperCase() === "AUDIO_INCOMPRENSIBLE"
-    ) {
-      throw new Error("No se pudo entender el audio");
-    }
-
-    return cleanTranscript;
-  } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Error desconocido";
-
-    if (
-      /input_audio|unsupported|audio.*not.*support|content.*type/i.test(message)
-    ) {
-      throw new Error(
-        "El modelo configurado en Lovable AI no admite input_audio. " +
-          "Configura LOVABLE_MEDIA_MODEL con un modelo compatible con audio " +
-          "o utiliza un servicio específico de transcripción.",
-      );
-    }
-
-    throw error;
+  if (!result.text) {
+    throw new Error(`No se pudo transcribir el audio (${result.reason})`);
   }
+
+  return clean(result.text);
 }
 
 /**
@@ -275,49 +366,67 @@ export async function describeImage(
     throw new Error(`El archivo no es una imagen válida: ${normalizedMime}`);
   }
 
+  const apiKey = requireGeminiKey();
+
   console.log("[Media AI] Analizando imagen", {
-    model: MODEL,
+    model: GEMINI_MODEL,
     mime: normalizedMime,
     base64Length: base64.length,
   });
 
-  const description = await ask([
-    {
-      type: "text",
-      text: [
-        "Analiza esta imagen enviada por un cliente mediante WhatsApp.",
-        "Responde en español, con información útil para que un asistente de ventas pueda contestarle.",
-        "No inventes ningún dato que no sea visible.",
-        "",
-        "Si es un comprobante de pago:",
-        "- comienza exactamente con COMPROBANTE",
-        "- extrae monto, fecha, hora, banco o billetera, número de operación y titular, solo si son visibles",
-        "",
-        "Si es un producto:",
-        "- comienza exactamente con PRODUCTO",
-        "- identifica el tipo de producto",
-        "- describe color, marca, modelo, estado y detalles visibles",
-        "",
-        "Si es una captura de pantalla o consulta:",
-        "- comienza exactamente con CONSULTA",
-        "- describe el contenido y cualquier texto importante visible",
-        "",
-        "Para cualquier otra imagen:",
-        "- comienza exactamente con IMAGEN",
-        "- describe brevemente qué se observa",
-        "",
-        "Usa un máximo de 6 líneas.",
-      ].join("\n"),
-    },
-    {
-      type: "image_url",
-      image_url: {
-        url: `data:${normalizedMime};base64,${base64}`,
+  const response = await callGemini({
+    apiKey,
+    model: GEMINI_MODEL,
+    system:
+      "Analizá imágenes enviadas por clientes de WhatsApp y devolvé texto claro, útil y breve en español.",
+    contents: [
+      {
+        role: "user",
+        parts: [
+          {
+            inlineData: {
+              mimeType: normalizedMime,
+              data: base64,
+            },
+          },
+          {
+            text: [
+              "Analiza esta imagen enviada por un cliente mediante WhatsApp.",
+              "Responde en español, con información útil para que un asistente de ventas pueda contestarle.",
+              "No inventes datos que no sean visibles.",
+              "",
+              "Si es un comprobante de pago:",
+              "- comienza exactamente con COMPROBANTE",
+              "- extrae monto, fecha, hora, banco o billetera, número de operación y titular, solo si son visibles",
+              "",
+              "Si es un producto:",
+              "- comienza exactamente con PRODUCTO",
+              "- describe qué producto es",
+              "- color, marca, modelo, estado y detalles visibles",
+              "",
+              "Si es una captura, consulta o texto:",
+              "- comienza exactamente con CONSULTA",
+              "- resume lo importante visible",
+              "",
+              "Para cualquier otra imagen:",
+              "- comienza exactamente con IMAGEN",
+              "- describe brevemente qué se observa",
+              "",
+              "Usa un máximo de 6 líneas.",
+            ].join("\n"),
+          },
+        ],
       },
-    },
-  ]);
+    ],
+    temperature: 0.1,
+    maxTokens: 1024,
+  });
 
-  const cleanDescription = description.trim();
+  if (!response || response === "__GEMINI_QUOTA_EXCEEDED__") {
+    throw new Error("No se pudo interpretar la imagen con Gemini");
+  }
+
+  const cleanDescription = clean(response);
 
   if (!cleanDescription) {
     throw new Error("No se pudo interpretar la imagen");
