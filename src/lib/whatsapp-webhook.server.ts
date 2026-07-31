@@ -491,6 +491,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       workspaceId,
       chatHistory,
       conversation.product_id,
+      phone,
     );
     const result = await generateAiReply(ctx);
 
@@ -523,6 +524,11 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       .eq("id", conversation.id);
 
     if (result.sale_closed && result.order && !conversation.sale_closed) {
+      const completedOrder = {
+        ...result.order,
+        phone,
+      };
+
       await createOrderFromAi({
         workspaceId,
         ownerId,
@@ -530,7 +536,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         contactId: contact.id,
         phone,
         productId: detectedProduct,
-        order: result.order,
+        order: completedOrder,
         products: ctx.products,
       });
     }
@@ -570,7 +576,7 @@ async function createOrderFromAi(args: {
       contact_id: args.contactId,
       order_number: orderNumber,
       customer_name: args.order.customer_name ?? "Cliente",
-      phone: args.order.phone ?? args.phone,
+      phone: args.phone,
       city: args.order.city ?? null,
       departamento: args.order.departamento ?? null,
       district: args.order.district ?? null,
