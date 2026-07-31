@@ -280,6 +280,76 @@ type Conn = {
   access_token: string | null;
 };
 
+/**
+ * Normaliza texto para clasificar mensajes sin depender de tildes o mayúsculas.
+ */
+function normalizeMessageText(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Después de una venta cerrada, estos mensajes continúan en la conversación
+ * anterior porque corresponden a postventa y no a un pedido nuevo.
+ */
+function isPostSaleMessage(value: string): boolean {
+  const text = normalizeMessageText(value);
+  if (!text) return false;
+
+  const postSalePatterns = [
+    "gracias",
+    "muchas gracias",
+    "cuando llega",
+    "cuando entregan",
+    "cuando me llega",
+    "donde esta mi pedido",
+    "estado de mi pedido",
+    "seguimiento",
+    "numero de guia",
+    "comprobante de despacho",
+    "quiero factura",
+    "necesito factura",
+    "mi factura",
+    "cambiar direccion",
+    "cambiar la direccion",
+    "cambiar ubicacion",
+    "cambiar la ubicacion",
+    "cambiar nombre",
+    "cambiar telefono",
+    "corregir direccion",
+    "corregir ubicacion",
+    "cancelar pedido",
+    "cancelar mi pedido",
+    "problema con mi pedido",
+    "reclamo",
+    "no me llego",
+    "ya pague",
+    "envie el comprobante",
+  ];
+
+  return postSalePatterns.some((pattern) => text.includes(pattern));
+}
+
+/**
+ * Decide si un mensaje recibido después de una venta debe iniciar otra compra.
+ *
+ * - Una referencia de anuncio siempre inicia una conversación comercial nueva.
+ * - Los mensajes claramente de postventa permanecen en la venta anterior.
+ * - Cualquier otro mensaje abre una conversación nueva para permitir que el
+ *   mismo número compre nuevamente.
+ */
+function shouldStartNewConversation(
+  message: IncomingMessage,
+  body: string,
+): boolean {
+  if (message.referral?.source_id) return true;
+  return !isPostSaleMessage(body);
+}
+
 async function processMessage(conn: Conn, profileName: string | null, message: IncomingMessage) {
   const workspaceId = conn.workspace_id;
   const ownerId = conn.user_id;
@@ -313,17 +383,30 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     contact = created;
   }
 
-  let { data: conversation } = await supabaseAdmin
-    .from("conversations")
-    .select("id, ai_paused, product_id, is_closed, sale_closed")
-    .eq("workspace_id", workspaceId)
-    .eq("contact_id", contact.id)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  let { data: conversation, error: conversationLookupError } =
+    await supabaseAdmin
+      .from("conversations")
+      .select("id, ai_paused, product_id, is_closed, sale_closed")
+      .eq("workspace_id", workspaceId)
+      .eq("contact_id", contact.id)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+  if (conversationLookupError) throw conversationLookupError;
 
   let isNewConversation = false;
-  if (!conversation) {
+  const startsAnotherPurchase =
+    Boolean(conversation?.sale_closed) &&
+    shouldStartNewConversation(message, body);
+
+  /*
+   * Un mismo contacto puede realizar varias compras.
+   * Cada venta nueva recibe su propia conversación y, por lo tanto, su propio
+   * conversation_id. Los mensajes de postventa siguen asociados al pedido
+   * anterior y no generan pedidos duplicados.
+   */
+  if (!conversation || startsAnotherPurchase) {
     const { data: created, error } = await supabaseAdmin
       .from("conversations")
       .insert({
@@ -331,12 +414,20 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         user_id: ownerId,
         contact_id: contact.id,
         status: "abierta",
+        sale_closed: false,
+        is_closed: false,
+        product_id: null,
         ad_id: message.referral?.source_id ?? null,
-        ad_media_url: message.referral?.image_url ?? message.referral?.video_url ?? null,
+        ad_media_url:
+          message.referral?.image_url ??
+          message.referral?.video_url ??
+          null,
       })
       .select("id, ai_paused, product_id, is_closed, sale_closed")
       .single();
+
     if (error) throw error;
+
     conversation = created;
     isNewConversation = true;
   }
@@ -537,7 +628,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
      * Si Gemini entregó todos los datos obligatorios, el backend crea el
      * pedido aunque el modelo haya olvidado marcar sale_closed=true.
      */
-    if (result.order && orderReady && !conversation.sale_closed) {
+    if (result.order && orderReady) {
       const completedOrder = {
         ...result.order,
         phone,
@@ -596,14 +687,17 @@ function isOrderReady(
 
   const customerName = cleanOrderText(order.customer_name);
   const city = cleanOrderText(order.city);
-  const street = cleanOrderText(order.street);
   const paymentMethod = cleanOrderText(order.payment_method);
   const quantity = Number(order.quantity);
 
+  /*
+   * La dirección es opcional para contraentrega y transportadora.
+   * El pedido puede crearse con producto, nombre, ciudad, forma de pago y
+   * cantidad válidos. Si existe una dirección, igualmente se guarda.
+   */
   return Boolean(
     customerName &&
       city &&
-      street &&
       paymentMethod &&
       Number.isFinite(quantity) &&
       quantity > 0,
