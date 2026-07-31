@@ -262,6 +262,18 @@ export async function handleWhatsAppWebhook(payload: WebhookPayload) {
   }
 }
 
+
+/**
+ * Alias de compatibilidad para rutas antiguas o imports con otros nombres.
+ * Todos ejecutan exactamente el mismo webhook principal.
+ */
+export const processWhatsAppWebhook = handleWhatsAppWebhook;
+export const processWebhook = handleWhatsAppWebhook;
+export const handleWebhook = handleWhatsAppWebhook;
+export const whatsappWebhookHandler = handleWhatsAppWebhook;
+
+export default handleWhatsAppWebhook;
+
 type Conn = {
   workspace_id: string;
   user_id: string;
