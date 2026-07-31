@@ -37,15 +37,25 @@ export const getPublicCatalog = createServerFn({ method: "GET" })
     if (!ws) return { workspaceName: "", phone: null, enabled: false, products: [] };
 
     let query = sb
-      .from("products")
-      .select(
-        "id, name, description, sales_copy, price, promo_price, delivery_info, created_at, product_media(id, media_type, storage_path, position), product_keywords(keyword)",
-      )
+      .from("public_catalog_products")
+      .select("id, name, description, sales_copy, price, promo_price, delivery_info, created_at")
       .eq("workspace_id", data.workspaceId)
-      .eq("is_active", true)
       .order("created_at", { ascending: false });
     if (data.productId) query = query.eq("id", data.productId);
     const { data: rows } = await query;
+
+    const productIds = (rows ?? []).map((r) => r.id as string);
+    const [{ data: mediaRows }, { data: keywordRows }] = await Promise.all([
+      productIds.length
+        ? sb
+            .from("product_media")
+            .select("id, product_id, media_type, storage_path, position")
+            .in("product_id", productIds)
+        : Promise.resolve({ data: [] as any[] }),
+      productIds.length
+        ? sb.from("product_keywords").select("product_id, keyword").in("product_id", productIds)
+        : Promise.resolve({ data: [] as any[] }),
+    ]);
 
     // Privileged reads limited to the storefront phone + catalog switch + signed media URLs.
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
