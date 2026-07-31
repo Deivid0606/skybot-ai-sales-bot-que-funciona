@@ -79,8 +79,11 @@ export const getPublicCatalog = createServerFn({ method: "GET" })
 
     const products: CatalogProduct[] = [];
     for (const p of rows ?? []) {
+      const pid = p.id as string;
       const media: CatalogMedia[] = [];
-      const items = [...(p.product_media ?? [])].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+      const items = [...((mediaRows ?? []) as any[])]
+        .filter((m) => m.product_id === pid)
+        .sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
       for (const m of items) {
         if (!m.storage_path) continue;
         const { data: signed } = await supabaseAdmin.storage
@@ -89,14 +92,16 @@ export const getPublicCatalog = createServerFn({ method: "GET" })
         if (signed?.signedUrl) media.push({ id: m.id, media_type: m.media_type, url: signed.signedUrl });
       }
       products.push({
-        id: p.id,
-        name: p.name,
+        id: pid,
+        name: p.name ?? "",
         description: p.description,
         sales_copy: p.sales_copy,
         price: Number(p.price ?? 0),
         promo_price: p.promo_price === null ? null : Number(p.promo_price),
         delivery_info: p.delivery_info,
-        keywords: (p.product_keywords ?? []).map((k) => k.keyword),
+        keywords: ((keywordRows ?? []) as any[])
+          .filter((k) => k.product_id === pid)
+          .map((k) => k.keyword as string),
         media,
       });
     }
