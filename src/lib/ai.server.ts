@@ -7,6 +7,7 @@ export type AiContext = {
   systemInstruction: string;
   geminiApiKey?: string | null;
   model?: string | null;
+  customerPhone?: string | null;
   businessName: string;
   currency: string;
   products: {
@@ -60,6 +61,8 @@ function cleanString(value: unknown): string {
 }
 
 function buildSystemPrompt(ctx: AiContext): string {
+  const detectedCustomerPhone = cleanString(ctx.customerPhone);
+
   const catalog = ctx.products
     .map(
       (product) =>
@@ -108,7 +111,11 @@ REGLAS:
 - Usa SOLO la información del catálogo y del conocimiento. Si no sabes algo, dilo con naturalidad y ofrece ayuda.
 - El cliente puede mandar audios e imágenes: recibirás su transcripción o una descripción que empieza con [imagen]. Si es un comprobante de pago, agradece y confirma los datos; si es un producto, identifícalo en el catálogo.
 - Tu meta es cerrar la venta: resuelve dudas, maneja objeciones y pide los datos de envío.
-- Para cerrar necesitas: nombre completo, teléfono, ciudad, dirección, cantidad y método de pago.
+- Para cerrar necesitas: nombre completo, ciudad, dirección, cantidad y método de pago.
+- El teléfono se obtiene automáticamente del número de WhatsApp cuando está disponible.
+- Si hay un número detectado automáticamente, NO vuelvas a pedir el teléfono.
+- Usa exactamente el número detectado en order.phone.
+- No inventes, acortes, formatees ni modifiques el número detectado.
 - CANTIDADES: si el cliente escribe un número suelto, por ejemplo "2", o escribe "2 unidades", la cantidad es EXACTAMENTE ese número.
 - Nunca dupliques, concatenes ni repitas dígitos.
 - Si el cliente repite la misma cantidad, no la sumes: sigue siendo la misma.
@@ -121,6 +128,16 @@ ${
     ? `- El producto de interés actual es id:${ctx.activeProductId}.`
     : ""
 }
+
+NÚMERO DEL CLIENTE DETECTADO AUTOMÁTICAMENTE:
+${detectedCustomerPhone || "No disponible"}
+
+REGLAS DEL NÚMERO:
+- Si el número aparece arriba, ya está confirmado por WhatsApp.
+- No se lo pidas nuevamente al cliente.
+- Cuando completes order, coloca ese mismo valor en phone.
+- El número puede venir sin el signo + y sigue siendo válido.
+- Si el número no está disponible, recién entonces puedes pedirlo.
 
 CORRECCIONES Y REGLAS OBLIGATORIAS DEL VENDEDOR:
 ${corrections || "Sin correcciones específicas."}
@@ -330,6 +347,29 @@ function normalizeOrder(value: unknown): AiOrder | null {
   return Object.keys(order).length > 0 ? order : null;
 }
 
+function applyDetectedPhone(
+  result: AiResult,
+  customerPhone: string | null | undefined,
+): AiResult {
+  const detectedPhone = cleanString(customerPhone);
+
+  if (!detectedPhone) {
+    return result;
+  }
+
+  if (!result.order) {
+    return result;
+  }
+
+  return {
+    ...result,
+    order: {
+      ...result.order,
+      phone: detectedPhone,
+    },
+  };
+}
+
 function fallbackResult(raw: string): AiResult {
   return {
     reply: sanitizeVisibleReply(raw),
@@ -445,7 +485,10 @@ async function generateWithGemini(
           ?.map((part) => part.text ?? "")
           .join("") ?? "";
 
-      return ensureValidResult(parseResult(raw));
+      return applyDetectedPhone(
+        ensureValidResult(parseResult(raw)),
+        ctx.customerPhone,
+      );
     }
 
     lastError = (await response.text()).slice(0, 500);
@@ -529,5 +572,8 @@ export async function generateAiReply(
   const content =
     json.choices?.[0]?.message?.content ?? "";
 
-  return ensureValidResult(parseResult(content));
+  return applyDetectedPhone(
+    ensureValidResult(parseResult(content)),
+    ctx.customerPhone,
+  );
 }
