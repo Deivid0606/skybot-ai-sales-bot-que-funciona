@@ -299,6 +299,40 @@ function SettingsPage() {
                   )}
                   Probar verificación
                 </Button>
+
+                {checks && (
+                  <div className="mt-2 space-y-2 rounded-lg border border-border bg-muted/30 p-3">
+                    <p className="text-xs font-semibold text-muted-foreground">
+                      Diagnóstico de verificación (hub.mode · hub.verify_token · hub.challenge)
+                    </p>
+                    {checks.map((c) => (
+                      <div key={c.id} className="flex gap-2 rounded-md bg-background/60 p-2">
+                        {c.status === "ok" ? (
+                          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                        ) : c.status === "warn" ? (
+                          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-500" />
+                        ) : (
+                          <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+                        )}
+                        <div className="min-w-0 space-y-0.5">
+                          <p className="text-xs font-medium">
+                            {c.label}
+                            {typeof c.httpStatus === "number" && c.httpStatus > 0 && (
+                              <span className="ml-2 text-muted-foreground">HTTP {c.httpStatus}</span>
+                            )}
+                          </p>
+                          <p className="text-xs text-muted-foreground">{c.detail}</p>
+                          {(c.expected || c.received) && (
+                            <p className="break-all font-mono text-[10px] text-muted-foreground">
+                              {c.expected && <>esperado: {c.expected} · </>}
+                              {c.received && <>recibido: {c.received}</>}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
 
