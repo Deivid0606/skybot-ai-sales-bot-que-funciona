@@ -53,6 +53,13 @@ export const Route = createFileRoute("/_authenticated/productos")({
   component: ProductsPage,
 });
 
+type ProductPriceForm = {
+  id?: string;
+  label: string;
+  quantity: string;
+  price: string;
+};
+
 type ProductForm = {
   id?: string;
   name: string;
@@ -60,7 +67,7 @@ type ProductForm = {
   description: string;
   sales_copy: string;
   price: string;
-  promo_price: string;
+  prices: ProductPriceForm[];
   stock: string;
   is_active: boolean;
   delivery_info: string;
@@ -78,7 +85,7 @@ const emptyForm: ProductForm = {
   description: "",
   sales_copy: "",
   price: "0",
-  promo_price: "",
+  prices: [],
   stock: "0",
   is_active: true,
   delivery_info: "",
@@ -151,7 +158,7 @@ function ProductsPage() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("products")
-        .select("*, product_keywords(id, keyword), product_media(id, media_type, storage_path)")
+        .select("*, product_keywords(id, keyword), product_media(id, media_type, storage_path), product_prices(id, label, quantity, price, sort_order)")
         .eq("workspace_id", workspaceId!)
         .order("created_at", { ascending: false });
       if (error) throw error;
@@ -171,7 +178,9 @@ function ProductsPage() {
         description: values.description.trim() || null,
         sales_copy: values.sales_copy.trim() || null,
         price: Number(values.price) || 0,
-        promo_price: values.promo_price ? Number(values.promo_price) : null,
+        // Se conserva la columna antigua para compatibilidad, pero los precios
+        // variables se guardan en product_prices.
+        promo_price: null,
         stock: Number(values.stock) || 0,
         is_active: values.is_active,
         delivery_info: values.delivery_info.trim() || null,
@@ -189,6 +198,28 @@ function ProductsPage() {
         const { data, error } = await supabase.from("products").insert(payload).select("id").single();
         if (error) throw error;
         productId = data.id;
+      }
+
+      const normalizedPrices = values.prices
+        .map((item, index) => ({
+          label: item.label.trim(),
+          quantity: Math.max(1, Number(item.quantity) || 1),
+          price: Number(item.price) || 0,
+          sort_order: index,
+        }))
+        .filter((item) => item.label && item.price > 0);
+
+      await supabase.from("product_prices").delete().eq("product_id", productId!);
+      if (normalizedPrices.length) {
+        const { error } = await supabase.from("product_prices").insert(
+          normalizedPrices.map((item) => ({
+            workspace_id: workspaceId,
+            user_id: user.id,
+            product_id: productId!,
+            ...item,
+          })),
+        );
+        if (error) throw error;
       }
 
       const keywords = values.keywords
@@ -299,6 +330,13 @@ function ProductsPage() {
     sales_copy: string | null;
     price: number;
     promo_price: number | null;
+    product_prices: {
+      id: string;
+      label: string;
+      quantity: number;
+      price: number;
+      sort_order: number;
+    }[];
     stock: number;
     is_active: boolean;
     delivery_info: string | null;
@@ -317,7 +355,14 @@ function ProductsPage() {
       description: p.description ?? "",
       sales_copy: p.sales_copy ?? "",
       price: String(p.price ?? 0),
-      promo_price: p.promo_price ? String(p.promo_price) : "",
+      prices: [...(p.product_prices ?? [])]
+        .sort((a, b) => a.sort_order - b.sort_order)
+        .map((item) => ({
+          id: item.id,
+          label: item.label,
+          quantity: String(item.quantity),
+          price: String(item.price),
+        })),
       stock: String(p.stock ?? 0),
       is_active: p.is_active,
       delivery_info: p.delivery_info ?? "",
@@ -422,16 +467,28 @@ function ProductsPage() {
                     {p.is_active ? "Activo" : "Inactivo"}
                   </Badge>
                 </div>
-                <div className="flex items-baseline gap-2">
-                  <span className="text-lg font-semibold">
-                    {formatGs(p.promo_price ?? p.price)}
-                  </span>
-                  {p.promo_price && (
-                    <span className="text-xs text-muted-foreground line-through">
-                      {formatGs(p.price)}
-                    </span>
+                <div className="space-y-2">
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-lg font-semibold">{formatGs(p.price)}</span>
+                    <span className="ml-auto text-xs text-muted-foreground">Stock {p.stock}</span>
+                  </div>
+                  {p.product_prices?.length > 0 && (
+                    <div className="flex flex-wrap gap-1">
+                      {[...p.product_prices]
+                        .sort((a, b) => a.sort_order - b.sort_order)
+                        .slice(0, 3)
+                        .map((item) => (
+                          <Badge key={item.id} variant="secondary" className="text-[10px]">
+                            {item.label}: {formatGs(item.price)}
+                          </Badge>
+                        ))}
+                      {p.product_prices.length > 3 && (
+                        <Badge variant="outline" className="text-[10px]">
+                          +{p.product_prices.length - 3}
+                        </Badge>
+                      )}
+                    </div>
                   )}
-                  <span className="ml-auto text-xs text-muted-foreground">Stock {p.stock}</span>
                 </div>
                 <p className="line-clamp-2 text-sm text-muted-foreground">
                   {p.sales_copy || p.description || "Sin copy de venta"}
@@ -519,21 +576,132 @@ function ProductsPage() {
                 onChange={(e) => setForm({ ...form, stock: e.target.value })}
               />
             </div>
-            <div className="space-y-1.5">
-              <Label>Precio (₲)</Label>
+            <div className="space-y-1.5 sm:col-span-2">
+              <Label>Precio base (₲)</Label>
               <Input
                 type="number"
+                min="0"
                 value={form.price}
                 onChange={(e) => setForm({ ...form, price: e.target.value })}
               />
+              <p className="text-xs text-muted-foreground">
+                Precio normal de una unidad. Debajo puedes agregar combos u otras opciones.
+              </p>
             </div>
-            <div className="space-y-1.5">
-              <Label>Precio promocional (₲)</Label>
-              <Input
-                type="number"
-                value={form.promo_price}
-                onChange={(e) => setForm({ ...form, promo_price: e.target.value })}
-              />
+
+            <div className="space-y-3 sm:col-span-2">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <Label>Opciones de precio</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Ejemplo: 2 unidades por ₲350.000.
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    setForm((current) => ({
+                      ...current,
+                      prices: [
+                        ...current.prices,
+                        { label: "", quantity: "1", price: "" },
+                      ],
+                    }))
+                  }
+                >
+                  <Plus className="mr-1 h-4 w-4" /> Agregar precio
+                </Button>
+              </div>
+
+              {form.prices.length === 0 ? (
+                <div className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground">
+                  No hay precios adicionales. Usa “Agregar precio” para crear uno.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {form.prices.map((item, index) => (
+                    <div
+                      key={item.id ?? `new-${index}`}
+                      className="grid gap-2 rounded-md border p-3 sm:grid-cols-[minmax(0,1fr)_110px_minmax(0,180px)_40px]"
+                    >
+                      <div className="space-y-1">
+                        <Label className="text-xs">Nombre</Label>
+                        <Input
+                          placeholder="Ej. 2 unidades"
+                          value={item.label}
+                          onChange={(e) =>
+                            setForm((current) => ({
+                              ...current,
+                              prices: current.prices.map((priceItem, currentIndex) =>
+                                currentIndex === index
+                                  ? { ...priceItem, label: e.target.value }
+                                  : priceItem,
+                              ),
+                            }))
+                          }
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">Cantidad</Label>
+                        <Input
+                          type="number"
+                          min="1"
+                          value={item.quantity}
+                          onChange={(e) =>
+                            setForm((current) => ({
+                              ...current,
+                              prices: current.prices.map((priceItem, currentIndex) =>
+                                currentIndex === index
+                                  ? { ...priceItem, quantity: e.target.value }
+                                  : priceItem,
+                              ),
+                            }))
+                          }
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">Precio total (₲)</Label>
+                        <Input
+                          type="number"
+                          min="0"
+                          placeholder="350000"
+                          value={item.price}
+                          onChange={(e) =>
+                            setForm((current) => ({
+                              ...current,
+                              prices: current.prices.map((priceItem, currentIndex) =>
+                                currentIndex === index
+                                  ? { ...priceItem, price: e.target.value }
+                                  : priceItem,
+                              ),
+                            }))
+                          }
+                        />
+                      </div>
+                      <div className="flex items-end">
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant="ghost"
+                          aria-label={`Eliminar precio ${index + 1}`}
+                          onClick={() =>
+                            setForm((current) => ({
+                              ...current,
+                              prices: current.prices.filter(
+                                (_, currentIndex) => currentIndex !== index,
+                              ),
+                            }))
+                          }
+                        >
+                          <Trash2 className="h-4 w-4 text-destructive" />
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
             <div className="space-y-1.5 sm:col-span-2">
               <Label>Descripción</Label>
@@ -621,7 +789,7 @@ function ProductsPage() {
                 salesCopy={form.sales_copy}
                 description={form.description}
                 price={form.price}
-                promoPrice={form.promo_price}
+                promoPrice={form.prices[0]?.price ?? ""}
                 deliveryInfo={form.delivery_info}
                 keywords={form.keywords}
                 existing={editingMedia}
@@ -637,6 +805,20 @@ function ProductsPage() {
               onClick={() => {
                 if (!form.name.trim()) {
                   toast.error("El nombre es obligatorio");
+                  return;
+                }
+                if ((Number(form.price) || 0) <= 0) {
+                  toast.error("El precio base debe ser mayor a cero");
+                  return;
+                }
+                const incompletePrice = form.prices.find(
+                  (item) =>
+                    !item.label.trim() ||
+                    (Number(item.quantity) || 0) < 1 ||
+                    (Number(item.price) || 0) <= 0,
+                );
+                if (incompletePrice) {
+                  toast.error("Completa el nombre, la cantidad y el precio de cada opción");
                   return;
                 }
                 save.mutate(form);
