@@ -62,34 +62,183 @@ async function ingestMedia(args: {
   type: "image" | "audio" | "video" | "document";
 }) {
   const { downloadWhatsAppMediaUrl } = await import("@/lib/whatsapp.server");
-  const { transcribeAudio, describeImage, toBase64 } = await import("@/lib/media-ai.server");
+  const { transcribeAudio, describeImage, toBase64 } = await import(
+    "@/lib/media-ai.server"
+  );
 
-  const url = await downloadWhatsAppMediaUrl(args.mediaId, args.accessToken);
-  if (!url) return { storagePath: null as string | null, transcript: null as string | null };
+  const emptyResult = {
+    storagePath: null as string | null,
+    transcript: null as string | null,
+  };
 
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${args.accessToken}` } });
-  if (!res.ok) return { storagePath: null, transcript: null };
-  const mime = res.headers.get("content-type") ?? "application/octet-stream";
-  const bytes = await res.arrayBuffer();
-
-  const ext = (mime.split(";")[0].split("/")[1] ?? "bin").replace(/[^a-z0-9]/gi, "");
-  const storagePath = `${args.workspaceId}/inbound/${Date.now()}-${args.mediaId}.${ext}`;
-  await supabaseAdmin.storage
-    .from("chat-media")
-    .upload(storagePath, bytes, { contentType: mime, upsert: false });
-
-  let transcript: string | null = null;
   try {
-    const base64 = toBase64(bytes);
-    if (args.type === "audio") transcript = await transcribeAudio(base64, mime);
-    else if (args.type === "image") transcript = await describeImage(base64, mime);
-  } catch (e) {
-    console.error("media ai error", e);
+    const mediaUrl = await downloadWhatsAppMediaUrl(
+      args.mediaId,
+      args.accessToken,
+    );
+
+    if (!mediaUrl) {
+      console.error("[WhatsApp media] Meta no devolvió una URL", {
+        mediaId: args.mediaId,
+        type: args.type,
+      });
+
+      return emptyResult;
+    }
+
+    const response = await fetch(mediaUrl, {
+      headers: {
+        Authorization: `Bearer ${args.accessToken}`,
+      },
+    });
+
+    if (!response.ok) {
+      console.error("[WhatsApp media] Error descargando desde Meta", {
+        mediaId: args.mediaId,
+        type: args.type,
+        status: response.status,
+        statusText: response.statusText,
+      });
+
+      return emptyResult;
+    }
+
+    const rawMime =
+      response.headers.get("content-type") ||
+      "application/octet-stream";
+
+    const mime = rawMime.split(";")[0].trim().toLowerCase();
+    const bytes = await response.arrayBuffer();
+
+    if (bytes.byteLength === 0) {
+      console.error("[WhatsApp media] Meta devolvió un archivo vacío", {
+        mediaId: args.mediaId,
+        type: args.type,
+        mime,
+      });
+
+      return emptyResult;
+    }
+
+    const extensionByMime: Record<string, string> = {
+      "image/jpeg": "jpg",
+      "image/jpg": "jpg",
+      "image/png": "png",
+      "image/webp": "webp",
+      "image/gif": "gif",
+
+      "audio/ogg": "ogg",
+      "audio/opus": "ogg",
+      "audio/mpeg": "mp3",
+      "audio/mp3": "mp3",
+      "audio/mp4": "m4a",
+      "audio/aac": "aac",
+      "audio/wav": "wav",
+      "audio/x-wav": "wav",
+
+      "video/mp4": "mp4",
+      "video/3gpp": "3gp",
+      "video/webm": "webm",
+
+      "application/pdf": "pdf",
+      "application/msword": "doc",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        "docx",
+      "application/vnd.ms-excel": "xls",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+        "xlsx",
+    };
+
+    const fallbackExtension =
+      mime.split("/")[1]?.replace(/[^a-z0-9]/gi, "") || "bin";
+
+    const extension = extensionByMime[mime] || fallbackExtension;
+    const safeMediaId = args.mediaId.replace(/[^a-zA-Z0-9_-]/g, "");
+
+    const storagePath =
+      `${args.workspaceId}/inbound/` +
+      `${Date.now()}-${safeMediaId}.${extension}`;
+
+    const { data: uploadedFile, error: uploadError } =
+      await supabaseAdmin.storage
+        .from("chat-media")
+        .upload(storagePath, bytes, {
+          contentType: mime,
+          upsert: false,
+        });
+
+    if (uploadError) {
+      console.error("[WhatsApp media] Error subiendo a chat-media", {
+        mediaId: args.mediaId,
+        type: args.type,
+        storagePath,
+        mime,
+        size: bytes.byteLength,
+        error: uploadError.message,
+      });
+
+      return emptyResult;
+    }
+
+    if (!uploadedFile?.path) {
+      console.error("[WhatsApp media] Supabase no devolvió la ruta subida", {
+        mediaId: args.mediaId,
+        type: args.type,
+        storagePath,
+      });
+
+      return emptyResult;
+    }
+
+    let transcript: string | null = null;
+
+    try {
+      const base64 = toBase64(bytes);
+
+      if (args.type === "audio") {
+        const result = await transcribeAudio(base64, mime);
+        transcript = result?.trim() || null;
+
+        if (!transcript) {
+          console.warn("[WhatsApp media] Audio sin transcripción", {
+            mediaId: args.mediaId,
+            mime,
+          });
+        }
+      } else if (args.type === "image") {
+        const result = await describeImage(base64, mime);
+        transcript = result?.trim() || null;
+
+        if (!transcript) {
+          console.warn("[WhatsApp media] Imagen sin interpretación", {
+            mediaId: args.mediaId,
+            mime,
+          });
+        }
+      }
+    } catch (error) {
+      console.error("[WhatsApp media] Error procesando archivo con IA", {
+        mediaId: args.mediaId,
+        type: args.type,
+        mime,
+        error,
+      });
+    }
+
+    return {
+      storagePath: uploadedFile.path,
+      transcript,
+    };
+  } catch (error) {
+    console.error("[WhatsApp media] Error inesperado procesando archivo", {
+      mediaId: args.mediaId,
+      type: args.type,
+      error,
+    });
+
+    return emptyResult;
   }
-
-  return { storagePath, transcript };
 }
-
 
 export async function handleWhatsAppWebhook(payload: WebhookPayload) {
   for (const entry of payload.entry ?? []) {
@@ -182,20 +331,30 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     isNewConversation = true;
   }
 
-  if (media && conn.access_token) {
-    const ingested = await ingestMedia({
-      workspaceId,
-      accessToken: conn.access_token,
-      mediaId: media.part.id!,
-      type: media.type,
-    });
-    mediaPath = ingested.storagePath;
-    transcript = ingested.transcript;
-    if (transcript) {
-      body =
-        media.type === "audio"
-          ? transcript
-          : `${body && body !== `[${message.type}]` ? body + "\n" : ""}[imagen] ${transcript}`;
+  if (media) {
+    if (!conn.access_token) {
+      console.error("[WhatsApp media] La conexión no tiene access_token", {
+        workspaceId,
+        mediaId: media.part.id,
+        type: media.type,
+      });
+    } else {
+      const ingested = await ingestMedia({
+        workspaceId,
+        accessToken: conn.access_token,
+        mediaId: media.part.id!,
+        type: media.type,
+      });
+
+      mediaPath = ingested.storagePath;
+      transcript = ingested.transcript;
+
+      if (transcript) {
+        body =
+          media.type === "audio"
+            ? transcript
+            : `${body && body !== `[${message.type}]` ? body + "\n" : ""}[imagen] ${transcript}`;
+      }
     }
   }
 
