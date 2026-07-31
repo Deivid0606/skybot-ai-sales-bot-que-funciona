@@ -249,6 +249,48 @@ function InboxPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
+  const deleteConversation = useMutation({
+    mutationFn: async () => {
+      if (!activeId || !workspaceId) return;
+
+      const conversationId = activeId;
+
+      const { error: labelsError } = await supabase
+        .from("conversation_labels")
+        .delete()
+        .eq("conversation_id", conversationId);
+
+      if (labelsError) throw labelsError;
+
+      const { error: messagesError } = await supabase
+        .from("messages")
+        .delete()
+        .eq("conversation_id", conversationId);
+
+      if (messagesError) throw messagesError;
+
+      const { error: conversationError } = await supabase
+        .from("conversations")
+        .delete()
+        .eq("id", conversationId)
+        .eq("workspace_id", workspaceId);
+
+      if (conversationError) throw conversationError;
+    },
+    onSuccess: () => {
+      setActiveId(null);
+      setSelected([]);
+      setDraft("");
+      toast.success("Chat eliminado");
+
+      queryClient.removeQueries({ queryKey: ["messages", activeId] });
+      queryClient.invalidateQueries({ queryKey: ["conversations", workspaceId] });
+    },
+    onError: (e: Error) => {
+      toast.error(`No se pudo eliminar el chat: ${e.message}`);
+    },
+  });
+
   const sendFile = useMutation({
     mutationFn: async (file: File) => {
       if (!activeId || !workspaceId) return;
@@ -408,9 +450,30 @@ function InboxPage() {
                   {active.products?.name ? ` · ${active.products.name}` : ""}
                 </p>
               </div>
-              <div className="ml-auto flex items-center gap-2">
+              <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
                 <Button variant="outline" size="sm" onClick={() => setInfoOpen(true)}>
                   <User className="mr-1 h-4 w-4" /> Info
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  disabled={deleteConversation.isPending}
+                  onClick={() => {
+                    const confirmed = window.confirm(
+                      "¿Seguro que quieres borrar este chat? Se eliminarán todos sus mensajes.",
+                    );
+
+                    if (confirmed) {
+                      deleteConversation.mutate();
+                    }
+                  }}
+                >
+                  {deleteConversation.isPending ? (
+                    <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Trash2 className="mr-1 h-4 w-4" />
+                  )}
+                  Borrar chat
                 </Button>
                 <Popover>
                   <PopoverTrigger asChild>
@@ -569,26 +632,56 @@ function InboxPage() {
                           isSelected && "ring-2 ring-destructive",
                         )}
                       >
-                        {m.media_url && <ChatMedia path={m.media_url} type={m.media_type} />}
-                        {m.body && <p className="whitespace-pre-wrap break-words">{m.body}</p>}
-                        {m.transcript && m.transcript !== m.body && (
-                          <p className="mt-1 rounded-md bg-background/20 p-1.5 text-xs italic opacity-90">
-                            {m.transcript}
+                        {m.media_url ? (
+                          <div
+                            className="mb-1"
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            <ChatMedia path={m.media_url} type={m.media_type} />
+                          </div>
+                        ) : m.media_type ? (
+                          <p className="mb-1 rounded-md bg-background/20 px-2 py-1 text-xs opacity-75">
+                            No se encontró el archivo de este mensaje.
                           </p>
+                        ) : null}
+
+                        {m.body &&
+                          !(
+                            m.media_type === "audio" &&
+                            (m.body === "[audio]" || m.body === "[voice]")
+                          ) && (
+                            <p className="whitespace-pre-wrap break-words">{m.body}</p>
+                          )}
+
+                        {m.transcript && (
+                          <div className="mt-1 rounded-md bg-background/20 p-2 text-xs">
+                            <p className="mb-0.5 font-medium opacity-80">
+                              {m.media_type === "audio" ? "Transcripción" : "Interpretación"}
+                            </p>
+                            <p className="whitespace-pre-wrap italic opacity-90">{m.transcript}</p>
+                          </div>
                         )}
+
                         {m.media_url &&
                           (m.media_type === "audio" || m.media_type === "image") &&
                           !m.transcript && (
                             <button
+                              type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 transcribe.mutate(m.id);
                               }}
                               disabled={transcribe.isPending}
-                              className="mt-1 flex items-center gap-1 text-[11px] underline opacity-80"
+                              className="mt-1 flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] underline opacity-80 hover:bg-background/20 disabled:cursor-not-allowed disabled:opacity-50"
                             >
-                              <Wand2 className="h-3 w-3" />
-                              {m.media_type === "audio" ? "Transcribir con IA" : "Interpretar con IA"}
+                              {transcribe.isPending ? (
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                              ) : (
+                                <Wand2 className="h-3 w-3" />
+                              )}
+                              {m.media_type === "audio"
+                                ? "Transcribir con IA"
+                                : "Interpretar con IA"}
                             </button>
                           )}
                         <p className="mt-1 text-[10px] opacity-70">
