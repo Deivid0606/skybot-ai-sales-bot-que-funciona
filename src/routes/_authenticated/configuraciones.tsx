@@ -1,9 +1,14 @@
 import { useEffect, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
+import { useServerFn } from "@tanstack/react-start";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, Copy, Loader2, RefreshCw, Save } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Copy, Loader2, RefreshCw, Save, XCircle } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
+import {
+  runWebhookDiagnostics,
+  type WebhookCheck,
+} from "@/lib/webhook-diagnostics.functions";
 import { PageHeader, PageShell } from "@/components/page-shell";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -122,6 +127,8 @@ function SettingsPage() {
 
   const webhookUrl = `${buildWebhookBase()}/api/public/whatsapp/webhook`;
   const [testing, setTesting] = useState(false);
+  const [checks, setChecks] = useState<WebhookCheck[] | null>(null);
+  const runDiagnostics = useServerFn(runWebhookDiagnostics);
 
   async function testWebhook() {
     const token = wa.verify_token.trim();
@@ -129,23 +136,24 @@ function SettingsPage() {
       toast.error("Primero generá y guardá el token de verificación");
       return;
     }
+    if (!workspaceId) {
+      toast.error("Sesión no válida");
+      return;
+    }
     setTesting(true);
+    setChecks(null);
     try {
-      const challenge = `botsky${Date.now()}`;
-      const url = `${webhookUrl}?hub.mode=subscribe&hub.verify_token=${encodeURIComponent(
-        token,
-      )}&hub.challenge=${challenge}`;
-      const res = await fetch(url);
-      const body = (await res.text()).trim();
-      if (res.ok && body === challenge) {
+      const res = await runDiagnostics({
+        data: { url: webhookUrl, token, workspaceId },
+      });
+      setChecks(res.checks);
+      if (res.verified) {
         toast.success("Webhook verificado. Ya podés pegar estos datos en Meta.");
-      } else if (res.status === 403) {
-        toast.error("El token no coincide con el guardado. Guardá la conexión y probá de nuevo.");
       } else {
-        toast.error(`La URL respondió ${res.status}. Publicá la app e intentá otra vez.`);
+        toast.error("La verificación falló. Mirá el detalle debajo.");
       }
-    } catch {
-      toast.error("No se pudo alcanzar la URL del webhook desde este navegador.");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "No se pudo ejecutar el diagnóstico");
     } finally {
       setTesting(false);
     }
@@ -291,6 +299,40 @@ function SettingsPage() {
                   )}
                   Probar verificación
                 </Button>
+
+                {checks && (
+                  <div className="mt-2 space-y-2 rounded-lg border border-border bg-muted/30 p-3">
+                    <p className="text-xs font-semibold text-muted-foreground">
+                      Diagnóstico de verificación (hub.mode · hub.verify_token · hub.challenge)
+                    </p>
+                    {checks.map((c) => (
+                      <div key={c.id} className="flex gap-2 rounded-md bg-background/60 p-2">
+                        {c.status === "ok" ? (
+                          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                        ) : c.status === "warn" ? (
+                          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-500" />
+                        ) : (
+                          <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+                        )}
+                        <div className="min-w-0 space-y-0.5">
+                          <p className="text-xs font-medium">
+                            {c.label}
+                            {typeof c.httpStatus === "number" && c.httpStatus > 0 && (
+                              <span className="ml-2 text-muted-foreground">HTTP {c.httpStatus}</span>
+                            )}
+                          </p>
+                          <p className="text-xs text-muted-foreground">{c.detail}</p>
+                          {(c.expected || c.received) && (
+                            <p className="break-all font-mono text-[10px] text-muted-foreground">
+                              {c.expected && <>esperado: {c.expected} · </>}
+                              {c.received && <>recibido: {c.received}</>}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
 
