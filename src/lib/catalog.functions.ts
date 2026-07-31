@@ -37,15 +37,25 @@ export const getPublicCatalog = createServerFn({ method: "GET" })
     if (!ws) return { workspaceName: "", phone: null, enabled: false, products: [] };
 
     let query = sb
-      .from("products")
-      .select(
-        "id, name, description, sales_copy, price, promo_price, delivery_info, created_at, product_media(id, media_type, storage_path, position), product_keywords(keyword)",
-      )
+      .from("public_catalog_products")
+      .select("id, name, description, sales_copy, price, promo_price, delivery_info, created_at")
       .eq("workspace_id", data.workspaceId)
-      .eq("is_active", true)
       .order("created_at", { ascending: false });
     if (data.productId) query = query.eq("id", data.productId);
     const { data: rows } = await query;
+
+    const productIds = (rows ?? []).map((r) => r.id as string);
+    const [{ data: mediaRows }, { data: keywordRows }] = await Promise.all([
+      productIds.length
+        ? sb
+            .from("product_media")
+            .select("id, product_id, media_type, storage_path, position")
+            .in("product_id", productIds)
+        : Promise.resolve({ data: [] as any[] }),
+      productIds.length
+        ? sb.from("product_keywords").select("product_id, keyword").in("product_id", productIds)
+        : Promise.resolve({ data: [] as any[] }),
+    ]);
 
     // Privileged reads limited to the storefront phone + catalog switch + signed media URLs.
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
@@ -69,8 +79,11 @@ export const getPublicCatalog = createServerFn({ method: "GET" })
 
     const products: CatalogProduct[] = [];
     for (const p of rows ?? []) {
+      const pid = p.id as string;
       const media: CatalogMedia[] = [];
-      const items = [...(p.product_media ?? [])].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+      const items = [...((mediaRows ?? []) as any[])]
+        .filter((m) => m.product_id === pid)
+        .sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
       for (const m of items) {
         if (!m.storage_path) continue;
         const { data: signed } = await supabaseAdmin.storage
@@ -79,14 +92,16 @@ export const getPublicCatalog = createServerFn({ method: "GET" })
         if (signed?.signedUrl) media.push({ id: m.id, media_type: m.media_type, url: signed.signedUrl });
       }
       products.push({
-        id: p.id,
-        name: p.name,
+        id: pid,
+        name: p.name ?? "",
         description: p.description,
         sales_copy: p.sales_copy,
         price: Number(p.price ?? 0),
         promo_price: p.promo_price === null ? null : Number(p.promo_price),
         delivery_info: p.delivery_info,
-        keywords: (p.product_keywords ?? []).map((k) => k.keyword),
+        keywords: ((keywordRows ?? []) as any[])
+          .filter((k) => k.product_id === pid)
+          .map((k) => k.keyword as string),
         media,
       });
     }

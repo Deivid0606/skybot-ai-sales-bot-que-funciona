@@ -13,6 +13,4 @@ DROP POLICY IF EXISTS "public_catalog_keywords_read" ON public.product_keywords;
 CREATE POLICY "public_catalog_keywords_read" ON public.product_keywords
   FOR SELECT
   TO anon
-  USING ((EXISTS ( SELECT 1
-   FROM products p
-  WHERE ((p.id = product_keywords.product_id) AND (p.is_active = true)))));
+  USING (public.is_public_catalog_product(product_id));

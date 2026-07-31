@@ -13,6 +13,4 @@ DROP POLICY IF EXISTS "public_catalog_media_read" ON public.product_media;
 CREATE POLICY "public_catalog_media_read" ON public.product_media
   FOR SELECT
   TO anon
-  USING ((EXISTS ( SELECT 1
-   FROM products p
-  WHERE ((p.id = product_media.product_id) AND (p.is_active = true)))));
+  USING (public.is_public_catalog_product(product_id));

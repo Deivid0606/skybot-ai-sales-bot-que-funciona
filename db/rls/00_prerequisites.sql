@@ -66,3 +66,11 @@ REVOKE ALL ON FUNCTION public.current_workspace_id() FROM PUBLIC, anon, authenti
 GRANT EXECUTE ON FUNCTION public.has_role(uuid, public.app_role) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.is_workspace_member(uuid) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.current_workspace_id() TO service_role;
+
+
+CREATE OR REPLACE FUNCTION public.is_public_catalog_product(_product_id uuid)
+RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+  SELECT EXISTS (SELECT 1 FROM public.products p WHERE p.id = _product_id AND p.is_active = true);
+$$;
+REVOKE ALL ON FUNCTION public.is_public_catalog_product(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.is_public_catalog_product(uuid) TO anon, authenticated, service_role;
