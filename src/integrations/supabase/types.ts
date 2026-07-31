@@ -57,6 +57,13 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
+            foreignKeyName: "ads_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "public_catalog_products"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "ads_workspace_id_fkey"
             columns: ["workspace_id"]
             isOneToOne: false
@@ -515,6 +522,13 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
+            foreignKeyName: "conversations_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "public_catalog_products"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "conversations_workspace_id_fkey"
             columns: ["workspace_id"]
             isOneToOne: false
@@ -690,6 +704,13 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
+            foreignKeyName: "messages_catalog_product_id_fkey"
+            columns: ["catalog_product_id"]
+            isOneToOne: false
+            referencedRelation: "public_catalog_products"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "messages_conversation_id_fkey"
             columns: ["conversation_id"]
             isOneToOne: false
@@ -802,6 +823,13 @@ export type Database = {
             columns: ["product_id"]
             isOneToOne: false
             referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "order_items_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "public_catalog_products"
             referencedColumns: ["id"]
           },
           {
@@ -972,6 +1000,13 @@ export type Database = {
             columns: ["product_id"]
             isOneToOne: false
             referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "orders_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "public_catalog_products"
             referencedColumns: ["id"]
           },
           {
@@ -1182,6 +1217,13 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
+            foreignKeyName: "product_followups_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "public_catalog_products"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "product_followups_workspace_id_fkey"
             columns: ["workspace_id"]
             isOneToOne: false
@@ -1221,6 +1263,13 @@ export type Database = {
             columns: ["product_id"]
             isOneToOne: false
             referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "product_keywords_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "public_catalog_products"
             referencedColumns: ["id"]
           },
           {
@@ -1272,6 +1321,13 @@ export type Database = {
             columns: ["product_id"]
             isOneToOne: false
             referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "product_media_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "public_catalog_products"
             referencedColumns: ["id"]
           },
           {
@@ -1710,7 +1766,50 @@ export type Database = {
       }
     }
     Views: {
-      [_ in never]: never
+      public_catalog_products: {
+        Row: {
+          created_at: string | null
+          delivery_info: string | null
+          description: string | null
+          id: string | null
+          name: string | null
+          price: number | null
+          promo_price: number | null
+          sales_copy: string | null
+          workspace_id: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          delivery_info?: string | null
+          description?: string | null
+          id?: string | null
+          name?: string | null
+          price?: number | null
+          promo_price?: number | null
+          sales_copy?: string | null
+          workspace_id?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          delivery_info?: string | null
+          description?: string | null
+          id?: string | null
+          name?: string | null
+          price?: number | null
+          promo_price?: number | null
+          sales_copy?: string | null
+          workspace_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "products_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Functions: {
       current_workspace_id: { Args: never; Returns: string }
@@ -1719,6 +1818,10 @@ export type Database = {
           _role: Database["public"]["Enums"]["app_role"]
           _user_id: string
         }
+        Returns: boolean
+      }
+      is_public_catalog_product: {
+        Args: { _product_id: string }
         Returns: boolean
       }
       is_workspace_member: { Args: { _workspace_id: string }; Returns: boolean }
