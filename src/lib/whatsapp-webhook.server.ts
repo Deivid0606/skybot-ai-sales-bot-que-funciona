@@ -280,156 +280,154 @@ type Conn = {
   access_token: string | null;
 };
 
-/**
- * Normaliza texto para clasificar mensajes sin depender de tildes o mayúsculas.
- */
-function normalizeMessageText(value: string): string {
-  return value
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-/**
- * Después de una venta cerrada, estos mensajes continúan en la conversación
- * anterior porque corresponden a postventa y no a un pedido nuevo.
- */
-function isPostSaleMessage(value: string): boolean {
-  const text = normalizeMessageText(value);
-  if (!text) return false;
-
-  const postSalePatterns = [
-    "gracias",
-    "muchas gracias",
-    "cuando llega",
-    "cuando entregan",
-    "cuando me llega",
-    "donde esta mi pedido",
-    "estado de mi pedido",
-    "seguimiento",
-    "numero de guia",
-    "comprobante de despacho",
-    "quiero factura",
-    "necesito factura",
-    "mi factura",
-    "cambiar direccion",
-    "cambiar la direccion",
-    "cambiar ubicacion",
-    "cambiar la ubicacion",
-    "cambiar nombre",
-    "cambiar telefono",
-    "corregir direccion",
-    "corregir ubicacion",
-    "cancelar pedido",
-    "cancelar mi pedido",
-    "problema con mi pedido",
-    "reclamo",
-    "no me llego",
-    "ya pague",
-    "envie el comprobante",
-  ];
-
-  return postSalePatterns.some((pattern) => text.includes(pattern));
-}
-
-/**
- * Decide si un mensaje recibido después de una venta debe iniciar otra compra.
- *
- * - Una referencia de anuncio siempre inicia una conversación comercial nueva.
- * - Los mensajes claramente de postventa permanecen en la venta anterior.
- * - Cualquier otro mensaje abre una conversación nueva para permitir que el
- *   mismo número compre nuevamente.
- */
-function shouldStartNewConversation(
-  message: IncomingMessage,
-  body: string,
-): boolean {
-  if (message.referral?.source_id) return true;
-  return !isPostSaleMessage(body);
-}
-
 async function processMessage(conn: Conn, profileName: string | null, message: IncomingMessage) {
   const workspaceId = conn.workspace_id;
   const ownerId = conn.user_id;
-  const phone = message.from;
+  const phone = String(message.from ?? "").replace(/\D/g, "");
+
+  if (!phone) {
+    console.warn("[WhatsApp webhook] Mensaje sin teléfono válido", {
+      workspaceId,
+      wamid: message.id,
+    });
+    return;
+  }
+
   const media = mediaOf(message);
   let body = media?.part.caption?.trim() || textOf(message);
   let mediaPath: string | null = null;
   let transcript: string | null = null;
 
-  const { data: existingMessage } = await supabaseAdmin
-    .from("messages")
-    .select("id")
-    .eq("wamid", message.id)
-    .maybeSingle();
+  /*
+   * Meta puede reenviar el mismo webhook. Si el wamid ya existe,
+   * no volvemos a procesar ni responder el mensaje.
+   */
+  const { data: existingMessage, error: existingMessageError } =
+    await supabaseAdmin
+      .from("messages")
+      .select("id")
+      .eq("wamid", message.id)
+      .maybeSingle();
+
+  if (existingMessageError) throw existingMessageError;
   if (existingMessage) return;
 
-  let { data: contact } = await supabaseAdmin
+  /*
+   * Un contacto es único por workspace + teléfono normalizado.
+   * Requiere el índice único indicado en la migración SQL.
+   */
+  const normalizedProfileName = profileName?.trim() || null;
+
+  const { data: contact, error: contactError } = await supabaseAdmin
     .from("contacts")
+    .upsert(
+      {
+        workspace_id: workspaceId,
+        user_id: ownerId,
+        phone,
+        ...(normalizedProfileName ? { name: normalizedProfileName } : {}),
+      },
+      {
+        onConflict: "workspace_id,phone",
+        ignoreDuplicates: false,
+      },
+    )
     .select("id, name")
-    .eq("workspace_id", workspaceId)
-    .eq("phone", phone)
-    .maybeSingle();
+    .single();
 
-  if (!contact) {
-    const { data: created, error } = await supabaseAdmin
-      .from("contacts")
-      .insert({ workspace_id: workspaceId, user_id: ownerId, phone, name: profileName })
-      .select("id, name")
-      .single();
-    if (error) throw error;
-    contact = created;
-  }
+  if (contactError) throw contactError;
 
+  /*
+   * Siempre reutilizamos una sola conversación por contacto.
+   * Nunca se crea otro chat por venir desde un anuncio ni por tener
+   * una venta anterior marcada como cerrada.
+   */
   let { data: conversation, error: conversationLookupError } =
     await supabaseAdmin
       .from("conversations")
       .select("id, ai_paused, product_id, is_closed, sale_closed")
       .eq("workspace_id", workspaceId)
       .eq("contact_id", contact.id)
-      .order("created_at", { ascending: false })
+      .order("created_at", { ascending: true })
       .limit(1)
       .maybeSingle();
 
   if (conversationLookupError) throw conversationLookupError;
 
   let isNewConversation = false;
-  const startsAnotherPurchase =
-    Boolean(conversation?.sale_closed) &&
-    shouldStartNewConversation(message, body);
 
-  /*
-   * Un mismo contacto puede realizar varias compras.
-   * Cada venta nueva recibe su propia conversación y, por lo tanto, su propio
-   * conversation_id. Los mensajes de postventa siguen asociados al pedido
-   * anterior y no generan pedidos duplicados.
-   */
-  if (!conversation || startsAnotherPurchase) {
-    const { data: created, error } = await supabaseAdmin
+  if (!conversation) {
+    const { data: created, error: createConversationError } =
+      await supabaseAdmin
+        .from("conversations")
+        .insert({
+          workspace_id: workspaceId,
+          user_id: ownerId,
+          contact_id: contact.id,
+          status: "abierta",
+          sale_closed: false,
+          is_closed: false,
+          product_id: null,
+          ad_id: message.referral?.source_id ?? null,
+          ad_media_url:
+            message.referral?.image_url ??
+            message.referral?.video_url ??
+            null,
+        })
+        .select("id, ai_paused, product_id, is_closed, sale_closed")
+        .single();
+
+    if (createConversationError) {
+      /*
+       * Si dos webhooks llegaron juntos, el índice único puede hacer
+       * que uno de los inserts falle con 23505. En ese caso recuperamos
+       * la conversación que creó el otro proceso.
+       */
+      if (createConversationError.code !== "23505") {
+        throw createConversationError;
+      }
+
+      const { data: concurrentConversation, error: concurrentLookupError } =
+        await supabaseAdmin
+          .from("conversations")
+          .select("id, ai_paused, product_id, is_closed, sale_closed")
+          .eq("workspace_id", workspaceId)
+          .eq("contact_id", contact.id)
+          .single();
+
+      if (concurrentLookupError) throw concurrentLookupError;
+      conversation = concurrentConversation;
+    } else {
+      conversation = created;
+      isNewConversation = true;
+    }
+  } else {
+    const referralMedia =
+      message.referral?.image_url ??
+      message.referral?.video_url ??
+      null;
+
+    const { data: reopened, error: reopenError } = await supabaseAdmin
       .from("conversations")
-      .insert({
-        workspace_id: workspaceId,
-        user_id: ownerId,
-        contact_id: contact.id,
+      .update({
         status: "abierta",
-        sale_closed: false,
         is_closed: false,
-        product_id: null,
-        ad_id: message.referral?.source_id ?? null,
-        ad_media_url:
-          message.referral?.image_url ??
-          message.referral?.video_url ??
-          null,
+        ...(message.referral?.source_id
+          ? { ad_id: message.referral.source_id }
+          : {}),
+        ...(referralMedia ? { ad_media_url: referralMedia } : {}),
       })
+      .eq("id", conversation.id)
+      .eq("workspace_id", workspaceId)
       .select("id, ai_paused, product_id, is_closed, sale_closed")
       .single();
 
-    if (error) throw error;
+    if (reopenError) throw reopenError;
+    conversation = reopened;
+  }
 
-    conversation = created;
-    isNewConversation = true;
+  if (!conversation) {
+    throw new Error("No se pudo crear ni recuperar la conversación");
   }
 
   if (media) {
