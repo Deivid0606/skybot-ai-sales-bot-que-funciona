@@ -54,6 +54,54 @@ function mediaOf(message: IncomingMessage) {
   return null;
 }
 
+
+function normalizeIntentText(value: string) {
+  return value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Detecta cuando un cliente que ya cerró una venta realmente quiere iniciar
+ * otra compra. Mensajes posteriores como ubicación, forma de pago o un
+ * agradecimiento no deben abrir una nueva venta ni crear otro pedido.
+ */
+function isNewPurchaseIntent(text: string, hasReferral: boolean) {
+  if (hasReferral) return true;
+
+  const normalized = normalizeIntentText(text);
+  if (!normalized || normalized.startsWith("[location")) return false;
+
+  const phrases = [
+    "quiero comprar",
+    "quiero pedir",
+    "quiero llevar",
+    "quiero otro",
+    "quiero otra",
+    "quiero uno mas",
+    "quiero una mas",
+    "otro pedido",
+    "otra compra",
+    "nuevo pedido",
+    "nueva compra",
+    "volver a comprar",
+    "comprar nuevamente",
+    "comprar de nuevo",
+    "pedir nuevamente",
+    "pedir de nuevo",
+    "me interesa",
+    "deseo comprar",
+    "deseo pedir",
+    "necesito otro",
+    "necesito otra",
+  ];
+
+  return phrases.some((phrase) => normalized.includes(phrase));
+}
+
 /** Descarga el archivo de WhatsApp, lo guarda y deja que la IA lo interprete. */
 async function ingestMedia(args: {
   workspaceId: string;
@@ -407,12 +455,31 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       message.referral?.video_url ??
       null;
 
+    /*
+     * Una conversación vendida solamente vuelve a habilitar una venta cuando
+     * el cliente expresa una intención clara de comprar otra vez o entra desde
+     * un anuncio nuevo. Ubicación, forma de pago y mensajes de seguimiento
+     * conservan sale_closed=true para impedir órdenes duplicadas.
+     */
+    const startsNewPurchase =
+      conversation.sale_closed &&
+      isNewPurchaseIntent(body, Boolean(message.referral?.source_id));
+
     const { data: reopened, error: reopenError } = await supabaseAdmin
       .from("conversations")
       .update({
-        status: "abierta",
+        status: startsNewPurchase
+          ? "abierta"
+          : conversation.sale_closed
+            ? "vendida"
+            : "abierta",
         is_closed: false,
-        sale_closed: false,
+        ...(startsNewPurchase
+          ? {
+              sale_closed: false,
+              product_id: null,
+            }
+          : {}),
         ...(message.referral?.source_id
           ? { ad_id: message.referral.source_id }
           : {}),
@@ -627,7 +694,13 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
      * Si Gemini entregó todos los datos obligatorios, el backend crea el
      * pedido aunque el modelo haya olvidado marcar sale_closed=true.
      */
-    if (result.order && orderReady) {
+    /*
+     * Si la conversación ya tiene una venta cerrada, la IA puede seguir
+     * devolviendo el pedido anterior por el historial. En ese caso no se crea
+     * otra orden. Una compra nueva primero reinicia sale_closed=false mediante
+     * isNewPurchaseIntent() y recién entonces puede registrar otro pedido.
+     */
+    if (!conversation.sale_closed && result.order && orderReady) {
       const completedOrder = {
         ...result.order,
         phone,
