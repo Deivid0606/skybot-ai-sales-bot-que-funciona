@@ -1,7 +1,7 @@
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { formatGs } from "@/lib/format";
 import { buildWorkspaceAiContext } from "@/lib/ai-context.server";
-import { generateAiReply, type AiContext } from "@/lib/ai.server";
+import { generateAiReply } from "@/lib/ai.server";
 import { sendWhatsAppText } from "@/lib/whatsapp.server";
 import { detectComplaint, COMPLAINT_REASON_LABELS } from "@/lib/complaints";
 
@@ -732,7 +732,12 @@ async function createOrderFromAi(args: {
   phone: string;
   productId: string | null;
   order: NonNullable<Awaited<ReturnType<typeof generateAiReply>>["order"]>;
-  products: AiContext["products"];
+  products: {
+    id: string;
+    name: string;
+    price: number;
+    promo_price: number | null;
+  }[];
 }) {
   /*
    * Evita pedidos duplicados si Meta reintenta un webhook o llegan
@@ -798,44 +803,13 @@ async function createOrderFromAi(args: {
     throw error;
   }
 
+  const unitPrice = Number(product.promo_price ?? product.price);
+
   const parsedQuantity = Number(args.order.quantity);
   const quantity =
     Number.isFinite(parsedQuantity) && parsedQuantity > 0
       ? Math.floor(parsedQuantity)
       : 1;
-
-  const selectedPrice = [...product.prices]
-    .sort((a, b) => a.sort_order - b.sort_order)
-    .find((option) => Number(option.quantity) === quantity);
-
-  if (!selectedPrice) {
-    const availableQuantities = [...product.prices]
-      .sort((a, b) => a.quantity - b.quantity)
-      .map((option) => option.quantity)
-      .join(", ");
-
-    const error = new Error(
-      `No existe una opción de precio para ${quantity} unidad(es) de ${product.name}. ` +
-        `Cantidades disponibles: ${availableQuantities || "ninguna"}.`,
-    );
-
-    await logOrderIssue({
-      workspaceId: args.workspaceId,
-      ownerId: args.ownerId,
-      message: `${error.message} Conversación: ${args.conversationId}.`,
-    });
-
-    throw error;
-  }
-
-  // product_prices.price representa el total completo del combo.
-  const selectedTotal = Number(selectedPrice.price);
-
-  if (!Number.isFinite(selectedTotal) || selectedTotal <= 0) {
-    throw new Error(
-      `La opción de precio “${selectedPrice.label}” no tiene un monto válido`,
-    );
-  }
 
   const orderNumber = `BS-${Date.now().toString(36).toUpperCase()}`;
 
@@ -865,8 +839,8 @@ async function createOrderFromAi(args: {
     product_id: args.productId,
     product_title: product.name,
     quantity,
-    price: selectedTotal,
-    total: selectedTotal,
+    price: unitPrice,
+    total: unitPrice * quantity,
     status: "nuevo" as const,
     payment_status: "pendiente" as const,
   };
@@ -986,7 +960,7 @@ async function createOrderFromAi(args: {
           street,
           product: product.name,
           quantity,
-          total: selectedTotal,
+          total: unitPrice * quantity,
           payment_method: paymentMethod,
           observations,
         }),
@@ -1058,7 +1032,7 @@ async function sendCatalogByKeyword(args: {
   const { data: keywords, error: keywordsError } = await supabaseAdmin
     .from("product_keywords")
     .select(
-      "keyword, product_id, products!inner(id, name, sales_copy, description, is_active)",
+      "keyword, product_id, products!inner(id, name, price, promo_price, sales_copy, description, is_active)",
     )
     .eq("workspace_id", args.workspaceId);
 
