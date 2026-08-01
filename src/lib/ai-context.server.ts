@@ -14,7 +14,10 @@ type CurrentTimeContext = {
   hour: number;
   minute: number;
   period: "madrugada" | "mañana" | "tarde" | "noche";
-  greeting: "Buenos días" | "Buenas tardes" | "Buenas noches";
+  greeting:
+    | "Buenos días"
+    | "Buenas tardes"
+    | "Buenas noches";
 };
 
 function getCurrentTimeContext(
@@ -33,8 +36,11 @@ function getCurrentTimeContext(
     hourCycle: "h23",
   }).formatToParts(now);
 
-  const getPart = (type: Intl.DateTimeFormatPartTypes): string =>
-    parts.find((part) => part.type === type)?.value ?? "";
+  const getPart = (
+    type: Intl.DateTimeFormatPartTypes,
+  ): string =>
+    parts.find((part) => part.type === type)?.value ??
+    "";
 
   const hour = Number(getPart("hour"));
   const minute = Number(getPart("minute"));
@@ -135,11 +141,19 @@ ${original}`.trim();
 export async function buildWorkspaceAiContext(
   supabase: Client,
   workspaceId: string,
-  history: { role: "user" | "assistant"; content: string }[],
+  history: {
+    role: "user" | "assistant";
+    content: string;
+  }[],
   activeProductId: string | null = null,
   customerPhone: string | null = null,
 ): Promise<AiContext> {
-  const [aiSettings, settings, products, training] = await Promise.all([
+  const [
+    aiSettingsResult,
+    settingsResult,
+    productsResult,
+    trainingResult,
+  ] = await Promise.all([
     supabase
       .from("ai_settings")
       .select(
@@ -154,11 +168,36 @@ export async function buildWorkspaceAiContext(
       .eq("workspace_id", workspaceId)
       .maybeSingle(),
 
+    /*
+     * Los precios reales del catálogo se encuentran
+     * en product_prices.
+     *
+     * products.price y products.promo_price se conservan
+     * solamente por compatibilidad con productos antiguos.
+     */
     supabase
       .from("products")
-      .select(
-        "id, name, price, promo_price, stock, sales_copy, description, delivery_info, ai_instructions, product_keywords(keyword)",
-      )
+      .select(`
+        id,
+        name,
+        price,
+        promo_price,
+        stock,
+        sales_copy,
+        description,
+        delivery_info,
+        ai_instructions,
+        product_keywords (
+          keyword
+        ),
+        product_prices (
+          id,
+          label,
+          quantity,
+          price,
+          sort_order
+        )
+      `)
       .eq("workspace_id", workspaceId)
       .eq("is_active", true),
 
@@ -169,42 +208,137 @@ export async function buildWorkspaceAiContext(
       .eq("is_active", true),
   ]);
 
+  if (aiSettingsResult.error) {
+    throw aiSettingsResult.error;
+  }
+
+  if (settingsResult.error) {
+    throw settingsResult.error;
+  }
+
+  if (productsResult.error) {
+    throw productsResult.error;
+  }
+
+  if (trainingResult.error) {
+    throw trainingResult.error;
+  }
+
+  const products = (productsResult.data ?? []).map(
+    (product) => {
+      const productPrices = [
+        ...(product.product_prices ?? []),
+      ]
+        .map((priceOption) => ({
+          id: priceOption.id,
+          label: String(priceOption.label ?? "").trim(),
+          quantity: Math.max(
+            1,
+            Math.floor(Number(priceOption.quantity) || 1),
+          ),
+          price: Number(priceOption.price) || 0,
+          sort_order:
+            Number(priceOption.sort_order) || 0,
+        }))
+        .filter(
+          (priceOption) =>
+            Boolean(priceOption.label) &&
+            Number.isFinite(priceOption.price) &&
+            priceOption.price > 0,
+        )
+        .sort(
+          (first, second) =>
+            first.sort_order - second.sort_order,
+        );
+
+      /*
+       * Precio heredado para mantener compatibilidad
+       * con partes antiguas de la IA.
+       *
+       * Si existe product_prices, usamos como referencia
+       * la primera opción válida.
+       */
+      const firstPriceOption =
+        productPrices[0] ?? null;
+
+      const legacyPrice = Number(product.price);
+      const legacyPromoPrice =
+        product.promo_price === null
+          ? null
+          : Number(product.promo_price);
+
+      const fallbackPrice =
+        firstPriceOption?.price ??
+        (Number.isFinite(legacyPromoPrice) &&
+        legacyPromoPrice !== null &&
+        legacyPromoPrice > 0
+          ? legacyPromoPrice
+          : Number.isFinite(legacyPrice) &&
+              legacyPrice > 0
+            ? legacyPrice
+            : 0);
+
+      return {
+        id: product.id,
+        name: product.name,
+
+        /*
+         * Se mantiene price para no romper ai.server.ts.
+         * Representa el total de la primera opción.
+         */
+        price: fallbackPrice,
+
+        promo_price:
+          Number.isFinite(legacyPromoPrice) &&
+          legacyPromoPrice !== null &&
+          legacyPromoPrice > 0
+            ? legacyPromoPrice
+            : null,
+
+        stock: product.stock,
+        sales_copy: product.sales_copy,
+        description: product.description,
+        delivery_info: product.delivery_info,
+        ai_instructions: product.ai_instructions,
+
+        keywords: (
+          product.product_keywords ?? []
+        )
+          .map((keyword) =>
+            String(keyword.keyword ?? "")
+              .trim()
+              .toLowerCase(),
+          )
+          .filter(Boolean),
+
+        product_prices: productPrices,
+      };
+    },
+  );
+
   return {
     systemInstruction: mergeSystemInstruction(
-      aiSettings.data?.system_instruction,
+      aiSettingsResult.data?.system_instruction,
     ),
 
-    geminiApiKey: aiSettings.data?.gemini_api_key ?? null,
+    geminiApiKey:
+      aiSettingsResult.data?.gemini_api_key ?? null,
 
-    model: aiSettings.data?.autodetect_model
+    model: aiSettingsResult.data?.autodetect_model
       ? null
-      : (aiSettings.data?.model ?? null),
+      : (aiSettingsResult.data?.model ?? null),
 
     customerPhone,
 
-    businessName: settings.data?.business_name ?? "",
+    businessName:
+      settingsResult.data?.business_name ?? "",
 
-    currency: settings.data?.currency ?? "PYG",
+    currency:
+      settingsResult.data?.currency ?? "PYG",
 
-    products: (products.data ?? []).map((product) => ({
-      id: product.id,
-      name: product.name,
-      price: Number(product.price),
-      promo_price:
-        product.promo_price === null
-          ? null
-          : Number(product.promo_price),
-      stock: product.stock,
-      sales_copy: product.sales_copy,
-      description: product.description,
-      delivery_info: product.delivery_info,
-      ai_instructions: product.ai_instructions,
-      keywords: (product.product_keywords ?? []).map(
-        (keyword) => keyword.keyword,
-      ),
-    })),
+    products,
 
-    training: training.data ?? [],
+    training: trainingResult.data ?? [],
 
     history,
 
