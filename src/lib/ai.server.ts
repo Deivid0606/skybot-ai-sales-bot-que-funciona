@@ -13,8 +13,13 @@ export type AiContext = {
   products: {
     id: string;
     name: string;
-    price: number;
-    promo_price: number | null;
+    prices: {
+      id: string;
+      label: string;
+      quantity: number;
+      price: number;
+      sort_order: number;
+    }[];
     stock: number;
     sales_copy: string | null;
     description: string | null;
@@ -64,22 +69,26 @@ function buildSystemPrompt(ctx: AiContext): string {
   const detectedCustomerPhone = cleanString(ctx.customerPhone);
 
   const catalog = ctx.products
-    .map(
-      (product) =>
-        `- id:${product.id} | ${product.name} | precio:${
-          product.promo_price ?? product.price
-        } ${ctx.currency}${
-          product.promo_price
-            ? ` (antes ${product.price})`
-            : ""
-        } | stock:${product.stock} | claves:${
-          product.keywords.join(", ") || "-"
-        }
+    .map((product) => {
+      const options = [...product.prices]
+        .sort((a, b) => a.sort_order - b.sort_order)
+        .map(
+          (option) =>
+            `${option.quantity} unidad${option.quantity === 1 ? "" : "es"}: ${option.price} ${ctx.currency} (opción: ${option.label})`,
+        )
+        .join("; ");
+
+      return `- id:${product.id} | ${product.name} | opciones:${
+        options || "sin precios cargados"
+      } | stock:${product.stock} | claves:${
+        product.keywords.join(", ") || "-"
+      }
   copy: ${product.sales_copy ?? product.description ?? "-"}
   entrega: ${product.delivery_info ?? "-"}
-  instrucciones: ${product.ai_instructions ?? "-"}`,
-    )
-    .join("\n");
+  instrucciones: ${product.ai_instructions ?? "-"}`;
+    })
+    .join("
+");
 
   const sortedTraining = [...ctx.training].sort(
     (a, b) => b.priority - a.priority,
@@ -119,7 +128,10 @@ REGLAS:
 - CANTIDADES: si el cliente escribe un número suelto, por ejemplo "2", o escribe "2 unidades", la cantidad es EXACTAMENTE ese número.
 - Nunca dupliques, concatenes ni repitas dígitos.
 - Si el cliente repite la misma cantidad, no la sumes: sigue siendo la misma.
-- TOTALES: total = precio vigente, usando promoción si existe, multiplicado por la cantidad.
+- PRECIOS POR CANTIDAD: cada opción del catálogo ya contiene el precio TOTAL del combo indicado.
+- Ejemplo: si la opción dice “2 unidades: 350000 PYG”, el total es 350000 PYG; NO multipliques 350000 por 2.
+- Solo cierra la venta cuando exista una opción de precio cuya cantidad coincida exactamente con la cantidad solicitada.
+- Si no existe esa cantidad, informa las cantidades disponibles y pregunta cuál prefiere.
 - Calcula con cuidado y no inventes montos.
 - Antes de confirmar, relee la cantidad que dijo el cliente y usa ese valor tal cual.
 - Cuando tengas TODOS los datos, marca sale_closed=true y completa el objeto order.
