@@ -50,10 +50,6 @@ export const Route = createFileRoute("/_authenticated/dashboard")({
   component: DashboardPage,
 });
 
-/**
- * Devuelve la fecha local actual en formato YYYY-MM-DD.
- * Evita problemas de cambio de día por zona horaria.
- */
 function getTodayDate() {
   const today = new Date();
 
@@ -64,30 +60,22 @@ function getTodayDate() {
   return `${year}-${month}-${day}`;
 }
 
-/**
- * Comprueba si una fecha de Supabase corresponde
- * a la fecha seleccionada según la hora local.
- */
 function isSameLocalDate(
   createdAt: string | null,
   selectedDate: string,
 ) {
   if (!createdAt || !selectedDate) return false;
 
-  const orderDate = new Date(createdAt);
+  const date = new Date(createdAt);
   const [year, month, day] = selectedDate.split("-").map(Number);
 
   return (
-    orderDate.getFullYear() === year &&
-    orderDate.getMonth() + 1 === month &&
-    orderDate.getDate() === day
+    date.getFullYear() === year &&
+    date.getMonth() + 1 === month &&
+    date.getDate() === day
   );
 }
 
-/**
- * Normaliza textos para comparar sin importar
- * mayúsculas, espacios ni acentos.
- */
 function normalizeText(value: unknown) {
   return String(value ?? "")
     .trim()
@@ -96,38 +84,22 @@ function normalizeText(value: unknown) {
     .replace(/[\u0300-\u036f]/g, "");
 }
 
-/**
- * Comprueba si el pedido tiene una etiqueta específica.
- *
- * Funciona si tags es:
- * - string[]
- * - string separado por comas
- * - null
- */
 function hasOrderTag(tags: unknown, expectedTag: string) {
-  const normalizedExpectedTag = normalizeText(expectedTag);
+  const expected = normalizeText(expectedTag);
 
   if (Array.isArray(tags)) {
-    return tags.some(
-      (tag) => normalizeText(tag) === normalizedExpectedTag,
-    );
+    return tags.some((tag) => normalizeText(tag) === expected);
   }
 
   if (typeof tags === "string") {
     return tags
       .split(",")
-      .some(
-        (tag) => normalizeText(tag) === normalizedExpectedTag,
-      );
+      .some((tag) => normalizeText(tag) === expected);
   }
 
   return false;
 }
 
-/**
- * Unifica nombres de ciudades con diferencias de
- * mayúsculas, espacios o acentos.
- */
 function getNormalizedCityName(city?: string | null) {
   const value = city?.trim();
 
@@ -180,26 +152,15 @@ function DashboardPage() {
 
           supabase
             .from("messages")
-            .select("id, sender")
+            .select("id, sender, created_at")
             .eq("workspace_id", workspaceId!)
             .limit(5000),
         ]);
 
-      if (conversations.error) {
-        throw conversations.error;
-      }
-
-      if (orders.error) {
-        throw orders.error;
-      }
-
-      if (balance.error) {
-        throw balance.error;
-      }
-
-      if (messages.error) {
-        throw messages.error;
-      }
+      if (conversations.error) throw conversations.error;
+      if (orders.error) throw orders.error;
+      if (balance.error) throw balance.error;
+      if (messages.error) throw messages.error;
 
       return {
         conversations: conversations.data ?? [],
@@ -223,10 +184,7 @@ function DashboardPage() {
 
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             {Array.from({ length: 8 }).map((_, index) => (
-              <Skeleton
-                key={index}
-                className="h-28 w-full"
-              />
+              <Skeleton key={index} className="h-28 w-full" />
             ))}
           </div>
 
@@ -265,14 +223,35 @@ function DashboardPage() {
   }
 
   /*
-   * =========================================================
-   * MÉTRICAS GENERALES
-   * =========================================================
+   * Todos los datos comerciales se filtran
+   * por la fecha seleccionada.
    */
 
-  const totalConversations = data.conversations.length;
+  const dateConversations = data.conversations.filter(
+    (conversation) =>
+      isSameLocalDate(
+        conversation.created_at,
+        selectedDate,
+      ),
+  );
 
-  const closedSales = data.conversations.filter(
+  const dateOrders = data.orders.filter(
+    (order) =>
+      order.status !== "cancelado" &&
+      isSameLocalDate(order.created_at, selectedDate),
+  );
+
+  const dateMessages = data.messages.filter((message) =>
+    isSameLocalDate(message.created_at, selectedDate),
+  );
+
+  /*
+   * Métricas del día.
+   */
+
+  const totalConversations = dateConversations.length;
+
+  const closedSales = dateConversations.filter(
     (conversation) => conversation.sale_closed,
   ).length;
 
@@ -280,27 +259,9 @@ function DashboardPage() {
     ? Math.round((closedSales / totalConversations) * 100)
     : 0;
 
-  const validOrders = data.orders.filter(
-    (order) => order.status !== "cancelado",
-  );
-
-  const totalRevenue = validOrders.reduce(
+  const dateRevenue = dateOrders.reduce(
     (total, order) => total + Number(order.total ?? 0),
     0,
-  );
-
-  const aiMessages = data.messages.filter(
-    (message) => message.sender === "ai",
-  ).length;
-
-  /*
-   * =========================================================
-   * PEDIDOS DE LA FECHA SELECCIONADA
-   * =========================================================
-   */
-
-  const dateOrders = validOrders.filter((order) =>
-    isSameLocalDate(order.created_at, selectedDate),
   );
 
   const loadedOrders = dateOrders.filter(
@@ -317,8 +278,13 @@ function DashboardPage() {
   }).length;
 
   const prepaidOrders = dateOrders.filter((order) => {
-    const paymentStatus = normalizeText(order.payment_status);
-    const paymentMethod = normalizeText(order.payment_method);
+    const paymentStatus = normalizeText(
+      order.payment_status,
+    );
+
+    const paymentMethod = normalizeText(
+      order.payment_method,
+    );
 
     return (
       paymentStatus === "anticipado" ||
@@ -328,7 +294,9 @@ function DashboardPage() {
   }).length;
 
   const pendingPaymentOrders = dateOrders.filter((order) => {
-    const paymentStatus = normalizeText(order.payment_status);
+    const paymentStatus = normalizeText(
+      order.payment_status,
+    );
 
     return (
       paymentStatus === "pendiente" ||
@@ -336,19 +304,16 @@ function DashboardPage() {
     );
   }).length;
 
-  const dateRevenue = dateOrders.reduce(
-    (total, order) => total + Number(order.total ?? 0),
-    0,
-  );
+  const aiMessagesToday = dateMessages.filter(
+    (message) => message.sender === "ai",
+  ).length;
 
   /*
-   * =========================================================
-   * PRODUCTOS MÁS VENDIDOS
-   * =========================================================
+   * Productos más vendidos del día.
    */
 
   const topProducts = Object.entries(
-    validOrders.reduce<Record<string, number>>(
+    dateOrders.reduce<Record<string, number>>(
       (accumulator, order) => {
         const productName =
           order.product_title?.trim() || "Sin producto";
@@ -365,9 +330,7 @@ function DashboardPage() {
     .slice(0, 5);
 
   /*
-   * =========================================================
-   * CIUDADES MÁS VENDIDAS DE LA FECHA
-   * =========================================================
+   * Ciudades más vendidas del día.
    */
 
   const topCities = Object.entries(
@@ -387,9 +350,7 @@ function DashboardPage() {
     .slice(0, 10);
 
   /*
-   * =========================================================
-   * DEPARTAMENTOS MÁS VENDIDOS DE LA FECHA
-   * =========================================================
+   * Departamentos más vendidos del día.
    */
 
   const topDepartments = Object.entries(
@@ -412,7 +373,7 @@ function DashboardPage() {
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5);
 
-  const generalStats = [
+  const primaryStats = [
     {
       label: "Conversaciones",
       value: totalConversations,
@@ -429,15 +390,15 @@ function DashboardPage() {
       icon: TrendingUp,
     },
     {
-      label: "Ingresos totales",
-      value: formatGs(totalRevenue),
+      label: "Ingresos",
+      value: formatGs(dateRevenue),
       icon: ShoppingCart,
     },
   ];
 
-  const dateStats = [
+  const orderStats = [
     {
-      label: "Pedidos de la fecha",
+      label: "Pedidos",
       value: dateOrders.length,
       icon: CalendarDays,
     },
@@ -462,11 +423,10 @@ function DashboardPage() {
     <PageShell>
       <PageHeader
         title="Dashboard"
-        description="Resumen en vivo de tu operación de ventas."
+        description="Resumen diario de tu operación de ventas."
       />
 
       <div className="space-y-4">
-        {/* Selector de fecha */}
         <Card>
           <CardContent className="flex flex-col gap-4 p-5 sm:flex-row sm:items-end sm:justify-between">
             <div>
@@ -474,13 +434,13 @@ function DashboardPage() {
                 <CalendarDays className="h-5 w-5 text-primary" />
 
                 <h2 className="font-display text-base font-semibold">
-                  Resumen diario
+                  Resumen por fecha
                 </h2>
               </div>
 
               <p className="mt-1 text-sm text-muted-foreground">
-                Al abrir el dashboard se muestran automáticamente
-                los pedidos de hoy.
+                Todas las métricas comerciales corresponden a la
+                fecha seleccionada.
               </p>
             </div>
 
@@ -504,84 +464,51 @@ function DashboardPage() {
           </CardContent>
         </Card>
 
-        {/* Métricas generales */}
-        <div>
-          <h2 className="mb-3 font-display text-base font-semibold">
-            Resumen general
-          </h2>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {primaryStats.map((stat) => (
+            <Card key={stat.label}>
+              <CardContent className="flex items-center gap-4 p-5">
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                  <stat.icon className="h-5 w-5" />
+                </span>
 
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {generalStats.map((stat) => (
-              <Card key={stat.label}>
-                <CardContent className="flex items-center gap-4 p-5">
-                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                    <stat.icon className="h-5 w-5" />
-                  </span>
+                <div className="min-w-0">
+                  <p className="text-xs text-muted-foreground">
+                    {stat.label}
+                  </p>
 
-                  <div className="min-w-0">
-                    <p className="text-xs text-muted-foreground">
-                      {stat.label}
-                    </p>
-
-                    <p className="truncate font-display text-xl font-bold">
-                      {stat.value}
-                    </p>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
+                  <p className="truncate font-display text-xl font-bold">
+                    {stat.value}
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
         </div>
 
-        {/* Métricas por fecha */}
-        <div>
-          <h2 className="mb-3 font-display text-base font-semibold">
-            Pedidos de la fecha seleccionada
-          </h2>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {orderStats.map((stat) => (
+            <Card key={stat.label}>
+              <CardContent className="flex items-center gap-4 p-5">
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                  <stat.icon className="h-5 w-5" />
+                </span>
 
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {dateStats.map((stat) => (
-              <Card key={stat.label}>
-                <CardContent className="flex items-center gap-4 p-5">
-                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                    <stat.icon className="h-5 w-5" />
-                  </span>
+                <div>
+                  <p className="text-xs text-muted-foreground">
+                    {stat.label}
+                  </p>
 
-                  <div>
-                    <p className="text-xs text-muted-foreground">
-                      {stat.label}
-                    </p>
-
-                    <p className="font-display text-xl font-bold">
-                      {stat.value}
-                    </p>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
+                  <p className="font-display text-xl font-bold">
+                    {stat.value}
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
         </div>
 
-        {/* Ingresos y pagos de la fecha */}
         <div className="grid gap-4 sm:grid-cols-2">
-          <Card>
-            <CardContent className="flex items-center gap-4 p-5">
-              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                <Wallet className="h-5 w-5" />
-              </span>
-
-              <div>
-                <p className="text-xs text-muted-foreground">
-                  Ingresos de la fecha
-                </p>
-
-                <p className="font-display text-xl font-bold">
-                  {formatGs(dateRevenue)}
-                </p>
-              </div>
-            </CardContent>
-          </Card>
-
           <Card>
             <CardContent className="flex items-center gap-4 p-5">
               <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
@@ -599,9 +526,26 @@ function DashboardPage() {
               </div>
             </CardContent>
           </Card>
+
+          <Card>
+            <CardContent className="flex items-center gap-4 p-5">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                <Bot className="h-5 w-5" />
+              </span>
+
+              <div>
+                <p className="text-xs text-muted-foreground">
+                  Respuestas IA del día
+                </p>
+
+                <p className="font-display text-xl font-bold">
+                  {aiMessagesToday}
+                </p>
+              </div>
+            </CardContent>
+          </Card>
         </div>
 
-        {/* Productos y ciudades */}
         <div className="grid gap-4 lg:grid-cols-2">
           <Card>
             <CardContent className="p-5">
@@ -610,22 +554,19 @@ function DashboardPage() {
               </h2>
 
               <p className="mt-1 text-xs text-muted-foreground">
-                Todos los pedidos, excepto los cancelados.
+                Productos vendidos en la fecha seleccionada.
               </p>
 
               <div className="mt-4 space-y-3">
                 {topProducts.length === 0 && (
                   <p className="text-sm text-muted-foreground">
-                    Aún no hay pedidos registrados.
+                    No hay pedidos registrados para esta fecha.
                   </p>
                 )}
 
                 {topProducts.map(([name, count]) => {
                   const highestCount =
                     topProducts[0]?.[1] ?? 1;
-
-                  const percentage =
-                    (count / highestCount) * 100;
 
                   return (
                     <div
@@ -640,7 +581,7 @@ function DashboardPage() {
                         <div
                           className="h-full rounded-full bg-primary"
                           style={{
-                            width: `${percentage}%`,
+                            width: `${(count / highestCount) * 100}%`,
                           }}
                         />
                       </div>
@@ -666,7 +607,7 @@ function DashboardPage() {
               </div>
 
               <p className="mt-1 text-xs text-muted-foreground">
-                Pedidos de la fecha seleccionada.
+                Ciudades correspondientes a la fecha seleccionada.
               </p>
 
               <div className="mt-4 space-y-3">
@@ -700,7 +641,6 @@ function DashboardPage() {
           </Card>
         </div>
 
-        {/* Departamentos y consumo */}
         <div className="grid gap-4 lg:grid-cols-2">
           <Card>
             <CardContent className="p-5">
@@ -713,7 +653,7 @@ function DashboardPage() {
               </div>
 
               <p className="mt-1 text-xs text-muted-foreground">
-                Calculados según departamento o ciudad.
+                Departamentos de la fecha seleccionada.
               </p>
 
               <div className="mt-4 space-y-3">
@@ -748,11 +688,18 @@ function DashboardPage() {
             </CardContent>
           </Card>
 
+          {/* Consumo no depende de la fecha */}
           <Card>
             <CardContent className="space-y-4 p-5">
-              <h2 className="font-display text-base font-semibold">
-                Consumo
-              </h2>
+              <div>
+                <h2 className="font-display text-base font-semibold">
+                  Consumo general
+                </h2>
+
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Estos valores no cambian con el filtro de fecha.
+                </p>
+              </div>
 
               <div className="flex items-center gap-3">
                 <Wallet className="h-4 w-4 text-primary" />
@@ -779,26 +726,14 @@ function DashboardPage() {
               </div>
 
               <div className="flex items-center gap-3">
-                <Bot className="h-4 w-4 text-primary" />
+                <Wallet className="h-4 w-4 text-primary" />
 
                 <span className="text-sm text-muted-foreground">
-                  Respuestas IA
+                  Compradas
                 </span>
 
                 <span className="ml-auto font-semibold">
-                  {aiMessages}
-                </span>
-              </div>
-
-              <div className="flex items-center gap-3">
-                <ShoppingCart className="h-4 w-4 text-primary" />
-
-                <span className="text-sm text-muted-foreground">
-                  Pedidos totales
-                </span>
-
-                <span className="ml-auto font-semibold">
-                  {validOrders.length}
+                  {data.balance?.purchased ?? 0}
                 </span>
               </div>
             </CardContent>
