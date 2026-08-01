@@ -66,7 +66,6 @@ type ProductForm = {
   sku: string;
   description: string;
   sales_copy: string;
-  price: string;
   prices: ProductPriceForm[];
   stock: string;
   is_active: boolean;
@@ -79,30 +78,31 @@ type ProductForm = {
   keywords: string;
 };
 
-const emptyForm: ProductForm = {
-  name: "",
-  sku: "",
-  description: "",
-  sales_copy: "",
-  price: "0",
-  prices: [],
-  stock: "0",
-  is_active: true,
-  delivery_info: "",
-  ai_instructions: "",
-  followup_message: "",
-  followup_minutes: "60",
-  followup_enabled: false,
-  no_repeat_template: true,
-  keywords: "",
-};
+function createEmptyForm(): ProductForm {
+  return {
+    name: "",
+    sku: "",
+    description: "",
+    sales_copy: "",
+    prices: [{ label: "1 unidad", quantity: "1", price: "" }],
+    stock: "0",
+    is_active: true,
+    delivery_info: "",
+    ai_instructions: "",
+    followup_message: "",
+    followup_minutes: "60",
+    followup_enabled: false,
+    no_repeat_template: true,
+    keywords: "",
+  };
+}
 
 function ProductsPage() {
   const { profile, user } = useAuth();
   const workspaceId = profile?.workspace_id ?? null;
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState<ProductForm>(emptyForm);
+  const [form, setForm] = useState<ProductForm>(createEmptyForm());
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [uploadingFor, setUploadingFor] = useState<string | null>(null);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
@@ -177,9 +177,9 @@ function ProductsPage() {
         sku: values.sku.trim() || null,
         description: values.description.trim() || null,
         sales_copy: values.sales_copy.trim() || null,
-        price: Number(values.price) || 0,
-        // Se conserva la columna antigua para compatibilidad, pero los precios
-        // variables se guardan en product_prices.
+        // Las opciones se guardan exclusivamente en product_prices.
+        // Se mantienen las columnas heredadas en cero/null solo por compatibilidad del esquema.
+        price: 0,
         promo_price: null,
         stock: Number(values.stock) || 0,
         is_active: values.is_active,
@@ -257,7 +257,7 @@ function ProductsPage() {
     onSuccess: () => {
       toast.success("Producto guardado");
       setOpen(false);
-      setForm(emptyForm);
+      setForm(createEmptyForm());
       setPendingFiles([]);
       setEditingMedia([]);
       queryClient.invalidateQueries({ queryKey: ["products"] });
@@ -328,8 +328,6 @@ function ProductsPage() {
     sku: string | null;
     description: string | null;
     sales_copy: string | null;
-    price: number;
-    promo_price: number | null;
     product_prices: {
       id: string;
       label: string;
@@ -354,7 +352,6 @@ function ProductsPage() {
       sku: p.sku ?? "",
       description: p.description ?? "",
       sales_copy: p.sales_copy ?? "",
-      price: String(p.price ?? 0),
       prices: [...(p.product_prices ?? [])]
         .sort((a, b) => a.sort_order - b.sort_order)
         .map((item) => ({
@@ -362,7 +359,8 @@ function ProductsPage() {
           label: item.label,
           quantity: String(item.quantity),
           price: String(item.price),
-        })),
+        }))
+        .concat((p.product_prices ?? []).length ? [] : [{ label: "1 unidad", quantity: "1", price: "" }]),
       stock: String(p.stock ?? 0),
       is_active: p.is_active,
       delivery_info: p.delivery_info ?? "",
@@ -417,7 +415,7 @@ function ProductsPage() {
             </Button>
             <Button
               onClick={() => {
-                setForm(emptyForm);
+                setForm(createEmptyForm());
                 setPendingFiles([]);
                 setEditingMedia([]);
                 setOpen(true);
@@ -443,7 +441,7 @@ function ProductsPage() {
           action={
             <Button
               onClick={() => {
-                setForm(emptyForm);
+                setForm(createEmptyForm());
                 setPendingFiles([]);
                 setEditingMedia([]);
                 setOpen(true);
@@ -468,26 +466,32 @@ function ProductsPage() {
                   </Badge>
                 </div>
                 <div className="space-y-2">
-                  <div className="flex items-baseline gap-2">
-                    <span className="text-lg font-semibold">{formatGs(p.price)}</span>
-                    <span className="ml-auto text-xs text-muted-foreground">Stock {p.stock}</span>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-muted-foreground">Opciones de precio</span>
+                    <span className="text-xs text-muted-foreground">Stock {p.stock}</span>
                   </div>
-                  {p.product_prices?.length > 0 && (
-                    <div className="flex flex-wrap gap-1">
+                  {p.product_prices?.length > 0 ? (
+                    <div className="space-y-1.5">
                       {[...p.product_prices]
                         .sort((a, b) => a.sort_order - b.sort_order)
                         .slice(0, 3)
                         .map((item) => (
-                          <Badge key={item.id} variant="secondary" className="text-[10px]">
-                            {item.label}: {formatGs(item.price)}
-                          </Badge>
+                          <div
+                            key={item.id}
+                            className="flex items-center justify-between gap-3 rounded-md bg-muted/50 px-2.5 py-1.5 text-sm"
+                          >
+                            <span className="truncate">{item.label}</span>
+                            <span className="shrink-0 font-semibold">{formatGs(item.price)}</span>
+                          </div>
                         ))}
                       {p.product_prices.length > 3 && (
-                        <Badge variant="outline" className="text-[10px]">
-                          +{p.product_prices.length - 3}
-                        </Badge>
+                        <p className="text-xs text-muted-foreground">
+                          +{p.product_prices.length - 3} precios más
+                        </p>
                       )}
                     </div>
+                  ) : (
+                    <p className="text-sm text-destructive">Sin precios cargados</p>
                   )}
                 </div>
                 <p className="line-clamp-2 text-sm text-muted-foreground">
@@ -576,25 +580,12 @@ function ProductsPage() {
                 onChange={(e) => setForm({ ...form, stock: e.target.value })}
               />
             </div>
-            <div className="space-y-1.5 sm:col-span-2">
-              <Label>Precio base (₲)</Label>
-              <Input
-                type="number"
-                min="0"
-                value={form.price}
-                onChange={(e) => setForm({ ...form, price: e.target.value })}
-              />
-              <p className="text-xs text-muted-foreground">
-                Precio normal de una unidad. Debajo puedes agregar combos u otras opciones.
-              </p>
-            </div>
-
             <div className="space-y-3 sm:col-span-2">
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <Label>Opciones de precio</Label>
                   <p className="text-xs text-muted-foreground">
-                    Ejemplo: 2 unidades por ₲350.000.
+                    Agrega una opción por cada cantidad o presentación disponible.
                   </p>
                 </div>
                 <Button
@@ -617,7 +608,7 @@ function ProductsPage() {
 
               {form.prices.length === 0 ? (
                 <div className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground">
-                  No hay precios adicionales. Usa “Agregar precio” para crear uno.
+                  Debes agregar al menos una opción de precio.
                 </div>
               ) : (
                 <div className="space-y-2">
@@ -686,6 +677,7 @@ function ProductsPage() {
                           size="icon"
                           variant="ghost"
                           aria-label={`Eliminar precio ${index + 1}`}
+                          disabled={form.prices.length === 1}
                           onClick={() =>
                             setForm((current) => ({
                               ...current,
@@ -788,8 +780,8 @@ function ProductsPage() {
                 name={form.name}
                 salesCopy={form.sales_copy}
                 description={form.description}
-                price={form.price}
-                promoPrice={form.prices[0]?.price ?? ""}
+                price={form.prices[0]?.price ?? "0"}
+                promoPrice=""
                 deliveryInfo={form.delivery_info}
                 keywords={form.keywords}
                 existing={editingMedia}
@@ -807,8 +799,8 @@ function ProductsPage() {
                   toast.error("El nombre es obligatorio");
                   return;
                 }
-                if ((Number(form.price) || 0) <= 0) {
-                  toast.error("El precio base debe ser mayor a cero");
+                if (form.prices.length === 0) {
+                  toast.error("Agrega al menos una opción de precio");
                   return;
                 }
                 const incompletePrice = form.prices.find(
