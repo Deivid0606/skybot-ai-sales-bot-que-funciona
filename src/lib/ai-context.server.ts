@@ -157,7 +157,7 @@ export async function buildWorkspaceAiContext(
     supabase
       .from("products")
       .select(
-        "id, name, stock, sales_copy, description, delivery_info, ai_instructions, product_keywords(keyword), product_prices(id, label, quantity, price, sort_order)",
+        "id, name, price, promo_price, stock, sales_copy, description, delivery_info, ai_instructions, product_keywords(keyword)",
       )
       .eq("workspace_id", workspaceId)
       .eq("is_active", true),
@@ -168,10 +168,6 @@ export async function buildWorkspaceAiContext(
       .eq("workspace_id", workspaceId)
       .eq("is_active", true),
   ]);
-
-  if (products.error) {
-    throw products.error;
-  }
 
   return {
     systemInstruction: mergeSystemInstruction(
@@ -193,23 +189,11 @@ export async function buildWorkspaceAiContext(
     products: (products.data ?? []).map((product) => ({
       id: product.id,
       name: product.name,
-      prices: [...(product.product_prices ?? [])]
-        .map((option) => ({
-          id: option.id,
-          label: option.label,
-          quantity: Number(option.quantity),
-          price: Number(option.price),
-          sort_order: Number(option.sort_order ?? 0),
-        }))
-        .filter(
-          (option) =>
-            option.label.trim() &&
-            Number.isFinite(option.quantity) &&
-            option.quantity > 0 &&
-            Number.isFinite(option.price) &&
-            option.price > 0,
-        )
-        .sort((a, b) => a.sort_order - b.sort_order),
+      price: Number(product.price),
+      promo_price:
+        product.promo_price === null
+          ? null
+          : Number(product.promo_price),
       stock: product.stock,
       sales_copy: product.sales_copy,
       description: product.description,
