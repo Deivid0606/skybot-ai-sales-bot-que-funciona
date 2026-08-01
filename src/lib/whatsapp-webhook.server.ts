@@ -737,6 +737,13 @@ async function createOrderFromAi(args: {
     name: string;
     price: number;
     promo_price: number | null;
+    product_prices?: {
+      id: string;
+      label: string;
+      quantity: number;
+      price: number;
+      sort_order: number;
+    }[];
   }[];
 }) {
   /*
@@ -804,27 +811,95 @@ async function createOrderFromAi(args: {
   }
 
   /*
-   * Precio vigente:
-   * - Usa promo_price solamente cuando sea un número válido mayor que cero.
-   * - Si promo_price es null, undefined, 0 o inválido, usa el precio normal.
-   * - Nunca permite crear pedidos con precio cero o inválido.
+   * Los precios reales se guardan en product_prices.
+   * Cada opción contiene:
+   * - quantity: cantidad incluida en la presentación.
+   * - price: precio TOTAL de esa presentación.
+   *
+   * Ejemplo:
+   * 2 unidades -> 250000
+   *
+   * En orders guardamos:
+   * - quantity = 2
+   * - price = 125000 (precio unitario calculado)
+   * - total = 250000
    */
-  const regularPrice = Number(product.price);
-  const promoPrice =
+  const parsedRequestedQuantity = Number(args.order.quantity);
+  const requestedQuantity =
+    Number.isFinite(parsedRequestedQuantity) &&
+    parsedRequestedQuantity > 0
+      ? Math.floor(parsedRequestedQuantity)
+      : 1;
+
+  const priceOptions = [...(product.product_prices ?? [])]
+    .map((option) => ({
+      id: option.id,
+      label: cleanOrderText(option.label),
+      quantity: Math.max(1, Math.floor(Number(option.quantity) || 1)),
+      price: Number(option.price),
+      sort_order: Number(option.sort_order) || 0,
+    }))
+    .filter(
+      (option) =>
+        option.label &&
+        Number.isFinite(option.quantity) &&
+        option.quantity > 0 &&
+        Number.isFinite(option.price) &&
+        option.price > 0,
+    )
+    .sort((a, b) => a.sort_order - b.sort_order);
+
+  /*
+   * Prioridad:
+   * 1. Opción cuya cantidad coincide exactamente con la solicitada.
+   * 2. Opción de una unidad.
+   * 3. Primera opción válida.
+   */
+  const selectedPrice =
+    priceOptions.find(
+      (option) => option.quantity === requestedQuantity,
+    ) ??
+    priceOptions.find((option) => option.quantity === 1) ??
+    priceOptions[0] ??
+    null;
+
+  /*
+   * Compatibilidad con productos antiguos:
+   * si todavía no tienen product_prices, se usan las columnas heredadas.
+   */
+  const legacyRegularPrice = Number(product.price);
+  const legacyPromoPrice =
     product.promo_price === null || product.promo_price === undefined
       ? null
       : Number(product.promo_price);
 
-  const unitPrice =
-    promoPrice !== null &&
-    Number.isFinite(promoPrice) &&
-    promoPrice > 0
-      ? promoPrice
-      : regularPrice;
+  const legacyUnitPrice =
+    legacyPromoPrice !== null &&
+    Number.isFinite(legacyPromoPrice) &&
+    legacyPromoPrice > 0
+      ? legacyPromoPrice
+      : legacyRegularPrice;
 
-  if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
+  let quantity: number;
+  let unitPrice: number;
+  let total: number;
+  let selectedPriceLabel: string | null = null;
+
+  if (selectedPrice) {
+    quantity = selectedPrice.quantity;
+    total = selectedPrice.price;
+    unitPrice = total / quantity;
+    selectedPriceLabel = selectedPrice.label;
+  } else if (
+    Number.isFinite(legacyUnitPrice) &&
+    legacyUnitPrice > 0
+  ) {
+    quantity = requestedQuantity;
+    unitPrice = legacyUnitPrice;
+    total = unitPrice * quantity;
+  } else {
     const error = new Error(
-      `El producto "${product.name}" no tiene un precio válido`,
+      `El producto "${product.name}" no tiene opciones de precio válidas`,
     );
 
     await logOrderIssue({
@@ -833,6 +908,7 @@ async function createOrderFromAi(args: {
       message:
         `${error.message}. Conversación: ${args.conversationId}. ` +
         `Producto: ${product.id}. ` +
+        `product_prices=${JSON.stringify(product.product_prices ?? [])}. ` +
         `price=${String(product.price)}. ` +
         `promo_price=${String(product.promo_price)}.`,
     });
@@ -840,11 +916,29 @@ async function createOrderFromAi(args: {
     throw error;
   }
 
-  const parsedQuantity = Number(args.order.quantity);
-  const quantity =
-    Number.isFinite(parsedQuantity) && parsedQuantity > 0
-      ? Math.floor(parsedQuantity)
-      : 1;
+  if (
+    !Number.isFinite(quantity) ||
+    quantity <= 0 ||
+    !Number.isFinite(unitPrice) ||
+    unitPrice <= 0 ||
+    !Number.isFinite(total) ||
+    total <= 0
+  ) {
+    const error = new Error(
+      `El producto "${product.name}" produjo un cálculo de precio inválido`,
+    );
+
+    await logOrderIssue({
+      workspaceId: args.workspaceId,
+      ownerId: args.ownerId,
+      message:
+        `${error.message}. Conversación: ${args.conversationId}. ` +
+        `Producto: ${product.id}. ` +
+        `Cantidad: ${quantity}. Precio unitario: ${unitPrice}. Total: ${total}.`,
+    });
+
+    throw error;
+  }
 
   const orderNumber = `BS-${Date.now().toString(36).toUpperCase()}`;
 
@@ -854,7 +948,18 @@ async function createOrderFromAi(args: {
   const departamento = cleanOrderText(args.order.departamento) || null;
   const district = cleanOrderText(args.order.district) || null;
   const street = cleanOrderText(args.order.street);
-  const observations = cleanOrderText(args.order.observations) || null;
+  const baseObservations =
+    cleanOrderText(args.order.observations) || null;
+
+  const observations = [
+    baseObservations,
+    selectedPriceLabel
+      ? `Opción de precio: ${selectedPriceLabel}`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" | ") || null;
+
   const paymentMethod = cleanOrderText(args.order.payment_method);
 
   const orderPayload = {
@@ -875,7 +980,7 @@ async function createOrderFromAi(args: {
     product_title: product.name,
     quantity,
     price: unitPrice,
-    total: unitPrice * quantity,
+    total,
     status: "nuevo" as const,
     payment_status: "pendiente" as const,
   };
@@ -994,8 +1099,10 @@ async function createOrderFromAi(args: {
           district,
           street,
           product: product.name,
+          price_option: selectedPriceLabel,
           quantity,
-          total: unitPrice * quantity,
+          unit_price: unitPrice,
+          total,
           payment_method: paymentMethod,
           observations,
         }),
