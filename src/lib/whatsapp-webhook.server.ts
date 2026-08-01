@@ -803,7 +803,42 @@ async function createOrderFromAi(args: {
     throw error;
   }
 
-  const unitPrice = Number(product.promo_price ?? product.price);
+  /*
+   * Precio vigente:
+   * - Usa promo_price solamente cuando sea un número válido mayor que cero.
+   * - Si promo_price es null, undefined, 0 o inválido, usa el precio normal.
+   * - Nunca permite crear pedidos con precio cero o inválido.
+   */
+  const regularPrice = Number(product.price);
+  const promoPrice =
+    product.promo_price === null || product.promo_price === undefined
+      ? null
+      : Number(product.promo_price);
+
+  const unitPrice =
+    promoPrice !== null &&
+    Number.isFinite(promoPrice) &&
+    promoPrice > 0
+      ? promoPrice
+      : regularPrice;
+
+  if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
+    const error = new Error(
+      `El producto "${product.name}" no tiene un precio válido`,
+    );
+
+    await logOrderIssue({
+      workspaceId: args.workspaceId,
+      ownerId: args.ownerId,
+      message:
+        `${error.message}. Conversación: ${args.conversationId}. ` +
+        `Producto: ${product.id}. ` +
+        `price=${String(product.price)}. ` +
+        `promo_price=${String(product.promo_price)}.`,
+    });
+
+    throw error;
+  }
 
   const parsedQuantity = Number(args.order.quantity);
   const quantity =
