@@ -412,6 +412,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       .update({
         status: "abierta",
         is_closed: false,
+        sale_closed: false,
         ...(message.referral?.source_id
           ? { ad_id: message.referral.source_id }
           : {}),
@@ -639,6 +640,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         contactId: contact.id,
         phone,
         productId: detectedProduct,
+        sourceMessageId: message.id,
         order: completedOrder,
         products: ctx.products,
       });
@@ -731,6 +733,7 @@ async function createOrderFromAi(args: {
   contactId: string;
   phone: string;
   productId: string | null;
+  sourceMessageId: string;
   order: NonNullable<Awaited<ReturnType<typeof generateAiReply>>["order"]>;
   products: {
     id: string;
@@ -747,15 +750,44 @@ async function createOrderFromAi(args: {
   }[];
 }) {
   /*
-   * Evita pedidos duplicados si Meta reintenta un webhook o llegan
-   * dos mensajes casi al mismo tiempo.
+   * Cada compra se identifica por el mensaje de WhatsApp que terminó de
+   * confirmar el pedido. El número generado es determinista: si Meta reenvía
+   * exactamente el mismo webhook, recuperamos el mismo pedido; si el cliente
+   * realiza otra compra en otro mensaje, se crea una orden nueva aunque se
+   * reutilicen el contacto y la conversación.
    */
+  const sourceMessageId = cleanOrderText(args.sourceMessageId);
+
+  if (!sourceMessageId) {
+    const error = new Error(
+      "No se puede crear el pedido porque falta el ID del mensaje de origen",
+    );
+
+    await logOrderIssue({
+      workspaceId: args.workspaceId,
+      ownerId: args.ownerId,
+      message: `${error.message}. Conversación: ${args.conversationId}.`,
+    });
+
+    throw error;
+  }
+
+  const orderKeyBytes = new TextEncoder().encode(
+    `${args.workspaceId}:${sourceMessageId}`,
+  );
+  const orderKeyHash = await crypto.subtle.digest("SHA-256", orderKeyBytes);
+  const orderKey = Array.from(new Uint8Array(orderKeyHash))
+    .slice(0, 10)
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("")
+    .toUpperCase();
+  const orderNumber = `BS-${orderKey}`;
+
   const { data: existingOrder, error: existingOrderError } = await supabaseAdmin
     .from("orders")
     .select("id, order_number")
     .eq("workspace_id", args.workspaceId)
-    .eq("conversation_id", args.conversationId)
-    .limit(1)
+    .eq("order_number", orderNumber)
     .maybeSingle();
 
   if (existingOrderError) {
@@ -763,7 +795,7 @@ async function createOrderFromAi(args: {
       workspaceId: args.workspaceId,
       ownerId: args.ownerId,
       message:
-        `No se pudo comprobar si ya existía un pedido. ` +
+        `No se pudo comprobar si el mensaje ya había creado un pedido. ` +
         `${existingOrderError.message} | ` +
         `${existingOrderError.details ?? ""} | ` +
         `${existingOrderError.hint ?? ""} | ` +
@@ -774,16 +806,9 @@ async function createOrderFromAi(args: {
   }
 
   if (existingOrder) {
-    await supabaseAdmin
-      .from("conversations")
-      .update({
-        sale_closed: true,
-        status: "vendida",
-      })
-      .eq("id", args.conversationId);
-
-    console.info("[Pedidos] Pedido ya existente", {
+    console.info("[Pedidos] Mensaje de venta ya procesado", {
       conversationId: args.conversationId,
+      sourceMessageId,
       orderId: existingOrder.id,
       orderNumber: existingOrder.order_number,
     });
@@ -939,8 +964,6 @@ async function createOrderFromAi(args: {
 
     throw error;
   }
-
-  const orderNumber = `BS-${Date.now().toString(36).toUpperCase()}`;
 
   const customerName = cleanOrderText(args.order.customer_name) || "Cliente";
 
