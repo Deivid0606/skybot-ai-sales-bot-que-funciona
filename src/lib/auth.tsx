@@ -11,7 +11,6 @@ import { supabase } from "@/integrations/supabase/client";
 
 export type Profile = {
   id: string;
-  user_id: string;
   workspace_id: string | null;
   full_name: string | null;
   email: string | null;
@@ -81,7 +80,7 @@ export async function getSessionFast(
         .then(({ data }) => data.session),
 
       new Promise<Session | null>((resolve) => {
-        setTimeout(() => resolve(stored), timeoutMs);
+        window.setTimeout(() => resolve(stored), timeoutMs);
       }),
     ]);
 
@@ -98,6 +97,7 @@ export function AuthProvider({
 }) {
   const [session, setSession] = useState<Session | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -105,60 +105,108 @@ export function AuthProvider({
     async (userId: string | undefined) => {
       if (!userId) {
         setProfile(null);
+        setWorkspaceId(null);
         setIsAdmin(false);
         return;
       }
 
-      const [profileResult, rolesResult] = await Promise.all([
-        supabase
-          .from("profiles")
-          .select(
-            `
-              id,
-              user_id,
-              workspace_id,
-              full_name,
-              email,
-              phone,
-              company,
-              status,
-              status_message
-            `,
-          )
-          .eq("user_id", userId)
-          .maybeSingle(),
+      try {
+        const [profileResult, membershipResult, rolesResult] =
+          await Promise.all([
+            supabase
+              .from("profiles")
+              .select(
+                `
+                  id,
+                  workspace_id,
+                  full_name,
+                  email,
+                  phone,
+                  company,
+                  status,
+                  status_message
+                `,
+              )
+              .eq("id", userId)
+              .maybeSingle(),
 
-        supabase
-          .from("user_roles")
-          .select("role")
-          .eq("user_id", userId),
-      ]);
+            supabase
+              .from("workspace_members")
+              .select("workspace_id")
+              .eq("user_id", userId)
+              .limit(1)
+              .maybeSingle(),
 
-      if (profileResult.error) {
-        console.error(
-          "Error cargando perfil:",
-          profileResult.error,
-        );
-      }
+            supabase
+              .from("user_roles")
+              .select("role")
+              .eq("user_id", userId),
+          ]);
 
-      if (rolesResult.error) {
-        console.error(
-          "Error cargando roles:",
-          rolesResult.error,
-        );
-      }
+        if (profileResult.error) {
+          console.error(
+            "Error cargando profile:",
+            profileResult.error,
+          );
+        }
 
-      setProfile(
-        (profileResult.data as Profile | null) ?? null,
-      );
+        if (membershipResult.error) {
+          console.error(
+            "Error cargando workspace_members:",
+            membershipResult.error,
+          );
+        }
 
-      setIsAdmin(
-        Boolean(
-          rolesResult.data?.some(
-            (row) => row.role === "admin",
+        if (rolesResult.error) {
+          console.error(
+            "Error cargando roles:",
+            rolesResult.error,
+          );
+        }
+
+        const loadedProfile =
+          (profileResult.data as Profile | null) ?? null;
+
+        /*
+         * Primero usa profiles.workspace_id.
+         * Si el perfil no existe o no tiene workspace,
+         * usa workspace_members como respaldo.
+         */
+        const resolvedWorkspaceId =
+          loadedProfile?.workspace_id ??
+          membershipResult.data?.workspace_id ??
+          null;
+
+        setProfile(loadedProfile);
+        setWorkspaceId(resolvedWorkspaceId);
+
+        setIsAdmin(
+          Boolean(
+            rolesResult.data?.some(
+              (row) => row.role === "admin",
+            ),
           ),
-        ),
-      );
+        );
+
+        console.log("AUTH WORKSPACE DEBUG", {
+          authUserId: userId,
+          profileId: loadedProfile?.id ?? null,
+          profileWorkspaceId:
+            loadedProfile?.workspace_id ?? null,
+          membershipWorkspaceId:
+            membershipResult.data?.workspace_id ?? null,
+          resolvedWorkspaceId,
+        });
+      } catch (error) {
+        console.error(
+          "Error inesperado cargando autenticación:",
+          error,
+        );
+
+        setProfile(null);
+        setWorkspaceId(null);
+        setIsAdmin(false);
+      }
     },
     [],
   );
@@ -166,23 +214,31 @@ export function AuthProvider({
   useEffect(() => {
     let active = true;
 
-    const { data: authListener } =
-      supabase.auth.onAuthStateChange(
-        (_event, newSession) => {
-          if (!active) return;
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(
+      (_event, newSession) => {
+        if (!active) return;
 
-          setSession(newSession);
+        setSession(newSession);
 
-          if (!newSession) {
-            setProfile(null);
-            setIsAdmin(false);
+        if (!newSession) {
+          setProfile(null);
+          setWorkspaceId(null);
+          setIsAdmin(false);
+          setLoading(false);
+          return;
+        }
+
+        setLoading(true);
+
+        void loadProfile(newSession.user.id).finally(() => {
+          if (active) {
             setLoading(false);
-            return;
           }
-
-          void loadProfile(newSession.user.id);
-        },
-      );
+        });
+      },
+    );
 
     void getSessionFast()
       .then(async (currentSession) => {
@@ -208,7 +264,7 @@ export function AuthProvider({
 
     return () => {
       active = false;
-      authListener.subscription.unsubscribe();
+      subscription.unsubscribe();
     };
   }, [loadProfile]);
 
@@ -216,8 +272,7 @@ export function AuthProvider({
     setLoading(true);
 
     try {
-      const currentSession =
-        await getSessionFast();
+      const currentSession = await getSessionFast();
 
       setSession(currentSession);
 
@@ -234,11 +289,9 @@ export function AuthProvider({
 
     setSession(null);
     setProfile(null);
+    setWorkspaceId(null);
     setIsAdmin(false);
   }, []);
-
-  const workspaceId =
-    profile?.workspace_id ?? null;
 
   const value = useMemo<AuthContextValue>(
     () => ({
