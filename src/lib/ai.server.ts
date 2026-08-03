@@ -427,400 +427,153 @@ function ensureValidResult(result: AiResult): AiResult {
   };
 }
 
-const GEMINI_FALLBACK_MODELS = [
-  "gemini-2.5-flash",
-  "gemini-2.0-flash",
-  "gemini-2.5-pro",
-] as const;
-
-const MAX_ATTEMPTS_PER_MODEL = 2;
-const MAX_GATEWAY_ATTEMPTS = 3;
-
-function sleep(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, milliseconds);
-  });
-}
-
-function getRetryDelayMs(
-  response: Response,
-  attempt: number,
-): number {
-  const retryAfter = response.headers.get("retry-after");
-
-  if (retryAfter) {
-    const seconds = Number(retryAfter);
-
-    if (Number.isFinite(seconds) && seconds >= 0) {
-      return Math.min(seconds * 1000, 10_000);
-    }
-
-    const retryDate = Date.parse(retryAfter);
-
-    if (Number.isFinite(retryDate)) {
-      return Math.min(
-        Math.max(retryDate - Date.now(), 0),
-        10_000,
-      );
-    }
-  }
-
-  /*
-   * Espera progresiva corta:
-   * intento 0 -> 800 ms
-   * intento 1 -> 1.600 ms
-   * intento 2 -> 2.400 ms
-   */
-  return 800 * (attempt + 1);
-}
-
-function isRateLimitedError(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    error.message.includes("rate_limited")
-  );
-}
-
 async function generateWithGemini(
   ctx: AiContext,
   key: string,
 ): Promise<AiResult> {
-  const configuredModel = cleanString(ctx.model);
-
-  const candidates = configuredModel
-    ? [
-        configuredModel,
-        ...GEMINI_FALLBACK_MODELS.filter(
-          (model) => model !== configuredModel,
-        ),
-      ]
-    : [...GEMINI_FALLBACK_MODELS];
+  const candidates = ctx.model
+    ? [ctx.model]
+    : [
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-2.5-pro",
+      ];
 
   let lastError = "";
-  let receivedRateLimit = false;
-  let receivedNonRateLimitError = false;
 
   for (const model of candidates) {
-    for (
-      let attempt = 0;
-      attempt < MAX_ATTEMPTS_PER_MODEL;
-      attempt += 1
-    ) {
-      let response: Response;
-
-      try {
-        response = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-            model,
-          )}:generateContent?key=${encodeURIComponent(key)}`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              systemInstruction: {
-                parts: [{ text: buildSystemPrompt(ctx) }],
-              },
-              contents: ctx.history.slice(-24).map((message) => ({
-                role:
-                  message.role === "assistant"
-                    ? "model"
-                    : "user",
-                parts: [{ text: message.content }],
-              })),
-              generationConfig: {
-                temperature: 0.35,
-                maxOutputTokens: 2048,
-                responseMimeType: "application/json",
-              },
-            }),
-          },
-        );
-      } catch (error) {
-        lastError =
-          error instanceof Error
-            ? error.message
-            : "Error de red desconocido";
-
-        console.error("[AI] Error de red llamando a Gemini", {
-          model,
-          attempt: attempt + 1,
-          error: lastError,
-        });
-
-        if (attempt + 1 < MAX_ATTEMPTS_PER_MODEL) {
-          await sleep(800 * (attempt + 1));
-          continue;
-        }
-
-        receivedNonRateLimitError = true;
-        break;
-      }
-
-      if (response.ok) {
-        const json = (await response.json()) as {
-          candidates?: Array<{
-            content?: {
-              parts?: Array<{
-                text?: string;
-              }>;
-            };
-          }>;
-        };
-
-        const raw =
-          json.candidates?.[0]?.content?.parts
-            ?.map((part) => part.text ?? "")
-            .join("") ?? "";
-
-        return applyDetectedPhone(
-          ensureValidResult(parseResult(raw)),
-          ctx.customerPhone,
-        );
-      }
-
-      lastError = (await response.text()).slice(0, 500);
-
-      if (response.status === 429) {
-        receivedRateLimit = true;
-
-        console.warn("[AI] Gemini devolvió 429", {
-          model,
-          attempt: attempt + 1,
-          error: lastError,
-        });
-
-        if (attempt + 1 < MAX_ATTEMPTS_PER_MODEL) {
-          await sleep(getRetryDelayMs(response, attempt));
-          continue;
-        }
-
-        /*
-         * Este modelo agotó sus intentos.
-         * Seguimos con el siguiente modelo disponible.
-         */
-        break;
-      }
-
-      receivedNonRateLimitError = true;
-
-      console.error("[AI] Modelo Gemini rechazó la solicitud", {
-        model,
-        attempt: attempt + 1,
-        status: response.status,
-        error: lastError,
-      });
-
-      /*
-       * Los errores 500, 502, 503 y 504 pueden ser temporales.
-       * Reintentamos el mismo modelo una vez antes de pasar al siguiente.
-       */
-      if (
-        [500, 502, 503, 504].includes(response.status) &&
-        attempt + 1 < MAX_ATTEMPTS_PER_MODEL
-      ) {
-        await sleep(getRetryDelayMs(response, attempt));
-        continue;
-      }
-
-      break;
-    }
-  }
-
-  if (receivedRateLimit && !receivedNonRateLimitError) {
-    throw new Error("rate_limited");
-  }
-
-  if (receivedRateLimit) {
-    throw new Error(
-      `gemini_error_rate_limited: ${
-        lastError || "Todos los modelos disponibles fallaron"
-      }`,
-    );
-  }
-
-  throw new Error(
-    `gemini_error: ${
-      lastError || "Todos los modelos disponibles fallaron"
-    }`,
-  );
-}
-
-async function generateWithGateway(
-  ctx: AiContext,
-  apiKey: string,
-): Promise<AiResult> {
-  let lastError = "";
-
-  for (
-    let attempt = 0;
-    attempt < MAX_GATEWAY_ATTEMPTS;
-    attempt += 1
-  ) {
-    let response: Response;
-
-    try {
-      response = await fetch(GATEWAY, {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
+      {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Lovable-API-Key": apiKey,
         },
         body: JSON.stringify({
-          model: DEFAULT_GATEWAY_MODEL,
-          messages: [
-            {
-              role: "system",
-              content: buildSystemPrompt(ctx),
-            },
-            ...ctx.history.slice(-24),
-          ],
-          temperature: 0.35,
-          response_format: {
-            type: "json_object",
+          systemInstruction: {
+            parts: [{ text: buildSystemPrompt(ctx) }],
+          },
+          contents: ctx.history.slice(-24).map((message) => ({
+            role:
+              message.role === "assistant"
+                ? "model"
+                : "user",
+            parts: [{ text: message.content }],
+          })),
+          generationConfig: {
+            temperature: 0.35,
+            maxOutputTokens: 2048,
+            responseMimeType: "application/json",
           },
         }),
-      });
-    } catch (error) {
-      lastError =
-        error instanceof Error
-          ? error.message
-          : "Error de red desconocido";
-
-      console.error("[AI] Error de red llamando al gateway", {
-        attempt: attempt + 1,
-        error: lastError,
-      });
-
-      if (attempt + 1 < MAX_GATEWAY_ATTEMPTS) {
-        await sleep(800 * (attempt + 1));
-        continue;
-      }
-
-      throw new Error(`ai_network_error: ${lastError}`);
-    }
+      },
+    );
 
     if (response.ok) {
       const json = (await response.json()) as {
-        choices?: Array<{
-          message?: {
-            content?: string;
+        candidates?: Array<{
+          content?: {
+            parts?: Array<{
+              text?: string;
+            }>;
           };
         }>;
       };
 
-      const content =
-        json.choices?.[0]?.message?.content ?? "";
+      const raw =
+        json.candidates?.[0]?.content?.parts
+          ?.map((part) => part.text ?? "")
+          .join("") ?? "";
 
       return applyDetectedPhone(
-        ensureValidResult(parseResult(content)),
+        ensureValidResult(parseResult(raw)),
         ctx.customerPhone,
       );
     }
 
     lastError = (await response.text()).slice(0, 500);
 
-    if (response.status === 402) {
-      throw new Error("credits_exhausted");
-    }
-
     if (response.status === 429) {
-      console.warn("[AI] Gateway devolvió 429", {
-        attempt: attempt + 1,
-        error: lastError,
-      });
-
-      if (attempt + 1 < MAX_GATEWAY_ATTEMPTS) {
-        await sleep(getRetryDelayMs(response, attempt));
-        continue;
-      }
-
       throw new Error("rate_limited");
     }
 
-    if (
-      [500, 502, 503, 504].includes(response.status) &&
-      attempt + 1 < MAX_GATEWAY_ATTEMPTS
-    ) {
-      console.warn("[AI] Error temporal del gateway", {
-        attempt: attempt + 1,
-        status: response.status,
-        error: lastError,
-      });
-
-      await sleep(getRetryDelayMs(response, attempt));
-      continue;
-    }
-
-    throw new Error(`ai_error: ${lastError}`);
+    console.error("[AI] Gemini model failed", {
+      model,
+      status: response.status,
+      error: lastError,
+    });
   }
 
-  throw new Error(
-    `ai_error: ${lastError || "No se pudo obtener respuesta"}`,
-  );
+  throw new Error(`gemini_error: ${lastError}`);
 }
 
 export async function generateAiReply(
   ctx: AiContext,
 ): Promise<AiResult> {
-  const geminiKey = ctx.geminiApiKey?.trim() ?? "";
-  const lovableKey = process.env.LOVABLE_API_KEY?.trim() ?? "";
-
-  /*
-   * Prioridad 1: clave Gemini propia del workspace.
-   */
-  if (geminiKey) {
-    try {
-      return await generateWithGemini(ctx, geminiKey);
-    } catch (error) {
-      console.error("[AI] Falló Gemini directo", {
-        message:
-          error instanceof Error
-            ? error.message
-            : "Error desconocido",
-      });
-
-      /*
-       * Si también existe LOVABLE_API_KEY, usamos el gateway como respaldo.
-       * Esto evita perder la respuesta cuando Gemini directo devuelve 429
-       * o presenta un error temporal.
-       */
-      if (lovableKey) {
-        console.warn(
-          "[AI] Intentando gateway de Lovable como respaldo",
-        );
-
-        try {
-          return await generateWithGateway(ctx, lovableKey);
-        } catch (gatewayError) {
-          /*
-           * Si ambos proveedores están limitados, mantenemos el error
-           * rate_limited para que el frontend muestre el mensaje correcto.
-           */
-          if (
-            isRateLimitedError(error) ||
-            isRateLimitedError(gatewayError)
-          ) {
-            throw new Error("rate_limited");
-          }
-
-          throw gatewayError;
-        }
-      }
-
-      throw error;
-    }
-  }
-
-  /*
-   * Prioridad 2: gateway de Lovable.
-   */
-  if (!lovableKey) {
-    throw new Error(
-      "Falta una clave de IA: configura geminiApiKey o LOVABLE_API_KEY",
+  if (ctx.geminiApiKey?.trim()) {
+    return generateWithGemini(
+      ctx,
+      ctx.geminiApiKey.trim(),
     );
   }
 
-  return generateWithGateway(ctx, lovableKey);
+  const apiKey = process.env.LOVABLE_API_KEY?.trim();
+
+  if (!apiKey) {
+    throw new Error("Falta LOVABLE_API_KEY");
+  }
+
+  const response = await fetch(GATEWAY, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Lovable-API-Key": apiKey,
+    },
+    body: JSON.stringify({
+      model: DEFAULT_GATEWAY_MODEL,
+      messages: [
+        {
+          role: "system",
+          content: buildSystemPrompt(ctx),
+        },
+        ...ctx.history.slice(-24),
+      ],
+      temperature: 0.35,
+      response_format: {
+        type: "json_object",
+      },
+    }),
+  });
+
+  if (response.status === 429) {
+    throw new Error("rate_limited");
+  }
+
+  if (response.status === 402) {
+    throw new Error("credits_exhausted");
+  }
+
+  if (!response.ok) {
+    const text = await response.text();
+
+    throw new Error(
+      `ai_error: ${text.slice(0, 500)}`,
+    );
+  }
+
+  const json = (await response.json()) as {
+    choices?: Array<{
+      message?: {
+        content?: string;
+      };
+    }>;
+  };
+
+  const content =
+    json.choices?.[0]?.message?.content ?? "";
+
+  return applyDetectedPhone(
+    ensureValidResult(parseResult(content)),
+    ctx.customerPhone,
+  );
 }
