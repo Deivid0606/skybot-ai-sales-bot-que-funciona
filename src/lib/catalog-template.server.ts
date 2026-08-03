@@ -12,9 +12,6 @@ export type CatalogTemplate = {
 
 type AnyClient = {
   from: (table: string) => any;
-  storage: {
-    from: (bucket: string) => any;
-  };
 };
 
 type ProductPrice = {
@@ -50,9 +47,8 @@ type ProductMediaRow = {
 };
 
 const PRODUCT_MEDIA_BUCKET = "product-media";
-const SIGNED_URL_SECONDS = 60 * 60 * 6;
 
-const normalize = (value: string) =>
+const normalize = (value: string): string =>
   value
     .toLowerCase()
     .normalize("NFD")
@@ -68,38 +64,30 @@ function isCompleteUrl(value: string): boolean {
 }
 
 /**
- * Supabase Storage necesita solamente la ruta interna del archivo.
+ * Convierte distintos formatos posibles en una ruta válida.
  *
- * Correcto:
- * workspace-id/product-id/archivo.jpg
- *
- * Incorrecto:
- * product-media/workspace-id/product-id/archivo.jpg
+ * Admite:
+ * workspace/producto/imagen.jpg
+ * product-media/workspace/producto/imagen.jpg
+ * URL pública o firmada completa
  */
-function normalizeStoragePath(path: string): string {
-  let normalizedPath = path.trim().replace(/^\/+/, "");
+function normalizeMediaPath(value: string): string {
+  const originalValue = value.trim();
+
+  if (!originalValue) {
+    return "";
+  }
+
+  if (isCompleteUrl(originalValue)) {
+    return originalValue;
+  }
+
+  let normalizedPath = originalValue.replace(/^\/+/, "");
 
   const bucketPrefix = `${PRODUCT_MEDIA_BUCKET}/`;
 
   if (normalizedPath.startsWith(bucketPrefix)) {
     normalizedPath = normalizedPath.slice(bucketPrefix.length);
-  }
-
-  /*
-   * También admite una URL pública de Supabase que accidentalmente
-   * se haya guardado dentro de storage_path.
-   */
-  const publicMarker = `/storage/v1/object/public/${PRODUCT_MEDIA_BUCKET}/`;
-  const signedMarker = `/storage/v1/object/sign/${PRODUCT_MEDIA_BUCKET}/`;
-
-  if (normalizedPath.includes(publicMarker)) {
-    normalizedPath =
-      normalizedPath.split(publicMarker)[1]?.split("?")[0] ?? normalizedPath;
-  }
-
-  if (normalizedPath.includes(signedMarker)) {
-    normalizedPath =
-      normalizedPath.split(signedMarker)[1]?.split("?")[0] ?? normalizedPath;
   }
 
   try {
@@ -135,21 +123,30 @@ function getMediaType(
   return "document";
 }
 
-async function resolveProductMediaUrl(
-  supabase: AnyClient,
-  media: ProductMediaRow,
-): Promise<string | null> {
-  const storagePathValue = media.storage_path?.trim() ?? "";
-  const urlValue = media.url?.trim() ?? "";
+/**
+ * Obtiene la ruta que ChatMedia firmará desde el navegador.
+ *
+ * No genera URLs firmadas en el servidor.
+ */
+function getProductMediaPath(media: ProductMediaRow): string | null {
+  const storagePath =
+    typeof media.storage_path === "string"
+      ? media.storage_path.trim()
+      : "";
+
+  const legacyUrl =
+    typeof media.url === "string"
+      ? media.url.trim()
+      : "";
 
   /*
-   * Preferimos storage_path porque es el campo correcto para archivos
-   * subidos a Supabase Storage.
+   * storage_path es la fuente principal porque es donde Productos
+   * guarda la ubicación real dentro del bucket product-media.
    */
-  const rawValue = storagePathValue || urlValue;
+  const rawValue = storagePath || legacyUrl;
 
   if (!rawValue) {
-    console.warn("[CatalogTemplate] Archivo sin ruta", {
+    console.warn("[CatalogTemplate] Archivo multimedia sin ruta", {
       mediaType: media.media_type,
       storagePath: media.storage_path,
       url: media.url,
@@ -158,107 +155,69 @@ async function resolveProductMediaUrl(
     return null;
   }
 
-  /*
-   * Cuando url ya es una URL completa, puede usarse directamente.
-   * storage_path, en cambio, siempre debe tratarse como ruta interna.
-   */
-  if (!storagePathValue && isCompleteUrl(urlValue)) {
-    return urlValue;
-  }
+  const normalizedValue = normalizeMediaPath(rawValue);
 
-  const storagePath = normalizeStoragePath(rawValue);
-
-  if (!storagePath) {
-    console.warn("[CatalogTemplate] Ruta normalizada vacía", {
-      rawValue,
+  if (!normalizedValue) {
+    console.warn("[CatalogTemplate] La ruta multimedia quedó vacía", {
       mediaType: media.media_type,
+      storagePath: media.storage_path,
+      url: media.url,
     });
 
     return null;
   }
 
-  const { data, error } = await supabase.storage
-    .from(PRODUCT_MEDIA_BUCKET)
-    .createSignedUrl(storagePath, SIGNED_URL_SECONDS);
-
-  if (error) {
-    console.error(
-      "[CatalogTemplate] No se pudo crear la URL firmada del producto",
-      {
-        bucket: PRODUCT_MEDIA_BUCKET,
-        originalStoragePath: media.storage_path,
-        originalUrl: media.url,
-        normalizedStoragePath: storagePath,
-        message: error.message,
-      },
-    );
-
-    /*
-     * Solo usamos url como respaldo cuando realmente es una URL completa.
-     * Nunca devolvemos una ruta interna inválida como si fuera URL.
-     */
-    if (isCompleteUrl(urlValue)) {
-      return urlValue;
-    }
-
-    return null;
-  }
-
-  if (!data?.signedUrl) {
-    console.error(
-      "[CatalogTemplate] Supabase no devolvió una URL firmada",
-      {
-        bucket: PRODUCT_MEDIA_BUCKET,
-        storagePath,
-      },
-    );
-
-    if (isCompleteUrl(urlValue)) {
-      return urlValue;
-    }
-
-    return null;
-  }
-
-  return data.signedUrl;
+  return normalizedValue;
 }
 
 function buildPriceLines(product: ProductRow): string[] {
   const prices = [...(product.product_prices ?? [])]
-    .filter(
-      (item) =>
-        Boolean(item?.label?.trim()) &&
-        Number(item?.quantity) > 0 &&
-        Number(item?.price) > 0,
-    )
+    .filter((item) => {
+      const label = item?.label?.trim() ?? "";
+      const quantity = Number(item?.quantity ?? 0);
+      const price = Number(item?.price ?? 0);
+
+      return Boolean(label) && quantity > 0 && price > 0;
+    })
     .sort(
       (first, second) =>
-        Number(first.sort_order ?? 0) - Number(second.sort_order ?? 0),
+        Number(first.sort_order ?? 0) -
+        Number(second.sort_order ?? 0),
     );
 
+  /*
+   * Sistema actual de precios múltiples.
+   */
   if (prices.length > 0) {
-    return prices.map(
-      (item) => `💰 ${item.label}: ${formatGs(Number(item.price))}`,
-    );
+    return prices.map((item) => {
+      const label = item.label.trim();
+      const price = Number(item.price);
+
+      return `💰 ${label}: ${formatGs(price)}`;
+    });
   }
 
   /*
-   * Compatibilidad con columnas antiguas.
+   * Compatibilidad con las columnas antiguas.
    */
   const regularPrice = Number(product.price ?? 0);
+
   const promoPrice =
-    product.promo_price !== null && Number(product.promo_price) > 0
+    product.promo_price !== null &&
+    Number(product.promo_price) > 0
       ? Number(product.promo_price)
       : null;
 
   if (promoPrice) {
-    return [
-      `💰 ${formatGs(promoPrice)}${
-        regularPrice > 0
-          ? ` (antes ${formatGs(regularPrice)})`
-          : ""
-      }`,
-    ];
+    if (regularPrice > 0) {
+      return [
+        `💰 ${formatGs(promoPrice)} (antes ${formatGs(
+          regularPrice,
+        )})`,
+      ];
+    }
+
+    return [`💰 ${formatGs(promoPrice)}`];
   }
 
   if (regularPrice > 0) {
@@ -269,8 +228,12 @@ function buildPriceLines(product: ProductRow): string[] {
 }
 
 /**
- * Detecta la palabra clave de un producto y arma la plantilla
- * multimedia más el copy que se enviará en el chat.
+ * Detecta una palabra clave del producto y construye la plantilla
+ * con su copy, precios y rutas multimedia.
+ *
+ * Las rutas multimedia se devuelven sin firmar.
+ * ChatMedia se encarga de firmarlas desde el navegador utilizando
+ * el bucket product-media y la sesión activa del usuario.
  */
 export async function buildKeywordTemplate(
   supabase: AnyClient,
@@ -279,11 +242,14 @@ export async function buildKeywordTemplate(
 ): Promise<CatalogTemplate | null> {
   const haystack = normalize(text ?? "");
 
-  if (!haystack || !workspaceId) {
+  if (!workspaceId || !haystack) {
     return null;
   }
 
-  const { data: keywords, error: keywordsError } = await supabase
+  const {
+    data: keywords,
+    error: keywordsError,
+  } = await supabase
     .from("product_keywords")
     .select(
       `
@@ -311,7 +277,7 @@ export async function buildKeywordTemplate(
 
   if (keywordsError) {
     console.error(
-      "[CatalogTemplate] No se pudieron consultar las palabras clave",
+      "[CatalogTemplate] Error consultando palabras clave",
       {
         workspaceId,
         message: keywordsError.message,
@@ -323,7 +289,7 @@ export async function buildKeywordTemplate(
     );
   }
 
-  if (!keywords?.length) {
+  if (!Array.isArray(keywords) || keywords.length === 0) {
     return null;
   }
 
@@ -348,13 +314,13 @@ export async function buildKeywordTemplate(
       "\\$&",
     );
 
-    const expression = new RegExp(
+    const keywordExpression = new RegExp(
       `(^|[^\\p{L}\\p{N}])${escapedKeyword}([^\\p{L}\\p{N}]|$)`,
       "u",
     );
 
     if (
-      expression.test(haystack) &&
+      keywordExpression.test(haystack) &&
       keyword.length > matchedKeywordLength
     ) {
       matchedRow = row;
@@ -362,15 +328,20 @@ export async function buildKeywordTemplate(
     }
   }
 
-  const product = matchedRow
-    ? getProductFromRelation(matchedRow.products)
-    : null;
+  if (!matchedRow) {
+    return null;
+  }
+
+  const product = getProductFromRelation(matchedRow.products);
 
   if (!product) {
     return null;
   }
 
-  const { data: media, error: mediaError } = await supabase
+  const {
+    data: media,
+    error: mediaError,
+  } = await supabase
     .from("product_media")
     .select("url, storage_path, media_type, position")
     .eq("workspace_id", workspaceId)
@@ -382,7 +353,7 @@ export async function buildKeywordTemplate(
 
   if (mediaError) {
     console.error(
-      "[CatalogTemplate] No se pudieron consultar los archivos del producto",
+      "[CatalogTemplate] Error consultando multimedia del producto",
       {
         workspaceId,
         productId: product.id,
@@ -395,40 +366,52 @@ export async function buildKeywordTemplate(
     );
   }
 
-  const mediaRows = (media ?? []).slice(0, 8) as ProductMediaRow[];
+  const mediaRows = Array.isArray(media)
+    ? (media as ProductMediaRow[]).slice(0, 8)
+    : [];
 
-  const resolvedMedia = await Promise.all(
-    mediaRows.map(async (mediaItem) => {
-      const url = await resolveProductMediaUrl(supabase, mediaItem);
+  const items: CatalogTemplate["media"] = [];
 
-      if (!url) {
-        return null;
-      }
+  for (const mediaItem of mediaRows) {
+    const path = getProductMediaPath(mediaItem);
 
-      return {
-        type: getMediaType(mediaItem.media_type),
-        url,
-      } satisfies CatalogTemplate["media"][number];
-    }),
-  );
+    if (!path) {
+      continue;
+    }
 
-  const items = resolvedMedia.filter(
-    (
-      item,
-    ): item is CatalogTemplate["media"][number] => item !== null,
-  );
+    items.push({
+      type: getMediaType(mediaItem.media_type),
+      url: path,
+    });
+  }
+
+  console.log("[CatalogTemplate] Plantilla generada", {
+    workspaceId,
+    productId: product.id,
+    productName: product.name,
+    mediaCount: items.length,
+    media: items,
+  });
 
   const priceLines = buildPriceLines(product);
+
+  const salesContent = (
+    product.sales_copy ||
+    product.description ||
+    ""
+  ).trim();
+
+  const deliveryContent = product.delivery_info?.trim()
+    ? `🚚 ${product.delivery_info.trim()}`
+    : "";
 
   const copy = [
     `*${product.name}*`,
     ...priceLines,
-    (product.sales_copy || product.description || "").trim(),
-    product.delivery_info
-      ? `🚚 ${product.delivery_info.trim()}`
-      : "",
+    salesContent,
+    deliveryContent,
   ]
-    .filter(Boolean)
+    .filter((value) => Boolean(value?.trim()))
     .join("\n\n");
 
   return {
