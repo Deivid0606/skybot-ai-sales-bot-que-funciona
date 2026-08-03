@@ -427,96 +427,223 @@ function ensureValidResult(result: AiResult): AiResult {
   };
 }
 
+const GEMINI_FALLBACK_MODELS = [
+  "gemini-3.6-flash",
+  "gemini-3.5-flash",
+  "gemini-3.1-flash-lite",
+] as const;
+
+const RETRYABLE_GEMINI_STATUSES = new Set([
+  408,
+  429,
+  500,
+  502,
+  503,
+  504,
+]);
+
+const GEMINI_MAX_ATTEMPTS_PER_MODEL = 3;
+const GEMINI_REQUEST_TIMEOUT_MS = 45_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function uniqueNonEmptyStrings(values: Array<string | null | undefined>): string[] {
+  return values.reduce<string[]>((result, value) => {
+    const cleaned = cleanString(value);
+
+    if (cleaned && !result.includes(cleaned)) {
+      result.push(cleaned);
+    }
+
+    return result;
+  }, []);
+}
+
+function getGeminiCandidates(preferredModel?: string | null): string[] {
+  return uniqueNonEmptyStrings([
+    preferredModel,
+    ...GEMINI_FALLBACK_MODELS,
+  ]);
+}
+
+function calculateRetryDelayMs(attempt: number): number {
+  const exponentialDelay = 1_000 * 2 ** Math.max(0, attempt - 1);
+  const jitter = Math.floor(Math.random() * 500);
+
+  return Math.min(exponentialDelay + jitter, 8_000);
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.name === "AbortError" || error.message.includes("aborted"))
+  );
+}
+
+async function readResponseText(response: Response): Promise<string> {
+  try {
+    return (await response.text()).slice(0, 1_000);
+  } catch {
+    return "";
+  }
+}
+
 async function generateWithGemini(
   ctx: AiContext,
   key: string,
 ): Promise<AiResult> {
-  const candidates = ctx.model
-    ? [ctx.model]
-    : [
-        "gemini-2.5-flash",
-        "gemini-2.0-flash",
-        "gemini-2.5-pro",
-      ];
-
+  const candidates = getGeminiCandidates(ctx.model);
   let lastError = "";
+  let lastStatus: number | null = null;
 
   for (const model of candidates) {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          systemInstruction: {
-            parts: [{ text: buildSystemPrompt(ctx) }],
-          },
-          contents: ctx.history.slice(-24).map((message) => ({
-            role:
-              message.role === "assistant"
-                ? "model"
-                : "user",
-            parts: [{ text: message.content }],
-          })),
-          generationConfig: {
-            temperature: 0.35,
-            maxOutputTokens: 2048,
-            responseMimeType: "application/json",
-          },
-        }),
-      },
-    );
-
-    if (response.ok) {
-      const json = (await response.json()) as {
-        candidates?: Array<{
-          content?: {
-            parts?: Array<{
-              text?: string;
-            }>;
-          };
-        }>;
-      };
-
-      const raw =
-        json.candidates?.[0]?.content?.parts
-          ?.map((part) => part.text ?? "")
-          .join("") ?? "";
-
-      return applyDetectedPhone(
-        ensureValidResult(parseResult(raw)),
-        ctx.customerPhone,
+    for (
+      let attempt = 1;
+      attempt <= GEMINI_MAX_ATTEMPTS_PER_MODEL;
+      attempt += 1
+    ) {
+      const controller = new AbortController();
+      const timeout = setTimeout(
+        () => controller.abort(),
+        GEMINI_REQUEST_TIMEOUT_MS,
       );
+
+      try {
+        const response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+            model,
+          )}:generateContent?key=${encodeURIComponent(key)}`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            signal: controller.signal,
+            body: JSON.stringify({
+              systemInstruction: {
+                parts: [{ text: buildSystemPrompt(ctx) }],
+              },
+              contents: ctx.history.slice(-24).map((message) => ({
+                role: message.role === "assistant" ? "model" : "user",
+                parts: [{ text: message.content }],
+              })),
+              generationConfig: {
+                maxOutputTokens: 2048,
+                responseMimeType: "application/json",
+              },
+            }),
+          },
+        );
+
+        if (response.ok) {
+          const json = (await response.json()) as {
+            candidates?: Array<{
+              content?: {
+                parts?: Array<{
+                  text?: string;
+                }>;
+              };
+              finishReason?: string;
+            }>;
+            promptFeedback?: {
+              blockReason?: string;
+            };
+          };
+
+          const raw =
+            json.candidates?.[0]?.content?.parts
+              ?.map((part) => part.text ?? "")
+              .join("") ?? "";
+
+          if (!raw.trim()) {
+            const blockReason = cleanString(json.promptFeedback?.blockReason);
+            const finishReason = cleanString(
+              json.candidates?.[0]?.finishReason,
+            );
+
+            throw new Error(
+              blockReason
+                ? `gemini_blocked:${blockReason}`
+                : finishReason
+                  ? `gemini_empty:${finishReason}`
+                  : "gemini_empty_response",
+            );
+          }
+
+          return applyDetectedPhone(
+            ensureValidResult(parseResult(raw)),
+            ctx.customerPhone,
+          );
+        }
+
+        lastStatus = response.status;
+        lastError =
+          (await readResponseText(response)) ||
+          `HTTP ${response.status} ${response.statusText}`;
+
+        console.error("[AI] Gemini request failed", {
+          model,
+          attempt,
+          status: response.status,
+          error: lastError,
+        });
+
+        // 404: modelo inexistente/no disponible para esta cuenta.
+        // No tiene sentido reintentarlo: pasa inmediatamente al siguiente.
+        if (response.status === 404) {
+          break;
+        }
+
+        // Errores de autenticación/configuración tampoco mejoran con reintentos.
+        if (
+          response.status === 400 ||
+          response.status === 401 ||
+          response.status === 403
+        ) {
+          break;
+        }
+
+        if (!RETRYABLE_GEMINI_STATUSES.has(response.status)) {
+          break;
+        }
+
+        if (attempt < GEMINI_MAX_ATTEMPTS_PER_MODEL) {
+          await sleep(calculateRetryDelayMs(attempt));
+        }
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : String(error);
+
+        lastError = isAbortError(error)
+          ? `Tiempo de espera agotado después de ${GEMINI_REQUEST_TIMEOUT_MS} ms`
+          : message;
+
+        console.error("[AI] Gemini network/request error", {
+          model,
+          attempt,
+          error: lastError,
+        });
+
+        if (attempt < GEMINI_MAX_ATTEMPTS_PER_MODEL) {
+          await sleep(calculateRetryDelayMs(attempt));
+          continue;
+        }
+      } finally {
+        clearTimeout(timeout);
+      }
     }
-
-    lastError = (await response.text()).slice(0, 500);
-
-    if (response.status === 429) {
-      throw new Error("rate_limited");
-    }
-
-    console.error("[AI] Gemini model failed", {
-      model,
-      status: response.status,
-      error: lastError,
-    });
   }
 
-  throw new Error(`gemini_error: ${lastError}`);
+  const statusPart = lastStatus ? ` status=${lastStatus}` : "";
+
+  throw new Error(
+    `gemini_error:${statusPart} ${lastError || "Todos los modelos fallaron"}`.trim(),
+  );
 }
 
-export async function generateAiReply(
-  ctx: AiContext,
-): Promise<AiResult> {
-  if (ctx.geminiApiKey?.trim()) {
-    return generateWithGemini(
-      ctx,
-      ctx.geminiApiKey.trim(),
-    );
-  }
-
+async function generateWithGateway(ctx: AiContext): Promise<AiResult> {
   const apiKey = process.env.LOVABLE_API_KEY?.trim();
 
   if (!apiKey) {
@@ -554,10 +681,13 @@ export async function generateAiReply(
   }
 
   if (!response.ok) {
-    const text = await response.text();
+    const responseText = await readResponseText(response);
 
     throw new Error(
-      `ai_error: ${text.slice(0, 500)}`,
+      `ai_error: ${
+        responseText ||
+        `HTTP ${response.status} ${response.statusText}`
+      }`,
     );
   }
 
@@ -577,3 +707,45 @@ export async function generateAiReply(
     ctx.customerPhone,
   );
 }
+
+export async function generateAiReply(
+  ctx: AiContext,
+): Promise<AiResult> {
+  const geminiApiKey = ctx.geminiApiKey?.trim();
+
+  if (geminiApiKey) {
+    try {
+      return await generateWithGemini(ctx, geminiApiKey);
+    } catch (geminiError) {
+      console.error(
+        "[AI] Gemini agotó reintentos/modelos; usando Lovable Gateway",
+        {
+          error:
+            geminiError instanceof Error
+              ? geminiError.message
+              : String(geminiError),
+        },
+      );
+
+      try {
+        return await generateWithGateway(ctx);
+      } catch (gatewayError) {
+        const geminiMessage =
+          geminiError instanceof Error
+            ? geminiError.message
+            : String(geminiError);
+        const gatewayMessage =
+          gatewayError instanceof Error
+            ? gatewayError.message
+            : String(gatewayError);
+
+        throw new Error(
+          `Todos los proveedores de IA fallaron. Gemini: ${geminiMessage}. Gateway: ${gatewayMessage}`,
+        );
+      }
+    }
+  }
+
+  return generateWithGateway(ctx);
+}
+
