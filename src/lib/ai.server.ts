@@ -1,27 +1,11 @@
 const GATEWAY = "https://ai.gateway.lovable.dev/v1/chat/completions";
 
 const DEFAULT_GATEWAY_MODEL =
-  getEnv("LOVABLE_CHAT_MODEL") || "google/gemini-3-flash";
+  process.env.LOVABLE_CHAT_MODEL?.trim() || "google/gemini-3-flash";
 
 export type AiContext = {
   systemInstruction: string;
   geminiApiKey?: string | null;
-  /**
-   * Configuración universal opcional.
-   * - provider: "auto" | "gemini" | "groq" | "openai" | "openrouter" | "lovable" | "custom"
-   * - apiKey/baseUrl/model permiten usar cualquier API compatible con OpenAI.
-   */
-  provider?:
-    | "auto"
-    | "gemini"
-    | "groq"
-    | "openai"
-    | "openrouter"
-    | "lovable"
-    | "custom"
-    | null;
-  apiKey?: string | null;
-  baseUrl?: string | null;
   model?: string | null;
   customerPhone?: string | null;
   businessName: string;
@@ -74,32 +58,6 @@ type UnknownRecord = Record<string, unknown>;
 
 function cleanString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
-}
-
-function getEnv(name: string): string {
-  try {
-    const deno = (globalThis as typeof globalThis & {
-      Deno?: { env?: { get?: (key: string) => string | undefined } };
-    }).Deno;
-
-    const denoValue = deno?.env?.get?.(name);
-    if (typeof denoValue === "string") {
-      return denoValue.trim();
-    }
-  } catch {
-    // Deno puede bloquear acceso a variables sin permiso.
-  }
-
-  try {
-    const nodeProcess = (globalThis as typeof globalThis & {
-      process?: { env?: Record<string, string | undefined> };
-    }).process;
-
-    const nodeValue = nodeProcess?.env?.[name];
-    return typeof nodeValue === "string" ? nodeValue.trim() : "";
-  } catch {
-    return "";
-  }
 }
 
 function buildSystemPrompt(ctx: AiContext): string {
@@ -469,55 +427,29 @@ function ensureValidResult(result: AiResult): AiResult {
   };
 }
 
-type AiProviderName =
-  | "gemini"
-  | "groq"
-  | "openai"
-  | "openrouter"
-  | "lovable"
-  | "custom";
-
-type ProviderAttempt = {
-  name: AiProviderName;
-  model: string;
-  run: () => Promise<AiResult>;
-};
-
-type OpenAiCompatibleConfig = {
-  provider: Exclude<AiProviderName, "gemini" | "lovable">;
-  apiKey: string;
-  baseUrl: string;
-  model: string;
-  extraHeaders?: Record<string, string>;
-};
-
-const REQUEST_TIMEOUT_MS = 45_000;
-const MAX_ATTEMPTS_PER_PROVIDER = 3;
-const RETRYABLE_STATUSES = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
-
 const GEMINI_FALLBACK_MODELS = [
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-lite",
-  "gemini-2.0-flash",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash",
+  "gemini-3.1-flash-lite",
 ] as const;
 
-const DEFAULT_MODELS = {
-  gemini: getEnv("GEMINI_MODEL") || GEMINI_FALLBACK_MODELS[0],
-  groq: getEnv("GROQ_MODEL") || "openai/gpt-oss-20b",
-  openai: getEnv("OPENAI_MODEL") || "gpt-4.1-mini",
-  openrouter:
-    getEnv("OPENROUTER_MODEL") || "openrouter/free",
-  custom: getEnv("AI_MODEL") || "",
-  lovable: DEFAULT_GATEWAY_MODEL,
-} as const;
+const RETRYABLE_GEMINI_STATUSES = new Set([
+  408,
+  429,
+  500,
+  502,
+  503,
+  504,
+]);
+
+const GEMINI_MAX_ATTEMPTS_PER_MODEL = 3;
+const GEMINI_REQUEST_TIMEOUT_MS = 45_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function uniqueNonEmptyStrings(
-  values: Array<string | null | undefined>,
-): string[] {
+function uniqueNonEmptyStrings(values: Array<string | null | undefined>): string[] {
   return values.reduce<string[]>((result, value) => {
     const cleaned = cleanString(value);
 
@@ -529,8 +461,11 @@ function uniqueNonEmptyStrings(
   }, []);
 }
 
-function normalizeBaseUrl(value: string): string {
-  return value.trim().replace(/\/+$/, "");
+function getGeminiCandidates(preferredModel?: string | null): string[] {
+  return uniqueNonEmptyStrings([
+    preferredModel,
+    ...GEMINI_FALLBACK_MODELS,
+  ]);
 }
 
 function calculateRetryDelayMs(attempt: number): number {
@@ -543,321 +478,229 @@ function calculateRetryDelayMs(attempt: number): number {
 function isAbortError(error: unknown): boolean {
   return (
     error instanceof Error &&
-    (error.name === "AbortError" ||
-      error.message.toLowerCase().includes("aborted"))
+    (error.name === "AbortError" || error.message.includes("aborted"))
   );
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 async function readResponseText(response: Response): Promise<string> {
   try {
-    return (await response.text()).slice(0, 2_000);
+    return (await response.text()).slice(0, 1_000);
   } catch {
     return "";
   }
 }
 
-function shouldRetryStatus(status: number): boolean {
-  return RETRYABLE_STATUSES.has(status);
-}
-
-function isConfigurationStatus(status: number): boolean {
-  return status === 400 || status === 401 || status === 403 || status === 404;
-}
-
-async function fetchWithRetries(
-  provider: string,
-  url: string,
-  initFactory: (signal: AbortSignal) => RequestInit,
-): Promise<Response> {
-  let lastError = "";
-
-  for (
-    let attempt = 1;
-    attempt <= MAX_ATTEMPTS_PER_PROVIDER;
-    attempt += 1
-  ) {
-    const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      REQUEST_TIMEOUT_MS,
-    );
-
-    try {
-      const response = await fetch(url, initFactory(controller.signal));
-
-      if (response.ok) {
-        return response;
-      }
-
-      const responseText =
-        (await readResponseText(response)) ||
-        `HTTP ${response.status} ${response.statusText}`;
-
-      lastError = `status=${response.status} ${responseText}`;
-
-      console.error(`[AI] ${provider} request failed`, {
-        attempt,
-        status: response.status,
-        error: responseText,
-      });
-
-      if (
-        isConfigurationStatus(response.status) ||
-        !shouldRetryStatus(response.status) ||
-        attempt === MAX_ATTEMPTS_PER_PROVIDER
-      ) {
-        throw new Error(`${provider}_error:${lastError}`);
-      }
-    } catch (error) {
-      lastError = isAbortError(error)
-        ? `Tiempo de espera agotado después de ${REQUEST_TIMEOUT_MS} ms`
-        : errorMessage(error);
-
-      console.error(`[AI] ${provider} network/request error`, {
-        attempt,
-        error: lastError,
-      });
-
-      if (attempt === MAX_ATTEMPTS_PER_PROVIDER) {
-        throw new Error(`${provider}_error:${lastError}`);
-      }
-    } finally {
-      clearTimeout(timeout);
-    }
-
-    await sleep(calculateRetryDelayMs(attempt));
-  }
-
-  throw new Error(`${provider}_error:${lastError || "Error desconocido"}`);
-}
-
-function getGeminiCandidates(preferredModel?: string | null): string[] {
-  return uniqueNonEmptyStrings([
-    preferredModel,
-    getEnv("GEMINI_MODEL"),
-    ...GEMINI_FALLBACK_MODELS,
-  ]);
-}
-
 async function generateWithGemini(
   ctx: AiContext,
-  apiKey: string,
-  preferredModel?: string | null,
+  key: string,
 ): Promise<AiResult> {
-  const candidates = getGeminiCandidates(preferredModel);
-  const errors: string[] = [];
+  const candidates = getGeminiCandidates(ctx.model);
+  let lastError = "";
+  let lastStatus: number | null = null;
 
   for (const model of candidates) {
-    const url =
-      `https://generativelanguage.googleapis.com/v1beta/models/` +
-      `${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+    for (
+      let attempt = 1;
+      attempt <= GEMINI_MAX_ATTEMPTS_PER_MODEL;
+      attempt += 1
+    ) {
+      const controller = new AbortController();
+      const timeout = setTimeout(
+        () => controller.abort(),
+        GEMINI_REQUEST_TIMEOUT_MS,
+      );
 
-    try {
-      const response = await fetchWithRetries(
-        `gemini:${model}`,
-        url,
-        (signal) => ({
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
+      try {
+        const response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+            model,
+          )}:generateContent?key=${encodeURIComponent(key)}`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            signal: controller.signal,
+            body: JSON.stringify({
+              systemInstruction: {
+                parts: [{ text: buildSystemPrompt(ctx) }],
+              },
+              contents: ctx.history.slice(-24).map((message) => ({
+                role: message.role === "assistant" ? "model" : "user",
+                parts: [{ text: message.content }],
+              })),
+              generationConfig: {
+                maxOutputTokens: 2048,
+                responseMimeType: "application/json",
+              },
+            }),
           },
-          signal,
-          body: JSON.stringify({
-            systemInstruction: {
-              parts: [{ text: buildSystemPrompt(ctx) }],
-            },
-            contents: ctx.history.slice(-24).map((message) => ({
-              role: message.role === "assistant" ? "model" : "user",
-              parts: [{ text: message.content }],
-            })),
-            generationConfig: {
-              temperature: 0.35,
-              maxOutputTokens: 2048,
-              responseMimeType: "application/json",
-            },
-          }),
-        }),
-      );
+        );
 
-      const json = (await response.json()) as {
-        candidates?: Array<{
-          content?: {
-            parts?: Array<{ text?: string }>;
+        if (response.ok) {
+          const json = (await response.json()) as {
+            candidates?: Array<{
+              content?: {
+                parts?: Array<{
+                  text?: string;
+                }>;
+              };
+              finishReason?: string;
+            }>;
+            promptFeedback?: {
+              blockReason?: string;
+            };
           };
-          finishReason?: string;
-        }>;
-        promptFeedback?: {
-          blockReason?: string;
-        };
-      };
 
-      const raw =
-        json.candidates?.[0]?.content?.parts
-          ?.map((part) => part.text ?? "")
-          .join("") ?? "";
+          const raw =
+            json.candidates?.[0]?.content?.parts
+              ?.map((part) => part.text ?? "")
+              .join("") ?? "";
 
-      if (!raw.trim()) {
-        const blockReason = cleanString(json.promptFeedback?.blockReason);
-        const finishReason = cleanString(
-          json.candidates?.[0]?.finishReason,
-        );
+          if (!raw.trim()) {
+            const blockReason = cleanString(json.promptFeedback?.blockReason);
+            const finishReason = cleanString(
+              json.candidates?.[0]?.finishReason,
+            );
 
-        throw new Error(
-          blockReason
-            ? `gemini_blocked:${blockReason}`
-            : finishReason
-              ? `gemini_empty:${finishReason}`
-              : "gemini_empty_response",
-        );
+            throw new Error(
+              blockReason
+                ? `gemini_blocked:${blockReason}`
+                : finishReason
+                  ? `gemini_empty:${finishReason}`
+                  : "gemini_empty_response",
+            );
+          }
+
+          return applyDetectedPhone(
+            ensureValidResult(parseResult(raw)),
+            ctx.customerPhone,
+          );
+        }
+
+        lastStatus = response.status;
+        lastError =
+          (await readResponseText(response)) ||
+          `HTTP ${response.status} ${response.statusText}`;
+
+        console.error("[AI] Gemini request failed", {
+          model,
+          attempt,
+          status: response.status,
+          error: lastError,
+        });
+
+        // 404: modelo inexistente/no disponible para esta cuenta.
+        // No tiene sentido reintentarlo: pasa inmediatamente al siguiente.
+        if (response.status === 404) {
+          break;
+        }
+
+        // Errores de autenticación/configuración tampoco mejoran con reintentos.
+        if (
+          response.status === 400 ||
+          response.status === 401 ||
+          response.status === 403
+        ) {
+          break;
+        }
+
+        if (!RETRYABLE_GEMINI_STATUSES.has(response.status)) {
+          break;
+        }
+
+        if (attempt < GEMINI_MAX_ATTEMPTS_PER_MODEL) {
+          await sleep(calculateRetryDelayMs(attempt));
+        }
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : String(error);
+
+        lastError = isAbortError(error)
+          ? `Tiempo de espera agotado después de ${GEMINI_REQUEST_TIMEOUT_MS} ms`
+          : message;
+
+        console.error("[AI] Gemini network/request error", {
+          model,
+          attempt,
+          error: lastError,
+        });
+
+        if (attempt < GEMINI_MAX_ATTEMPTS_PER_MODEL) {
+          await sleep(calculateRetryDelayMs(attempt));
+          continue;
+        }
+      } finally {
+        clearTimeout(timeout);
       }
-
-      return applyDetectedPhone(
-        ensureValidResult(parseResult(raw)),
-        ctx.customerPhone,
-      );
-    } catch (error) {
-      errors.push(`${model}: ${errorMessage(error)}`);
     }
   }
 
-  throw new Error(`gemini_error:${errors.join(" | ")}`);
-}
+  const statusPart = lastStatus ? ` status=${lastStatus}` : "";
 
-function extractOpenAiCompatibleContent(value: unknown): string {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return "";
-  }
-
-  const root = value as UnknownRecord;
-  const choices = Array.isArray(root.choices) ? root.choices : [];
-  const firstChoice =
-    choices[0] && typeof choices[0] === "object"
-      ? (choices[0] as UnknownRecord)
-      : null;
-  const message =
-    firstChoice?.message &&
-    typeof firstChoice.message === "object" &&
-    !Array.isArray(firstChoice.message)
-      ? (firstChoice.message as UnknownRecord)
-      : null;
-
-  if (typeof message?.content === "string") {
-    return message.content;
-  }
-
-  if (Array.isArray(message?.content)) {
-    return message.content
-      .map((part) => {
-        if (!part || typeof part !== "object" || Array.isArray(part)) {
-          return "";
-        }
-
-        const record = part as UnknownRecord;
-        return cleanString(record.text);
-      })
-      .filter(Boolean)
-      .join("");
-  }
-
-  // Compatibilidad adicional con APIs que devuelven output_text.
-  return cleanString(root.output_text);
-}
-
-async function generateWithOpenAiCompatible(
-  ctx: AiContext,
-  config: OpenAiCompatibleConfig,
-): Promise<AiResult> {
-  const baseUrl = normalizeBaseUrl(config.baseUrl);
-  const url = baseUrl.endsWith("/chat/completions")
-    ? baseUrl
-    : `${baseUrl}/chat/completions`;
-
-  const response = await fetchWithRetries(
-    `${config.provider}:${config.model}`,
-    url,
-    (signal) => ({
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${config.apiKey}`,
-        "Content-Type": "application/json",
-        ...config.extraHeaders,
-      },
-      signal,
-      body: JSON.stringify({
-        model: config.model,
-        messages: [
-          {
-            role: "system",
-            content: buildSystemPrompt(ctx),
-          },
-          ...ctx.history.slice(-24),
-        ],
-        temperature: 0.35,
-        max_tokens: 2048,
-        response_format: {
-          type: "json_object",
-        },
-      }),
-    }),
-  );
-
-  const json = (await response.json()) as unknown;
-  const content = extractOpenAiCompatibleContent(json);
-
-  if (!content.trim()) {
-    throw new Error(`${config.provider}_empty_response`);
-  }
-
-  return applyDetectedPhone(
-    ensureValidResult(parseResult(content)),
-    ctx.customerPhone,
+  throw new Error(
+    `gemini_error:${statusPart} ${lastError || "Todos los modelos fallaron"}`.trim(),
   );
 }
 
 async function generateWithGateway(ctx: AiContext): Promise<AiResult> {
-  const apiKey = getEnv("LOVABLE_API_KEY");
+  const apiKey = process.env.LOVABLE_API_KEY?.trim();
 
   if (!apiKey) {
     throw new Error("Falta LOVABLE_API_KEY");
   }
 
-  const response = await fetchWithRetries(
-    `lovable:${DEFAULT_GATEWAY_MODEL}`,
-    GATEWAY,
-    (signal) => ({
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Lovable-API-Key": apiKey,
-      },
-      signal,
-      body: JSON.stringify({
-        model: DEFAULT_GATEWAY_MODEL,
-        messages: [
-          {
-            role: "system",
-            content: buildSystemPrompt(ctx),
-          },
-          ...ctx.history.slice(-24),
-        ],
-        temperature: 0.35,
-        response_format: {
-          type: "json_object",
+  const response = await fetch(GATEWAY, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Lovable-API-Key": apiKey,
+    },
+    body: JSON.stringify({
+      model: DEFAULT_GATEWAY_MODEL,
+      messages: [
+        {
+          role: "system",
+          content: buildSystemPrompt(ctx),
         },
-      }),
+        ...ctx.history.slice(-24),
+      ],
+      temperature: 0.35,
+      response_format: {
+        type: "json_object",
+      },
     }),
-  );
+  });
 
-  const json = (await response.json()) as unknown;
-  const content = extractOpenAiCompatibleContent(json);
-
-  if (!content.trim()) {
-    throw new Error("lovable_empty_response");
+  if (response.status === 429) {
+    throw new Error("rate_limited");
   }
+
+  if (response.status === 402) {
+    throw new Error("credits_exhausted");
+  }
+
+  if (!response.ok) {
+    const responseText = await readResponseText(response);
+
+    throw new Error(
+      `ai_error: ${
+        responseText ||
+        `HTTP ${response.status} ${response.statusText}`
+      }`,
+    );
+  }
+
+  const json = (await response.json()) as {
+    choices?: Array<{
+      message?: {
+        content?: string;
+      };
+    }>;
+  };
+
+  const content =
+    json.choices?.[0]?.message?.content ?? "";
 
   return applyDetectedPhone(
     ensureValidResult(parseResult(content)),
@@ -865,248 +708,44 @@ async function generateWithGateway(ctx: AiContext): Promise<AiResult> {
   );
 }
 
-function normalizeRequestedProvider(
-  value: AiContext["provider"],
-): AiContext["provider"] {
-  const cleaned = cleanString(value).toLowerCase();
+export async function generateAiReply(
+  ctx: AiContext,
+): Promise<AiResult> {
+  const geminiApiKey = ctx.geminiApiKey?.trim();
 
-  if (
-    cleaned === "auto" ||
-    cleaned === "gemini" ||
-    cleaned === "groq" ||
-    cleaned === "openai" ||
-    cleaned === "openrouter" ||
-    cleaned === "lovable" ||
-    cleaned === "custom"
-  ) {
-    return cleaned;
-  }
+  if (geminiApiKey) {
+    try {
+      return await generateWithGemini(ctx, geminiApiKey);
+    } catch (geminiError) {
+      console.error(
+        "[AI] Gemini agotó reintentos/modelos; usando Lovable Gateway",
+        {
+          error:
+            geminiError instanceof Error
+              ? geminiError.message
+              : String(geminiError),
+        },
+      );
 
-  return "auto";
-}
+      try {
+        return await generateWithGateway(ctx);
+      } catch (gatewayError) {
+        const geminiMessage =
+          geminiError instanceof Error
+            ? geminiError.message
+            : String(geminiError);
+        const gatewayMessage =
+          gatewayError instanceof Error
+            ? gatewayError.message
+            : String(gatewayError);
 
-function buildProviderAttempts(ctx: AiContext): ProviderAttempt[] {
-  const requestedProvider = normalizeRequestedProvider(ctx.provider);
-  const genericApiKey = cleanString(ctx.apiKey);
-  const genericBaseUrl = cleanString(ctx.baseUrl);
-  const preferredModel = cleanString(ctx.model);
-
-  const geminiApiKey =
-    cleanString(ctx.geminiApiKey) ||
-    cleanString(getEnv("GEMINI_API_KEY"));
-
-  const groqApiKey =
-    (requestedProvider === "groq" ? genericApiKey : "") ||
-    cleanString(getEnv("GROQ_API_KEY"));
-
-  const openAiApiKey =
-    (requestedProvider === "openai" ? genericApiKey : "") ||
-    cleanString(getEnv("OPENAI_API_KEY"));
-
-  const openRouterApiKey =
-    (requestedProvider === "openrouter" ? genericApiKey : "") ||
-    cleanString(getEnv("OPENROUTER_API_KEY"));
-
-  const customApiKey =
-    (requestedProvider === "custom" ? genericApiKey : "") ||
-    cleanString(getEnv("AI_API_KEY"));
-
-  const customBaseUrl =
-    (requestedProvider === "custom" ? genericBaseUrl : "") ||
-    cleanString(getEnv("AI_BASE_URL"));
-
-  const attempts: ProviderAttempt[] = [];
-
-  const addGemini = () => {
-    if (!geminiApiKey) return;
-
-    attempts.push({
-      name: "gemini",
-      model: preferredModel || DEFAULT_MODELS.gemini,
-      run: () =>
-        generateWithGemini(
-          ctx,
-          geminiApiKey,
-          requestedProvider === "gemini" ? preferredModel : null,
-        ),
-    });
-  };
-
-  const addCompatible = (
-    name: "groq" | "openai" | "openrouter" | "custom",
-    apiKey: string,
-    baseUrl: string,
-    defaultModel: string,
-    extraHeaders?: Record<string, string>,
-  ) => {
-    const model = preferredModel || defaultModel;
-
-    if (!apiKey || !baseUrl || !model) return;
-
-    attempts.push({
-      name,
-      model,
-      run: () =>
-        generateWithOpenAiCompatible(ctx, {
-          provider: name,
-          apiKey,
-          baseUrl,
-          model,
-          extraHeaders,
-        }),
-    });
-  };
-
-  const addLovable = () => {
-    if (!getEnv("LOVABLE_API_KEY")) return;
-
-    attempts.push({
-      name: "lovable",
-      model: DEFAULT_MODELS.lovable,
-      run: () => generateWithGateway(ctx),
-    });
-  };
-
-  if (requestedProvider === "gemini") {
-    addGemini();
-  } else if (requestedProvider === "groq") {
-    addCompatible(
-      "groq",
-      groqApiKey,
-      genericBaseUrl || "https://api.groq.com/openai/v1",
-      DEFAULT_MODELS.groq,
-    );
-  } else if (requestedProvider === "openai") {
-    addCompatible(
-      "openai",
-      openAiApiKey,
-      genericBaseUrl || "https://api.openai.com/v1",
-      DEFAULT_MODELS.openai,
-    );
-  } else if (requestedProvider === "openrouter") {
-    addCompatible(
-      "openrouter",
-      openRouterApiKey,
-      genericBaseUrl || "https://openrouter.ai/api/v1",
-      DEFAULT_MODELS.openrouter,
-      {
-        ...(getEnv("OPENROUTER_SITE_URL")
-          ? { "HTTP-Referer": getEnv("OPENROUTER_SITE_URL") }
-          : {}),
-        ...(getEnv("OPENROUTER_APP_NAME")
-          ? { "X-Title": getEnv("OPENROUTER_APP_NAME") }
-          : {}),
-      },
-    );
-  } else if (requestedProvider === "custom") {
-    addCompatible(
-      "custom",
-      customApiKey,
-      customBaseUrl,
-      DEFAULT_MODELS.custom,
-    );
-  } else if (requestedProvider === "lovable") {
-    addLovable();
-  } else {
-    // AUTO: orden configurable y seguro para producción.
-    const order = uniqueNonEmptyStrings([
-      getEnv("AI_PROVIDER_ORDER"),
-    ])
-      .flatMap((value) => value.split(","))
-      .map((value) => value.trim().toLowerCase())
-      .filter(Boolean);
-
-    const autoOrder =
-      order.length > 0
-        ? order
-        : ["groq", "gemini", "openrouter", "openai", "custom", "lovable"];
-
-    for (const provider of autoOrder) {
-      if (provider === "groq") {
-        addCompatible(
-          "groq",
-          groqApiKey,
-          "https://api.groq.com/openai/v1",
-          DEFAULT_MODELS.groq,
+        throw new Error(
+          `Todos los proveedores de IA fallaron. Gemini: ${geminiMessage}. Gateway: ${gatewayMessage}`,
         );
-      } else if (provider === "gemini") {
-        addGemini();
-      } else if (provider === "openrouter") {
-        addCompatible(
-          "openrouter",
-          openRouterApiKey,
-          "https://openrouter.ai/api/v1",
-          DEFAULT_MODELS.openrouter,
-          {
-            ...(getEnv("OPENROUTER_SITE_URL")
-              ? { "HTTP-Referer": getEnv("OPENROUTER_SITE_URL") }
-              : {}),
-            ...(getEnv("OPENROUTER_APP_NAME")
-              ? { "X-Title": getEnv("OPENROUTER_APP_NAME") }
-              : {}),
-          },
-        );
-      } else if (provider === "openai") {
-        addCompatible(
-          "openai",
-          openAiApiKey,
-          "https://api.openai.com/v1",
-          DEFAULT_MODELS.openai,
-        );
-      } else if (provider === "custom") {
-        addCompatible(
-          "custom",
-          customApiKey,
-          customBaseUrl,
-          DEFAULT_MODELS.custom,
-        );
-      } else if (provider === "lovable") {
-        addLovable();
       }
     }
   }
 
-  return attempts;
-}
-
-export async function generateAiReply(
-  ctx: AiContext,
-): Promise<AiResult> {
-  const attempts = buildProviderAttempts(ctx);
-
-  if (attempts.length === 0) {
-    throw new Error(
-      "No hay ningún proveedor de IA configurado. Configura GEMINI_API_KEY, GROQ_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, LOVABLE_API_KEY o AI_API_KEY + AI_BASE_URL + AI_MODEL.",
-    );
-  }
-
-  const failures: string[] = [];
-
-  for (const attempt of attempts) {
-    try {
-      const result = await attempt.run();
-
-      console.info("[AI] Respuesta generada correctamente", {
-        provider: attempt.name,
-        model: attempt.model,
-      });
-
-      return result;
-    } catch (error) {
-      const message = errorMessage(error);
-
-      failures.push(`${attempt.name}(${attempt.model}): ${message}`);
-
-      console.error("[AI] Proveedor falló; intentando siguiente", {
-        provider: attempt.name,
-        model: attempt.model,
-        error: message,
-      });
-    }
-  }
-
-  throw new Error(
-    `Todos los proveedores de IA configurados fallaron. ${failures.join(" | ")}`,
-  );
+  return generateWithGateway(ctx);
 }
 
