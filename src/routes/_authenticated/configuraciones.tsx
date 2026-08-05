@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, CheckCircle2, Copy, Loader2, RefreshCw, Save, XCircle, Sparkles, Zap, Globe, Cloud } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Copy, Loader2, RefreshCw, Save, XCircle } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import {
@@ -32,64 +32,11 @@ export const Route = createFileRoute("/_authenticated/configuraciones")({
   component: SettingsPage,
 });
 
-// ============================================================
-// TIPOS DE PROVEEDORES
-// ============================================================
-
-type AiProvider = "gemini" | "groq" | "openrouter" | "cloudflare";
-
-const PROVIDER_INFO: Record<AiProvider, {
-  label: string;
-  icon: React.ReactNode;
-  description: string;
-  keyPlaceholder: string;
-  keyLabel: string;
-  docsUrl: string;
-  keyFormat?: string;
-  testUrl?: string;
-}> = {
-  gemini: {
-    label: "Google Gemini",
-    icon: <Sparkles className="h-4 w-4" />,
-    description: "Contexto largo (1M tokens), 1,500 solicitudes/día gratis",
-    keyPlaceholder: "AIza...",
-    keyLabel: "API Key de Gemini",
-    docsUrl: "https://aistudio.google.com/app/apikey",
-    testUrl: "https://generativelanguage.googleapis.com/v1beta/models?key=",
-  },
-  groq: {
-    label: "Groq",
-    icon: <Zap className="h-4 w-4" />,
-    description: "⚡ Súper rápido (~200ms), 30 solicitudes/minuto gratis",
-    keyPlaceholder: "gsk_...",
-    keyLabel: "API Key de Groq",
-    docsUrl: "https://console.groq.com/keys",
-  },
-  openrouter: {
-    label: "OpenRouter",
-    icon: <Globe className="h-4 w-4" />,
-    description: "Acceso a 20+ modelos con una sola key",
-    keyPlaceholder: "sk-or-...",
-    keyLabel: "API Key de OpenRouter",
-    docsUrl: "https://openrouter.ai/keys",
-  },
-  cloudflare: {
-    label: "Cloudflare Workers AI",
-    icon: <Cloud className="h-4 w-4" />,
-    description: "100k neuronas/día gratis, integración con Cloudflare",
-    keyPlaceholder: "account_id:api_token",
-    keyLabel: "API Key de Cloudflare",
-    docsUrl: "https://dash.cloudflare.com/?to=/:account/workers-and-pages",
-    keyFormat: "account_id:api_token",
-  },
-};
-
 function SettingsPage() {
   const { profile, user } = useAuth();
   const workspaceId = profile?.workspace_id ?? null;
   const queryClient = useQueryClient();
   const [saving, setSaving] = useState(false);
-  const [testingKey, setTestingKey] = useState(false);
 
   const [wa, setWa] = useState({
     phone_number_id: "",
@@ -100,20 +47,14 @@ function SettingsPage() {
     verify_token: "",
     display_phone: "",
   });
-  
   const [ai, setAi] = useState({
     ai_enabled: true,
-    provider: "gemini" as AiProvider,
-    gemini_api_key: "",
-    groq_api_key: "",
-    openrouter_api_key: "",
-    cloudflare_api_key: "",
     model: "google/gemini-3.6-flash",
     system_instruction: "",
     reply_delay_seconds: 3,
     autodetect_model: true,
+    gemini_api_key: "",
   });
-  
   const [biz, setBiz] = useState({
     business_name: "",
     currency: "PYG",
@@ -123,10 +64,6 @@ function SettingsPage() {
     notify_numbers: "",
     catalog_enabled: true,
   });
-
-  // ============================================================
-  // CARGA DE DATOS
-  // ============================================================
 
   const { data, isLoading } = useQuery({
     queryKey: ["settings", workspaceId],
@@ -156,23 +93,19 @@ function SettingsPage() {
     }
     if (data.ai) {
       setAi({
-        ai_enabled: data.ai.ai_enabled ?? true,
-        provider: data.ai.provider ?? "gemini",
+        ai_enabled: data.ai.ai_enabled,
+        model: data.ai.model,
+        system_instruction: data.ai.system_instruction,
+        reply_delay_seconds: data.ai.reply_delay_seconds,
+        autodetect_model: data.ai.autodetect_model,
         gemini_api_key: data.ai.gemini_api_key ?? "",
-        groq_api_key: data.ai.groq_api_key ?? "",
-        openrouter_api_key: data.ai.openrouter_api_key ?? "",
-        cloudflare_api_key: data.ai.cloudflare_api_key ?? "",
-        model: data.ai.model ?? "google/gemini-3.6-flash",
-        system_instruction: data.ai.system_instruction ?? "",
-        reply_delay_seconds: data.ai.reply_delay_seconds ?? 3,
-        autodetect_model: data.ai.autodetect_model ?? true,
       });
     }
     if (data.settings) {
       setBiz({
         business_name: data.settings.business_name ?? "",
-        currency: data.settings.currency ?? "PYG",
-        timezone: data.settings.timezone ?? "America/Asuncion",
+        currency: data.settings.currency,
+        timezone: data.settings.timezone,
         google_sheets_url: data.settings.google_sheets_url ?? "",
         apps_script_url: data.settings.apps_script_url ?? "",
         notify_numbers: (data.settings.notify_numbers ?? []).join(", "),
@@ -181,10 +114,8 @@ function SettingsPage() {
     }
   }, [data]);
 
-  // ============================================================
-  // WEBHOOK
-  // ============================================================
-
+  // Meta solo acepta una URL pública y estable. La vista previa del editor
+  // (id-preview--<id>.lovable.app) no sirve, por eso la convertimos al dominio estable.
   function buildWebhookBase() {
     if (typeof window === "undefined") return "";
     const host = window.location.hostname;
@@ -233,113 +164,13 @@ function SettingsPage() {
     return `botsky_${rand}_${new Date().getFullYear()}`;
   }
 
+
   useEffect(() => {
     if (!data) return;
     if (!data.conn?.verify_token) {
       setWa((prev) => (prev.verify_token ? prev : { ...prev, verify_token: generateVerifyToken() }));
     }
   }, [data]);
-
-  // ============================================================
-  // VALIDACIÓN DE API KEY
-  // ============================================================
-
-  async function testApiKey(provider: AiProvider, key: string): Promise<{ valid: boolean; message: string }> {
-    try {
-      switch (provider) {
-        case "gemini": {
-          // Test Gemini API key
-          const response = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`,
-            { signal: AbortSignal.timeout(5000) }
-          );
-          if (response.ok) {
-            return { valid: true, message: "✅ API Key válida" };
-          }
-          const error = await response.json().catch(() => ({}));
-          const errorMsg = (error as any)?.error?.message || "API Key inválida";
-          return { valid: false, message: `❌ ${errorMsg}` };
-        }
-        
-        case "groq": {
-          // Test Groq API key
-          const response = await fetch("https://api.groq.com/openai/v1/models", {
-            headers: { "Authorization": `Bearer ${key}` },
-            signal: AbortSignal.timeout(5000)
-          });
-          if (response.ok) {
-            return { valid: true, message: "✅ API Key válida" };
-          }
-          return { valid: false, message: "❌ API Key inválida" };
-        }
-        
-        case "openrouter": {
-          // Test OpenRouter API key
-          const response = await fetch("https://openrouter.ai/api/v1/auth/key", {
-            headers: { "Authorization": `Bearer ${key}` },
-            signal: AbortSignal.timeout(5000)
-          });
-          if (response.ok) {
-            return { valid: true, message: "✅ API Key válida" };
-          }
-          return { valid: false, message: "❌ API Key inválida" };
-        }
-        
-        case "cloudflare": {
-          // Test Cloudflare: formato account_id:api_token
-          const [accountId, apiToken] = key.split(":");
-          if (!accountId || !apiToken) {
-            return { valid: false, message: "❌ Formato incorrecto. Usa: account_id:api_token" };
-          }
-          const response = await fetch(
-            `https://api.cloudflare.com/client/v4/accounts/${accountId}`,
-            {
-              headers: { "Authorization": `Bearer ${apiToken}` },
-              signal: AbortSignal.timeout(5000)
-            }
-          );
-          if (response.ok) {
-            return { valid: true, message: "✅ API Key válida" };
-          }
-          return { valid: false, message: "❌ API Key inválida" };
-        }
-        
-        default:
-          return { valid: false, message: "Proveedor no soportado" };
-      }
-    } catch (error) {
-      return { 
-        valid: false, 
-        message: `❌ Error de conexión: ${error instanceof Error ? error.message : "Timeout"}` 
-      };
-    }
-  }
-
-  async function handleTestKey() {
-    const key = getCurrentApiKey().trim();
-    if (!key) {
-      toast.error(`Primero ingresá tu API Key de ${PROVIDER_INFO[ai.provider].label}`);
-      return;
-    }
-
-    setTestingKey(true);
-    try {
-      const result = await testApiKey(ai.provider, key);
-      if (result.valid) {
-        toast.success(result.message);
-      } else {
-        toast.error(result.message);
-      }
-    } catch (error) {
-      toast.error("Error al validar la API Key");
-    } finally {
-      setTestingKey(false);
-    }
-  }
-
-  // ============================================================
-  // GUARDADO
-  // ============================================================
 
   async function upsert(table: "whatsapp_connections" | "ai_settings" | "user_settings", values: Record<string, unknown>) {
     if (!workspaceId || !user) throw new Error("Sesión no válida");
@@ -349,12 +180,14 @@ function SettingsPage() {
       .eq("workspace_id", workspaceId)
       .maybeSingle();
     if (existing) {
-      const { error } = await supabase.from(table).update(values).eq("id", existing.id);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { error } = await supabase.from(table).update(values as any).eq("id", existing.id);
       if (error) throw error;
     } else {
       const { error } = await supabase
         .from(table)
-        .insert({ ...values, workspace_id: workspaceId, user_id: user.id });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .insert({ ...values, workspace_id: workspaceId, user_id: user.id } as any);
       if (error) throw error;
     }
   }
@@ -374,28 +207,14 @@ function SettingsPage() {
           connected: Boolean(wa.phone_number_id.trim() && wa.access_token.trim()),
         });
       } else if (section === "ai") {
-        // Validar que la API Key no esté vacía si la IA está activa
-        const currentKey = getCurrentApiKey().trim();
-        if (ai.ai_enabled && !currentKey) {
-          toast.error(`La IA está activa pero no tienes API Key de ${PROVIDER_INFO[ai.provider].label}`);
-          setSaving(false);
-          return;
-        }
-
         await upsert("ai_settings", {
           ai_enabled: ai.ai_enabled,
-          provider: ai.provider,
-          gemini_api_key: ai.gemini_api_key.trim() || null,
-          groq_api_key: ai.groq_api_key.trim() || null,
-          openrouter_api_key: ai.openrouter_api_key.trim() || null,
-          cloudflare_api_key: ai.cloudflare_api_key.trim() || null,
           model: ai.model,
           system_instruction: ai.system_instruction,
           reply_delay_seconds: Number(ai.reply_delay_seconds) || 0,
           autodetect_model: ai.autodetect_model,
+          gemini_api_key: ai.gemini_api_key.trim() || null,
         });
-        
-        toast.success("Configuración de IA guardada");
       } else {
         await upsert("user_settings", {
           business_name: biz.business_name.trim() || null,
@@ -409,8 +228,8 @@ function SettingsPage() {
             .filter(Boolean),
           catalog_enabled: biz.catalog_enabled,
         });
-        toast.success("Configuración de negocio guardada");
       }
+      toast.success("Configuración guardada");
       queryClient.invalidateQueries({ queryKey: ["settings"] });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Error al guardar");
@@ -418,79 +237,6 @@ function SettingsPage() {
       setSaving(false);
     }
   }
-
-  // ============================================================
-  // HELPERS
-  // ============================================================
-
-  function getCurrentApiKey(): string {
-    switch (ai.provider) {
-      case "gemini": return ai.gemini_api_key;
-      case "groq": return ai.groq_api_key;
-      case "openrouter": return ai.openrouter_api_key;
-      case "cloudflare": return ai.cloudflare_api_key;
-      default: return "";
-    }
-  }
-
-  function setCurrentApiKey(value: string) {
-    switch (ai.provider) {
-      case "gemini": setAi({ ...ai, gemini_api_key: value }); break;
-      case "groq": setAi({ ...ai, groq_api_key: value }); break;
-      case "openrouter": setAi({ ...ai, openrouter_api_key: value }); break;
-      case "cloudflare": setAi({ ...ai, cloudflare_api_key: value }); break;
-    }
-  }
-
-  function getModelOptions(): { value: string; label: string }[] {
-    switch (ai.provider) {
-      case "gemini":
-        return [
-          { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash (Recomendado)" },
-          { value: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
-          { value: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
-          { value: "google/gemini-3.6-flash", label: "Google Gemini 3.6 Flash" },
-        ];
-      case "groq":
-        return [
-          { value: "llama-3.3-70b-versatile", label: "Llama 3.3 70B (Recomendado)" },
-          { value: "llama-3.1-70b-versatile", label: "Llama 3.1 70B" },
-          { value: "mixtral-8x7b-32768", label: "Mixtral 8x7B" },
-          { value: "gemma2-9b-it", label: "Gemma 2 9B" },
-          { value: "llama-3.2-3b-preview", label: "Llama 3.2 3B (Rápido)" },
-        ];
-      case "openrouter":
-        return [
-          { value: "google/gemini-2.5-flash", label: "Gemini 2.5 Flash" },
-          { value: "google/gemini-2.5-pro", label: "Gemini 2.5 Pro" },
-          { value: "meta-llama/llama-3.3-70b-instruct", label: "Llama 3.3 70B" },
-          { value: "meta-llama/llama-3.1-8b-instruct", label: "Llama 3.1 8B" },
-          { value: "mistralai/mistral-7b-instruct", label: "Mistral 7B" },
-        ];
-      case "cloudflare":
-        return [
-          { value: "@cf/meta/llama-3.3-70b-instruct", label: "Llama 3.3 70B" },
-          { value: "@cf/meta/llama-3.1-8b-instruct", label: "Llama 3.1 8B" },
-          { value: "@cf/mistral/mistral-7b-instruct-v0.1", label: "Mistral 7B" },
-          { value: "@cf/google/gemma-2-9b-it", label: "Gemma 2 9B" },
-          { value: "@cf/microsoft/phi-3-mini-128k-instruct", label: "Phi-3 Mini" },
-        ];
-      default:
-        return [];
-    }
-  }
-
-  function getProviderStatus(): { hasKey: boolean; isConfigured: boolean; keyValid?: boolean } {
-    const hasKey = Boolean(getCurrentApiKey().trim());
-    return {
-      hasKey,
-      isConfigured: hasKey && ai.ai_enabled,
-    };
-  }
-
-  // ============================================================
-  // RENDER
-  // ============================================================
 
   if (isLoading) {
     return (
@@ -512,9 +258,6 @@ function SettingsPage() {
           <TabsTrigger value="negocio">Negocio</TabsTrigger>
         </TabsList>
 
-        {/* ============================================================
-            TAB: WHATSAPP
-        ============================================================ */}
         <TabsContent value="whatsapp" className="mt-4">
           <Card>
             <CardContent className="space-y-4 p-5">
@@ -545,8 +288,8 @@ function SettingsPage() {
                   </Button>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Pegá esta URL exacta (sin espacios ni barra final) en "URL de devolución de
-                  llamada". Guardá primero la conexión: Meta valida el token contra lo guardado.
+                  Pegá esta URL exacta (sin espacios ni barra final) en “URL de devolución de
+                  llamada”. Guardá primero la conexión: Meta valida el token contra lo guardado.
                 </p>
                 <Button variant="secondary" size="sm" onClick={testWebhook} disabled={testing}>
                   {testing ? (
@@ -591,6 +334,9 @@ function SettingsPage() {
                   </div>
                 )}
               </div>
+
+
+
 
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-1.5">
@@ -675,13 +421,9 @@ function SettingsPage() {
           </Card>
         </TabsContent>
 
-        {/* ============================================================
-            TAB: INTELIGENCIA ARTIFICIAL (ACTUALIZADO CON VALIDACIÓN)
-        ============================================================ */}
         <TabsContent value="ia" className="mt-4">
           <Card>
             <CardContent className="space-y-5 p-5">
-              {/* Tiempo de respuesta */}
               <div className="space-y-1.5">
                 <Label>Tiempo de respuesta del bot</Label>
                 <div className="flex items-center gap-2">
@@ -698,113 +440,33 @@ function SettingsPage() {
                 </div>
               </div>
 
-              {/* Proveedor de IA */}
               <div className="space-y-3 rounded-lg border p-4">
-                <div className="flex items-center justify-between">
-                  <p className="text-sm font-semibold">Proveedor de IA</p>
-                  {ai.ai_enabled && (
-                    <Badge variant={getProviderStatus().isConfigured ? "default" : "destructive"}>
-                      {getProviderStatus().isConfigured ? "✅ Activo" : "❌ Sin API Key"}
-                    </Badge>
-                  )}
-                </div>
-
-                {/* Selector de proveedor */}
+                <p className="text-sm font-semibold">IA (Gemini)</p>
                 <div className="space-y-1.5">
-                  <Label>Seleccioná tu proveedor de IA</Label>
-                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                    {(Object.keys(PROVIDER_INFO) as AiProvider[]).map((provider) => {
-                      const info = PROVIDER_INFO[provider];
-                      const isSelected = ai.provider === provider;
-                      const hasKey = provider === "gemini" ? ai.gemini_api_key.trim() :
-                                     provider === "groq" ? ai.groq_api_key.trim() :
-                                     provider === "openrouter" ? ai.openrouter_api_key.trim() :
-                                     ai.cloudflare_api_key.trim();
-                      
-                      return (
-                        <button
-                          key={provider}
-                          type="button"
-                          onClick={() => setAi({ ...ai, provider })}
-                          className={`flex flex-col items-center gap-1 rounded-lg border p-3 text-center transition-colors ${
-                            isSelected
-                              ? "border-primary bg-primary/5"
-                              : "border-border hover:bg-muted/50"
-                          } ${hasKey ? "opacity-100" : "opacity-60"}`}
-                        >
-                          <div className="flex items-center gap-1">
-                            {info.icon}
-                            <span className="text-xs font-medium">{info.label}</span>
-                          </div>
-                          {hasKey && (
-                            <CheckCircle2 className="h-3 w-3 text-primary" />
-                          )}
-                          {!hasKey && (
-                            <span className="text-[10px] text-muted-foreground">sin key</span>
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Descripción del proveedor */}
-                <div className="rounded-lg bg-muted/30 p-3">
-                  <p className="text-sm text-muted-foreground">
-                    {PROVIDER_INFO[ai.provider].description}
-                  </p>
-                  <a
-                    href={PROVIDER_INFO[ai.provider].docsUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-xs text-primary underline hover:text-primary/80"
-                  >
-                    📖 Cómo obtener tu API Key →
-                  </a>
-                  {PROVIDER_INFO[ai.provider].keyFormat && (
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Formato: <code className="rounded bg-muted px-1 py-0.5">{PROVIDER_INFO[ai.provider].keyFormat}</code>
-                    </p>
-                  )}
-                </div>
-
-                {/* API Key del proveedor seleccionado */}
-                <div className="space-y-1.5">
-                  <Label>{PROVIDER_INFO[ai.provider].keyLabel}</Label>
-                  <div className="flex gap-2">
-                    <Input
-                      type="password"
-                      placeholder={PROVIDER_INFO[ai.provider].keyPlaceholder}
-                      value={getCurrentApiKey()}
-                      onChange={(e) => setCurrentApiKey(e.target.value)}
-                      className="flex-1"
-                    />
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={handleTestKey}
-                      disabled={testingKey || !getCurrentApiKey().trim()}
-                    >
-                      {testingKey ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <CheckCircle2 className="h-4 w-4" />
-                      )}
-                      <span className="ml-1 hidden sm:inline">Validar</span>
-                    </Button>
-                  </div>
-                  {getCurrentApiKey().trim() ? (
+                  <Label>API Key de Gemini</Label>
+                  <Input
+                    type="password"
+                    placeholder="AIza..."
+                    value={ai.gemini_api_key}
+                    onChange={(e) => setAi({ ...ai, gemini_api_key: e.target.value })}
+                  />
+                  {ai.gemini_api_key.trim() ? (
                     <p className="flex items-center gap-1 text-xs text-primary">
-                      <CheckCircle2 className="h-3.5 w-3.5" /> API Key cargada
+                      <CheckCircle2 className="h-3.5 w-3.5" /> API Key configurada
                     </p>
                   ) : (
-                    <p className="text-xs text-muted-foreground">
-                      Ingresá tu API Key de {PROVIDER_INFO[ai.provider].label}
-                    </p>
+                    <p className="text-xs text-muted-foreground">Aún no cargaste tu API Key.</p>
                   )}
+                  <a
+                    href="https://aistudio.google.com/app/apikey"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-xs underline text-muted-foreground hover:text-foreground"
+                  >
+                    Obtené tu API Key en Google AI Studio
+                  </a>
                 </div>
 
-                {/* Modelo */}
                 <div className="space-y-1.5">
                   <Label>Modelo preferido</Label>
                   <select
@@ -816,27 +478,19 @@ function SettingsPage() {
                         : setAi({ ...ai, autodetect_model: false, model: e.target.value })
                     }
                   >
-                    <option value="auto">Auto-detectar (recomendado)</option>
-                    {getModelOptions().map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
+                    <option value="auto">Auto-detectar</option>
+                    <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+                    <option value="gemini-2.5-pro">gemini-2.5-pro</option>
+                    <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+                    <option value="google/gemini-3.6-flash">google/gemini-3.6-flash</option>
                   </select>
                   <p className="text-xs text-muted-foreground">
-                    {ai.provider === "groq" 
-                      ? "⚡ Groq es ideal por su velocidad y baja latencia"
-                      : ai.provider === "gemini"
-                      ? "🧠 Gemini destaca por su contexto largo (1M tokens)"
-                      : ai.provider === "openrouter"
-                      ? "🌐 OpenRouter permite probar múltiples modelos con una sola key"
-                      : "☁️ Cloudflare Workers AI integración con el ecosistema Cloudflare"
-                    }
+                    Seleccioná "Auto-detectar" para que el sistema encuentre el modelo disponible
+                    automáticamente.
                   </p>
                 </div>
               </div>
 
-              {/* Instrucción del sistema */}
               <div className="space-y-1.5">
                 <Label>Instrucción del sistema</Label>
                 <Textarea
@@ -847,7 +501,6 @@ function SettingsPage() {
                 />
               </div>
 
-              {/* Switch activar IA */}
               <div className="flex items-center gap-3 rounded-lg border p-4">
                 <Switch
                   checked={ai.ai_enabled}
@@ -861,26 +514,10 @@ function SettingsPage() {
                 </div>
               </div>
 
-              {/* Estado de configuración */}
-              {ai.ai_enabled && (
-                <div className="rounded-lg border p-3">
-                  {getProviderStatus().isConfigured ? (
-                    <p className="flex items-center gap-2 text-sm text-primary">
-                      <CheckCircle2 className="h-4 w-4" />
-                      IA activa y configurada correctamente con {PROVIDER_INFO[ai.provider].label}
-                    </p>
-                  ) : getProviderStatus().hasKey ? (
-                    <p className="flex items-center gap-2 text-sm text-yellow-600">
-                      <AlertTriangle className="h-4 w-4" />
-                      Tienes API Key pero la IA está desactivada
-                    </p>
-                  ) : (
-                    <p className="flex items-center gap-2 text-sm text-destructive">
-                      <XCircle className="h-4 w-4" />
-                      {`Configurá una API Key de ${PROVIDER_INFO[ai.provider].label} para activar la IA`}
-                    </p>
-                  )}
-                </div>
+              {ai.ai_enabled && ai.gemini_api_key.trim() && (
+                <p className="flex items-center gap-1 text-sm text-primary">
+                  <CheckCircle2 className="h-4 w-4" /> IA activa y configurada correctamente
+                </p>
               )}
 
               <Button onClick={() => handleSave("ai")} disabled={saving}>
@@ -890,9 +527,6 @@ function SettingsPage() {
           </Card>
         </TabsContent>
 
-        {/* ============================================================
-            TAB: NEGOCIO
-        ============================================================ */}
         <TabsContent value="negocio" className="mt-4">
           <Card>
             <CardContent className="space-y-4 p-5">
