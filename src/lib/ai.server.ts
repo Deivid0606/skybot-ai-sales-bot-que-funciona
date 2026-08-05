@@ -1,11 +1,27 @@
+// ============================================================
+// IA MULTI-PROVEEDOR PARA BOT SKY
+// Soporte: Gemini, Groq, OpenRouter, Cloudflare Workers AI
+// Cada workspace/vendedor usa su propia API Key
+// ============================================================
+
 const GATEWAY = "https://ai.gateway.lovable.dev/v1/chat/completions";
 
 const DEFAULT_GATEWAY_MODEL =
   process.env.LOVABLE_CHAT_MODEL?.trim() || "google/gemini-3-flash";
 
+// ============================================================
+// TIPOS
+// ============================================================
+
+export type AiProvider = "gemini" | "groq" | "openrouter" | "cloudflare";
+
 export type AiContext = {
   systemInstruction: string;
+  provider?: AiProvider | null;
   geminiApiKey?: string | null;
+  groqApiKey?: string | null;
+  openrouterApiKey?: string | null;
+  cloudflareApiKey?: string | null;
   model?: string | null;
   customerPhone?: string | null;
   businessName: string;
@@ -56,9 +72,52 @@ export type AiResult = {
 
 type UnknownRecord = Record<string, unknown>;
 
+// ============================================================
+// UTILIDADES
+// ============================================================
+
 function cleanString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.name === "AbortError" || error.message.includes("aborted"))
+  );
+}
+
+async function readResponseText(response: Response): Promise<string> {
+  try {
+    return (await response.text()).slice(0, 1_000);
+  } catch {
+    return "";
+  }
+}
+
+function uniqueNonEmptyStrings(values: Array<string | null | undefined>): string[] {
+  return values.reduce<string[]>((result, value) => {
+    const cleaned = cleanString(value);
+    if (cleaned && !result.includes(cleaned)) {
+      result.push(cleaned);
+    }
+    return result;
+  }, []);
+}
+
+function calculateRetryDelayMs(attempt: number): number {
+  const exponentialDelay = 1_000 * 2 ** Math.max(0, attempt - 1);
+  const jitter = Math.floor(Math.random() * 500);
+  return Math.min(exponentialDelay + jitter, 8_000);
+}
+
+// ============================================================
+// PROMPT BUILDER (sin cambios)
+// ============================================================
 
 function buildSystemPrompt(ctx: AiContext): string {
   const detectedCustomerPhone = cleanString(ctx.customerPhone);
@@ -69,9 +128,7 @@ function buildSystemPrompt(ctx: AiContext): string {
         `- id:${product.id} | ${product.name} | precio:${
           product.promo_price ?? product.price
         } ${ctx.currency}${
-          product.promo_price
-            ? ` (antes ${product.price})`
-            : ""
+          product.promo_price ? ` (antes ${product.price})` : ""
         } | stock:${product.stock} | claves:${
           product.keywords.join(", ") || "-"
         }
@@ -164,6 +221,10 @@ Cuando detectes un producto, product_id debe contener su id real del catálogo.
 Cuando cierres la venta, order debe tener esta forma:
 {"customer_name":"","phone":"","city":"","departamento":"","district":"","street":"","quantity":1,"payment_method":"","observations":""}.`;
 }
+
+// ============================================================
+// PARSER DE RESPUESTA (sin cambios)
+// ============================================================
 
 function stripMarkdownCodeFence(raw: string): string {
   return raw
@@ -427,6 +488,10 @@ function ensureValidResult(result: AiResult): AiResult {
   };
 }
 
+// ============================================================
+// PROVEEDOR: GEMINI
+// ============================================================
+
 const GEMINI_FALLBACK_MODELS = [
   "gemini-3.6-flash",
   "gemini-3.5-flash",
@@ -445,49 +510,11 @@ const RETRYABLE_GEMINI_STATUSES = new Set([
 const GEMINI_MAX_ATTEMPTS_PER_MODEL = 3;
 const GEMINI_REQUEST_TIMEOUT_MS = 45_000;
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function uniqueNonEmptyStrings(values: Array<string | null | undefined>): string[] {
-  return values.reduce<string[]>((result, value) => {
-    const cleaned = cleanString(value);
-
-    if (cleaned && !result.includes(cleaned)) {
-      result.push(cleaned);
-    }
-
-    return result;
-  }, []);
-}
-
 function getGeminiCandidates(preferredModel?: string | null): string[] {
   return uniqueNonEmptyStrings([
     preferredModel,
     ...GEMINI_FALLBACK_MODELS,
   ]);
-}
-
-function calculateRetryDelayMs(attempt: number): number {
-  const exponentialDelay = 1_000 * 2 ** Math.max(0, attempt - 1);
-  const jitter = Math.floor(Math.random() * 500);
-
-  return Math.min(exponentialDelay + jitter, 8_000);
-}
-
-function isAbortError(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    (error.name === "AbortError" || error.message.includes("aborted"))
-  );
-}
-
-async function readResponseText(response: Response): Promise<string> {
-  try {
-    return (await response.text()).slice(0, 1_000);
-  } catch {
-    return "";
-  }
 }
 
 async function generateWithGemini(
@@ -590,13 +617,10 @@ async function generateWithGemini(
           error: lastError,
         });
 
-        // 404: modelo inexistente/no disponible para esta cuenta.
-        // No tiene sentido reintentarlo: pasa inmediatamente al siguiente.
         if (response.status === 404) {
           break;
         }
 
-        // Errores de autenticación/configuración tampoco mejoran con reintentos.
         if (
           response.status === 400 ||
           response.status === 401 ||
@@ -642,6 +666,341 @@ async function generateWithGemini(
     `gemini_error:${statusPart} ${lastError || "Todos los modelos fallaron"}`.trim(),
   );
 }
+
+// ============================================================
+// PROVEEDOR: GROQ (NUEVO - SÚPER RÁPIDO)
+// ============================================================
+
+const GROQ_MODELS = {
+  "llama-3.3-70b-versatile": "llama-3.3-70b-versatile",
+  "llama-3.1-70b-versatile": "llama-3.1-70b-versatile",
+  "mixtral-8x7b-32768": "mixtral-8x7b-32768",
+  "gemma2-9b-it": "gemma2-9b-it",
+  "llama-3.2-3b-preview": "llama-3.2-3b-preview",
+  "llama-3.2-1b-preview": "llama-3.2-1b-preview",
+} as const;
+
+type GroqModel = keyof typeof GROQ_MODELS;
+
+const DEFAULT_GROQ_MODEL: GroqModel = "llama-3.3-70b-versatile";
+
+async function generateWithGroq(ctx: AiContext): Promise<AiResult> {
+  const apiKey = ctx.groqApiKey?.trim();
+
+  if (!apiKey) {
+    throw new Error("Falta GROQ_API_KEY");
+  }
+
+  // Mapeo de modelos: si el usuario eligió "auto" o un modelo no soportado, usamos el default
+  let model: GroqModel = DEFAULT_GROQ_MODEL;
+  
+  if (ctx.model) {
+    const userModel = ctx.model.trim();
+    // Si el modelo está en nuestra lista de modelos Groq, lo usamos
+    if (userModel in GROQ_MODELS) {
+      model = userModel as GroqModel;
+    } else {
+      // Si no, intentamos mapear modelos comunes de Gemini a Groq
+      const modelMap: Record<string, GroqModel> = {
+        "gemini-2.5-flash": "llama-3.3-70b-versatile",
+        "gemini-2.5-pro": "llama-3.3-70b-versatile",
+        "gemini-2.0-flash": "mixtral-8x7b-32768",
+        "google/gemini-3.6-flash": "llama-3.3-70b-versatile",
+        "google/gemini-2.5-flash": "llama-3.3-70b-versatile",
+      };
+      model = modelMap[userModel] || DEFAULT_GROQ_MODEL;
+    }
+  }
+
+  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: model,
+      messages: [
+        {
+          role: "system",
+          content: buildSystemPrompt(ctx),
+        },
+        ...ctx.history.slice(-24),
+      ],
+      temperature: 0.35,
+      response_format: {
+        type: "json_object",
+      },
+    }),
+  });
+
+  if (response.status === 429) {
+    throw new Error("rate_limited_groq");
+  }
+
+  if (!response.ok) {
+    const responseText = await readResponseText(response);
+    throw new Error(
+      `groq_error: ${
+        responseText ||
+        `HTTP ${response.status} ${response.statusText}`
+      }`,
+    );
+  }
+
+  const json = (await response.json()) as {
+    choices?: Array<{
+      message?: {
+        content?: string;
+      };
+    }>;
+  };
+
+  const content = json.choices?.[0]?.message?.content ?? "";
+
+  if (!content) {
+    throw new Error("groq_empty_response");
+  }
+
+  return applyDetectedPhone(
+    ensureValidResult(parseResult(content)),
+    ctx.customerPhone,
+  );
+}
+
+// ============================================================
+// PROVEEDOR: OPENROUTER (NUEVO - ACCESO A MÚLTIPLES MODELOS)
+// ============================================================
+
+const OPENROUTER_MODELS = {
+  "google/gemini-2.5-flash": "google/gemini-2.5-flash",
+  "google/gemini-2.5-pro": "google/gemini-2.5-pro",
+  "meta-llama/llama-3.3-70b-instruct": "meta-llama/llama-3.3-70b-instruct",
+  "meta-llama/llama-3.1-8b-instruct": "meta-llama/llama-3.1-8b-instruct",
+  "mistralai/mistral-7b-instruct": "mistralai/mistral-7b-instruct",
+  "microsoft/phi-3-mini-128k-instruct": "microsoft/phi-3-mini-128k-instruct",
+} as const;
+
+type OpenRouterModel = keyof typeof OPENROUTER_MODELS;
+
+const DEFAULT_OPENROUTER_MODEL: OpenRouterModel = "google/gemini-2.5-flash";
+
+async function generateWithOpenRouter(ctx: AiContext): Promise<AiResult> {
+  const apiKey = ctx.openrouterApiKey?.trim();
+
+  if (!apiKey) {
+    throw new Error("Falta OPENROUTER_API_KEY");
+  }
+
+  let model: OpenRouterModel = DEFAULT_OPENROUTER_MODEL;
+
+  if (ctx.model) {
+    const userModel = ctx.model.trim();
+    if (userModel in OPENROUTER_MODELS) {
+      model = userModel as OpenRouterModel;
+    } else {
+      // Mapeo de modelos comunes
+      const modelMap: Record<string, OpenRouterModel> = {
+        "gemini-2.5-flash": "google/gemini-2.5-flash",
+        "gemini-2.5-pro": "google/gemini-2.5-pro",
+        "gemini-2.0-flash": "google/gemini-2.5-flash",
+        "google/gemini-3.6-flash": "google/gemini-2.5-flash",
+        "llama-3.3-70b": "meta-llama/llama-3.3-70b-instruct",
+        "llama-3.1-8b": "meta-llama/llama-3.1-8b-instruct",
+      };
+      model = modelMap[userModel] || DEFAULT_OPENROUTER_MODEL;
+    }
+  }
+
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`,
+      "HTTP-Referer": process.env.OPENROUTER_REFERER || "https://botsky.app",
+      "X-Title": "Bot SKY",
+    },
+    body: JSON.stringify({
+      model: model,
+      messages: [
+        {
+          role: "system",
+          content: buildSystemPrompt(ctx),
+        },
+        ...ctx.history.slice(-24),
+      ],
+      temperature: 0.35,
+      response_format: {
+        type: "json_object",
+      },
+    }),
+  });
+
+  if (response.status === 429) {
+    throw new Error("rate_limited_openrouter");
+  }
+
+  if (!response.ok) {
+    const responseText = await readResponseText(response);
+    throw new Error(
+      `openrouter_error: ${
+        responseText ||
+        `HTTP ${response.status} ${response.statusText}`
+      }`,
+    );
+  }
+
+  const json = (await response.json()) as {
+    choices?: Array<{
+      message?: {
+        content?: string;
+      };
+    }>;
+  };
+
+  const content = json.choices?.[0]?.message?.content ?? "";
+
+  if (!content) {
+    throw new Error("openrouter_empty_response");
+  }
+
+  return applyDetectedPhone(
+    ensureValidResult(parseResult(content)),
+    ctx.customerPhone,
+  );
+}
+
+// ============================================================
+// PROVEEDOR: CLOUDFLARE WORKERS AI (NUEVO)
+// ============================================================
+
+const CLOUDFLARE_MODELS = {
+  "@cf/meta/llama-3.3-70b-instruct": "@cf/meta/llama-3.3-70b-instruct",
+  "@cf/meta/llama-3.1-8b-instruct": "@cf/meta/llama-3.1-8b-instruct",
+  "@cf/mistral/mistral-7b-instruct-v0.1": "@cf/mistral/mistral-7b-instruct-v0.1",
+  "@cf/google/gemma-2-9b-it": "@cf/google/gemma-2-9b-it",
+  "@cf/microsoft/phi-3-mini-128k-instruct": "@cf/microsoft/phi-3-mini-128k-instruct",
+} as const;
+
+type CloudflareModel = keyof typeof CLOUDFLARE_MODELS;
+
+const DEFAULT_CLOUDFLARE_MODEL: CloudflareModel = "@cf/meta/llama-3.3-70b-instruct";
+
+async function generateWithCloudflare(ctx: AiContext): Promise<AiResult> {
+  const apiKey = ctx.cloudflareApiKey?.trim();
+
+  if (!apiKey) {
+    throw new Error("Falta CLOUDFLARE_API_KEY");
+  }
+
+  // Cloudflare necesita account_id y API Token
+  // El formato esperado: "account_id:api_token"
+  const [accountId, apiToken] = apiKey.split(":");
+  
+  if (!accountId || !apiToken) {
+    throw new Error("CLOUDFLARE_API_KEY debe tener formato: account_id:api_token");
+  }
+
+  let model: CloudflareModel = DEFAULT_CLOUDFLARE_MODEL;
+
+  if (ctx.model) {
+    const userModel = ctx.model.trim();
+    if (userModel in CLOUDFLARE_MODELS) {
+      model = userModel as CloudflareModel;
+    } else {
+      const modelMap: Record<string, CloudflareModel> = {
+        "gemini-2.5-flash": "@cf/meta/llama-3.3-70b-instruct",
+        "gemini-2.5-pro": "@cf/meta/llama-3.3-70b-instruct",
+        "gemini-2.0-flash": "@cf/meta/llama-3.1-8b-instruct",
+        "google/gemini-3.6-flash": "@cf/meta/llama-3.3-70b-instruct",
+        "llama-3.3-70b": "@cf/meta/llama-3.3-70b-instruct",
+        "llama-3.1-8b": "@cf/meta/llama-3.1-8b-instruct",
+        "mixtral": "@cf/mistral/mistral-7b-instruct-v0.1",
+        "gemma-2-9b": "@cf/google/gemma-2-9b-it",
+      };
+      model = modelMap[userModel] || DEFAULT_CLOUDFLARE_MODEL;
+    }
+  }
+
+  const response = await fetch(
+    `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${model}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiToken}`,
+      },
+      body: JSON.stringify({
+        messages: [
+          {
+            role: "system",
+            content: buildSystemPrompt(ctx),
+          },
+          ...ctx.history.slice(-24),
+        ],
+        temperature: 0.35,
+        // Cloudflare no soporta response_format directamente,
+        // pero podemos forzar JSON en el prompt
+      }),
+    }
+  );
+
+  if (response.status === 429) {
+    throw new Error("rate_limited_cloudflare");
+  }
+
+  if (!response.ok) {
+    const responseText = await readResponseText(response);
+    throw new Error(
+      `cloudflare_error: ${
+        responseText ||
+        `HTTP ${response.status} ${response.statusText}`
+      }`,
+    );
+  }
+
+  const json = (await response.json()) as {
+    result?: {
+      response?: string;
+    };
+    success?: boolean;
+    errors?: Array<{ message: string }>;
+  };
+
+  if (!json.success) {
+    const errorMsg = json.errors?.[0]?.message || "Unknown error";
+    throw new Error(`cloudflare_error: ${errorMsg}`);
+  }
+
+  const content = json.result?.response ?? "";
+
+  if (!content) {
+    throw new Error("cloudflare_empty_response");
+  }
+
+  // Cloudflare puede devolver texto plano, intentamos parsear JSON
+  let parsedContent = content;
+  
+  // Si no es JSON válido, intentamos extraer el JSON del texto
+  try {
+    JSON.parse(content);
+  } catch {
+    // Intentamos extraer el primer objeto JSON
+    const extracted = extractFirstJsonObject(content);
+    if (extracted) {
+      parsedContent = extracted;
+    }
+  }
+
+  return applyDetectedPhone(
+    ensureValidResult(parseResult(parsedContent)),
+    ctx.customerPhone,
+  );
+}
+
+// ============================================================
+// PROVEEDOR: GATEWAY (FALLBACK - SIN CAMBIOS)
+// ============================================================
 
 async function generateWithGateway(ctx: AiContext): Promise<AiResult> {
   const apiKey = process.env.LOVABLE_API_KEY?.trim();
@@ -708,44 +1067,107 @@ async function generateWithGateway(ctx: AiContext): Promise<AiResult> {
   );
 }
 
+// ============================================================
+// FUNCIÓN PRINCIPAL - CON MÚLTIPLES PROVEEDORES
+// ============================================================
+
 export async function generateAiReply(
   ctx: AiContext,
 ): Promise<AiResult> {
-  const geminiApiKey = ctx.geminiApiKey?.trim();
+  // Determinar el proveedor a usar
+  const provider = ctx.provider || "gemini";
+  
+  // Mapa de proveedores a sus respectivas funciones
+  const providerHandlers: Record<AiProvider, () => Promise<AiResult>> = {
+    gemini: async () => {
+      const key = ctx.geminiApiKey?.trim();
+      if (!key) {
+        throw new Error("Falta GEMINI_API_KEY para el proveedor Gemini");
+      }
+      return await generateWithGemini(ctx, key);
+    },
+    groq: async () => {
+      const key = ctx.groqApiKey?.trim();
+      if (!key) {
+        throw new Error("Falta GROQ_API_KEY para el proveedor Groq");
+      }
+      return await generateWithGroq(ctx);
+    },
+    openrouter: async () => {
+      const key = ctx.openrouterApiKey?.trim();
+      if (!key) {
+        throw new Error("Falta OPENROUTER_API_KEY para el proveedor OpenRouter");
+      }
+      return await generateWithOpenRouter(ctx);
+    },
+    cloudflare: async () => {
+      const key = ctx.cloudflareApiKey?.trim();
+      if (!key) {
+        throw new Error("Falta CLOUDFLARE_API_KEY para el proveedor Cloudflare");
+      }
+      return await generateWithCloudflare(ctx);
+    },
+  };
 
-  if (geminiApiKey) {
-    try {
-      return await generateWithGemini(ctx, geminiApiKey);
-    } catch (geminiError) {
-      console.error(
-        "[AI] Gemini agotó reintentos/modelos; usando Lovable Gateway",
-        {
-          error:
-            geminiError instanceof Error
-              ? geminiError.message
-              : String(geminiError),
-        },
-      );
+  // Intentar con el proveedor seleccionado
+  const handler = providerHandlers[provider as AiProvider] || providerHandlers.gemini;
+  
+  try {
+    return await handler();
+  } catch (primaryError) {
+    console.error(`[AI] El proveedor ${provider} falló:`, primaryError);
 
+    // Si es un error de rate limiting o autenticación, no intentamos otros proveedores
+    const errorMsg = primaryError instanceof Error ? primaryError.message : String(primaryError);
+    if (
+      errorMsg.includes("rate_limited") ||
+      errorMsg.includes("401") ||
+      errorMsg.includes("403") ||
+      errorMsg.includes("authentication")
+    ) {
+      throw primaryError;
+    }
+
+    // Intentar con Gemini si el fallback tiene key
+    const geminiKey = ctx.geminiApiKey?.trim();
+    if (provider !== "gemini" && geminiKey) {
       try {
-        return await generateWithGateway(ctx);
-      } catch (gatewayError) {
-        const geminiMessage =
-          geminiError instanceof Error
-            ? geminiError.message
-            : String(geminiError);
-        const gatewayMessage =
-          gatewayError instanceof Error
-            ? gatewayError.message
-            : String(gatewayError);
-
-        throw new Error(
-          `Todos los proveedores de IA fallaron. Gemini: ${geminiMessage}. Gateway: ${gatewayMessage}`,
-        );
+        console.log("[AI] Fallback a Gemini...");
+        return await generateWithGemini(ctx, geminiKey);
+      } catch (geminiError) {
+        console.error("[AI] Gemini fallback también falló:", geminiError);
       }
     }
-  }
 
-  return generateWithGateway(ctx);
+    // Intentar con Gateway de Lovable como último recurso
+    try {
+      console.log("[AI] Fallback a Lovable Gateway...");
+      return await generateWithGateway(ctx);
+    } catch (gatewayError) {
+      console.error("[AI] Gateway fallback también falló:", gatewayError);
+      throw new Error(
+        `Todos los proveedores de IA fallaron. Proveedor primario (${provider}): ${errorMsg}. ` +
+        `Gateway: ${gatewayError instanceof Error ? gatewayError.message : String(gatewayError)}`
+      );
+    }
+  }
 }
 
+// ============================================================
+// EXPORTACIONES PARA USO EXTERNO
+// ============================================================
+
+export {
+  buildSystemPrompt,
+  parseResult,
+  ensureValidResult,
+  applyDetectedPhone,
+};
+
+export default {
+  generateAiReply,
+  buildSystemPrompt,
+  parseResult,
+  ensureValidResult,
+  applyDetectedPhone,
+};
