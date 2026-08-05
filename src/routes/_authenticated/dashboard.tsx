@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
+  ArrowRight,
   Bot,
   Building2,
   CalendarDays,
@@ -10,7 +11,9 @@ import {
   MapPin,
   MessageSquare,
   PackageCheck,
+  RefreshCcw,
   ShoppingCart,
+  Sparkles,
   TrendingUp,
   Wallet,
 } from "lucide-react";
@@ -23,27 +26,21 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import { useWorkspaceId } from "@/lib/auth";
 
 export const Route = createFileRoute("/_authenticated/dashboard")({
   head: () => ({
     meta: [
-      {
-        title: "Dashboard — BOT SKY",
-      },
+      { title: "Dashboard — BOT SKY" },
       {
         name: "description",
-        content:
-          "Métricas de conversaciones, ventas y desempeño de tu IA.",
+        content: "Métricas de conversaciones, ventas y desempeño de tu IA.",
       },
-      {
-        property: "og:title",
-        content: "Dashboard — BOT SKY",
-      },
+      { property: "og:title", content: "Dashboard — BOT SKY" },
       {
         property: "og:description",
-        content:
-          "Métricas en vivo de tu operación de ventas por WhatsApp.",
+        content: "Métricas en vivo de tu operación de ventas por WhatsApp.",
       },
     ],
   }),
@@ -52,7 +49,6 @@ export const Route = createFileRoute("/_authenticated/dashboard")({
 
 function getTodayDate() {
   const today = new Date();
-
   const year = today.getFullYear();
   const month = String(today.getMonth() + 1).padStart(2, "0");
   const day = String(today.getDate()).padStart(2, "0");
@@ -60,20 +56,42 @@ function getTodayDate() {
   return `${year}-${month}-${day}`;
 }
 
-function isSameLocalDate(
-  createdAt: string | null,
-  selectedDate: string,
-) {
-  if (!createdAt || !selectedDate) return false;
+function parseLocalDate(value: string, endOfDay = false) {
+  const [year, month, day] = value.split("-").map(Number);
 
-  const date = new Date(createdAt);
-  const [year, month, day] = selectedDate.split("-").map(Number);
-
-  return (
-    date.getFullYear() === year &&
-    date.getMonth() + 1 === month &&
-    date.getDate() === day
+  return new Date(
+    year,
+    month - 1,
+    day,
+    endOfDay ? 23 : 0,
+    endOfDay ? 59 : 0,
+    endOfDay ? 59 : 0,
+    endOfDay ? 999 : 0,
   );
+}
+
+function isWithinLocalDateRange(
+  createdAt: string | null,
+  dateFrom: string,
+  dateTo: string,
+) {
+  if (!createdAt || !dateFrom || !dateTo) return false;
+
+  const createdDate = new Date(createdAt);
+  const from = parseLocalDate(dateFrom);
+  const to = parseLocalDate(dateTo, true);
+
+  return createdDate >= from && createdDate <= to;
+}
+
+function formatDisplayDate(value: string) {
+  if (!value) return "";
+
+  return new Intl.DateTimeFormat("es-PY", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  }).format(parseLocalDate(value));
 }
 
 function normalizeText(value: unknown) {
@@ -112,8 +130,10 @@ function getNormalizedCityName(city?: string | null) {
 
 function DashboardPage() {
   const workspaceId = useWorkspaceId();
+  const today = getTodayDate();
 
-  const [selectedDate, setSelectedDate] = useState(getTodayDate);
+  const [dateFrom, setDateFrom] = useState(today);
+  const [dateTo, setDateTo] = useState(today);
 
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["dashboard", workspaceId],
@@ -121,41 +141,40 @@ function DashboardPage() {
     refetchInterval: 60_000,
 
     queryFn: async () => {
-      const [conversations, orders, balance, messages] =
-        await Promise.all([
-          supabase
-            .from("conversations")
-            .select("id, status, sale_closed, created_at")
-            .eq("workspace_id", workspaceId!),
+      const [conversations, orders, balance, messages] = await Promise.all([
+        supabase
+          .from("conversations")
+          .select("id, status, sale_closed, created_at")
+          .eq("workspace_id", workspaceId!),
 
-          supabase
-            .from("orders")
-            .select(`
-              id,
-              total,
-              status,
-              created_at,
-              product_title,
-              city,
-              departamento,
-              payment_status,
-              payment_method,
-              tags
-            `)
-            .eq("workspace_id", workspaceId!),
+        supabase
+          .from("orders")
+          .select(`
+            id,
+            total,
+            status,
+            created_at,
+            product_title,
+            city,
+            departamento,
+            payment_status,
+            payment_method,
+            tags
+          `)
+          .eq("workspace_id", workspaceId!),
 
-          supabase
-            .from("conversation_balances")
-            .select("available, consumed, purchased")
-            .eq("workspace_id", workspaceId!)
-            .maybeSingle(),
+        supabase
+          .from("conversation_balances")
+          .select("available, consumed, purchased")
+          .eq("workspace_id", workspaceId!)
+          .maybeSingle(),
 
-          supabase
-            .from("messages")
-            .select("id, sender, created_at")
-            .eq("workspace_id", workspaceId!)
-            .limit(5000),
-        ]);
+        supabase
+          .from("messages")
+          .select("id, sender, created_at")
+          .eq("workspace_id", workspaceId!)
+          .limit(5000),
+      ]);
 
       if (conversations.error) throw conversations.error;
       if (orders.error) throw orders.error;
@@ -174,23 +193,20 @@ function DashboardPage() {
   if (isLoading || !data) {
     return (
       <PageShell>
-        <PageHeader
-          title="Dashboard"
-          description="Resumen de tu operación."
-        />
+        <PageHeader title="Dashboard" description="Resumen de tu operación." />
 
-        <div className="space-y-4">
-          <Skeleton className="h-28 w-full" />
+        <div className="space-y-5">
+          <Skeleton className="h-44 w-full rounded-2xl" />
 
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             {Array.from({ length: 8 }).map((_, index) => (
-              <Skeleton key={index} className="h-28 w-full" />
+              <Skeleton key={index} className="h-32 w-full rounded-2xl" />
             ))}
           </div>
 
-          <div className="grid gap-4 lg:grid-cols-2">
-            <Skeleton className="h-80 w-full" />
-            <Skeleton className="h-80 w-full" />
+          <div className="grid gap-4 xl:grid-cols-2">
+            <Skeleton className="h-96 w-full rounded-2xl" />
+            <Skeleton className="h-96 w-full rounded-2xl" />
           </div>
         </div>
       </PageShell>
@@ -200,17 +216,13 @@ function DashboardPage() {
   if (isError) {
     return (
       <PageShell>
-        <PageHeader
-          title="Dashboard"
-          description="Resumen de tu operación."
-        />
+        <PageHeader title="Dashboard" description="Resumen de tu operación." />
 
-        <Card>
-          <CardContent className="p-5">
-            <p className="font-medium text-destructive">
+        <Card className="border-destructive/30 bg-destructive/5">
+          <CardContent className="p-6">
+            <p className="font-semibold text-destructive">
               No se pudo cargar el dashboard.
             </p>
-
             <p className="mt-1 text-sm text-muted-foreground">
               {error instanceof Error
                 ? error.message
@@ -222,69 +234,49 @@ function DashboardPage() {
     );
   }
 
-  /*
-   * Todos los datos comerciales se filtran
-   * por la fecha seleccionada.
-   */
+  const hasInvalidRange = dateFrom > dateTo;
 
-  const dateConversations = data.conversations.filter(
-    (conversation) =>
-      isSameLocalDate(
-        conversation.created_at,
-        selectedDate,
-      ),
-  );
+  const rangeConversations = hasInvalidRange
+    ? []
+    : data.conversations.filter((conversation) =>
+        isWithinLocalDateRange(conversation.created_at, dateFrom, dateTo),
+      );
 
-  const dateOrders = data.orders.filter(
-    (order) =>
-      order.status !== "cancelado" &&
-      isSameLocalDate(order.created_at, selectedDate),
-  );
+  const rangeOrders = hasInvalidRange
+    ? []
+    : data.orders.filter(
+        (order) =>
+          order.status !== "cancelado" &&
+          isWithinLocalDateRange(order.created_at, dateFrom, dateTo),
+      );
 
-  const dateMessages = data.messages.filter((message) =>
-    isSameLocalDate(message.created_at, selectedDate),
-  );
+  const rangeMessages = hasInvalidRange
+    ? []
+    : data.messages.filter((message) =>
+        isWithinLocalDateRange(message.created_at, dateFrom, dateTo),
+      );
 
-  /*
-   * Métricas del día.
-   */
-
-  const totalConversations = dateConversations.length;
-
-  const closedSales = dateConversations.filter(
+  const totalConversations = rangeConversations.length;
+  const closedSales = rangeConversations.filter(
     (conversation) => conversation.sale_closed,
   ).length;
-
   const conversion = totalConversations
     ? Math.round((closedSales / totalConversations) * 100)
     : 0;
-
-  const dateRevenue = dateOrders.reduce(
+  const rangeRevenue = rangeOrders.reduce(
     (total, order) => total + Number(order.total ?? 0),
     0,
   );
-
-  const loadedOrders = dateOrders.filter(
+  const loadedOrders = rangeOrders.filter(
     (order) => order.status === "cargado",
   ).length;
-
-  const centralOrders = dateOrders.filter((order) => {
-    const departamento = resolveDepartamento(
-      order.departamento,
-      order.city,
-    );
-
+  const centralOrders = rangeOrders.filter((order) => {
+    const departamento = resolveDepartamento(order.departamento, order.city);
     return departamento === "Central";
   }).length;
-
-  const prepaidOrders = dateOrders.filter((order) => {
-    const paymentStatus = normalizeText(
-      order.payment_status,
-    );
-
-    const paymentMethod = normalizeText(
-      order.payment_method,
-    );
+  const prepaidOrders = rangeOrders.filter((order) => {
+    const paymentStatus = normalizeText(order.payment_status);
+    const paymentMethod = normalizeText(order.payment_method);
 
     return (
       paymentStatus === "anticipado" ||
@@ -292,83 +284,46 @@ function DashboardPage() {
       hasOrderTag(order.tags, "Pago anticipado")
     );
   }).length;
-
-  const pendingPaymentOrders = dateOrders.filter((order) => {
-    const paymentStatus = normalizeText(
-      order.payment_status,
-    );
+  const pendingPaymentOrders = rangeOrders.filter((order) => {
+    const paymentStatus = normalizeText(order.payment_status);
 
     return (
       paymentStatus === "pendiente" ||
       hasOrderTag(order.tags, "Pendiente de pago")
     );
   }).length;
-
-  const aiMessagesToday = dateMessages.filter(
+  const aiMessages = rangeMessages.filter(
     (message) => message.sender === "ai",
   ).length;
 
-  /*
-   * Productos más vendidos del día.
-   */
-
   const topProducts = Object.entries(
-    dateOrders.reduce<Record<string, number>>(
-      (accumulator, order) => {
-        const productName =
-          order.product_title?.trim() || "Sin producto";
-
-        accumulator[productName] =
-          (accumulator[productName] ?? 0) + 1;
-
-        return accumulator;
-      },
-      {},
-    ),
+    rangeOrders.reduce<Record<string, number>>((accumulator, order) => {
+      const productName = order.product_title?.trim() || "Sin producto";
+      accumulator[productName] = (accumulator[productName] ?? 0) + 1;
+      return accumulator;
+    }, {}),
   )
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5);
 
-  /*
-   * Ciudades más vendidas del día.
-   */
-
   const topCities = Object.entries(
-    dateOrders.reduce<Record<string, number>>(
-      (accumulator, order) => {
-        const city = getNormalizedCityName(order.city);
-
-        accumulator[city] =
-          (accumulator[city] ?? 0) + 1;
-
-        return accumulator;
-      },
-      {},
-    ),
+    rangeOrders.reduce<Record<string, number>>((accumulator, order) => {
+      const city = getNormalizedCityName(order.city);
+      accumulator[city] = (accumulator[city] ?? 0) + 1;
+      return accumulator;
+    }, {}),
   )
     .sort((a, b) => b[1] - a[1])
     .slice(0, 10);
 
-  /*
-   * Departamentos más vendidos del día.
-   */
-
   const topDepartments = Object.entries(
-    dateOrders.reduce<Record<string, number>>(
-      (accumulator, order) => {
-        const department =
-          resolveDepartamento(
-            order.departamento,
-            order.city,
-          ) || "Sin departamento";
-
-        accumulator[department] =
-          (accumulator[department] ?? 0) + 1;
-
-        return accumulator;
-      },
-      {},
-    ),
+    rangeOrders.reduce<Record<string, number>>((accumulator, order) => {
+      const department =
+        resolveDepartamento(order.departamento, order.city) ||
+        "Sin departamento";
+      accumulator[department] = (accumulator[department] ?? 0) + 1;
+      return accumulator;
+    }, {}),
   )
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5);
@@ -378,130 +333,206 @@ function DashboardPage() {
       label: "Conversaciones",
       value: totalConversations,
       icon: MessageSquare,
+      helper: "Conversaciones iniciadas",
     },
     {
       label: "Ventas cerradas",
       value: closedSales,
       icon: CheckCircle2,
+      helper: "Ventas confirmadas por IA",
     },
     {
       label: "Conversión",
       value: `${conversion}%`,
       icon: TrendingUp,
+      helper: "Ventas sobre conversaciones",
     },
     {
       label: "Ingresos",
-      value: formatGs(dateRevenue),
+      value: formatGs(rangeRevenue),
       icon: ShoppingCart,
+      helper: "Total sin cancelados",
     },
   ];
 
   const orderStats = [
     {
       label: "Pedidos",
-      value: dateOrders.length,
+      value: rangeOrders.length,
       icon: CalendarDays,
+      helper: "Pedidos del periodo",
     },
     {
       label: "Pedidos cargados",
       value: loadedOrders,
       icon: PackageCheck,
+      helper: "Estado cargado",
     },
     {
       label: "Pedidos de Central",
       value: centralOrders,
       icon: Building2,
+      helper: "Departamento Central",
     },
     {
       label: "Pagos anticipados",
       value: prepaidOrders,
       icon: CreditCard,
+      helper: "Pagados por adelantado",
     },
   ];
+
+  const resetToToday = () => {
+    const currentToday = getTodayDate();
+    setDateFrom(currentToday);
+    setDateTo(currentToday);
+  };
 
   return (
     <PageShell>
       <PageHeader
         title="Dashboard"
-        description="Resumen diario de tu operación de ventas."
+        description="Métricas de conversaciones, ventas y desempeño de tu IA."
       />
 
-      <div className="space-y-4">
-        <Card>
-          <CardContent className="flex flex-col gap-4 p-5 sm:flex-row sm:items-end sm:justify-between">
-            <div>
-              <div className="flex items-center gap-2">
-                <CalendarDays className="h-5 w-5 text-primary" />
+      <div className="space-y-5">
+        <section className="relative overflow-hidden rounded-2xl border bg-gradient-to-br from-primary/10 via-background to-background p-5 shadow-sm sm:p-6">
+          <div className="pointer-events-none absolute -right-16 -top-16 h-48 w-48 rounded-full bg-primary/10 blur-3xl" />
 
-                <h2 className="font-display text-base font-semibold">
-                  Resumen por fecha
-                </h2>
-              </div>
+          <div className="relative flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
+            <div className="max-w-xl">
+              <Badge className="mb-3 gap-1.5 rounded-full px-3 py-1" variant="secondary">
+                <Sparkles className="h-3.5 w-3.5" />
+                BOT SKY en tiempo real
+              </Badge>
 
-              <p className="mt-1 text-sm text-muted-foreground">
-                Todas las métricas comerciales corresponden a la
-                fecha seleccionada.
+              <h2 className="font-display text-2xl font-bold tracking-tight sm:text-3xl">
+                Rendimiento de tu operación
+              </h2>
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                Seleccioná un periodo para analizar todas las métricas
+                comerciales. Por defecto, el dashboard siempre abre con la
+                fecha de hoy.
               </p>
             </div>
 
-            <div className="w-full sm:w-56">
-              <label
-                htmlFor="dashboard-date"
-                className="mb-1.5 block text-xs font-medium text-muted-foreground"
-              >
-                Seleccionar fecha
-              </label>
+            <div className="w-full rounded-2xl border bg-background/90 p-4 shadow-sm backdrop-blur xl:max-w-2xl">
+              <div className="grid gap-3 sm:grid-cols-[1fr_auto_1fr_auto] sm:items-end">
+                <div>
+                  <label
+                    htmlFor="dashboard-date-from"
+                    className="mb-1.5 block text-xs font-semibold text-muted-foreground"
+                  >
+                    Desde
+                  </label>
+                  <Input
+                    id="dashboard-date-from"
+                    type="date"
+                    value={dateFrom}
+                    max={dateTo}
+                    onChange={(event) => setDateFrom(event.target.value)}
+                    className="h-11 rounded-xl"
+                  />
+                </div>
 
-              <Input
-                id="dashboard-date"
-                type="date"
-                value={selectedDate}
-                onChange={(event) =>
-                  setSelectedDate(event.target.value)
-                }
-              />
-            </div>
-          </CardContent>
-        </Card>
+                <div className="hidden h-11 items-center justify-center text-muted-foreground sm:flex">
+                  <ArrowRight className="h-4 w-4" />
+                </div>
 
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {primaryStats.map((stat) => (
-            <Card key={stat.label}>
-              <CardContent className="flex items-center gap-4 p-5">
-                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                  <stat.icon className="h-5 w-5" />
+                <div>
+                  <label
+                    htmlFor="dashboard-date-to"
+                    className="mb-1.5 block text-xs font-semibold text-muted-foreground"
+                  >
+                    Hasta
+                  </label>
+                  <Input
+                    id="dashboard-date-to"
+                    type="date"
+                    value={dateTo}
+                    min={dateFrom}
+                    onChange={(event) => setDateTo(event.target.value)}
+                    className="h-11 rounded-xl"
+                  />
+                </div>
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={resetToToday}
+                  className="h-11 rounded-xl"
+                >
+                  <RefreshCcw className="mr-2 h-4 w-4" />
+                  Hoy
+                </Button>
+              </div>
+
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                <CalendarDays className="h-3.5 w-3.5" />
+                <span>
+                  Periodo: {formatDisplayDate(dateFrom)} — {formatDisplayDate(dateTo)}
                 </span>
+              </div>
 
-                <div className="min-w-0">
-                  <p className="text-xs text-muted-foreground">
-                    {stat.label}
-                  </p>
+              {hasInvalidRange && (
+                <p className="mt-3 rounded-lg bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive">
+                  La fecha “Desde” no puede ser posterior a la fecha “Hasta”.
+                </p>
+              )}
+            </div>
+          </div>
+        </section>
 
-                  <p className="truncate font-display text-xl font-bold">
-                    {stat.value}
-                  </p>
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          {primaryStats.map((stat) => (
+            <Card
+              key={stat.label}
+              className="group overflow-hidden rounded-2xl border-border/70 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md"
+            >
+              <CardContent className="p-5">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-muted-foreground">
+                      {stat.label}
+                    </p>
+                    <p className="mt-2 truncate font-display text-2xl font-bold tracking-tight">
+                      {stat.value}
+                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {stat.helper}
+                    </p>
+                  </div>
+                  <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary transition-transform group-hover:scale-105">
+                    <stat.icon className="h-5 w-5" />
+                  </span>
                 </div>
               </CardContent>
             </Card>
           ))}
         </div>
 
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           {orderStats.map((stat) => (
-            <Card key={stat.label}>
-              <CardContent className="flex items-center gap-4 p-5">
-                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                  <stat.icon className="h-5 w-5" />
-                </span>
-
-                <div>
-                  <p className="text-xs text-muted-foreground">
-                    {stat.label}
-                  </p>
-
-                  <p className="font-display text-xl font-bold">
-                    {stat.value}
-                  </p>
+            <Card
+              key={stat.label}
+              className="group overflow-hidden rounded-2xl border-border/70 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md"
+            >
+              <CardContent className="p-5">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-sm font-medium text-muted-foreground">
+                      {stat.label}
+                    </p>
+                    <p className="mt-2 font-display text-2xl font-bold tracking-tight">
+                      {stat.value}
+                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {stat.helper}
+                    </p>
+                  </div>
+                  <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary transition-transform group-hover:scale-105">
+                    <stat.icon className="h-5 w-5" />
+                  </span>
                 </div>
               </CardContent>
             </Card>
@@ -509,86 +540,79 @@ function DashboardPage() {
         </div>
 
         <div className="grid gap-4 sm:grid-cols-2">
-          <Card>
+          <Card className="rounded-2xl border-border/70 shadow-sm">
             <CardContent className="flex items-center gap-4 p-5">
-              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400">
                 <CreditCard className="h-5 w-5" />
               </span>
-
               <div>
-                <p className="text-xs text-muted-foreground">
+                <p className="text-sm font-medium text-muted-foreground">
                   Pendientes de pago
                 </p>
-
-                <p className="font-display text-xl font-bold">
+                <p className="mt-1 font-display text-2xl font-bold">
                   {pendingPaymentOrders}
                 </p>
               </div>
             </CardContent>
           </Card>
 
-          <Card>
+          <Card className="rounded-2xl border-border/70 shadow-sm">
             <CardContent className="flex items-center gap-4 p-5">
-              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-violet-500/10 text-violet-600 dark:text-violet-400">
                 <Bot className="h-5 w-5" />
               </span>
-
               <div>
-                <p className="text-xs text-muted-foreground">
-                  Respuestas IA del día
+                <p className="text-sm font-medium text-muted-foreground">
+                  Respuestas de IA
                 </p>
-
-                <p className="font-display text-xl font-bold">
-                  {aiMessagesToday}
+                <p className="mt-1 font-display text-2xl font-bold">
+                  {aiMessages}
                 </p>
               </div>
             </CardContent>
           </Card>
         </div>
 
-        <div className="grid gap-4 lg:grid-cols-2">
-          <Card>
-            <CardContent className="p-5">
-              <h2 className="font-display text-base font-semibold">
-                Productos más vendidos
-              </h2>
-
-              <p className="mt-1 text-xs text-muted-foreground">
-                Productos vendidos en la fecha seleccionada.
-              </p>
-
-              <div className="mt-4 space-y-3">
-                {topProducts.length === 0 && (
-                  <p className="text-sm text-muted-foreground">
-                    No hay pedidos registrados para esta fecha.
+        <div className="grid gap-4 xl:grid-cols-2">
+          <Card className="rounded-2xl border-border/70 shadow-sm">
+            <CardContent className="p-5 sm:p-6">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2 className="font-display text-lg font-semibold">
+                    Productos más vendidos
+                  </h2>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Ranking de productos dentro del periodo seleccionado.
                   </p>
+                </div>
+                <Badge variant="secondary">Top 5</Badge>
+              </div>
+
+              <div className="mt-6 space-y-4">
+                {topProducts.length === 0 && (
+                  <EmptyState text="No hay pedidos registrados en este periodo." />
                 )}
 
-                {topProducts.map(([name, count]) => {
-                  const highestCount =
-                    topProducts[0]?.[1] ?? 1;
+                {topProducts.map(([name, count], index) => {
+                  const highestCount = topProducts[0]?.[1] ?? 1;
 
                   return (
-                    <div
-                      key={name}
-                      className="flex items-center gap-3"
-                    >
-                      <span className="min-w-0 flex-1 truncate text-sm">
-                        {name}
-                      </span>
-
-                      <div className="h-2 w-24 overflow-hidden rounded-full bg-muted sm:w-32">
+                    <div key={name} className="space-y-2">
+                      <div className="flex items-center gap-3">
+                        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-muted text-xs font-bold">
+                          {index + 1}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                          {name}
+                        </span>
+                        <Badge variant="secondary">{count}</Badge>
+                      </div>
+                      <div className="ml-10 h-2 overflow-hidden rounded-full bg-muted">
                         <div
-                          className="h-full rounded-full bg-primary"
-                          style={{
-                            width: `${(count / highestCount) * 100}%`,
-                          }}
+                          className="h-full rounded-full bg-primary transition-all"
+                          style={{ width: `${(count / highestCount) * 100}%` }}
                         />
                       </div>
-
-                      <Badge variant="secondary">
-                        {count}
-                      </Badge>
                     </div>
                   );
                 })}
@@ -596,44 +620,42 @@ function DashboardPage() {
             </CardContent>
           </Card>
 
-          <Card>
-            <CardContent className="p-5">
-              <div className="flex items-center gap-2">
-                <MapPin className="h-4 w-4 text-primary" />
-
-                <h2 className="font-display text-base font-semibold">
-                  Ciudades más vendidas
-                </h2>
+          <Card className="rounded-2xl border-border/70 shadow-sm">
+            <CardContent className="p-5 sm:p-6">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <MapPin className="h-5 w-5 text-primary" />
+                    <h2 className="font-display text-lg font-semibold">
+                      Ciudades más vendidas
+                    </h2>
+                  </div>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Ciudades con mayor cantidad de pedidos.
+                  </p>
+                </div>
+                <Badge variant="secondary">Top 10</Badge>
               </div>
 
-              <p className="mt-1 text-xs text-muted-foreground">
-                Ciudades correspondientes a la fecha seleccionada.
-              </p>
-
-              <div className="mt-4 space-y-3">
+              <div className="mt-6 grid gap-2 sm:grid-cols-2">
                 {topCities.length === 0 && (
-                  <p className="text-sm text-muted-foreground">
-                    No hay pedidos registrados para esta fecha.
-                  </p>
+                  <div className="sm:col-span-2">
+                    <EmptyState text="No hay ciudades registradas en este periodo." />
+                  </div>
                 )}
 
                 {topCities.map(([city, count], index) => (
                   <div
                     key={city}
-                    className="flex items-center gap-3 rounded-lg border p-3"
+                    className="flex items-center gap-3 rounded-xl border bg-muted/20 p-3 transition-colors hover:bg-muted/40"
                   >
-                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold">
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-background text-xs font-bold shadow-sm">
                       {index + 1}
                     </span>
-
-                    <span className="min-w-0 flex-1 truncate text-sm">
+                    <span className="min-w-0 flex-1 truncate text-sm font-medium">
                       {city}
                     </span>
-
-                    <Badge variant="secondary">
-                      {count}{" "}
-                      {count === 1 ? "pedido" : "pedidos"}
-                    </Badge>
+                    <Badge variant="secondary">{count}</Badge>
                   </div>
                 ))}
               </div>
@@ -641,105 +663,114 @@ function DashboardPage() {
           </Card>
         </div>
 
-        <div className="grid gap-4 lg:grid-cols-2">
-          <Card>
-            <CardContent className="p-5">
-              <div className="flex items-center gap-2">
-                <Building2 className="h-4 w-4 text-primary" />
-
-                <h2 className="font-display text-base font-semibold">
-                  Departamentos más vendidos
-                </h2>
+        <div className="grid gap-4 xl:grid-cols-2">
+          <Card className="rounded-2xl border-border/70 shadow-sm">
+            <CardContent className="p-5 sm:p-6">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <Building2 className="h-5 w-5 text-primary" />
+                    <h2 className="font-display text-lg font-semibold">
+                      Departamentos más vendidos
+                    </h2>
+                  </div>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Distribución geográfica de los pedidos.
+                  </p>
+                </div>
+                <Badge variant="secondary">Top 5</Badge>
               </div>
 
-              <p className="mt-1 text-xs text-muted-foreground">
-                Departamentos de la fecha seleccionada.
-              </p>
-
-              <div className="mt-4 space-y-3">
+              <div className="mt-6 space-y-2">
                 {topDepartments.length === 0 && (
-                  <p className="text-sm text-muted-foreground">
-                    No hay pedidos registrados para esta fecha.
-                  </p>
+                  <EmptyState text="No hay departamentos registrados en este periodo." />
                 )}
 
-                {topDepartments.map(
-                  ([department, count], index) => (
-                    <div
-                      key={department}
-                      className="flex items-center gap-3 rounded-lg border p-3"
-                    >
-                      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold">
-                        {index + 1}
-                      </span>
-
-                      <span className="min-w-0 flex-1 truncate text-sm">
-                        {department}
-                      </span>
-
-                      <Badge variant="secondary">
-                        {count}{" "}
-                        {count === 1 ? "pedido" : "pedidos"}
-                      </Badge>
-                    </div>
-                  ),
-                )}
+                {topDepartments.map(([department, count], index) => (
+                  <div
+                    key={department}
+                    className="flex items-center gap-3 rounded-xl border bg-muted/20 p-3 transition-colors hover:bg-muted/40"
+                  >
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-background text-xs font-bold shadow-sm">
+                      {index + 1}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                      {department}
+                    </span>
+                    <Badge variant="secondary">
+                      {count} {count === 1 ? "pedido" : "pedidos"}
+                    </Badge>
+                  </div>
+                ))}
               </div>
             </CardContent>
           </Card>
 
-          {/* Consumo no depende de la fecha */}
-          <Card>
-            <CardContent className="space-y-4 p-5">
-              <div>
-                <h2 className="font-display text-base font-semibold">
-                  Consumo general
-                </h2>
-
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Estos valores no cambian con el filtro de fecha.
-                </p>
-              </div>
-
-              <div className="flex items-center gap-3">
-                <Wallet className="h-4 w-4 text-primary" />
-
-                <span className="text-sm text-muted-foreground">
-                  Disponibles
-                </span>
-
-                <span className="ml-auto font-semibold">
-                  {data.balance?.available ?? 0}
+          <Card className="rounded-2xl border-border/70 bg-gradient-to-br from-card to-muted/30 shadow-sm">
+            <CardContent className="p-5 sm:p-6">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2 className="font-display text-lg font-semibold">
+                    Consumo general
+                  </h2>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Estos valores no cambian con el filtro de fechas.
+                  </p>
+                </div>
+                <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                  <Wallet className="h-5 w-5" />
                 </span>
               </div>
 
-              <div className="flex items-center gap-3">
-                <MessageSquare className="h-4 w-4 text-primary" />
-
-                <span className="text-sm text-muted-foreground">
-                  Consumidas
-                </span>
-
-                <span className="ml-auto font-semibold">
-                  {data.balance?.consumed ?? 0}
-                </span>
-              </div>
-
-              <div className="flex items-center gap-3">
-                <Wallet className="h-4 w-4 text-primary" />
-
-                <span className="text-sm text-muted-foreground">
-                  Compradas
-                </span>
-
-                <span className="ml-auto font-semibold">
-                  {data.balance?.purchased ?? 0}
-                </span>
+              <div className="mt-6 grid gap-3 sm:grid-cols-3 xl:grid-cols-1 2xl:grid-cols-3">
+                <ConsumptionItem
+                  label="Disponibles"
+                  value={data.balance?.available ?? 0}
+                  icon={Wallet}
+                />
+                <ConsumptionItem
+                  label="Consumidas"
+                  value={data.balance?.consumed ?? 0}
+                  icon={MessageSquare}
+                />
+                <ConsumptionItem
+                  label="Compradas"
+                  value={data.balance?.purchased ?? 0}
+                  icon={ShoppingCart}
+                />
               </div>
             </CardContent>
           </Card>
         </div>
       </div>
     </PageShell>
+  );
+}
+
+function EmptyState({ text }: { text: string }) {
+  return (
+    <div className="rounded-xl border border-dashed bg-muted/20 px-4 py-8 text-center">
+      <p className="text-sm text-muted-foreground">{text}</p>
+    </div>
+  );
+}
+
+function ConsumptionItem({
+  label,
+  value,
+  icon: Icon,
+}: {
+  label: string;
+  value: number;
+  icon: typeof Wallet;
+}) {
+  return (
+    <div className="rounded-xl border bg-background/80 p-4 shadow-sm">
+      <div className="flex items-center gap-2 text-muted-foreground">
+        <Icon className="h-4 w-4" />
+        <span className="text-xs font-medium">{label}</span>
+      </div>
+      <p className="mt-2 font-display text-2xl font-bold">{value}</p>
+    </div>
   );
 }
