@@ -169,11 +169,9 @@ function DashboardPage() {
           .eq("workspace_id", workspaceId!)
           .maybeSingle(),
 
-        supabase
-          .from("messages")
-          .select("id, sender, created_at")
-          .eq("workspace_id", workspaceId!)
-          .limit(5000),
+        // Los mensajes se cargan abajo con paginación para no perder datos
+        // cuando el workspace supera el límite de filas de Supabase.
+        Promise.resolve({ data: null, error: null }),
       ]);
 
       if (conversations.error) throw conversations.error;
@@ -181,11 +179,41 @@ function DashboardPage() {
       if (balance.error) throw balance.error;
       if (messages.error) throw messages.error;
 
+      const allMessages: Array<{
+        id: string;
+        conversation_id: string | null;
+        sender: string | null;
+        created_at: string | null;
+      }> = [];
+
+      const pageSize = 1000;
+      let page = 0;
+
+      while (true) {
+        const from = page * pageSize;
+        const to = from + pageSize - 1;
+
+        const messagePage = await supabase
+          .from("messages")
+          .select("id, conversation_id, sender, created_at")
+          .eq("workspace_id", workspaceId!)
+          .order("created_at", { ascending: true })
+          .range(from, to);
+
+        if (messagePage.error) throw messagePage.error;
+
+        const rows = messagePage.data ?? [];
+        allMessages.push(...rows);
+
+        if (rows.length < pageSize) break;
+        page += 1;
+      }
+
       return {
         conversations: conversations.data ?? [],
         orders: orders.data ?? [],
         balance: balance.data,
-        messages: messages.data ?? [],
+        messages: allMessages,
       };
     },
   });
@@ -236,12 +264,6 @@ function DashboardPage() {
 
   const hasInvalidRange = dateFrom > dateTo;
 
-  const rangeConversations = hasInvalidRange
-    ? []
-    : data.conversations.filter((conversation) =>
-        isWithinLocalDateRange(conversation.created_at, dateFrom, dateTo),
-      );
-
   const rangeOrders = hasInvalidRange
     ? []
     : data.orders.filter(
@@ -256,8 +278,26 @@ function DashboardPage() {
         isWithinLocalDateRange(message.created_at, dateFrom, dateTo),
       );
 
-  const totalConversations = rangeConversations.length;
-  const closedSales = rangeConversations.filter(
+  /*
+   * Una conversación equivale a un conversation_id único que tuvo
+   * al menos un mensaje dentro del periodo seleccionado.
+   * Varios mensajes del mismo chat siguen contando como 1 conversación.
+   */
+  const activeConversationIds = new Set(
+    rangeMessages
+      .map((message) => message.conversation_id)
+      .filter(
+        (conversationId): conversationId is string =>
+          Boolean(conversationId),
+      ),
+  );
+
+  const activeConversations = data.conversations.filter((conversation) =>
+    activeConversationIds.has(conversation.id),
+  );
+
+  const totalConversations = activeConversationIds.size;
+  const closedSales = activeConversations.filter(
     (conversation) => conversation.sale_closed,
   ).length;
   const conversion = totalConversations
@@ -333,7 +373,7 @@ function DashboardPage() {
       label: "Conversaciones",
       value: totalConversations,
       icon: MessageSquare,
-      helper: "Conversaciones iniciadas",
+      helper: "Chats con mensajes en el periodo",
     },
     {
       label: "Ventas cerradas",
