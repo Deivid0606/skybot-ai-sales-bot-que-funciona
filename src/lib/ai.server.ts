@@ -668,7 +668,7 @@ async function generateWithGemini(
 }
 
 // ============================================================
-// PROVEEDOR: GROQ (NUEVO - SÚPER RÁPIDO)
+// PROVEEDOR: GROQ (SÚPER RÁPIDO)
 // ============================================================
 
 const GROQ_MODELS = {
@@ -688,25 +688,26 @@ async function generateWithGroq(ctx: AiContext): Promise<AiResult> {
   const apiKey = ctx.groqApiKey?.trim();
 
   if (!apiKey) {
-    throw new Error("Falta GROQ_API_KEY");
+    throw new Error("Falta GROQ_API_KEY para el proveedor Groq");
   }
 
-  // Mapeo de modelos: si el usuario eligió "auto" o un modelo no soportado, usamos el default
   let model: GroqModel = DEFAULT_GROQ_MODEL;
   
   if (ctx.model) {
     const userModel = ctx.model.trim();
-    // Si el modelo está en nuestra lista de modelos Groq, lo usamos
     if (userModel in GROQ_MODELS) {
       model = userModel as GroqModel;
     } else {
-      // Si no, intentamos mapear modelos comunes de Gemini a Groq
       const modelMap: Record<string, GroqModel> = {
         "gemini-2.5-flash": "llama-3.3-70b-versatile",
         "gemini-2.5-pro": "llama-3.3-70b-versatile",
         "gemini-2.0-flash": "mixtral-8x7b-32768",
         "google/gemini-3.6-flash": "llama-3.3-70b-versatile",
         "google/gemini-2.5-flash": "llama-3.3-70b-versatile",
+        "llama-3.3-70b": "llama-3.3-70b-versatile",
+        "llama-3.1-8b": "llama-3.1-70b-versatile",
+        "mixtral": "mixtral-8x7b-32768",
+        "gemma-2-9b": "gemma2-9b-it",
       };
       model = modelMap[userModel] || DEFAULT_GROQ_MODEL;
     }
@@ -741,10 +742,7 @@ async function generateWithGroq(ctx: AiContext): Promise<AiResult> {
   if (!response.ok) {
     const responseText = await readResponseText(response);
     throw new Error(
-      `groq_error: ${
-        responseText ||
-        `HTTP ${response.status} ${response.statusText}`
-      }`,
+      `groq_error: ${responseText || `HTTP ${response.status} ${response.statusText}`}`,
     );
   }
 
@@ -769,7 +767,7 @@ async function generateWithGroq(ctx: AiContext): Promise<AiResult> {
 }
 
 // ============================================================
-// PROVEEDOR: OPENROUTER (NUEVO - ACCESO A MÚLTIPLES MODELOS)
+// PROVEEDOR: OPENROUTER
 // ============================================================
 
 const OPENROUTER_MODELS = {
@@ -789,7 +787,7 @@ async function generateWithOpenRouter(ctx: AiContext): Promise<AiResult> {
   const apiKey = ctx.openrouterApiKey?.trim();
 
   if (!apiKey) {
-    throw new Error("Falta OPENROUTER_API_KEY");
+    throw new Error("Falta OPENROUTER_API_KEY para el proveedor OpenRouter");
   }
 
   let model: OpenRouterModel = DEFAULT_OPENROUTER_MODEL;
@@ -799,7 +797,6 @@ async function generateWithOpenRouter(ctx: AiContext): Promise<AiResult> {
     if (userModel in OPENROUTER_MODELS) {
       model = userModel as OpenRouterModel;
     } else {
-      // Mapeo de modelos comunes
       const modelMap: Record<string, OpenRouterModel> = {
         "gemini-2.5-flash": "google/gemini-2.5-flash",
         "gemini-2.5-pro": "google/gemini-2.5-pro",
@@ -807,6 +804,7 @@ async function generateWithOpenRouter(ctx: AiContext): Promise<AiResult> {
         "google/gemini-3.6-flash": "google/gemini-2.5-flash",
         "llama-3.3-70b": "meta-llama/llama-3.3-70b-instruct",
         "llama-3.1-8b": "meta-llama/llama-3.1-8b-instruct",
+        "mixtral": "mistralai/mistral-7b-instruct",
       };
       model = modelMap[userModel] || DEFAULT_OPENROUTER_MODEL;
     }
@@ -843,10 +841,7 @@ async function generateWithOpenRouter(ctx: AiContext): Promise<AiResult> {
   if (!response.ok) {
     const responseText = await readResponseText(response);
     throw new Error(
-      `openrouter_error: ${
-        responseText ||
-        `HTTP ${response.status} ${response.statusText}`
-      }`,
+      `openrouter_error: ${responseText || `HTTP ${response.status} ${response.statusText}`}`,
     );
   }
 
@@ -871,7 +866,7 @@ async function generateWithOpenRouter(ctx: AiContext): Promise<AiResult> {
 }
 
 // ============================================================
-// PROVEEDOR: CLOUDFLARE WORKERS AI (NUEVO)
+// PROVEEDOR: CLOUDFLARE WORKERS AI
 // ============================================================
 
 const CLOUDFLARE_MODELS = {
@@ -890,11 +885,9 @@ async function generateWithCloudflare(ctx: AiContext): Promise<AiResult> {
   const apiKey = ctx.cloudflareApiKey?.trim();
 
   if (!apiKey) {
-    throw new Error("Falta CLOUDFLARE_API_KEY");
+    throw new Error("Falta CLOUDFLARE_API_KEY para el proveedor Cloudflare");
   }
 
-  // Cloudflare necesita account_id y API Token
-  // El formato esperado: "account_id:api_token"
   const [accountId, apiToken] = apiKey.split(":");
   
   if (!accountId || !apiToken) {
@@ -939,8 +932,6 @@ async function generateWithCloudflare(ctx: AiContext): Promise<AiResult> {
           ...ctx.history.slice(-24),
         ],
         temperature: 0.35,
-        // Cloudflare no soporta response_format directamente,
-        // pero podemos forzar JSON en el prompt
       }),
     }
   );
@@ -952,10 +943,7 @@ async function generateWithCloudflare(ctx: AiContext): Promise<AiResult> {
   if (!response.ok) {
     const responseText = await readResponseText(response);
     throw new Error(
-      `cloudflare_error: ${
-        responseText ||
-        `HTTP ${response.status} ${response.statusText}`
-      }`,
+      `cloudflare_error: ${responseText || `HTTP ${response.status} ${response.statusText}`}`,
     );
   }
 
@@ -978,14 +966,11 @@ async function generateWithCloudflare(ctx: AiContext): Promise<AiResult> {
     throw new Error("cloudflare_empty_response");
   }
 
-  // Cloudflare puede devolver texto plano, intentamos parsear JSON
   let parsedContent = content;
   
-  // Si no es JSON válido, intentamos extraer el JSON del texto
   try {
     JSON.parse(content);
   } catch {
-    // Intentamos extraer el primer objeto JSON
     const extracted = extractFirstJsonObject(content);
     if (extracted) {
       parsedContent = extracted;
@@ -999,7 +984,7 @@ async function generateWithCloudflare(ctx: AiContext): Promise<AiResult> {
 }
 
 // ============================================================
-// PROVEEDOR: GATEWAY (FALLBACK - SIN CAMBIOS)
+// PROVEEDOR: GATEWAY (FALLBACK)
 // ============================================================
 
 async function generateWithGateway(ctx: AiContext): Promise<AiResult> {
@@ -1041,12 +1026,8 @@ async function generateWithGateway(ctx: AiContext): Promise<AiResult> {
 
   if (!response.ok) {
     const responseText = await readResponseText(response);
-
     throw new Error(
-      `ai_error: ${
-        responseText ||
-        `HTTP ${response.status} ${response.statusText}`
-      }`,
+      `ai_error: ${responseText || `HTTP ${response.status} ${response.statusText}`}`,
     );
   }
 
@@ -1058,8 +1039,7 @@ async function generateWithGateway(ctx: AiContext): Promise<AiResult> {
     }>;
   };
 
-  const content =
-    json.choices?.[0]?.message?.content ?? "";
+  const content = json.choices?.[0]?.message?.content ?? "";
 
   return applyDetectedPhone(
     ensureValidResult(parseResult(content)),
@@ -1074,6 +1054,11 @@ async function generateWithGateway(ctx: AiContext): Promise<AiResult> {
 export async function generateAiReply(
   ctx: AiContext,
 ): Promise<AiResult> {
+  // 🔥 LOG PARA DEBUG - VER QUÉ PROVEEDOR ESTÁ CONFIGURADO
+  console.log(`[AI] Proveedor configurado: ${ctx.provider || 'gemini'}`);
+  console.log(`[AI] Groq API Key: ${ctx.groqApiKey ? '✅ Configurada' : '❌ No configurada'}`);
+  console.log(`[AI] Gemini API Key: ${ctx.geminiApiKey ? '✅ Configurada' : '❌ No configurada'}`);
+
   // Determinar el proveedor a usar
   const provider = ctx.provider || "gemini";
   
@@ -1113,12 +1098,16 @@ export async function generateAiReply(
   const handler = providerHandlers[provider as AiProvider] || providerHandlers.gemini;
   
   try {
-    return await handler();
+    console.log(`[AI] Intentando con proveedor: ${provider}`);
+    const result = await handler();
+    console.log(`[AI] Respuesta exitosa de ${provider}`);
+    return result;
   } catch (primaryError) {
     console.error(`[AI] El proveedor ${provider} falló:`, primaryError);
 
-    // Si es un error de rate limiting o autenticación, no intentamos otros proveedores
     const errorMsg = primaryError instanceof Error ? primaryError.message : String(primaryError);
+    
+    // Si es un error de rate limiting o autenticación, no intentamos otros proveedores
     if (
       errorMsg.includes("rate_limited") ||
       errorMsg.includes("401") ||
@@ -1128,12 +1117,11 @@ export async function generateAiReply(
       throw primaryError;
     }
 
-    // Intentar con Gemini si el fallback tiene key
-    const geminiKey = ctx.geminiApiKey?.trim();
-    if (provider !== "gemini" && geminiKey) {
+    // 🔥 SI EL PROVEEDOR ES GROQ Y FALLA, INTENTAR CON GEMINI
+    if (provider === "groq" && ctx.geminiApiKey?.trim()) {
       try {
-        console.log("[AI] Fallback a Gemini...");
-        return await generateWithGemini(ctx, geminiKey);
+        console.log("[AI] Fallback: Groq falló, intentando con Gemini...");
+        return await generateWithGemini(ctx, ctx.geminiApiKey.trim());
       } catch (geminiError) {
         console.error("[AI] Gemini fallback también falló:", geminiError);
       }
@@ -1141,7 +1129,7 @@ export async function generateAiReply(
 
     // Intentar con Gateway de Lovable como último recurso
     try {
-      console.log("[AI] Fallback a Lovable Gateway...");
+      console.log("[AI] Fallback: Usando Lovable Gateway...");
       return await generateWithGateway(ctx);
     } catch (gatewayError) {
       console.error("[AI] Gateway fallback también falló:", gatewayError);
