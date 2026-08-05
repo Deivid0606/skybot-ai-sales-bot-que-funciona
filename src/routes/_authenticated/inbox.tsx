@@ -6,6 +6,7 @@ import {
   Bot,
   BotOff,
   CheckCircle2,
+  CalendarDays,
   Loader2,
   MessageSquare,
   Search,
@@ -46,6 +47,31 @@ import { MAX_FILE_BYTES, guessMediaType, uploadWorkspaceFile } from "@/lib/stora
 import { AdOriginCard } from "@/components/ad-origin-card";
 import { ContactInfoDialog } from "@/components/contact-info-dialog";
 
+function getTodayDate() {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = String(today.getMonth() + 1).padStart(2, "0");
+  const day = String(today.getDate()).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+}
+
+function isWithinLocalDateRange(
+  value: string | null | undefined,
+  dateFrom: string,
+  dateTo: string,
+) {
+  if (!value || !dateFrom || !dateTo) return false;
+
+  const date = new Date(value);
+  const [fromYear, fromMonth, fromDay] = dateFrom.split("-").map(Number);
+  const [toYear, toMonth, toDay] = dateTo.split("-").map(Number);
+
+  const start = new Date(fromYear, fromMonth - 1, fromDay, 0, 0, 0, 0);
+  const end = new Date(toYear, toMonth - 1, toDay, 23, 59, 59, 999);
+
+  return date >= start && date <= end;
+}
 
 export const Route = createFileRoute("/_authenticated/inbox")({
   validateSearch: (search: Record<string, unknown>) => ({
@@ -69,6 +95,9 @@ function InboxPage() {
   const queryClient = useQueryClient();
   const [activeId, setActiveId] = useState<string | null>(initialConversationId ?? null);
   const [search, setSearch] = useState("");
+  const [dateFrom, setDateFrom] = useState(getTodayDate);
+  const [dateTo, setDateTo] = useState(getTodayDate);
+  const [selectedLabelId, setSelectedLabelId] = useState("all");
   const [draft, setDraft] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const [selected, setSelected] = useState<string[]>([]);
@@ -341,13 +370,36 @@ function InboxPage() {
 
   const filtered = (conversations ?? []).filter((c) => {
     const q = search.trim().toLowerCase();
-    if (!q) return true;
-    return (
+
+    const matchesSearch =
+      !q ||
       (c.contacts?.name ?? "").toLowerCase().includes(q) ||
       (c.contacts?.phone ?? "").includes(q) ||
-      (c.last_message ?? "").toLowerCase().includes(q)
+      (c.last_message ?? "").toLowerCase().includes(q);
+
+    const matchesDate = isWithinLocalDateRange(
+      c.created_at,
+      dateFrom,
+      dateTo,
     );
+
+    const matchesLabel =
+      selectedLabelId === "all" ||
+      c.conversation_labels.some(
+        (conversationLabel) =>
+          conversationLabel.label_id === selectedLabelId,
+      );
+
+    return matchesSearch && matchesDate && matchesLabel;
   });
+
+  const resetFilters = () => {
+    const today = getTodayDate();
+    setSearch("");
+    setDateFrom(today);
+    setDateTo(today);
+    setSelectedLabelId("all");
+  };
 
   return (
     <div className="flex h-[calc(100vh-3.5rem)] w-full">
@@ -357,18 +409,91 @@ function InboxPage() {
           activeId && "hidden sm:flex",
         )}
       >
-        <div className="relative p-3">
-          <Search className="absolute left-6 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            className="pl-9"
-            placeholder="Buscar chat"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
+        <div className="space-y-3 border-b border-border bg-card/60 p-3 backdrop-blur">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              className="pl-9"
+              placeholder="Buscar por nombre, teléfono o mensaje"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <label className="space-y-1">
+              <span className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
+                <CalendarDays className="h-3.5 w-3.5" /> Desde
+              </span>
+              <Input
+                type="date"
+                value={dateFrom}
+                max={dateTo}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setDateFrom(value);
+                  if (value > dateTo) setDateTo(value);
+                }}
+              />
+            </label>
+
+            <label className="space-y-1">
+              <span className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
+                <CalendarDays className="h-3.5 w-3.5" /> Hasta
+              </span>
+              <Input
+                type="date"
+                value={dateTo}
+                min={dateFrom}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setDateTo(value);
+                  if (value < dateFrom) setDateFrom(value);
+                }}
+              />
+            </label>
+          </div>
+
+          <div className="flex gap-2">
+            <label className="min-w-0 flex-1 space-y-1">
+              <span className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
+                <Tag className="h-3.5 w-3.5" /> Etiqueta
+              </span>
+              <select
+                value={selectedLabelId}
+                onChange={(event) => setSelectedLabelId(event.target.value)}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              >
+                <option value="all">Todas las etiquetas</option>
+                {labels?.map((label) => (
+                  <option key={label.id} value={label.id}>
+                    {label.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              className="mt-5 shrink-0"
+              onClick={resetFilters}
+              title="Restablecer filtros"
+              aria-label="Restablecer filtros"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+
+          <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+            <span>Mostrando {filtered.length} conversación{filtered.length === 1 ? "" : "es"}</span>
+            <span>{dateFrom === dateTo ? dateFrom : `${dateFrom} — ${dateTo}`}</span>
+          </div>
         </div>
         <ScrollArea className="flex-1">
           {filtered.length === 0 && (
-            <p className="p-4 text-sm text-muted-foreground">Aún no hay conversaciones.</p>
+            <p className="p-4 text-sm text-muted-foreground">No hay conversaciones que coincidan con los filtros.</p>
           )}
           {filtered.map((c) => (
             <button
