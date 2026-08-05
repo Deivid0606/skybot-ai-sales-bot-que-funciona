@@ -46,6 +46,7 @@ const PROVIDER_INFO: Record<AiProvider, {
   keyLabel: string;
   docsUrl: string;
   keyFormat?: string;
+  testUrl?: string;
 }> = {
   gemini: {
     label: "Google Gemini",
@@ -54,6 +55,7 @@ const PROVIDER_INFO: Record<AiProvider, {
     keyPlaceholder: "AIza...",
     keyLabel: "API Key de Gemini",
     docsUrl: "https://aistudio.google.com/app/apikey",
+    testUrl: "https://generativelanguage.googleapis.com/v1beta/models?key=",
   },
   groq: {
     label: "Groq",
@@ -87,6 +89,7 @@ function SettingsPage() {
   const workspaceId = profile?.workspace_id ?? null;
   const queryClient = useQueryClient();
   const [saving, setSaving] = useState(false);
+  const [testingKey, setTestingKey] = useState(false);
 
   const [wa, setWa] = useState({
     phone_number_id: "",
@@ -238,6 +241,103 @@ function SettingsPage() {
   }, [data]);
 
   // ============================================================
+  // VALIDACIÓN DE API KEY
+  // ============================================================
+
+  async function testApiKey(provider: AiProvider, key: string): Promise<{ valid: boolean; message: string }> {
+    try {
+      switch (provider) {
+        case "gemini": {
+          // Test Gemini API key
+          const response = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`,
+            { signal: AbortSignal.timeout(5000) }
+          );
+          if (response.ok) {
+            return { valid: true, message: "✅ API Key válida" };
+          }
+          const error = await response.json().catch(() => ({}));
+          const errorMsg = (error as any)?.error?.message || "API Key inválida";
+          return { valid: false, message: `❌ ${errorMsg}` };
+        }
+        
+        case "groq": {
+          // Test Groq API key
+          const response = await fetch("https://api.groq.com/openai/v1/models", {
+            headers: { "Authorization": `Bearer ${key}` },
+            signal: AbortSignal.timeout(5000)
+          });
+          if (response.ok) {
+            return { valid: true, message: "✅ API Key válida" };
+          }
+          return { valid: false, message: "❌ API Key inválida" };
+        }
+        
+        case "openrouter": {
+          // Test OpenRouter API key
+          const response = await fetch("https://openrouter.ai/api/v1/auth/key", {
+            headers: { "Authorization": `Bearer ${key}` },
+            signal: AbortSignal.timeout(5000)
+          });
+          if (response.ok) {
+            return { valid: true, message: "✅ API Key válida" };
+          }
+          return { valid: false, message: "❌ API Key inválida" };
+        }
+        
+        case "cloudflare": {
+          // Test Cloudflare: formato account_id:api_token
+          const [accountId, apiToken] = key.split(":");
+          if (!accountId || !apiToken) {
+            return { valid: false, message: "❌ Formato incorrecto. Usa: account_id:api_token" };
+          }
+          const response = await fetch(
+            `https://api.cloudflare.com/client/v4/accounts/${accountId}`,
+            {
+              headers: { "Authorization": `Bearer ${apiToken}` },
+              signal: AbortSignal.timeout(5000)
+            }
+          );
+          if (response.ok) {
+            return { valid: true, message: "✅ API Key válida" };
+          }
+          return { valid: false, message: "❌ API Key inválida" };
+        }
+        
+        default:
+          return { valid: false, message: "Proveedor no soportado" };
+      }
+    } catch (error) {
+      return { 
+        valid: false, 
+        message: `❌ Error de conexión: ${error instanceof Error ? error.message : "Timeout"}` 
+      };
+    }
+  }
+
+  async function handleTestKey() {
+    const key = getCurrentApiKey().trim();
+    if (!key) {
+      toast.error(`Primero ingresá tu API Key de ${PROVIDER_INFO[ai.provider].label}`);
+      return;
+    }
+
+    setTestingKey(true);
+    try {
+      const result = await testApiKey(ai.provider, key);
+      if (result.valid) {
+        toast.success(result.message);
+      } else {
+        toast.error(result.message);
+      }
+    } catch (error) {
+      toast.error("Error al validar la API Key");
+    } finally {
+      setTestingKey(false);
+    }
+  }
+
+  // ============================================================
   // GUARDADO
   // ============================================================
 
@@ -274,6 +374,14 @@ function SettingsPage() {
           connected: Boolean(wa.phone_number_id.trim() && wa.access_token.trim()),
         });
       } else if (section === "ai") {
+        // Validar que la API Key no esté vacía si la IA está activa
+        const currentKey = getCurrentApiKey().trim();
+        if (ai.ai_enabled && !currentKey) {
+          toast.error(`La IA está activa pero no tienes API Key de ${PROVIDER_INFO[ai.provider].label}`);
+          setSaving(false);
+          return;
+        }
+
         await upsert("ai_settings", {
           ai_enabled: ai.ai_enabled,
           provider: ai.provider,
@@ -286,6 +394,8 @@ function SettingsPage() {
           reply_delay_seconds: Number(ai.reply_delay_seconds) || 0,
           autodetect_model: ai.autodetect_model,
         });
+        
+        toast.success("Configuración de IA guardada");
       } else {
         await upsert("user_settings", {
           business_name: biz.business_name.trim() || null,
@@ -299,8 +409,8 @@ function SettingsPage() {
             .filter(Boolean),
           catalog_enabled: biz.catalog_enabled,
         });
+        toast.success("Configuración de negocio guardada");
       }
-      toast.success("Configuración guardada");
       queryClient.invalidateQueries({ queryKey: ["settings"] });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Error al guardar");
@@ -336,7 +446,7 @@ function SettingsPage() {
     switch (ai.provider) {
       case "gemini":
         return [
-          { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
+          { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash (Recomendado)" },
           { value: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
           { value: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
           { value: "google/gemini-3.6-flash", label: "Google Gemini 3.6 Flash" },
@@ -370,7 +480,7 @@ function SettingsPage() {
     }
   }
 
-  function getProviderStatus(): { hasKey: boolean; isConfigured: boolean } {
+  function getProviderStatus(): { hasKey: boolean; isConfigured: boolean; keyValid?: boolean } {
     const hasKey = Boolean(getCurrentApiKey().trim());
     return {
       hasKey,
@@ -566,7 +676,7 @@ function SettingsPage() {
         </TabsContent>
 
         {/* ============================================================
-            TAB: INTELIGENCIA ARTIFICIAL (ACTUALIZADO)
+            TAB: INTELIGENCIA ARTIFICIAL (ACTUALIZADO CON VALIDACIÓN)
         ============================================================ */}
         <TabsContent value="ia" className="mt-4">
           <Card>
@@ -661,19 +771,35 @@ function SettingsPage() {
                 {/* API Key del proveedor seleccionado */}
                 <div className="space-y-1.5">
                   <Label>{PROVIDER_INFO[ai.provider].keyLabel}</Label>
-                  <Input
-                    type="password"
-                    placeholder={PROVIDER_INFO[ai.provider].keyPlaceholder}
-                    value={getCurrentApiKey()}
-                    onChange={(e) => setCurrentApiKey(e.target.value)}
-                  />
+                  <div className="flex gap-2">
+                    <Input
+                      type="password"
+                      placeholder={PROVIDER_INFO[ai.provider].keyPlaceholder}
+                      value={getCurrentApiKey()}
+                      onChange={(e) => setCurrentApiKey(e.target.value)}
+                      className="flex-1"
+                    />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleTestKey}
+                      disabled={testingKey || !getCurrentApiKey().trim()}
+                    >
+                      {testingKey ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <CheckCircle2 className="h-4 w-4" />
+                      )}
+                      <span className="ml-1 hidden sm:inline">Validar</span>
+                    </Button>
+                  </div>
                   {getCurrentApiKey().trim() ? (
                     <p className="flex items-center gap-1 text-xs text-primary">
-                      <CheckCircle2 className="h-3.5 w-3.5" /> API Key configurada
+                      <CheckCircle2 className="h-3.5 w-3.5" /> API Key cargada
                     </p>
                   ) : (
                     <p className="text-xs text-muted-foreground">
-                      Aún no cargaste tu API Key para {PROVIDER_INFO[ai.provider].label}
+                      Ingresá tu API Key de {PROVIDER_INFO[ai.provider].label}
                     </p>
                   )}
                 </div>
@@ -751,7 +877,7 @@ function SettingsPage() {
                   ) : (
                     <p className="flex items-center gap-2 text-sm text-destructive">
                       <XCircle className="h-4 w-4" />
-                      Configura una API Key para activar la IA
+                      {`Configurá una API Key de ${PROVIDER_INFO[ai.provider].label} para activar la IA`}
                     </p>
                   )}
                 </div>
