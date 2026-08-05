@@ -138,6 +138,10 @@ INSTRUCCIONES GENERALES DEL NEGOCIO:
 ${original}`.trim();
 }
 
+// ============================================================
+// FUNCIÓN PRINCIPAL ACTUALIZADA CON MÚLTIPLES PROVEEDORES
+// ============================================================
+
 export async function buildWorkspaceAiContext(
   supabase: Client,
   workspaceId: string,
@@ -148,6 +152,7 @@ export async function buildWorkspaceAiContext(
   activeProductId: string | null = null,
   customerPhone: string | null = null,
 ): Promise<AiContext> {
+  // 🔥 OBTENER TODOS LOS DATOS INCLUYENDO TODAS LAS API KEYS
   const [
     aiSettingsResult,
     settingsResult,
@@ -157,7 +162,7 @@ export async function buildWorkspaceAiContext(
     supabase
       .from("ai_settings")
       .select(
-        "system_instruction, gemini_api_key, model, autodetect_model",
+        "system_instruction, gemini_api_key, groq_api_key, openrouter_api_key, cloudflare_api_key, provider, model, autodetect_model, ai_enabled"
       )
       .eq("workspace_id", workspaceId)
       .maybeSingle(),
@@ -316,17 +321,34 @@ export async function buildWorkspaceAiContext(
     },
   );
 
+  // 🔥 OBTENER EL PROVEEDOR Y LAS KEYS
+  const aiData = aiSettingsResult.data;
+  
+  // Determinar qué provider usar (prioridad: lo guardado en DB, o gemini por defecto)
+  const provider = aiData?.provider || "gemini";
+  
+  // Log para debugging
+  console.log(`[AI Context] Proveedor configurado: ${provider}`);
+  console.log(`[AI Context] Groq API Key: ${aiData?.groq_api_key ? '✅ Configurada' : '❌ No configurada'}`);
+  console.log(`[AI Context] Gemini API Key: ${aiData?.gemini_api_key ? '✅ Configurada' : '❌ No configurada'}`);
+
   return {
     systemInstruction: mergeSystemInstruction(
-      aiSettingsResult.data?.system_instruction,
+      aiData?.system_instruction,
     ),
 
-    geminiApiKey:
-      aiSettingsResult.data?.gemini_api_key ?? null,
+    // 🔥 TODAS LAS API KEYS
+    geminiApiKey: aiData?.gemini_api_key ?? null,
+    groqApiKey: aiData?.groq_api_key ?? null,
+    openrouterApiKey: aiData?.openrouter_api_key ?? null,
+    cloudflareApiKey: aiData?.cloudflare_api_key ?? null,
 
-    model: aiSettingsResult.data?.autodetect_model
+    // 🔥 EL PROVEEDOR SELECCIONADO
+    provider: provider,
+
+    model: aiData?.autodetect_model
       ? null
-      : (aiSettingsResult.data?.model ?? null),
+      : (aiData?.model ?? null),
 
     customerPhone,
 
