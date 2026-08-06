@@ -228,7 +228,9 @@ function InboxPage() {
             ad_id: active.ad_id,
             name: cleanName,
             product_id: adProductId,
+            source_url: active.ad_url ?? ad?.source_url ?? null,
             media_url: active.ad_media_url ?? ad?.media_url ?? null,
+            media_type: active.ad_media_type ?? ad?.media_type ?? null,
             is_active: true,
           },
           { onConflict: "workspace_id,ad_id" },
@@ -822,7 +824,14 @@ function InboxPage() {
                   <AdOriginCard
                     adId={active.ad_id}
                     mediaUrl={active.ad_media_url ?? ad?.media_url}
-                    title={ad?.name ?? ad?.products?.name ?? active.products?.name}
+                    mediaType={active.ad_media_type ?? ad?.media_type}
+                    sourceUrl={active.ad_url ?? ad?.source_url}
+                    title={
+                      ad?.name ??
+                      active.ad_name ??
+                      ad?.products?.name ??
+                      active.products?.name
+                    }
                     copy={ad?.products?.sales_copy ?? active.products?.sales_copy}
                     date={active.created_at}
                   />
