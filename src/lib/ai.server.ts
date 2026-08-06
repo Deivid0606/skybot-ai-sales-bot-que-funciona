@@ -1,10 +1,9 @@
 // lib/ai.server.ts
 const GATEWAY = "https://ai.gateway.lovable.dev/v1/chat/completions";
 
-// 🔥 CAMBIADO: Usa modelo más barato
+// 🔥 Modelo optimizado para ahorro
 const DEFAULT_GATEWAY_MODEL =
   process.env.LOVABLE_CHAT_MODEL?.trim() || "google/gemini-2.0-flash-lite-001";
-  // Alternativas: "openai/gpt-4o-mini", "google/gemini-2.0-flash-lite-001"
 
 export type AiContext = {
   systemInstruction: string;
@@ -70,7 +69,7 @@ function cleanString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-// 🔥 OPTIMIZADO: Sistema prompt más eficiente
+// 🔥 Sistema prompt optimizado
 function buildSystemPrompt(ctx: AiContext): string {
   const detectedCustomerPhone = cleanString(ctx.customerPhone);
 
@@ -83,10 +82,10 @@ function buildSystemPrompt(ctx: AiContext): string {
     }
   }
   
-  // Si no hay producto activo, solo muestra nombres y keywords (no descripciones largas)
+  // Si no hay producto activo, solo muestra nombres y keywords
   if (!catalog && ctx.products.length > 0) {
     catalog = "PRODUCTOS DISPONIBLES:\n" + ctx.products
-      .slice(0, 20) // 🔥 Limita a 20 productos para no sobrecargar
+      .slice(0, 20)
       .map(p => `- ${p.name} (${p.keywords.join(", ") || "sin palabras clave"})`)
       .join("\n");
     
@@ -440,7 +439,7 @@ function ensureValidResult(result: AiResult): AiResult {
 }
 
 const GEMINI_FALLBACK_MODELS = [
-  "gemini-2.0-flash-lite-001",  // 🔥 Cambiado: modelo más barato primero
+  "gemini-2.0-flash-lite-001",
   "gemini-2.0-flash-001",
   "gemini-1.5-flash-001",
 ] as const;
@@ -455,7 +454,7 @@ const RETRYABLE_GEMINI_STATUSES = new Set([
 ]);
 
 const GEMINI_MAX_ATTEMPTS_PER_MODEL = 3;
-const GEMINI_REQUEST_TIMEOUT_MS = 30_000; // 🔥 REDUCIDO: 30 segundos
+const GEMINI_REQUEST_TIMEOUT_MS = 30_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -502,6 +501,7 @@ async function readResponseText(response: Response): Promise<string> {
   }
 }
 
+// 🔥 SECCIÓN GEMINI - COMPLETAMENTE OPTIMIZADA CON 800 TOKENS
 async function generateWithGemini(
   ctx: AiContext,
   key: string,
@@ -542,7 +542,7 @@ async function generateWithGemini(
                 parts: [{ text: message.content }],
               })),
               generationConfig: {
-                maxOutputTokens: 500, // 🔥 REDUCIDO: 2048 → 500
+                maxOutputTokens: 800, // 🔥 800 tokens para respuestas completas
                 temperature: 0.35,
                 responseMimeType: "application/json",
               },
@@ -645,6 +645,7 @@ async function generateWithGemini(
   );
 }
 
+// 🔥 SECCIÓN GATEWAY - COMPLETAMENTE OPTIMIZADA CON 800 TOKENS
 async function generateWithGateway(ctx: AiContext): Promise<AiResult> {
   const apiKey = process.env.LOVABLE_API_KEY?.trim();
 
@@ -665,10 +666,10 @@ async function generateWithGateway(ctx: AiContext): Promise<AiResult> {
           role: "system",
           content: buildSystemPrompt(ctx),
         },
-        ...ctx.history.slice(-8), // 🔥 REDUCIDO: 24 → 8
+        ...ctx.history.slice(-8),
       ],
       temperature: 0.35,
-      max_tokens: 500, // 🔥 NUEVO: Limita tokens de salida
+      max_tokens: 800, // 🔥 800 tokens para respuestas completas
       response_format: {
         type: "json_object",
       },
@@ -711,6 +712,7 @@ async function generateWithGateway(ctx: AiContext): Promise<AiResult> {
   );
 }
 
+// 🔥 FUNCIÓN PRINCIPAL
 export async function generateAiReply(
   ctx: AiContext,
 ): Promise<AiResult> {
