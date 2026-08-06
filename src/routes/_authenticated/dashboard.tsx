@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   CreditCard,
   MapPin,
+  Megaphone,
   MessageSquare,
   PackageCheck,
   RefreshCcw,
@@ -141,10 +142,10 @@ function DashboardPage() {
     refetchInterval: 60_000,
 
     queryFn: async () => {
-      const [conversations, orders, balance, messages] = await Promise.all([
+      const [conversations, orders, balance, ads, messages] = await Promise.all([
         supabase
           .from("conversations")
-          .select("id, status, sale_closed, created_at")
+          .select("id, status, sale_closed, created_at, ad_id")
           .eq("workspace_id", workspaceId!),
 
         supabase
@@ -169,6 +170,11 @@ function DashboardPage() {
           .eq("workspace_id", workspaceId!)
           .maybeSingle(),
 
+        supabase
+          .from("ads")
+          .select("id, ad_id, name, media_url, products(name)")
+          .eq("workspace_id", workspaceId!),
+
         // Los mensajes se cargan abajo con paginación para no perder datos
         // cuando el workspace supera el límite de filas de Supabase.
         Promise.resolve({ data: null, error: null }),
@@ -177,6 +183,7 @@ function DashboardPage() {
       if (conversations.error) throw conversations.error;
       if (orders.error) throw orders.error;
       if (balance.error) throw balance.error;
+      if (ads.error) throw ads.error;
       if (messages.error) throw messages.error;
 
       const allMessages: Array<{
@@ -213,6 +220,7 @@ function DashboardPage() {
         conversations: conversations.data ?? [],
         orders: orders.data ?? [],
         balance: balance.data,
+        ads: ads.data ?? [],
         messages: allMessages,
       };
     },
@@ -335,6 +343,76 @@ function DashboardPage() {
   const aiMessages = rangeMessages.filter(
     (message) => message.sender === "ai",
   ).length;
+
+  const activeConversationById = new Map(
+    activeConversations.map((conversation) => [conversation.id, conversation]),
+  );
+
+  const registeredAdByExternalId = new Map(
+    data.ads.map((ad) => [ad.ad_id, ad]),
+  );
+
+  const adIdsInPeriod = new Set(
+    activeConversations
+      .map((conversation) => conversation.ad_id)
+      .filter((adId): adId is string => Boolean(adId)),
+  );
+
+  const adMetrics = Array.from(adIdsInPeriod)
+    .map((adId) => {
+      const registeredAd = registeredAdByExternalId.get(adId);
+      const adConversations = activeConversations.filter(
+        (conversation) => conversation.ad_id === adId,
+      );
+      const adConversationIds = new Set(
+        adConversations.map((conversation) => conversation.id),
+      );
+      const conversations = adConversationIds.size;
+      const messages = rangeMessages.filter(
+        (message) =>
+          message.sender !== "ai" &&
+          Boolean(message.conversation_id) &&
+          adConversationIds.has(message.conversation_id!),
+      ).length;
+      const sales = adConversations.filter(
+        (conversation) => conversation.sale_closed,
+      ).length;
+      const conversion = conversations
+        ? Math.round((sales / conversations) * 1000) / 10
+        : 0;
+      const relatedProducts = registeredAd?.products as
+        | { name?: string | null }
+        | Array<{ name?: string | null }>
+        | null
+        | undefined;
+      const productName = Array.isArray(relatedProducts)
+        ? relatedProducts[0]?.name
+        : relatedProducts?.name;
+
+      return {
+        key: registeredAd?.id ?? adId,
+        adId,
+        name: registeredAd?.name?.trim() || "Anuncio sin registrar",
+        productName: productName?.trim() || "Sin producto asignado",
+        conversations,
+        messages,
+        sales,
+        conversion,
+      };
+    })
+    .sort((a, b) =>
+      b.sales - a.sales ||
+      b.conversations - a.conversations ||
+      a.name.localeCompare(b.name),
+    );
+
+  const conversationsWithoutAd = activeConversations.filter(
+    (conversation) => !conversation.ad_id,
+  ).length;
+
+  // Mantiene una referencia explícita para facilitar futuras extensiones
+  // de métricas que necesiten resolver la conversación desde un mensaje.
+  void activeConversationById;
 
   const topProducts = Object.entries(
     rangeOrders.reduce<Record<string, number>>((accumulator, order) => {
@@ -612,6 +690,79 @@ function DashboardPage() {
             </CardContent>
           </Card>
         </div>
+
+        <Card className="rounded-2xl border-border/70 shadow-sm">
+          <CardContent className="p-5 sm:p-6">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Megaphone className="h-5 w-5 text-primary" />
+                  <h2 className="font-display text-lg font-semibold">
+                    Rendimiento por anuncio
+                  </h2>
+                </div>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Conversaciones, mensajes recibidos y ventas cerradas por cada anuncio.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <Badge variant="secondary">{adMetrics.length} anuncios</Badge>
+                {conversationsWithoutAd > 0 && (
+                  <Badge variant="outline">
+                    {conversationsWithoutAd} sin anuncio
+                  </Badge>
+                )}
+              </div>
+            </div>
+
+            <div className="mt-6 overflow-x-auto">
+              {adMetrics.length === 0 ? (
+                <EmptyState text="No hay conversaciones provenientes de anuncios en este periodo." />
+              ) : (
+                <table className="w-full min-w-[820px] text-sm">
+                  <thead>
+                    <tr className="border-b text-left text-xs text-muted-foreground">
+                      <th className="pb-3 pr-4 font-semibold">Anuncio</th>
+                      <th className="pb-3 pr-4 font-semibold">Producto</th>
+                      <th className="pb-3 px-3 text-center font-semibold">Conversaciones</th>
+                      <th className="pb-3 px-3 text-center font-semibold">Mensajes</th>
+                      <th className="pb-3 px-3 text-center font-semibold">Ventas</th>
+                      <th className="pb-3 pl-3 text-right font-semibold">Conversión</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {adMetrics.map((ad) => (
+                      <tr key={ad.key} className="border-b last:border-0">
+                        <td className="py-4 pr-4">
+                          <p className="max-w-xs truncate font-semibold">{ad.name}</p>
+                          <p className="mt-0.5 max-w-xs truncate text-xs text-muted-foreground">
+                            ID: {ad.adId}
+                          </p>
+                        </td>
+                        <td className="py-4 pr-4">
+                          <span className="max-w-xs truncate">{ad.productName}</span>
+                        </td>
+                        <td className="px-3 py-4 text-center font-medium">
+                          {ad.conversations}
+                        </td>
+                        <td className="px-3 py-4 text-center font-medium">
+                          {ad.messages}
+                        </td>
+                        <td className="px-3 py-4 text-center">
+                          <Badge>{ad.sales}</Badge>
+                        </td>
+                        <td className="py-4 pl-3 text-right font-semibold">
+                          {ad.conversion}%
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </CardContent>
+        </Card>
 
         <div className="grid gap-4 xl:grid-cols-2">
           <Card className="rounded-2xl border-border/70 shadow-sm">
