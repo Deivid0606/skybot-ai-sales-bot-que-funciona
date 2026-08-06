@@ -3,7 +3,7 @@
 const GATEWAY = "https://ai.gateway.lovable.dev/v1/chat/completions";
 
 const DEFAULT_GATEWAY_MODEL =
-  process.env.LOVABLE_CHAT_MODEL?.trim() || "google/gemini-2.0-flash-lite-001";
+  process.env.LOVABLE_CHAT_MODEL?.trim() || "google/gemini-2.5-flash";
 
 export type AiContext = {
   systemInstruction: string;
@@ -407,9 +407,8 @@ function ensureValidResult(result: AiResult): AiResult {
 }
 
 const GEMINI_FALLBACK_MODELS = [
-  "gemini-2.0-flash-lite-001",
-  "gemini-2.0-flash-001",
-  "gemini-1.5-flash-001",
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
 ] as const;
 
 const RETRYABLE_GEMINI_STATUSES = new Set([
@@ -423,12 +422,15 @@ const RETRYABLE_GEMINI_STATUSES = new Set([
 
 const GEMINI_MAX_ATTEMPTS_PER_MODEL = 3;
 const GEMINI_REQUEST_TIMEOUT_MS = 30_000;
+const GEMINI_LIST_MODELS_TIMEOUT_MS = 10_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function uniqueNonEmptyStrings(values: Array<string | null | undefined>): string[] {
+function uniqueNonEmptyStrings(
+  values: Array<string | null | undefined>,
+): string[] {
   return values.reduce<string[]>((result, value) => {
     const cleaned = cleanString(value);
 
@@ -440,9 +442,109 @@ function uniqueNonEmptyStrings(values: Array<string | null | undefined>): string
   }, []);
 }
 
-function getGeminiCandidates(preferredModel?: string | null): string[] {
+function normalizeGeminiModelName(
+  value: string | null | undefined,
+): string | null {
+  let model = cleanString(value);
+
+  if (!model) return null;
+
+  // Acepta valores guardados como "models/gemini-..." o
+  // "google/gemini-..." y los adapta al endpoint directo de Google.
+  model = model.replace(/^models\//i, "").replace(/^google\//i, "");
+
+  // Modelos retirados que no deben volver a probarse.
+  const deprecatedModels = new Set([
+    "gemini-1.5-flash-001",
+    "gemini-2.0-flash-001",
+    "gemini-2.0-flash-lite-001",
+  ]);
+
+  return deprecatedModels.has(model) ? null : model;
+}
+
+async function listAvailableGeminiModels(key: string): Promise<string[]> {
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    GEMINI_LIST_MODELS_TIMEOUT_MS,
+  );
+
+  try {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(
+        key,
+      )}`,
+      {
+        method: "GET",
+        signal: controller.signal,
+        headers: {
+          Accept: "application/json",
+        },
+      },
+    );
+
+    if (!response.ok) {
+      console.warn("[AI] No se pudo consultar ListModels", {
+        status: response.status,
+        error: await readResponseText(response),
+      });
+      return [];
+    }
+
+    const json = (await response.json()) as {
+      models?: Array<{
+        name?: string;
+        supportedGenerationMethods?: string[];
+      }>;
+    };
+
+    return uniqueNonEmptyStrings(
+      (json.models ?? [])
+        .filter((model) =>
+          model.supportedGenerationMethods?.includes("generateContent"),
+        )
+        .map((model) => normalizeGeminiModelName(model.name)),
+    );
+  } catch (error) {
+    console.warn("[AI] Error consultando ListModels", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return [];
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function getGeminiCandidates(
+  key: string,
+  preferredModel?: string | null,
+): Promise<string[]> {
+  const preferred = normalizeGeminiModelName(preferredModel);
+  const available = await listAvailableGeminiModels(key);
+
+  // Si Google devolvió la lista, probamos únicamente modelos realmente
+  // disponibles para esa API key y compatibles con generateContent.
+  if (available.length > 0) {
+    const preferredCandidates = uniqueNonEmptyStrings([
+      preferred,
+      ...GEMINI_FALLBACK_MODELS,
+    ]).filter((model) => available.includes(model));
+
+    const otherFlashModels = available
+      .filter((model) => /gemini/i.test(model) && /flash/i.test(model))
+      .filter((model) => !preferredCandidates.includes(model))
+      .sort((first, second) => second.localeCompare(first));
+
+    return uniqueNonEmptyStrings([
+      ...preferredCandidates,
+      ...otherFlashModels,
+    ]);
+  }
+
+  // Si ListModels falla temporalmente, conserva fallbacks estables.
   return uniqueNonEmptyStrings([
-    preferredModel,
+    preferred,
     ...GEMINI_FALLBACK_MODELS,
   ]);
 }
@@ -469,14 +571,19 @@ async function readResponseText(response: Response): Promise<string> {
   }
 }
 
-// 🔥 GEMINI - CON 1500 TOKENS
+// 🔥 GEMINI: detecta modelos disponibles y evita modelos retirados
 async function generateWithGemini(
   ctx: AiContext,
   key: string,
 ): Promise<AiResult> {
-  const candidates = getGeminiCandidates(ctx.model);
-  let lastError = "";
-  let lastStatus: number | null = null;
+  const candidates = await getGeminiCandidates(key, ctx.model);
+  const errors: string[] = [];
+
+  if (candidates.length === 0) {
+    throw new Error(
+      "gemini_error: La API key no tiene modelos compatibles con generateContent",
+    );
+  }
 
   for (const model of candidates) {
     for (
@@ -510,7 +617,7 @@ async function generateWithGemini(
                 parts: [{ text: message.content }],
               })),
               generationConfig: {
-                maxOutputTokens: 1500, // 🔥 1500 tokens para respuestas COMPLETAS
+                maxOutputTokens: 1500,
                 temperature: 0.35,
                 responseMimeType: "application/json",
               },
@@ -559,19 +666,23 @@ async function generateWithGemini(
           );
         }
 
-        lastStatus = response.status;
-        lastError =
+        const responseText =
           (await readResponseText(response)) ||
           `HTTP ${response.status} ${response.statusText}`;
+
+        errors.push(
+          `${model} intento ${attempt}: HTTP ${response.status} ${responseText}`,
+        );
 
         console.error("[AI] Gemini request failed", {
           model,
           attempt,
           status: response.status,
-          error: lastError,
+          error: responseText,
         });
 
-        if (response.status === 404 || response.status === 400 || response.status === 401 || response.status === 403) {
+        // No reintenta el mismo modelo ante errores definitivos.
+        if ([400, 401, 403, 404].includes(response.status)) {
           break;
         }
 
@@ -583,17 +694,18 @@ async function generateWithGemini(
           await sleep(calculateRetryDelayMs(attempt));
         }
       } catch (error) {
-        const message =
-          error instanceof Error ? error.message : String(error);
-
-        lastError = isAbortError(error)
+        const message = isAbortError(error)
           ? `Tiempo de espera agotado después de ${GEMINI_REQUEST_TIMEOUT_MS} ms`
-          : message;
+          : error instanceof Error
+            ? error.message
+            : String(error);
+
+        errors.push(`${model} intento ${attempt}: ${message}`);
 
         console.error("[AI] Gemini network/request error", {
           model,
           attempt,
-          error: lastError,
+          error: message,
         });
 
         if (attempt < GEMINI_MAX_ATTEMPTS_PER_MODEL) {
@@ -606,10 +718,8 @@ async function generateWithGemini(
     }
   }
 
-  const statusPart = lastStatus ? ` status=${lastStatus}` : "";
-
   throw new Error(
-    `gemini_error:${statusPart} ${lastError || "Todos los modelos fallaron"}`.trim(),
+    `gemini_error: ${errors.join(" | ") || "Todos los modelos fallaron"}`,
   );
 }
 
