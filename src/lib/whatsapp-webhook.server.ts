@@ -13,7 +13,17 @@ type IncomingMessage = {
   type: string;
   text?: { body: string };
   interactive?: { button_reply?: { title: string }; list_reply?: { title: string } };
-  referral?: { source_id?: string; image_url?: string; video_url?: string; headline?: string };
+  referral?: {
+    source_id?: string;
+    source_url?: string;
+    source_type?: string;
+    headline?: string;
+    body?: string;
+    image_url?: string;
+    video_url?: string;
+    thumbnail_url?: string;
+    media_type?: string;
+  };
   image?: MediaPart;
   audio?: MediaPart;
   voice?: MediaPart;
@@ -54,6 +64,50 @@ function mediaOf(message: IncomingMessage) {
   return null;
 }
 
+
+type ReferralData = {
+  adId: string | null;
+  adName: string | null;
+  adUrl: string | null;
+  mediaUrl: string | null;
+  mediaType: "image" | "video" | null;
+};
+
+function referralOf(message: IncomingMessage): ReferralData {
+  const referral = message.referral;
+
+  if (!referral) {
+    return {
+      adId: null,
+      adName: null,
+      adUrl: null,
+      mediaUrl: null,
+      mediaType: null,
+    };
+  }
+
+  const videoUrl = referral.video_url?.trim() || null;
+  const imageUrl =
+    referral.image_url?.trim() ||
+    referral.thumbnail_url?.trim() ||
+    null;
+
+  const rawMediaType = referral.media_type?.trim().toLowerCase() || "";
+  const mediaType: "image" | "video" | null =
+    videoUrl || rawMediaType.startsWith("video")
+      ? "video"
+      : imageUrl || rawMediaType.startsWith("image")
+        ? "image"
+        : null;
+
+  return {
+    adId: referral.source_id?.trim() || null,
+    adName: referral.headline?.trim() || null,
+    adUrl: referral.source_url?.trim() || null,
+    mediaUrl: videoUrl ?? imageUrl,
+    mediaType,
+  };
+}
 
 function normalizeIntentText(value: string) {
   return value
@@ -342,6 +396,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
   }
 
   const media = mediaOf(message);
+  const referral = referralOf(message);
   let body = media?.part.caption?.trim() || textOf(message);
   let mediaPath: string | null = null;
   let transcript: string | null = null;
@@ -416,11 +471,11 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
           sale_closed: false,
           is_closed: false,
           product_id: null,
-          ad_id: message.referral?.source_id ?? null,
-          ad_media_url:
-            message.referral?.image_url ??
-            message.referral?.video_url ??
-            null,
+          ad_id: referral.adId,
+          ad_name: referral.adName,
+          ad_url: referral.adUrl,
+          ad_media_url: referral.mediaUrl,
+          ad_media_type: referral.mediaType,
         })
         .select("id, ai_paused, product_id, is_closed, sale_closed")
         .single();
@@ -450,11 +505,6 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       isNewConversation = true;
     }
   } else {
-    const referralMedia =
-      message.referral?.image_url ??
-      message.referral?.video_url ??
-      null;
-
     /*
      * Una conversación vendida solamente vuelve a habilitar una venta cuando
      * el cliente expresa una intención clara de comprar otra vez o entra desde
@@ -463,7 +513,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
      */
     const startsNewPurchase =
       conversation.sale_closed &&
-      isNewPurchaseIntent(body, Boolean(message.referral?.source_id));
+      isNewPurchaseIntent(body, Boolean(referral.adId));
 
     const { data: reopened, error: reopenError } = await supabaseAdmin
       .from("conversations")
@@ -480,10 +530,11 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
               product_id: null,
             }
           : {}),
-        ...(message.referral?.source_id
-          ? { ad_id: message.referral.source_id }
-          : {}),
-        ...(referralMedia ? { ad_media_url: referralMedia } : {}),
+        ...(referral.adId ? { ad_id: referral.adId } : {}),
+        ...(referral.adName ? { ad_name: referral.adName } : {}),
+        ...(referral.adUrl ? { ad_url: referral.adUrl } : {}),
+        ...(referral.mediaUrl ? { ad_media_url: referral.mediaUrl } : {}),
+        ...(referral.mediaType ? { ad_media_type: referral.mediaType } : {}),
       })
       .eq("id", conversation.id)
       .eq("workspace_id", workspaceId)
