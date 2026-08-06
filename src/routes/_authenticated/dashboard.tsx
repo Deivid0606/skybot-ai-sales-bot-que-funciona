@@ -235,7 +235,6 @@ function DashboardPage() {
           id: string;
           status: string | null;
           sale_closed: boolean | null;
-          sale_closed_at: string | null;
           created_at: string | null;
           ad_id: string | null;
         }>,
@@ -327,19 +326,15 @@ function DashboardPage() {
 
   const totalConversations = activeConversationIds.size;
 
-  const closedSalesConversations = hasInvalidRange
-    ? []
-    : data.conversations.filter(
-        (conversation) =>
-          Boolean(conversation.sale_closed) &&
-          isWithinLocalDateRange(
-            conversation.sale_closed_at,
-            dateFrom,
-            dateTo,
-          ),
-      );
+  // Fuente oficial de ventas: pedidos no cancelados creados en el periodo.
+  const closedSales = rangeOrders.length;
 
-  const closedSales = closedSalesConversations.length;
+  // Mensajes recibidos: solo mensajes entrantes del cliente.
+  // Excluye respuestas de IA, agentes y mensajes del sistema.
+  const customerMessages = rangeMessages.filter((message) =>
+    isInboundMessageSender(message.sender),
+  ).length;
+
   const conversion = totalConversations
     ? Math.round((closedSales / totalConversations) * 100)
     : 0;
@@ -385,7 +380,7 @@ function DashboardPage() {
   );
 
   const adIdsInPeriod = new Set(
-    [...activeConversations, ...closedSalesConversations]
+    activeConversations
       .map((conversation) => conversation.ad_id)
       .filter((adId): adId is string => Boolean(adId)),
   );
@@ -394,9 +389,6 @@ function DashboardPage() {
     .map((adId) => {
       const registeredAd = registeredAdByExternalId.get(adId);
       const adConversations = activeConversations.filter(
-        (conversation) => conversation.ad_id === adId,
-      );
-      const adSalesConversations = closedSalesConversations.filter(
         (conversation) => conversation.ad_id === adId,
       );
       const adConversationIds = new Set(
@@ -409,7 +401,11 @@ function DashboardPage() {
           Boolean(message.conversation_id) &&
           adConversationIds.has(message.conversation_id!),
       ).length;
-      const sales = adSalesConversations.length;
+      // Atribución por anuncio disponible actualmente en conversations.
+      // El total general de ventas siempre proviene de orders.
+      const sales = adConversations.filter(
+        (conversation) => Boolean(conversation.sale_closed),
+      ).length;
       const conversion = conversations
         ? Math.round((sales / conversations) * 1000) / 10
         : 0;
@@ -481,28 +477,28 @@ function DashboardPage() {
 
   const primaryStats = [
     {
-      label: "Conversaciones",
-      value: totalConversations,
+      label: "Mensajes recibidos",
+      value: customerMessages,
       icon: MessageSquare,
-      helper: "Chats con mensajes en el periodo",
+      helper: "Mensajes enviados por clientes",
     },
     {
       label: "Ventas cerradas",
       value: closedSales,
       icon: CheckCircle2,
-      helper: "Ventas cerradas dentro del periodo",
+      helper: "Pedidos no cancelados del periodo",
     },
     {
       label: "Conversión",
       value: `${conversion}%`,
       icon: TrendingUp,
-      helper: "Ventas sobre conversaciones",
+      helper: "Pedidos sobre conversaciones activas",
     },
     {
       label: "Ingresos",
       value: formatGs(rangeRevenue),
       icon: ShoppingCart,
-      helper: "Total sin cancelados",
+      helper: "Total de pedidos no cancelados",
     },
   ];
 
