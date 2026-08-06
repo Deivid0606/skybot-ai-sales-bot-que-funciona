@@ -1,7 +1,10 @@
+// lib/ai.server.ts
 const GATEWAY = "https://ai.gateway.lovable.dev/v1/chat/completions";
 
+// 🔥 CAMBIADO: Usa modelo más barato
 const DEFAULT_GATEWAY_MODEL =
-  process.env.LOVABLE_CHAT_MODEL?.trim() || "google/gemini-3-flash";
+  process.env.LOVABLE_CHAT_MODEL?.trim() || "google/gemini-2.0-flash-lite-001";
+  // Alternativas: "openai/gpt-4o-mini", "google/gemini-2.0-flash-lite-001"
 
 export type AiContext = {
   systemInstruction: string;
@@ -21,6 +24,13 @@ export type AiContext = {
     delivery_info: string | null;
     ai_instructions: string | null;
     keywords: string[];
+    product_prices?: {
+      id: string;
+      label: string;
+      quantity: number;
+      price: number;
+      sort_order: number;
+    }[];
   }[];
   training: {
     title: string;
@@ -60,30 +70,35 @@ function cleanString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+// 🔥 OPTIMIZADO: Sistema prompt más eficiente
 function buildSystemPrompt(ctx: AiContext): string {
   const detectedCustomerPhone = cleanString(ctx.customerPhone);
 
-  const catalog = ctx.products
-    .map(
-      (product) =>
-        `- id:${product.id} | ${product.name} | precio:${
-          product.promo_price ?? product.price
-        } ${ctx.currency}${
-          product.promo_price
-            ? ` (antes ${product.price})`
-            : ""
-        } | stock:${product.stock} | claves:${
-          product.keywords.join(", ") || "-"
-        }
-  copy: ${product.sales_copy ?? product.description ?? "-"}
-  entrega: ${product.delivery_info ?? "-"}
-  instrucciones: ${product.ai_instructions ?? "-"}`,
-    )
-    .join("\n");
+  // 🔥 SOLO muestra el producto activo o un resumen del catálogo
+  let catalog = "";
+  if (ctx.activeProductId) {
+    const activeProduct = ctx.products.find(p => p.id === ctx.activeProductId);
+    if (activeProduct) {
+      catalog = `PRODUCTO ACTIVO:\n- ${activeProduct.name} | precio:${activeProduct.promo_price ?? activeProduct.price} ${ctx.currency} | stock:${activeProduct.stock}\ncopy: ${activeProduct.sales_copy ?? activeProduct.description ?? "-"}\nentrega: ${activeProduct.delivery_info ?? "-"}`;
+    }
+  }
+  
+  // Si no hay producto activo, solo muestra nombres y keywords (no descripciones largas)
+  if (!catalog && ctx.products.length > 0) {
+    catalog = "PRODUCTOS DISPONIBLES:\n" + ctx.products
+      .slice(0, 20) // 🔥 Limita a 20 productos para no sobrecargar
+      .map(p => `- ${p.name} (${p.keywords.join(", ") || "sin palabras clave"})`)
+      .join("\n");
+    
+    if (ctx.products.length > 20) {
+      catalog += `\n... y ${ctx.products.length - 20} productos más. Pregunta por ellos.`;
+    }
+  }
 
-  const sortedTraining = [...ctx.training].sort(
-    (a, b) => b.priority - a.priority,
-  );
+  // 🔥 SOLO usa el entrenamiento con mayor prioridad (top 8)
+  const sortedTraining = [...ctx.training]
+    .sort((a, b) => b.priority - a.priority)
+    .slice(0, 8);
 
   const isRule = (category: string) =>
     category === "correccion" || category === "reglas";
@@ -95,10 +110,7 @@ function buildSystemPrompt(ctx: AiContext): string {
 
   const knowledge = sortedTraining
     .filter((entry) => !isRule(entry.category))
-    .map(
-      (entry) =>
-        `- [${entry.category}] ${entry.title}: ${entry.content}`,
-    )
+    .map((entry) => `- [${entry.category}] ${entry.title}: ${entry.content}`)
     .join("\n");
 
   return `Eres un vendedor humano y cercano de ${
@@ -428,9 +440,9 @@ function ensureValidResult(result: AiResult): AiResult {
 }
 
 const GEMINI_FALLBACK_MODELS = [
-  "gemini-3.6-flash",
-  "gemini-3.5-flash",
-  "gemini-3.1-flash-lite",
+  "gemini-2.0-flash-lite-001",  // 🔥 Cambiado: modelo más barato primero
+  "gemini-2.0-flash-001",
+  "gemini-1.5-flash-001",
 ] as const;
 
 const RETRYABLE_GEMINI_STATUSES = new Set([
@@ -443,7 +455,7 @@ const RETRYABLE_GEMINI_STATUSES = new Set([
 ]);
 
 const GEMINI_MAX_ATTEMPTS_PER_MODEL = 3;
-const GEMINI_REQUEST_TIMEOUT_MS = 45_000;
+const GEMINI_REQUEST_TIMEOUT_MS = 30_000; // 🔥 REDUCIDO: 30 segundos
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -525,12 +537,13 @@ async function generateWithGemini(
               systemInstruction: {
                 parts: [{ text: buildSystemPrompt(ctx) }],
               },
-              contents: ctx.history.slice(-24).map((message) => ({
+              contents: ctx.history.slice(-8).map((message) => ({
                 role: message.role === "assistant" ? "model" : "user",
                 parts: [{ text: message.content }],
               })),
               generationConfig: {
-                maxOutputTokens: 2048,
+                maxOutputTokens: 500, // 🔥 REDUCIDO: 2048 → 500
+                temperature: 0.35,
                 responseMimeType: "application/json",
               },
             }),
@@ -590,18 +603,7 @@ async function generateWithGemini(
           error: lastError,
         });
 
-        // 404: modelo inexistente/no disponible para esta cuenta.
-        // No tiene sentido reintentarlo: pasa inmediatamente al siguiente.
-        if (response.status === 404) {
-          break;
-        }
-
-        // Errores de autenticación/configuración tampoco mejoran con reintentos.
-        if (
-          response.status === 400 ||
-          response.status === 401 ||
-          response.status === 403
-        ) {
+        if (response.status === 404 || response.status === 400 || response.status === 401 || response.status === 403) {
           break;
         }
 
@@ -663,9 +665,10 @@ async function generateWithGateway(ctx: AiContext): Promise<AiResult> {
           role: "system",
           content: buildSystemPrompt(ctx),
         },
-        ...ctx.history.slice(-24),
+        ...ctx.history.slice(-8), // 🔥 REDUCIDO: 24 → 8
       ],
       temperature: 0.35,
+      max_tokens: 500, // 🔥 NUEVO: Limita tokens de salida
       response_format: {
         type: "json_object",
       },
@@ -748,4 +751,3 @@ export async function generateAiReply(
 
   return generateWithGateway(ctx);
 }
-
