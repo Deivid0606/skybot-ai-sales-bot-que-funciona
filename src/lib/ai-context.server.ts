@@ -1,8 +1,6 @@
-// lib/ai-context.server.ts
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/integrations/supabase/types";
 import type { AiContext } from "@/lib/ai.server";
-import { contextCache } from "@/lib/cache.server";
 
 type Client = SupabaseClient<Database>;
 
@@ -16,10 +14,15 @@ type CurrentTimeContext = {
   hour: number;
   minute: number;
   period: "madrugada" | "mañana" | "tarde" | "noche";
-  greeting: "Buenos días" | "Buenas tardes" | "Buenas noches";
+  greeting:
+    | "Buenos días"
+    | "Buenas tardes"
+    | "Buenas noches";
 };
 
-function getCurrentTimeContext(timeZone = DEFAULT_TIME_ZONE): CurrentTimeContext {
+function getCurrentTimeContext(
+  timeZone = DEFAULT_TIME_ZONE,
+): CurrentTimeContext {
   const now = new Date();
 
   const parts = new Intl.DateTimeFormat("es-PY", {
@@ -33,8 +36,11 @@ function getCurrentTimeContext(timeZone = DEFAULT_TIME_ZONE): CurrentTimeContext
     hourCycle: "h23",
   }).formatToParts(now);
 
-  const getPart = (type: Intl.DateTimeFormatPartTypes): string =>
-    parts.find((part) => part.type === type)?.value ?? "";
+  const getPart = (
+    type: Intl.DateTimeFormatPartTypes,
+  ): string =>
+    parts.find((part) => part.type === type)?.value ??
+    "";
 
   const hour = Number(getPart("hour"));
   const minute = Number(getPart("minute"));
@@ -87,7 +93,9 @@ function getCurrentTimeContext(timeZone = DEFAULT_TIME_ZONE): CurrentTimeContext
   };
 }
 
-function buildCurrentTimeInstruction(timeZone = DEFAULT_TIME_ZONE): string {
+function buildCurrentTimeInstruction(
+  timeZone = DEFAULT_TIME_ZONE,
+): string {
   const current = getCurrentTimeContext(timeZone);
 
   return [
@@ -111,8 +119,13 @@ function buildCurrentTimeInstruction(timeZone = DEFAULT_TIME_ZONE): string {
   ].join("\n");
 }
 
-function mergeSystemInstruction(originalInstruction: string | null | undefined): string {
-  const timeInstruction = buildCurrentTimeInstruction(DEFAULT_TIME_ZONE);
+function mergeSystemInstruction(
+  originalInstruction: string | null | undefined,
+): string {
+  const timeInstruction = buildCurrentTimeInstruction(
+    DEFAULT_TIME_ZONE,
+  );
+
   const original = originalInstruction?.trim() ?? "";
 
   if (!original) {
@@ -125,60 +138,6 @@ INSTRUCCIONES GENERALES DEL NEGOCIO:
 ${original}`.trim();
 }
 
-// 🔥 NUEVA: Función para procesar productos (extraída para reutilización)
-function processProducts(productsData: any[]): AiContext["products"] {
-  return (productsData ?? []).map((product) => {
-    const productPrices = [
-      ...(product.product_prices ?? []),
-    ]
-      .map((priceOption) => ({
-        id: priceOption.id,
-        label: String(priceOption.label ?? "").trim(),
-        quantity: Math.max(1, Math.floor(Number(priceOption.quantity) || 1)),
-        price: Number(priceOption.price) || 0,
-        sort_order: Number(priceOption.sort_order) || 0,
-      }))
-      .filter(
-        (priceOption) =>
-          Boolean(priceOption.label) &&
-          Number.isFinite(priceOption.price) &&
-          priceOption.price > 0,
-      )
-      .sort((first, second) => first.sort_order - second.sort_order);
-
-    const firstPriceOption = productPrices[0] ?? null;
-    const legacyPrice = Number(product.price);
-    const legacyPromoPrice = product.promo_price === null ? null : Number(product.promo_price);
-
-    const fallbackPrice =
-      firstPriceOption?.price ??
-      (Number.isFinite(legacyPromoPrice) && legacyPromoPrice !== null && legacyPromoPrice > 0
-        ? legacyPromoPrice
-        : Number.isFinite(legacyPrice) && legacyPrice > 0
-        ? legacyPrice
-        : 0);
-
-    return {
-      id: product.id,
-      name: product.name,
-      price: fallbackPrice,
-      promo_price:
-        Number.isFinite(legacyPromoPrice) && legacyPromoPrice !== null && legacyPromoPrice > 0
-          ? legacyPromoPrice
-          : null,
-      stock: product.stock,
-      sales_copy: product.sales_copy,
-      description: product.description,
-      delivery_info: product.delivery_info,
-      ai_instructions: product.ai_instructions,
-      keywords: (product.product_keywords ?? [])
-        .map((keyword: any) => String(keyword.keyword ?? "").trim().toLowerCase())
-        .filter(Boolean),
-      product_prices: productPrices,
-    };
-  });
-}
-
 export async function buildWorkspaceAiContext(
   supabase: Client,
   workspaceId: string,
@@ -189,125 +148,200 @@ export async function buildWorkspaceAiContext(
   activeProductId: string | null = null,
   customerPhone: string | null = null,
 ): Promise<AiContext> {
-  // 🔥 CACHE: Usa caché para el contexto estático (productos, entrenamiento, settings)
-  const cacheKey = `workspace:${workspaceId}`;
-  const cachedStaticData = contextCache.get<{
-    products: AiContext["products"];
-    training: AiContext["training"];
-    businessName: string;
-    currency: string;
-    systemInstruction: string;
-    geminiApiKey: string | null;
-    model: string | null;
-  }>(cacheKey);
+  const [
+    aiSettingsResult,
+    settingsResult,
+    productsResult,
+    trainingResult,
+  ] = await Promise.all([
+    supabase
+      .from("ai_settings")
+      .select(
+        "system_instruction, gemini_api_key, model, autodetect_model",
+      )
+      .eq("workspace_id", workspaceId)
+      .maybeSingle(),
 
-  let staticData: {
-    products: AiContext["products"];
-    training: AiContext["training"];
-    businessName: string;
-    currency: string;
-    systemInstruction: string;
-    geminiApiKey: string | null;
-    model: string | null;
-  };
+    supabase
+      .from("user_settings")
+      .select("business_name, currency")
+      .eq("workspace_id", workspaceId)
+      .maybeSingle(),
 
-  if (cachedStaticData) {
-    console.log(`[Cache] Usando caché para workspace ${workspaceId}`);
-    staticData = cachedStaticData;
-  } else {
-    console.log(`[Cache] Cargando datos frescos para workspace ${workspaceId}`);
-
-    const [
-      aiSettingsResult,
-      settingsResult,
-      productsResult,
-      trainingResult,
-    ] = await Promise.all([
-      supabase
-        .from("ai_settings")
-        .select("system_instruction, gemini_api_key, model, autodetect_model")
-        .eq("workspace_id", workspaceId)
-        .maybeSingle(),
-
-      supabase
-        .from("user_settings")
-        .select("business_name, currency")
-        .eq("workspace_id", workspaceId)
-        .maybeSingle(),
-
-      supabase
-        .from("products")
-        .select(`
+    /*
+     * Los precios reales del catálogo se encuentran
+     * en product_prices.
+     *
+     * products.price y products.promo_price se conservan
+     * solamente por compatibilidad con productos antiguos.
+     */
+    supabase
+      .from("products")
+      .select(`
+        id,
+        name,
+        price,
+        promo_price,
+        stock,
+        sales_copy,
+        description,
+        delivery_info,
+        ai_instructions,
+        product_keywords (
+          keyword
+        ),
+        product_prices (
           id,
-          name,
+          label,
+          quantity,
           price,
-          promo_price,
-          stock,
-          sales_copy,
-          description,
-          delivery_info,
-          ai_instructions,
-          product_keywords (
-            keyword
-          ),
-          product_prices (
-            id,
-            label,
-            quantity,
-            price,
-            sort_order
-          )
-        `)
-        .eq("workspace_id", workspaceId)
-        .eq("is_active", true),
+          sort_order
+        )
+      `)
+      .eq("workspace_id", workspaceId)
+      .eq("is_active", true),
 
-      supabase
-        .from("training_entries")
-        .select("title, content, category, priority")
-        .eq("workspace_id", workspaceId)
-        .eq("is_active", true),
-    ]);
+    supabase
+      .from("training_entries")
+      .select("title, content, category, priority")
+      .eq("workspace_id", workspaceId)
+      .eq("is_active", true),
+  ]);
 
-    if (aiSettingsResult.error) throw aiSettingsResult.error;
-    if (settingsResult.error) throw settingsResult.error;
-    if (productsResult.error) throw productsResult.error;
-    if (trainingResult.error) throw trainingResult.error;
-
-    const products = processProducts(productsResult.data ?? []);
-    const training = trainingResult.data ?? [];
-
-    staticData = {
-      products,
-      training,
-      businessName: settingsResult.data?.business_name ?? "",
-      currency: settingsResult.data?.currency ?? "PYG",
-      systemInstruction: mergeSystemInstruction(
-        aiSettingsResult.data?.system_instruction,
-      ),
-      geminiApiKey: aiSettingsResult.data?.gemini_api_key ?? null,
-      model: aiSettingsResult.data?.autodetect_model
-        ? null
-        : (aiSettingsResult.data?.model ?? null),
-    };
-
-    // Guardar en caché por 5 minutos
-    contextCache.set(cacheKey, staticData, 300000);
+  if (aiSettingsResult.error) {
+    throw aiSettingsResult.error;
   }
 
-  // 🔥 Limita el historial a 8 mensajes (reducido de 24)
-  const limitedHistory = history.slice(-8);
+  if (settingsResult.error) {
+    throw settingsResult.error;
+  }
 
-  // 🔥 Solo el historial y activeProductId son dinámicos
+  if (productsResult.error) {
+    throw productsResult.error;
+  }
+
+  if (trainingResult.error) {
+    throw trainingResult.error;
+  }
+
+  const products = (productsResult.data ?? []).map(
+    (product) => {
+      const productPrices = [
+        ...(product.product_prices ?? []),
+      ]
+        .map((priceOption) => ({
+          id: priceOption.id,
+          label: String(priceOption.label ?? "").trim(),
+          quantity: Math.max(
+            1,
+            Math.floor(Number(priceOption.quantity) || 1),
+          ),
+          price: Number(priceOption.price) || 0,
+          sort_order:
+            Number(priceOption.sort_order) || 0,
+        }))
+        .filter(
+          (priceOption) =>
+            Boolean(priceOption.label) &&
+            Number.isFinite(priceOption.price) &&
+            priceOption.price > 0,
+        )
+        .sort(
+          (first, second) =>
+            first.sort_order - second.sort_order,
+        );
+
+      /*
+       * Precio heredado para mantener compatibilidad
+       * con partes antiguas de la IA.
+       *
+       * Si existe product_prices, usamos como referencia
+       * la primera opción válida.
+       */
+      const firstPriceOption =
+        productPrices[0] ?? null;
+
+      const legacyPrice = Number(product.price);
+      const legacyPromoPrice =
+        product.promo_price === null
+          ? null
+          : Number(product.promo_price);
+
+      const fallbackPrice =
+        firstPriceOption?.price ??
+        (Number.isFinite(legacyPromoPrice) &&
+        legacyPromoPrice !== null &&
+        legacyPromoPrice > 0
+          ? legacyPromoPrice
+          : Number.isFinite(legacyPrice) &&
+              legacyPrice > 0
+            ? legacyPrice
+            : 0);
+
+      return {
+        id: product.id,
+        name: product.name,
+
+        /*
+         * Se mantiene price para no romper ai.server.ts.
+         * Representa el total de la primera opción.
+         */
+        price: fallbackPrice,
+
+        promo_price:
+          Number.isFinite(legacyPromoPrice) &&
+          legacyPromoPrice !== null &&
+          legacyPromoPrice > 0
+            ? legacyPromoPrice
+            : null,
+
+        stock: product.stock,
+        sales_copy: product.sales_copy,
+        description: product.description,
+        delivery_info: product.delivery_info,
+        ai_instructions: product.ai_instructions,
+
+        keywords: (
+          product.product_keywords ?? []
+        )
+          .map((keyword) =>
+            String(keyword.keyword ?? "")
+              .trim()
+              .toLowerCase(),
+          )
+          .filter(Boolean),
+
+        product_prices: productPrices,
+      };
+    },
+  );
+
   return {
-    systemInstruction: staticData.systemInstruction,
-    geminiApiKey: staticData.geminiApiKey,
-    model: staticData.model,
+    systemInstruction: mergeSystemInstruction(
+      aiSettingsResult.data?.system_instruction,
+    ),
+
+    geminiApiKey:
+      aiSettingsResult.data?.gemini_api_key ?? null,
+
+    model: aiSettingsResult.data?.autodetect_model
+      ? null
+      : (aiSettingsResult.data?.model ?? null),
+
     customerPhone,
-    businessName: staticData.businessName,
-    currency: staticData.currency,
-    products: staticData.products,
-    training: staticData.training,
-    history: limitedHistory,
+
+    businessName:
+      settingsResult.data?.business_name ?? "",
+
+    currency:
+      settingsResult.data?.currency ?? "PYG",
+
+    products,
+
+    training: trainingResult.data ?? [],
+
+    history,
+
     activeProductId,
   };
 }
