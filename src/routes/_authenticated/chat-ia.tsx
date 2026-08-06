@@ -138,15 +138,28 @@ function ChatAiPage() {
   );
   const [sentTemplateIds, setSentTemplateIds] = useState<string[]>([]);
 
+  // 🔥 CONFIGURACIÓN: Límite de historial para ahorrar tokens
+  const HISTORY_LIMIT = 10; // Solo envía los últimos 10 mensajes
+
   const ask = useMutation({
     mutationFn: async (message: string) => {
+      // 🔥 OPTIMIZACIÓN CRÍTICA: Solo envía los últimos HISTORY_LIMIT mensajes
+      const limitedHistory = turns
+        .slice(-HISTORY_LIMIT)
+        .map((turn) => ({
+          role: turn.role,
+          content: turn.content,
+        }));
+
+      // Log para debugging (puedes eliminar esta línea en producción)
+      console.log(
+        `[Chat IA] Enviando ${limitedHistory.length} mensajes (de ${turns.length} totales) - Ahorro: ${((1 - limitedHistory.length / Math.max(turns.length, 1)) * 100).toFixed(0)}%`
+      );
+
       return testAiReply({
         data: {
           message,
-          history: turns.map((turn) => ({
-            role: turn.role,
-            content: turn.content,
-          })),
+          history: limitedHistory, // ← AHORA SOLO ENVÍA 10 MENSAJES
           activeProductId,
           sentTemplateIds,
         },
@@ -246,8 +259,8 @@ function ChatAiPage() {
           <div className="flex-1 space-y-3 overflow-y-auto">
             {turns.length === 0 && (
               <p className="text-sm text-muted-foreground">
-                Escribe como si fueras un cliente: “hola, cuánto cuesta el
-                reloj?”
+                Escribe como si fueras un cliente: "hola, cuánto cuesta el
+                reloj?"
               </p>
             )}
 
