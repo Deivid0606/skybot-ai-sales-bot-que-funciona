@@ -212,31 +212,45 @@ function InboxPage() {
 
   const saveAd = useMutation({
     mutationFn: async () => {
-      if (!workspaceId || !activeId || !active?.ad_id) {
-        throw new Error("Esta conversación no tiene ID de anuncio.");
+      const userId = profile?.id;
+
+      if (!workspaceId || !userId || !activeId || !active?.ad_id) {
+        throw new Error(
+          "Faltan datos del usuario, workspace o anuncio para poder guardarlo.",
+        );
       }
 
       const cleanName = adName.trim();
-      if (!cleanName) throw new Error("Escribí el nombre del anuncio.");
-      if (!adProductId) throw new Error("Seleccioná un producto.");
+
+      if (!cleanName) {
+        throw new Error("Escribí el nombre del anuncio.");
+      }
+
+      if (!adProductId) {
+        throw new Error("Seleccioná un producto.");
+      }
+
+      const adPayload = {
+        workspace_id: workspaceId,
+        user_id: userId,
+        ad_id: active.ad_id,
+        name: cleanName,
+        product_id: adProductId,
+        source_url: active.ad_url ?? ad?.source_url ?? null,
+        media_url: active.ad_media_url ?? ad?.media_url ?? null,
+        media_type: active.ad_media_type ?? ad?.media_type ?? null,
+        is_active: true,
+      };
 
       const { error: adError } = await supabase
         .from("ads")
-        .upsert(
-          {
-            workspace_id: workspaceId,
-            ad_id: active.ad_id,
-            name: cleanName,
-            product_id: adProductId,
-            source_url: active.ad_url ?? ad?.source_url ?? null,
-            media_url: active.ad_media_url ?? ad?.media_url ?? null,
-            media_type: active.ad_media_type ?? ad?.media_type ?? null,
-            is_active: true,
-          },
-          { onConflict: "workspace_id,ad_id" },
-        );
+        .upsert(adPayload, {
+          onConflict: "workspace_id,ad_id",
+        });
 
-      if (adError) throw adError;
+      if (adError) {
+        throw new Error(`No se pudo guardar el anuncio: ${adError.message}`);
+      }
 
       const { error: conversationError } = await supabase
         .from("conversations")
@@ -247,15 +261,32 @@ function InboxPage() {
         .eq("id", activeId)
         .eq("workspace_id", workspaceId);
 
-      if (conversationError) throw conversationError;
+      if (conversationError) {
+        throw new Error(
+          `El anuncio se guardó, pero no se pudo actualizar la conversación: ${conversationError.message}`,
+        );
+      }
     },
+
     onSuccess: () => {
-      toast.success(ad ? "Anuncio actualizado" : "Anuncio registrado");
-      queryClient.invalidateQueries({ queryKey: ["ad", workspaceId, active?.ad_id] });
-      queryClient.invalidateQueries({ queryKey: ["conversations", workspaceId] });
-      queryClient.invalidateQueries({ queryKey: ["dashboard", workspaceId] });
+      toast.success(ad ? "Anuncio actualizado correctamente" : "Anuncio registrado correctamente");
+
+      queryClient.invalidateQueries({
+        queryKey: ["ad", workspaceId, active?.ad_id],
+      });
+
+      queryClient.invalidateQueries({
+        queryKey: ["conversations", workspaceId],
+      });
+
+      queryClient.invalidateQueries({
+        queryKey: ["dashboard", workspaceId],
+      });
     },
-    onError: (e: Error) => toast.error(e.message),
+
+    onError: (error: Error) => {
+      toast.error(error.message);
+    },
   });
 
   const send = useMutation({
