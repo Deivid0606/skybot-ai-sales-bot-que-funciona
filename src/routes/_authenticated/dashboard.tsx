@@ -164,18 +164,10 @@ function DashboardPage() {
 
         supabase
           .from("orders")
-          .select(`
-            id,
-            total,
-            status,
-            created_at,
-            product_title,
-            city,
-            departamento,
-            payment_status,
-            payment_method,
-            tags
-          `)
+          // Se usa "*" para incluir conversation_id o ad_id cuando existan
+          // en la tabla. La atribución por anuncio funciona con cualquiera
+          // de las dos columnas y mantiene compatibilidad con datos antiguos.
+          .select("*")
           .eq("workspace_id", workspaceId!),
 
         supabase
@@ -238,7 +230,20 @@ function DashboardPage() {
           created_at: string | null;
           ad_id: string | null;
         }>,
-        orders: orders.data ?? [],
+        orders: (orders.data ?? []) as Array<{
+          id: string;
+          total: number | string | null;
+          status: string | null;
+          created_at: string | null;
+          product_title: string | null;
+          city: string | null;
+          departamento: string | null;
+          payment_status: string | null;
+          payment_method: string | null;
+          tags: unknown;
+          conversation_id?: string | null;
+          ad_id?: string | null;
+        }>,
         balance: balance.data,
         ads: ads.data ?? [],
         messages: allMessages,
@@ -371,19 +376,40 @@ function DashboardPage() {
     (message) => message.sender === "ai",
   ).length;
 
-  const activeConversationById = new Map(
-    activeConversations.map((conversation) => [conversation.id, conversation]),
+  const conversationById = new Map(
+    data.conversations.map((conversation) => [conversation.id, conversation]),
   );
 
   const registeredAdByExternalId = new Map(
     data.ads.map((ad) => [ad.ad_id, ad]),
   );
 
-  const adIdsInPeriod = new Set(
-    activeConversations
-      .map((conversation) => conversation.ad_id)
-      .filter((adId): adId is string => Boolean(adId)),
-  );
+  /*
+   * Resuelve el anuncio real de cada pedido:
+   * 1. Usa orders.ad_id cuando está guardado directamente.
+   * 2. Si no existe, usa orders.conversation_id y busca el ad_id del chat.
+   * 3. Si no hay relación, el pedido queda como venta sin atribuir.
+   */
+  const getOrderAdId = (order: (typeof rangeOrders)[number]) => {
+    if (order.ad_id) return order.ad_id;
+
+    if (order.conversation_id) {
+      return conversationById.get(order.conversation_id)?.ad_id ?? null;
+    }
+
+    return null;
+  };
+
+  const adIdsInPeriod = new Set<string>();
+
+  activeConversations.forEach((conversation) => {
+    if (conversation.ad_id) adIdsInPeriod.add(conversation.ad_id);
+  });
+
+  rangeOrders.forEach((order) => {
+    const orderAdId = getOrderAdId(order);
+    if (orderAdId) adIdsInPeriod.add(orderAdId);
+  });
 
   const adMetrics = Array.from(adIdsInPeriod)
     .map((adId) => {
@@ -401,10 +427,10 @@ function DashboardPage() {
           Boolean(message.conversation_id) &&
           adConversationIds.has(message.conversation_id!),
       ).length;
-      // Atribución por anuncio disponible actualmente en conversations.
-      // El total general de ventas siempre proviene de orders.
-      const sales = adConversations.filter(
-        (conversation) => Boolean(conversation.sale_closed),
+      // Fuente oficial de ventas por anuncio: pedidos no cancelados
+      // creados en el periodo y relacionados con este anuncio.
+      const sales = rangeOrders.filter(
+        (order) => getOrderAdId(order) === adId,
       ).length;
       const conversion = conversations
         ? Math.round((sales / conversations) * 1000) / 10
@@ -439,9 +465,9 @@ function DashboardPage() {
     (conversation) => !conversation.ad_id,
   ).length;
 
-  // Mantiene una referencia explícita para facilitar futuras extensiones
-  // de métricas que necesiten resolver la conversación desde un mensaje.
-  void activeConversationById;
+  const unattributedSales = rangeOrders.filter(
+    (order) => !getOrderAdId(order),
+  ).length;
 
   const topProducts = Object.entries(
     rangeOrders.reduce<Record<string, number>>((accumulator, order) => {
@@ -739,7 +765,12 @@ function DashboardPage() {
                 <Badge variant="secondary">{adMetrics.length} anuncios</Badge>
                 {conversationsWithoutAd > 0 && (
                   <Badge variant="outline">
-                    {conversationsWithoutAd} sin anuncio
+                    {conversationsWithoutAd} chats sin anuncio
+                  </Badge>
+                )}
+                {unattributedSales > 0 && (
+                  <Badge variant="outline">
+                    {unattributedSales} ventas sin atribuir
                   </Badge>
                 )}
               </div>
