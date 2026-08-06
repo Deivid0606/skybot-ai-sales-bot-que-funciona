@@ -10,6 +10,7 @@ import {
   Loader2,
   MessageSquare,
   Search,
+  Save,
   Send,
   Sparkles,
   Paperclip,
@@ -103,8 +104,8 @@ function InboxPage() {
   const [selected, setSelected] = useState<string[]>([]);
   const [infoOpen, setInfoOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
-
-
+  const [adName, setAdName] = useState("");
+  const [adProductId, setAdProductId] = useState("");
 
 
   const { data: conversations } = useQuery({
@@ -202,6 +203,57 @@ function InboxPage() {
       if (error) throw error;
       return data;
     },
+  });
+
+  useEffect(() => {
+    setAdName(ad?.name ?? active?.ad_name ?? "");
+    setAdProductId(ad?.product_id ?? active?.product_id ?? "");
+  }, [ad?.name, ad?.product_id, active?.ad_name, active?.product_id, active?.ad_id]);
+
+  const saveAd = useMutation({
+    mutationFn: async () => {
+      if (!workspaceId || !activeId || !active?.ad_id) {
+        throw new Error("Esta conversación no tiene ID de anuncio.");
+      }
+
+      const cleanName = adName.trim();
+      if (!cleanName) throw new Error("Escribí el nombre del anuncio.");
+      if (!adProductId) throw new Error("Seleccioná un producto.");
+
+      const { error: adError } = await supabase
+        .from("ads")
+        .upsert(
+          {
+            workspace_id: workspaceId,
+            ad_id: active.ad_id,
+            name: cleanName,
+            product_id: adProductId,
+            media_url: active.ad_media_url ?? ad?.media_url ?? null,
+            is_active: true,
+          },
+          { onConflict: "workspace_id,ad_id" },
+        );
+
+      if (adError) throw adError;
+
+      const { error: conversationError } = await supabase
+        .from("conversations")
+        .update({
+          ad_name: cleanName,
+          product_id: adProductId,
+        })
+        .eq("id", activeId)
+        .eq("workspace_id", workspaceId);
+
+      if (conversationError) throw conversationError;
+    },
+    onSuccess: () => {
+      toast.success(ad ? "Anuncio actualizado" : "Anuncio registrado");
+      queryClient.invalidateQueries({ queryKey: ["ad", workspaceId, active?.ad_id] });
+      queryClient.invalidateQueries({ queryKey: ["conversations", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard", workspaceId] });
+    },
+    onError: (e: Error) => toast.error(e.message),
   });
 
   const send = useMutation({
@@ -716,6 +768,56 @@ function InboxPage() {
 
             <ScrollArea className="flex-1 bg-muted/30 p-4">
               <div className="mx-auto flex max-w-3xl flex-col gap-2">
+                {active.ad_id && (
+                  <div className="mb-2 rounded-2xl border bg-card p-4 shadow-sm">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <p className="font-semibold">Registrar anuncio</p>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          ID detectado: <span className="font-mono">{active.ad_id}</span>
+                        </p>
+                      </div>
+                      <Badge variant={ad ? "default" : "secondary"}>
+                        {ad ? "Registrado" : "Sin registrar"}
+                      </Badge>
+                    </div>
+
+                    <div className="mt-4 grid gap-3 md:grid-cols-[1fr_1fr_auto]">
+                      <Input
+                        value={adName}
+                        onChange={(event) => setAdName(event.target.value)}
+                        placeholder="Nombre del anuncio"
+                      />
+
+                      <select
+                        value={adProductId}
+                        onChange={(event) => setAdProductId(event.target.value)}
+                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                      >
+                        <option value="">Seleccionar producto</option>
+                        {products?.map((product) => (
+                          <option key={product.id} value={product.id}>
+                            {product.name}
+                          </option>
+                        ))}
+                      </select>
+
+                      <Button
+                        type="button"
+                        onClick={() => saveAd.mutate()}
+                        disabled={saveAd.isPending || !adName.trim() || !adProductId}
+                      >
+                        {saveAd.isPending ? (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        ) : (
+                          <Save className="mr-2 h-4 w-4" />
+                        )}
+                        {ad ? "Actualizar" : "Guardar"}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
                 {active.ad_id && (
                   <AdOriginCard
                     adId={active.ad_id}
