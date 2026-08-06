@@ -32,6 +32,25 @@ export const Route = createFileRoute("/_authenticated/configuraciones")({
   component: SettingsPage,
 });
 
+const VALID_GEMINI_MODELS = [
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
+  "gemini-2.5-pro",
+] as const;
+
+type GeminiModel = (typeof VALID_GEMINI_MODELS)[number];
+
+function normalizeGeminiModel(value: unknown): GeminiModel {
+  const normalized = String(value ?? "")
+    .trim()
+    .replace(/^models\//i, "")
+    .replace(/^google\//i, "");
+
+  return VALID_GEMINI_MODELS.includes(normalized as GeminiModel)
+    ? (normalized as GeminiModel)
+    : "gemini-2.5-flash";
+}
+
 function SettingsPage() {
   const { profile, user } = useAuth();
   const workspaceId = profile?.workspace_id ?? null;
@@ -49,7 +68,7 @@ function SettingsPage() {
   });
   const [ai, setAi] = useState({
     ai_enabled: true,
-    model: "google/gemini-3.6-flash",
+    model: "gemini-2.5-flash",
     system_instruction: "",
     reply_delay_seconds: 3,
     autodetect_model: true,
@@ -94,7 +113,7 @@ function SettingsPage() {
     if (data.ai) {
       setAi({
         ai_enabled: data.ai.ai_enabled,
-        model: data.ai.model,
+        model: normalizeGeminiModel(data.ai.model),
         system_instruction: data.ai.system_instruction,
         reply_delay_seconds: data.ai.reply_delay_seconds,
         autodetect_model: data.ai.autodetect_model,
@@ -209,7 +228,9 @@ function SettingsPage() {
       } else if (section === "ai") {
         await upsert("ai_settings", {
           ai_enabled: ai.ai_enabled,
-          model: ai.model,
+          model: ai.autodetect_model
+            ? "gemini-2.5-flash"
+            : normalizeGeminiModel(ai.model),
           system_instruction: ai.system_instruction,
           reply_delay_seconds: Number(ai.reply_delay_seconds) || 0,
           autodetect_model: ai.autodetect_model,
@@ -452,7 +473,7 @@ function SettingsPage() {
                   />
                   {ai.gemini_api_key.trim() ? (
                     <p className="flex items-center gap-1 text-xs text-primary">
-                      <CheckCircle2 className="h-3.5 w-3.5" /> API Key configurada
+                      <CheckCircle2 className="h-3.5 w-3.5" /> API Key guardada
                     </p>
                   ) : (
                     <p className="text-xs text-muted-foreground">Aún no cargaste tu API Key.</p>
@@ -472,21 +493,33 @@ function SettingsPage() {
                   <select
                     className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
                     value={ai.autodetect_model ? "auto" : ai.model}
-                    onChange={(e) =>
-                      e.target.value === "auto"
-                        ? setAi({ ...ai, autodetect_model: true })
-                        : setAi({ ...ai, autodetect_model: false, model: e.target.value })
-                    }
+                    onChange={(e) => {
+                      if (e.target.value === "auto") {
+                        setAi({
+                          ...ai,
+                          autodetect_model: true,
+                          model: "gemini-2.5-flash",
+                        });
+                        return;
+                      }
+
+                      setAi({
+                        ...ai,
+                        autodetect_model: false,
+                        model: normalizeGeminiModel(e.target.value),
+                      });
+                    }}
                   >
-                    <option value="auto">Auto-detectar</option>
+                    <option value="auto">Auto-detectar (recomendado)</option>
                     <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+                    <option value="gemini-2.5-flash-lite">
+                      gemini-2.5-flash-lite
+                    </option>
                     <option value="gemini-2.5-pro">gemini-2.5-pro</option>
-                    <option value="gemini-2.0-flash">gemini-2.0-flash</option>
-                    <option value="google/gemini-3.6-flash">google/gemini-3.6-flash</option>
                   </select>
                   <p className="text-xs text-muted-foreground">
-                    Seleccioná "Auto-detectar" para que el sistema encuentre el modelo disponible
-                    automáticamente.
+                    Seleccioná "Auto-detectar" para que el servidor consulte los modelos
+                    compatibles con la API key y elija uno disponible automáticamente.
                   </p>
                 </div>
               </div>
@@ -516,7 +549,7 @@ function SettingsPage() {
 
               {ai.ai_enabled && ai.gemini_api_key.trim() && (
                 <p className="flex items-center gap-1 text-sm text-primary">
-                  <CheckCircle2 className="h-4 w-4" /> IA activa y configurada correctamente
+                  <CheckCircle2 className="h-4 w-4" /> IA activa con API Key guardada
                 </p>
               )}
 
