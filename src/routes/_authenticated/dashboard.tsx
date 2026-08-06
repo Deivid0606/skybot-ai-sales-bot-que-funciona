@@ -103,6 +103,20 @@ function normalizeText(value: unknown) {
     .replace(/[\u0300-\u036f]/g, "");
 }
 
+function isInboundMessageSender(sender: unknown) {
+  const normalizedSender = normalizeText(sender);
+
+  if (!normalizedSender) return false;
+
+  return ![
+    "ai",
+    "agent",
+    "assistant",
+    "bot",
+    "system",
+  ].includes(normalizedSender);
+}
+
 function hasOrderTag(tags: unknown, expectedTag: string) {
   const expected = normalizeText(expectedTag);
 
@@ -145,7 +159,7 @@ function DashboardPage() {
       const [conversations, orders, balance, ads, messages] = await Promise.all([
         supabase
           .from("conversations")
-          .select("id, status, sale_closed, created_at, ad_id")
+          .select("*")
           .eq("workspace_id", workspaceId!),
 
         supabase
@@ -217,7 +231,14 @@ function DashboardPage() {
       }
 
       return {
-        conversations: conversations.data ?? [],
+        conversations: (conversations.data ?? []) as Array<{
+          id: string;
+          status: string | null;
+          sale_closed: boolean | null;
+          sale_closed_at: string | null;
+          created_at: string | null;
+          ad_id: string | null;
+        }>,
         orders: orders.data ?? [],
         balance: balance.data,
         ads: ads.data ?? [],
@@ -305,9 +326,20 @@ function DashboardPage() {
   );
 
   const totalConversations = activeConversationIds.size;
-  const closedSales = activeConversations.filter(
-    (conversation) => conversation.sale_closed,
-  ).length;
+
+  const closedSalesConversations = hasInvalidRange
+    ? []
+    : data.conversations.filter(
+        (conversation) =>
+          Boolean(conversation.sale_closed) &&
+          isWithinLocalDateRange(
+            conversation.sale_closed_at,
+            dateFrom,
+            dateTo,
+          ),
+      );
+
+  const closedSales = closedSalesConversations.length;
   const conversion = totalConversations
     ? Math.round((closedSales / totalConversations) * 100)
     : 0;
@@ -353,7 +385,7 @@ function DashboardPage() {
   );
 
   const adIdsInPeriod = new Set(
-    activeConversations
+    [...activeConversations, ...closedSalesConversations]
       .map((conversation) => conversation.ad_id)
       .filter((adId): adId is string => Boolean(adId)),
   );
@@ -364,19 +396,20 @@ function DashboardPage() {
       const adConversations = activeConversations.filter(
         (conversation) => conversation.ad_id === adId,
       );
+      const adSalesConversations = closedSalesConversations.filter(
+        (conversation) => conversation.ad_id === adId,
+      );
       const adConversationIds = new Set(
         adConversations.map((conversation) => conversation.id),
       );
       const conversations = adConversationIds.size;
       const messages = rangeMessages.filter(
         (message) =>
-          message.sender !== "ai" &&
+          isInboundMessageSender(message.sender) &&
           Boolean(message.conversation_id) &&
           adConversationIds.has(message.conversation_id!),
       ).length;
-      const sales = adConversations.filter(
-        (conversation) => conversation.sale_closed,
-      ).length;
+      const sales = adSalesConversations.length;
       const conversion = conversations
         ? Math.round((sales / conversations) * 1000) / 10
         : 0;
@@ -457,7 +490,7 @@ function DashboardPage() {
       label: "Ventas cerradas",
       value: closedSales,
       icon: CheckCircle2,
-      helper: "Ventas confirmadas por IA",
+      helper: "Ventas cerradas dentro del periodo",
     },
     {
       label: "Conversión",
