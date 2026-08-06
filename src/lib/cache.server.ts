@@ -31,7 +31,6 @@ class Cache {
     this.store.clear();
   }
 
-  // Limpia entradas expiradas (opcional, se ejecuta automáticamente en get)
   clean(): void {
     const now = Date.now();
     for (const [key, entry] of this.store) {
@@ -42,4 +41,6 @@ class Cache {
   }
 }
 
+// ✅ EXPORTACIÓN CORRECTA
 export const contextCache = new Cache();
+export default Cache;
