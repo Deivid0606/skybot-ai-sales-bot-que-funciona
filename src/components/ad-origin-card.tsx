@@ -28,7 +28,34 @@ function normalizeUrl(value?: string | null) {
   return `https://${url}`;
 }
 
-function detectVideo(mediaUrl?: string | null, mediaType?: string | null) {
+/**
+ * Abre el anuncio en la Biblioteca de anuncios de Meta usando el mismo
+ * formato de URL que Meta genera al seleccionar un anuncio por su ID.
+ *
+ * El source_id de Click to WhatsApp puede abrir correctamente con esta URL
+ * siempre que Meta todavía tenga el anuncio disponible en la biblioteca.
+ */
+function buildMetaAdLibraryUrl(adId: string) {
+  const cleanAdId = adId.trim();
+
+  if (!cleanAdId) return null;
+
+  const params = new URLSearchParams({
+    active_status: "active",
+    ad_type: "all",
+    country: "PY",
+    id: cleanAdId,
+    is_targeted_country: "false",
+    media_type: "all",
+  });
+
+  return `https://www.facebook.com/ads/library/?${params.toString()}`;
+}
+
+function detectVideo(
+  mediaUrl?: string | null,
+  mediaType?: string | null,
+) {
   const normalizedType = mediaType?.trim().toLowerCase();
 
   if (
@@ -39,15 +66,7 @@ function detectVideo(mediaUrl?: string | null, mediaType?: string | null) {
     return true;
   }
 
-  return /\.(mp4|webm|ogg|mov|m4v)(?:\?.*)?$/i.test(mediaUrl ?? "");
-}
-
-function getFallbackAdUrl(adId: string) {
-  const cleanAdId = adId.trim();
-
-  if (!cleanAdId) return null;
-
-  return `https://www.facebook.com/ads/library/?id=${encodeURIComponent(cleanAdId)}`;
+  return /\.(mp4|webm|ogg|mov|m4v|3gp)(?:\?.*)?$/i.test(mediaUrl ?? "");
 }
 
 export function AdOriginCard({
@@ -59,17 +78,29 @@ export function AdOriginCard({
   copy,
   date,
 }: Props) {
-  const directUrl = normalizeUrl(sourceUrl);
-  const targetUrl = directUrl ?? getFallbackAdUrl(adId);
+  /*
+   * Si Meta envió source_url, se prioriza esa URL.
+   * Si no existe, se construye la URL completa de la Biblioteca de anuncios.
+   */
+  const targetUrl =
+    normalizeUrl(sourceUrl) ??
+    buildMetaAdLibraryUrl(adId);
+
   const isVideo = detectVideo(mediaUrl, mediaType);
 
   const openAd = () => {
     if (!targetUrl) return;
 
-    window.open(targetUrl, "_blank", "noopener,noreferrer");
+    window.open(
+      targetUrl,
+      "_blank",
+      "noopener,noreferrer",
+    );
   };
 
-  const handleKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
+  const handleKeyDown = (
+    event: React.KeyboardEvent<HTMLElement>,
+  ) => {
     if (!targetUrl) return;
 
     if (event.key === "Enter" || event.key === " ") {
@@ -94,14 +125,27 @@ export function AdOriginCard({
       <div className="flex items-center gap-2 border-b border-border px-3 py-2.5">
         <Megaphone className="h-4 w-4 shrink-0 text-primary" />
 
-        <span className="text-sm font-medium">Anuncio</span>
+        <span className="text-sm font-medium">
+          Anuncio
+        </span>
 
         <span className="ml-auto max-w-[55%] truncate text-[11px] text-muted-foreground">
           {adId}
         </span>
 
         {targetUrl && (
-          <ExternalLink className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              openAd();
+            }}
+            aria-label="Abrir anuncio en Meta"
+            title="Abrir anuncio en Meta"
+            className="shrink-0 text-muted-foreground transition-colors hover:text-primary"
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+          </button>
         )}
       </div>
 
@@ -128,18 +172,21 @@ export function AdOriginCard({
             ) : (
               <img
                 src={mediaUrl}
-                alt={title ? `Anuncio ${title}` : "Creatividad del anuncio"}
+                alt={
+                  title
+                    ? `Anuncio ${title}`
+                    : "Creatividad del anuncio"
+                }
                 loading="lazy"
                 className="h-full w-full object-cover"
-                onError={(event) => {
-                  event.currentTarget.style.display = "none";
-                }}
               />
             )
           ) : (
             <div className="flex h-full w-full flex-col items-center justify-center gap-1 text-muted-foreground">
               <ImageOff className="h-6 w-6" />
-              <span className="text-[10px]">Sin multimedia</span>
+              <span className="text-[10px]">
+                Sin multimedia
+              </span>
             </div>
           )}
         </div>
@@ -150,7 +197,8 @@ export function AdOriginCard({
           </p>
 
           <p className="mt-1 line-clamp-5 whitespace-pre-wrap text-sm leading-5 text-muted-foreground">
-            {copy || "El cliente inició la conversación desde este anuncio."}
+            {copy ||
+              "El cliente inició la conversación desde este anuncio."}
           </p>
 
           {targetUrl && (
@@ -162,7 +210,7 @@ export function AdOriginCard({
               }}
               className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
             >
-              Ver anuncio
+              Ver anuncio en Meta
               <ExternalLink className="h-3.5 w-3.5" />
             </button>
           )}
