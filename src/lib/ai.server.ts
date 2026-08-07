@@ -21,6 +21,13 @@ export type AiContext = {
     delivery_info: string | null;
     ai_instructions: string | null;
     keywords: string[];
+    product_prices?: {
+      id: string;
+      label: string;
+      quantity: number;
+      price: number;
+      sort_order: number;
+    }[];
   }[];
   training: {
     title: string;
@@ -64,21 +71,46 @@ function buildSystemPrompt(ctx: AiContext): string {
   const detectedCustomerPhone = cleanString(ctx.customerPhone);
 
   const catalog = ctx.products
-    .map(
-      (product) =>
-        `- id:${product.id} | ${product.name} | precio:${
-          product.promo_price ?? product.price
-        } ${ctx.currency}${
-          product.promo_price
-            ? ` (antes ${product.price})`
-            : ""
-        } | stock:${product.stock} | claves:${
-          product.keywords.join(", ") || "-"
-        }
+    .map((product) => {
+      const priceOptions = [...(product.product_prices ?? [])]
+        .map((option) => ({
+          label: cleanString(option.label),
+          quantity: Math.max(1, Math.floor(Number(option.quantity) || 1)),
+          price: Number(option.price),
+          sortOrder: Number(option.sort_order) || 0,
+        }))
+        .filter(
+          (option) =>
+            Number.isFinite(option.quantity) &&
+            option.quantity > 0 &&
+            Number.isFinite(option.price) &&
+            option.price > 0,
+        )
+        .sort((a, b) => a.sortOrder - b.sortOrder);
+
+      const prices =
+        priceOptions.length > 0
+          ? priceOptions
+              .map(
+                (option) =>
+                  `${option.quantity} ${
+                    option.quantity === 1 ? "unidad" : "unidades"
+                  } = ${option.price} ${ctx.currency} (PRECIO TOTAL DEL COMBO)`,
+              )
+              .join(" | ")
+          : `precio unitario vigente:${
+              product.promo_price ?? product.price
+            } ${ctx.currency}${
+              product.promo_price ? ` (antes ${product.price})` : ""
+            }`;
+
+      return `- id:${product.id} | ${product.name} | ${prices} | stock:${
+        product.stock
+      } | claves:${product.keywords.join(", ") || "-"}
   copy: ${product.sales_copy ?? product.description ?? "-"}
   entrega: ${product.delivery_info ?? "-"}
-  instrucciones: ${product.ai_instructions ?? "-"}`,
-    )
+  instrucciones: ${product.ai_instructions ?? "-"}`;
+    })
     .join("\n");
 
   const sortedTraining = [...ctx.training].sort(
@@ -116,12 +148,16 @@ REGLAS:
 - Si hay un número detectado automáticamente, NO vuelvas a pedir el teléfono.
 - Usa exactamente el número detectado en order.phone.
 - No inventes, acortes, formatees ni modifiques el número detectado.
-- CANTIDADES: si el cliente escribe un número suelto, por ejemplo "2", o escribe "2 unidades", la cantidad es EXACTAMENTE ese número.
-- Nunca dupliques, concatenes ni repitas dígitos.
+- CANTIDADES: si acabas de preguntar cuántas unidades quiere y el cliente responde un número suelto, por ejemplo "1" o "2", la cantidad es EXACTAMENTE ese número.
+- "1" significa 1 unidad. NUNCA puede convertirse en 11, 10, 12 ni en otra cantidad.
+- Nunca dupliques, concatenes, sumes ni repitas dígitos de la cantidad.
 - Si el cliente repite la misma cantidad, no la sumes: sigue siendo la misma.
-- TOTALES: total = precio vigente, usando promoción si existe, multiplicado por la cantidad.
-- Calcula con cuidado y no inventes montos.
-- Antes de confirmar, relee la cantidad que dijo el cliente y usa ese valor tal cual.
+- PRECIOS POR CANTIDAD: si el producto tiene opciones como "1 unidad = 130000" y "2 unidades = 230000", el valor indicado es el PRECIO TOTAL de esa opción. NO multipliques nuevamente ese precio.
+- Si existen opciones de precio por cantidad, usa SOLAMENTE una opción cuya cantidad coincida exactamente con la cantidad elegida.
+- Si el cliente pide una cantidad que no existe en las opciones, NO inventes precio ni total: ofrece las cantidades disponibles.
+- Solo cuando NO existan opciones por cantidad puedes calcular total = precio unitario vigente × cantidad.
+- Antes de responder o cerrar el pedido, relee la cantidad literal del cliente y verifica que cantidad y precio correspondan exactamente.
+- NO vuelvas a copiar el sales_copy completo si ya apareció en el historial. Después de la presentación inicial, responde breve: precio/opciones relevantes + una sola pregunta para avanzar la venta.
 - Cuando tengas TODOS los datos, marca sale_closed=true y completa el objeto order.
 ${
   ctx.activeProductId
@@ -748,4 +784,3 @@ export async function generateAiReply(
 
   return generateWithGateway(ctx);
 }
-
