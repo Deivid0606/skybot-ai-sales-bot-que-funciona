@@ -503,6 +503,12 @@ function DashboardPage() {
 
   const primaryStats = [
     {
+      label: "Conversaciones recibidas",
+      value: totalConversations,
+      icon: MessageSquare,
+      helper: "Chats únicos activos en el periodo",
+    },
+    {
       label: "Mensajes recibidos",
       value: customerMessages,
       icon: MessageSquare,
@@ -656,7 +662,7 @@ function DashboardPage() {
           </div>
         </section>
 
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
           {primaryStats.map((stat) => (
             <Card
               key={stat.label}
