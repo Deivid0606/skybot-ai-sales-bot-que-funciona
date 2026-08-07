@@ -674,8 +674,10 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
 
   if (!aiSettings?.ai_enabled || conversation.ai_paused || conversation.is_closed) return;
 
-  // Palabra clave → envía la plantilla del producto (multimedia + copy)
-  const keywordProductId = await sendCatalogByKeyword({
+  // Palabra clave → envía la plantilla del producto (multimedia + copy).
+  // Si el catálogo fue enviado AHORA, terminamos este turno para evitar que
+  // generateAiReply() vuelva a mandar el mismo copy en el mismo webhook.
+  const catalogResult = await sendCatalogByKeyword({
     workspaceId,
     ownerId,
     conversationId: conversation.id,
@@ -683,7 +685,14 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     phone,
     text: body,
   });
-  if (keywordProductId) conversation.product_id = keywordProductId;
+
+  if (catalogResult) {
+    conversation.product_id = catalogResult.productId;
+
+    if (catalogResult.sent) {
+      return;
+    }
+  }
 
   const { data: history } = await supabaseAdmin
     .from("messages")
@@ -710,7 +719,23 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     );
     const result = await generateAiReply(ctx);
 
-    const wamid = await sendWhatsAppText(conn, phone, result.reply);
+    const detectedProduct =
+      result.product_id && ctx.products.some((p) => p.id === result.product_id)
+        ? result.product_id
+        : conversation.product_id;
+
+    // Segunda barrera anti-repetición:
+    // si la IA intenta volver a mandar prácticamente el mismo copy largo del
+    // catálogo, lo reemplazamos por una oferta breve con los precios reales.
+    const safeReply = buildSafeAiReply({
+      reply: result.reply,
+      history: chatHistory,
+      products: ctx.products,
+      productId: detectedProduct,
+      lastCustomerMessage: body,
+    });
+
+    const wamid = await sendWhatsAppText(conn, phone, safeReply);
 
     await supabaseAdmin.from("messages").insert({
       workspace_id: workspaceId,
@@ -718,20 +743,15 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       conversation_id: conversation.id,
       direction: "outbound",
       sender: "ai",
-      body: result.reply,
+      body: safeReply,
       wamid,
       status: "sent",
     });
 
-    const detectedProduct =
-      result.product_id && ctx.products.some((p) => p.id === result.product_id)
-        ? result.product_id
-        : conversation.product_id;
-
     await supabaseAdmin
       .from("conversations")
       .update({
-        last_message: result.reply,
+        last_message: safeReply,
         last_message_at: new Date().toISOString(),
         product_id: detectedProduct,
         unread_count: 0,
@@ -1356,10 +1376,190 @@ async function createOrderFromAi(args: {
   return created;
 }
 
+type CatalogKeywordResult = {
+  productId: string;
+  /** true = el catálogo/copy fue enviado en ESTE turno. */
+  sent: boolean;
+};
+
+function normalizeForDuplicateCheck(value: string) {
+  return value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/https?:\/\/\S+/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function tokenSimilarity(a: string, b: string) {
+  const aTokens = new Set(normalizeForDuplicateCheck(a).split(" ").filter(Boolean));
+  const bTokens = new Set(normalizeForDuplicateCheck(b).split(" ").filter(Boolean));
+
+  if (aTokens.size === 0 || bTokens.size === 0) return 0;
+
+  let intersection = 0;
+  for (const token of aTokens) {
+    if (bTokens.has(token)) intersection += 1;
+  }
+
+  return intersection / Math.min(aTokens.size, bTokens.size);
+}
+
+function looksLikeRepeatedCatalogCopy(
+  reply: string,
+  history: { role: "user" | "assistant"; content: string }[],
+) {
+  const normalizedReply = normalizeForDuplicateCheck(reply);
+
+  // Las respuestas breves no se consideran repetición de un copy comercial.
+  if (normalizedReply.length < 180) return false;
+
+  const previousLongAssistantMessages = history
+    .filter((message) => message.role === "assistant")
+    .map((message) => message.content)
+    .filter((content) => normalizeForDuplicateCheck(content).length >= 180)
+    .slice(-6);
+
+  return previousLongAssistantMessages.some((previous) => {
+    const normalizedPrevious = normalizeForDuplicateCheck(previous);
+
+    if (normalizedReply === normalizedPrevious) return true;
+    if (normalizedReply.includes(normalizedPrevious)) return true;
+    if (normalizedPrevious.includes(normalizedReply)) return true;
+
+    return tokenSimilarity(reply, previous) >= 0.72;
+  });
+}
+
+function isGreetingOrInitialInquiry(value: string) {
+  const normalized = normalizeIntentText(value);
+
+  const patterns = [
+    "hola",
+    "buen dia",
+    "buenas",
+    "buenas tardes",
+    "buenas noches",
+    "informacion",
+    "info",
+    "precio",
+    "cuanto cuesta",
+    "cuanto sale",
+    "disponible",
+    "me interesa",
+    "quiero informacion",
+  ];
+
+  return patterns.some((pattern) => normalized.includes(pattern));
+}
+
+type AiContextProducts = Awaited<
+  ReturnType<typeof buildWorkspaceAiContext>
+>["products"];
+
+function buildShortProductOffer(args: {
+  products: AiContextProducts;
+  productId: string | null;
+  lastCustomerMessage: string;
+}) {
+  const product =
+    args.products.find((candidate) => candidate.id === args.productId) ?? null;
+
+  if (!product) {
+    return "¡Claro! 😊 ¿Para qué ciudad sería el envío? 📍";
+  }
+
+  const options = [...(product.product_prices ?? [])]
+    .map((option) => ({
+      quantity: Math.max(1, Math.floor(Number(option.quantity) || 1)),
+      price: Number(option.price),
+      sortOrder: Number(option.sort_order) || 0,
+    }))
+    .filter(
+      (option) =>
+        Number.isFinite(option.quantity) &&
+        option.quantity > 0 &&
+        Number.isFinite(option.price) &&
+        option.price > 0,
+    )
+    .sort((a, b) => a.sortOrder - b.sortOrder)
+    .slice(0, 5);
+
+  let priceText = "";
+
+  if (options.length === 1) {
+    priceText = `a solo ${formatGs(options[0].price)}`;
+  } else if (options.length > 1) {
+    priceText = `! 🔥\n\n${options
+      .map(
+        (option) =>
+          `${option.quantity} ${option.quantity === 1 ? "unidad" : "unidades"} — ${formatGs(option.price)}`,
+      )
+      .join("\n")}`;
+  } else {
+    const promoPrice = Number(product.promo_price);
+    const regularPrice = Number(product.price);
+    const effectivePrice =
+      Number.isFinite(promoPrice) && promoPrice > 0 ? promoPrice : regularPrice;
+
+    if (Number.isFinite(effectivePrice) && effectivePrice > 0) {
+      priceText = `a solo ${formatGs(effectivePrice)}`;
+    }
+  }
+
+  const question = isGreetingOrInitialInquiry(args.lastCustomerMessage)
+    ? "¿Para qué ciudad sería el envío? 📍"
+    : "¿Querés que avancemos con tu pedido? 📦";
+
+  if (options.length > 1) {
+    return `¡El ${product.name} está en súper oferta${priceText}\n\n${question}`;
+  }
+
+  if (priceText) {
+    return `¡El ${product.name} está en súper oferta ${priceText}! 🔥\n\n${question}`;
+  }
+
+  return `¡El ${product.name} está en súper oferta! 🔥\n\n${question}`;
+}
+
+function buildSafeAiReply(args: {
+  reply: string;
+  history: { role: "user" | "assistant"; content: string }[];
+  products: AiContextProducts;
+  productId: string | null;
+  lastCustomerMessage: string;
+}) {
+  const cleanReply = args.reply.trim();
+
+  if (!cleanReply) {
+    return buildShortProductOffer({
+      products: args.products,
+      productId: args.productId,
+      lastCustomerMessage: args.lastCustomerMessage,
+    });
+  }
+
+  if (!looksLikeRepeatedCatalogCopy(cleanReply, args.history)) {
+    return cleanReply;
+  }
+
+  console.info("[IA] Copy repetido bloqueado; se envía respuesta comercial breve", {
+    productId: args.productId,
+  });
+
+  return buildShortProductOffer({
+    products: args.products,
+    productId: args.productId,
+    lastCustomerMessage: args.lastCustomerMessage,
+  });
+}
+
 /**
  * Detecta palabras clave del catálogo en el mensaje del cliente y envía
  * la plantilla del producto (multimedia + copy) una sola vez por conversación.
- * Devuelve el id del producto detectado, o null.
+ * Devuelve el producto detectado e indica si se envió en este turno.
  */
 async function sendCatalogByKeyword(args: {
   workspaceId: string;
@@ -1368,7 +1568,7 @@ async function sendCatalogByKeyword(args: {
   conn: Conn;
   phone: string;
   text: string;
-}): Promise<string | null> {
+}): Promise<CatalogKeywordResult | null> {
   const raw = (args.text ?? "").toLowerCase().trim();
   if (!raw) return null;
 
@@ -1446,7 +1646,9 @@ async function sendCatalogByKeyword(args: {
     .limit(1)
     .maybeSingle();
 
-  if (alreadySent) return productId;
+  if (alreadySent) {
+    return { productId, sent: false };
+  }
 
   const copy =
     match.products.sales_copy?.trim() ||
@@ -1469,6 +1671,7 @@ ${match.products.description ?? ""}`.trim();
   }
 
   let copySentAsCaption = false;
+  let copySent = false;
   let sentMediaCount = 0;
 
   for (const media of (mediaRows ?? []).slice(0, 8)) {
@@ -1527,6 +1730,7 @@ ${match.products.description ?? ""}`.trim();
 
       if (caption) {
         copySentAsCaption = true;
+        copySent = true;
       }
 
       const { error: insertError } = await supabaseAdmin
@@ -1564,6 +1768,7 @@ ${match.products.description ?? ""}`.trim();
   if (!copySentAsCaption) {
     try {
       const wamid = await sendWhatsAppText(args.conn, args.phone, copy);
+      copySent = true;
 
       const { error: copyError } = await supabaseAdmin.from("messages").insert({
         workspace_id: args.workspaceId,
