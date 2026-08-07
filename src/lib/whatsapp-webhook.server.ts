@@ -342,6 +342,158 @@ async function ingestMedia(args: {
   }
 }
 
+
+/**
+ * Si el cliente envía una imagen o documento después de elegir pago anticipado,
+ * vincula ese archivo al pedido más reciente de la misma conversación.
+ *
+ * Reglas:
+ * - Solo imágenes/documentos.
+ * - Solo pedidos con forma de pago anticipado/transferencia/depósito/giro.
+ * - No pisa un comprobante ya existente.
+ * - Cambia payment_status a "anticipado" únicamente cuando existe archivo real.
+ * - Registra también payment_receipts para conservar historial.
+ */
+async function attachPaymentReceiptToLatestOrder(args: {
+  workspaceId: string;
+  ownerId: string;
+  conversationId: string;
+  mediaPath: string;
+  mediaType: "image" | "audio" | "video" | "document";
+  transcript?: string | null;
+}) {
+  if (args.mediaType !== "image" && args.mediaType !== "document") {
+    return false;
+  }
+
+  const { data: order, error: orderError } = await supabaseAdmin
+    .from("orders")
+    .select(
+      "id, order_number, payment_method, payment_status, receipt_url, total",
+    )
+    .eq("workspace_id", args.workspaceId)
+    .eq("conversation_id", args.conversationId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (orderError) {
+    console.error("[Comprobante] Error buscando el pedido de la conversación", {
+      workspaceId: args.workspaceId,
+      conversationId: args.conversationId,
+      error: orderError.message,
+    });
+    return false;
+  }
+
+  if (!order) {
+    return false;
+  }
+
+  const paymentMethod = normalizeIntentText(order.payment_method ?? "");
+
+  const isAdvancePayment =
+    paymentMethod.includes("anticipado") ||
+    paymentMethod.includes("transferencia") ||
+    paymentMethod.includes("transfer") ||
+    paymentMethod.includes("deposito") ||
+    paymentMethod.includes("giro") ||
+    paymentMethod.includes("bancari");
+
+  if (!isAdvancePayment) {
+    return false;
+  }
+
+  /*
+   * No reemplazamos un comprobante ya asociado. Esto evita que cualquier
+   * imagen/documento posterior del mismo cliente pise el comprobante correcto.
+   */
+  if (order.receipt_url) {
+    return false;
+  }
+
+  const { error: updateError } = await supabaseAdmin
+    .from("orders")
+    .update({
+      receipt_url: args.mediaPath,
+      payment_status: "anticipado",
+    })
+    .eq("id", order.id)
+    .eq("workspace_id", args.workspaceId);
+
+  if (updateError) {
+    console.error("[Comprobante] No se pudo asociar el archivo al pedido", {
+      orderId: order.id,
+      orderNumber: order.order_number,
+      error: updateError.message,
+    });
+    return false;
+  }
+
+  /*
+   * Evita duplicar el mismo archivo en payment_receipts si por alguna razón
+   * esta función se invoca dos veces dentro del mismo flujo.
+   */
+  const { data: existingReceipt, error: existingReceiptError } =
+    await supabaseAdmin
+      .from("payment_receipts")
+      .select("id")
+      .eq("workspace_id", args.workspaceId)
+      .eq("order_id", order.id)
+      .eq("url", args.mediaPath)
+      .limit(1)
+      .maybeSingle();
+
+  if (existingReceiptError) {
+    console.error("[Comprobante] No se pudo verificar payment_receipts", {
+      orderId: order.id,
+      error: existingReceiptError.message,
+    });
+  } else if (!existingReceipt) {
+    const noteParts = ["Comprobante recibido por WhatsApp"];
+    const cleanTranscript = args.transcript?.trim();
+
+    if (cleanTranscript) {
+      noteParts.push(cleanTranscript.slice(0, 1200));
+    }
+
+    const { error: receiptError } = await supabaseAdmin
+      .from("payment_receipts")
+      .insert({
+        workspace_id: args.workspaceId,
+        user_id: args.ownerId,
+        order_id: order.id,
+        url: args.mediaPath,
+        amount: order.total,
+        note: noteParts.join(" | "),
+      });
+
+    if (receiptError) {
+      /*
+       * El pedido ya quedó correctamente actualizado. No revertimos receipt_url
+       * solo porque falle el registro histórico secundario.
+       */
+      console.error(
+        "[Comprobante] Pedido actualizado, pero falló payment_receipts",
+        {
+          orderId: order.id,
+          orderNumber: order.order_number,
+          error: receiptError.message,
+        },
+      );
+    }
+  }
+
+  console.info("[Comprobante] Comprobante asociado correctamente", {
+    orderId: order.id,
+    orderNumber: order.order_number,
+    conversationId: args.conversationId,
+    receiptUrl: args.mediaPath,
+  });
+
+  return true;
+}
+
 export async function handleWhatsAppWebhook(payload: WebhookPayload) {
   for (const entry of payload.entry ?? []) {
     for (const change of entry.changes ?? []) {
@@ -594,6 +746,21 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     .select("id")
     .single();
 
+  /*
+   * Si ya existe un pedido anticipado para esta conversación, el archivo
+   * recibido se convierte inmediatamente en su comprobante.
+   */
+  if (mediaPath && media) {
+    await attachPaymentReceiptToLatestOrder({
+      workspaceId,
+      ownerId,
+      conversationId: conversation.id,
+      mediaPath,
+      mediaType: media.type,
+      transcript,
+    });
+  }
+
   await supabaseAdmin
     .from("conversations")
     .update({
@@ -788,6 +955,22 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         order: completedOrder,
         products: ctx.products,
       });
+
+      /*
+       * Si el mismo mensaje que terminó de confirmar el pedido contenía el
+       * comprobante, en el primer intento todavía no existía la orden.
+       * Reintentamos ahora que createOrderFromAi() ya la creó.
+       */
+      if (mediaPath && media) {
+        await attachPaymentReceiptToLatestOrder({
+          workspaceId,
+          ownerId,
+          conversationId: conversation.id,
+          mediaPath,
+          mediaType: media.type,
+          transcript,
+        });
+      }
     } else if (result.sale_closed && !result.order) {
       await logOrderIssue({
         workspaceId,
