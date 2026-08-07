@@ -930,11 +930,48 @@ async function createOrderFromAi(args: {
   }
 
   if (existingOrder) {
+    /*
+     * Si el pedido ya existía (por reintento del mismo webhook), aprovechamos
+     * para reparar su relación con la conversación y el anuncio si faltaba.
+     */
+    const { data: existingConversation, error: existingConversationError } =
+      await supabaseAdmin
+        .from("conversations")
+        .select("id, ad_id")
+        .eq("id", args.conversationId)
+        .eq("workspace_id", args.workspaceId)
+        .maybeSingle();
+
+    if (existingConversationError) {
+      console.error("[Pedidos] No se pudo resolver el anuncio del pedido existente", {
+        conversationId: args.conversationId,
+        error: existingConversationError.message,
+      });
+    }
+
+    const { error: repairExistingOrderError } = await supabaseAdmin
+      .from("orders")
+      .update({
+        conversation_id: args.conversationId,
+        ad_id: existingConversation?.ad_id ?? null,
+      })
+      .eq("id", existingOrder.id)
+      .eq("workspace_id", args.workspaceId);
+
+    if (repairExistingOrderError) {
+      console.error("[Pedidos] No se pudo reparar la atribución del pedido existente", {
+        orderId: existingOrder.id,
+        conversationId: args.conversationId,
+        error: repairExistingOrderError.message,
+      });
+    }
+
     console.info("[Pedidos] Mensaje de venta ya procesado", {
       conversationId: args.conversationId,
       sourceMessageId,
       orderId: existingOrder.id,
       orderNumber: existingOrder.order_number,
+      adId: existingConversation?.ad_id ?? null,
     });
 
     return existingOrder;
@@ -1109,10 +1146,35 @@ async function createOrderFromAi(args: {
 
   const paymentMethod = cleanOrderText(args.order.payment_method);
 
+  /*
+   * Resolvemos el anuncio directamente desde la conversación de origen.
+   * Así cada pedido nuevo queda atribuido al anuncio correcto en el Dashboard.
+   */
+  const { data: orderConversation, error: orderConversationError } =
+    await supabaseAdmin
+      .from("conversations")
+      .select("id, ad_id")
+      .eq("id", args.conversationId)
+      .eq("workspace_id", args.workspaceId)
+      .maybeSingle();
+
+  if (orderConversationError) {
+    await logOrderIssue({
+      workspaceId: args.workspaceId,
+      ownerId: args.ownerId,
+      message:
+        `No se pudo resolver el anuncio de la conversación antes de crear el pedido. ` +
+        `Conversación: ${args.conversationId}. ${orderConversationError.message}`,
+    });
+
+    throw orderConversationError;
+  }
+
   const orderPayload = {
     workspace_id: args.workspaceId,
     user_id: args.ownerId,
     conversation_id: args.conversationId,
+    ad_id: orderConversation?.ad_id ?? null,
     contact_id: args.contactId,
     order_number: orderNumber,
     customer_name: customerName,
@@ -1287,6 +1349,7 @@ async function createOrderFromAi(args: {
     id: created.id,
     orderNumber: created.order_number,
     conversationId: args.conversationId,
+    adId: orderConversation?.ad_id ?? null,
     workspaceId: args.workspaceId,
   });
 
