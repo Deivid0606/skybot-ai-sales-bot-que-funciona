@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { formatDateTime } from "@/lib/format";
 import { createFileRoute } from "@tanstack/react-router";
 import {
@@ -6,7 +6,12 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { Download, Search, Trash2 } from "lucide-react";
+import {
+  CalendarDays,
+  Download,
+  Search,
+  Trash2,
+} from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import {
   PageHeader,
@@ -53,14 +58,71 @@ export const Route = createFileRoute("/_authenticated/pedidos")({
   component: OrdersPage,
 });
 
+function getTodayDate() {
+  const today = new Date();
+
+  const year = today.getFullYear();
+  const month = String(today.getMonth() + 1).padStart(2, "0");
+  const day = String(today.getDate()).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+}
+
+function isWithinLocalDateRange(
+  value: string | null | undefined,
+  dateFrom: string,
+  dateTo: string,
+) {
+  if (!value || !dateFrom || !dateTo) {
+    return false;
+  }
+
+  const date = new Date(value);
+
+  const [fromYear, fromMonth, fromDay] = dateFrom
+    .split("-")
+    .map(Number);
+
+  const [toYear, toMonth, toDay] = dateTo
+    .split("-")
+    .map(Number);
+
+  const start = new Date(
+    fromYear,
+    fromMonth - 1,
+    fromDay,
+    0,
+    0,
+    0,
+    0,
+  );
+
+  const end = new Date(
+    toYear,
+    toMonth - 1,
+    toDay,
+    23,
+    59,
+    59,
+    999,
+  );
+
+  return date >= start && date <= end;
+}
+
 function OrdersPage() {
   const workspaceId = useWorkspaceId();
   const queryClient = useQueryClient();
 
   const [search, setSearch] = useState("");
 
-  // Al entrar, muestra solamente los pedidos nuevos.
+  // Conservamos el comportamiento anterior:
+  // al entrar muestra pedidos NUEVOS.
   const [status, setStatus] = useState("nuevo");
+
+  // Siempre inicia mostrando HOY.
+  const [dateFrom, setDateFrom] = useState(getTodayDate);
+  const [dateTo, setDateTo] = useState(getTodayDate);
 
   const {
     data: orders,
@@ -74,7 +136,9 @@ function OrdersPage() {
         .from("orders")
         .select("*")
         .eq("workspace_id", workspaceId!)
-        .order("created_at", { ascending: false });
+        .order("created_at", {
+          ascending: false,
+        });
 
       if (error) {
         throw error;
@@ -87,7 +151,9 @@ function OrdersPage() {
   const deleteOrderMutation = useMutation({
     mutationFn: async (orderId: string) => {
       if (!workspaceId) {
-        throw new Error("No se encontró el espacio de trabajo.");
+        throw new Error(
+          "No se encontró el espacio de trabajo.",
+        );
       }
 
       const { error } = await supabase
@@ -115,34 +181,106 @@ function OrdersPage() {
           ? error.message
           : "No se pudo eliminar el pedido.";
 
-      window.alert(`Error al eliminar el pedido: ${message}`);
+      window.alert(
+        `Error al eliminar el pedido: ${message}`,
+      );
     },
   });
 
-  const filtered = (orders ?? []).filter((order) => {
-    const matchStatus =
-      status === "todos" || order.status === status;
+  /**
+   * PRIMER FILTRO:
+   * solamente por fecha.
+   *
+   * Esto se utiliza para calcular el dashboard,
+   * independientemente del buscador y del estado seleccionado.
+   */
+  const ordersInDateRange = useMemo(() => {
+    return (orders ?? []).filter((order) =>
+      isWithinLocalDateRange(
+        order.created_at,
+        dateFrom,
+        dateTo,
+      ),
+    );
+  }, [orders, dateFrom, dateTo]);
 
-    const query = search.trim().toLowerCase();
+  /**
+   * Conteo por estado para el dashboard.
+   *
+   * Solo toma pedidos del rango de fechas seleccionado.
+   */
+  const statusCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
 
-    const customerName = String(
-      order.customer_name ?? "",
-    ).toLowerCase();
+    for (const orderStatus of ORDER_STATES) {
+      counts[orderStatus] = 0;
+    }
 
-    const phone = String(order.phone ?? "").toLowerCase();
+    for (const order of ordersInDateRange) {
+      counts[order.status] =
+        (counts[order.status] ?? 0) + 1;
+    }
 
-    const orderNumber = String(
-      order.order_number ?? "",
-    ).toLowerCase();
+    return counts;
+  }, [ordersInDateRange]);
 
-    const matchSearch =
-      !query ||
-      customerName.includes(query) ||
-      phone.includes(query) ||
-      orderNumber.includes(query);
+  /**
+   * Estados que realmente tienen datos.
+   *
+   * Si un estado tiene 0 pedidos, no mostramos
+   * una tarjeta vacía en el dashboard.
+   */
+  const visibleStatusMetrics = useMemo(() => {
+    return ORDER_STATES.filter(
+      (orderStatus) =>
+        (statusCounts[orderStatus] ?? 0) > 0,
+    );
+  }, [statusCounts]);
 
-    return matchStatus && matchSearch;
-  });
+  /**
+   * Total de pedidos dentro de las fechas.
+   */
+  const totalInDateRange = ordersInDateRange.length;
+
+  /**
+   * FILTRO FINAL:
+   * fecha + estado + búsqueda.
+   */
+  const filtered = useMemo(() => {
+    return ordersInDateRange.filter((order) => {
+      const matchStatus =
+        status === "todos" ||
+        order.status === status;
+
+      const query = search
+        .trim()
+        .toLowerCase();
+
+      const customerName = String(
+        order.customer_name ?? "",
+      ).toLowerCase();
+
+      const phone = String(
+        order.phone ?? "",
+      ).toLowerCase();
+
+      const orderNumber = String(
+        order.order_number ?? "",
+      ).toLowerCase();
+
+      const matchSearch =
+        !query ||
+        customerName.includes(query) ||
+        phone.includes(query) ||
+        orderNumber.includes(query);
+
+      return matchStatus && matchSearch;
+    });
+  }, [
+    ordersInDateRange,
+    status,
+    search,
+  ]);
 
   async function handleDeleteOrder(
     orderId: string,
@@ -158,12 +296,23 @@ function OrdersPage() {
       return;
     }
 
-    await deleteOrderMutation.mutateAsync(orderId);
+    await deleteOrderMutation.mutateAsync(
+      orderId,
+    );
+  }
+
+  function resetDateFilters() {
+    const today = getTodayDate();
+
+    setDateFrom(today);
+    setDateTo(today);
   }
 
   function exportCsv() {
     if (!filtered.length) {
-      window.alert("No hay pedidos para exportar.");
+      window.alert(
+        "No hay pedidos para exportar.",
+      );
       return;
     }
 
@@ -181,6 +330,7 @@ function OrdersPage() {
         "Pago",
         "Estado",
       ],
+
       ...filtered.map((order) => [
         order.order_number ?? "",
         formatDateTime(order.created_at),
@@ -201,13 +351,17 @@ function OrdersPage() {
         row
           .map(
             (column) =>
-              `"${String(column).replace(/"/g, '""')}"`,
+              `"${String(column).replace(
+                /"/g,
+                '""',
+              )}"`,
           )
           .join(","),
       )
       .join("\n");
 
-    // BOM para que Excel reconozca correctamente acentos y ñ.
+    // BOM para que Excel reconozca
+    // correctamente acentos y ñ.
     const csvWithBom = `\uFEFF${csv}`;
 
     const url = URL.createObjectURL(
@@ -216,14 +370,18 @@ function OrdersPage() {
       }),
     );
 
-    const anchor = document.createElement("a");
+    const anchor =
+      document.createElement("a");
 
     anchor.href = url;
-    anchor.download = `pedidos-${status}-${new Date()
-      .toISOString()
-      .slice(0, 10)}.csv`;
+
+    anchor.download =
+      dateFrom === dateTo
+        ? `pedidos-${status}-${dateFrom}.csv`
+        : `pedidos-${status}-${dateFrom}-a-${dateTo}.csv`;
 
     document.body.appendChild(anchor);
+
     anchor.click();
     anchor.remove();
 
@@ -247,44 +405,189 @@ function OrdersPage() {
         }
       />
 
-      <Card>
-        <CardContent className="flex flex-wrap gap-3 p-4">
-          <div className="relative min-w-56 flex-1">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+      {/* DASHBOARD DE ESTADOS */}
+      {!isLoading &&
+        !error &&
+        totalInDateRange > 0 && (
+          <div
+            className="
+              grid
+              grid-cols-2
+              gap-3
+              sm:grid-cols-3
+              lg:grid-cols-4
+              xl:grid-cols-7
+            "
+          >
+            {visibleStatusMetrics.map(
+              (orderStatus) => {
+                const count =
+                  statusCounts[
+                    orderStatus
+                  ] ?? 0;
 
-            <Input
-              className="pl-9"
-              placeholder="Buscar por cliente, teléfono o número"
-              value={search}
-              onChange={(event) =>
-                setSearch(event.target.value)
-              }
-            />
+                const selected =
+                  status === orderStatus;
+
+                return (
+                  <button
+                    key={orderStatus}
+                    type="button"
+                    onClick={() =>
+                      setStatus(orderStatus)
+                    }
+                    className={`
+                      rounded-xl
+                      border
+                      p-4
+                      text-left
+                      transition-all
+                      hover:border-primary/50
+                      hover:bg-accent/40
+                      ${
+                        selected
+                          ? "border-primary bg-primary/10"
+                          : "border-border bg-card"
+                      }
+                    `}
+                  >
+                    <p className="text-xs font-medium text-muted-foreground">
+                      {orderStateLabel(
+                        orderStatus,
+                      )}
+                    </p>
+
+                    <p className="mt-1 text-2xl font-bold">
+                      {count}
+                    </p>
+                  </button>
+                );
+              },
+            )}
+          </div>
+        )}
+
+      {/* FILTROS */}
+      <Card>
+        <CardContent className="space-y-4 p-4">
+          {/* FILTRO DE FECHAS */}
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[220px_220px_auto_1fr]">
+            <label className="space-y-1">
+              <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                <CalendarDays className="h-3.5 w-3.5" />
+                Desde
+              </span>
+
+              <Input
+                type="date"
+                value={dateFrom}
+                max={dateTo}
+                onChange={(event) => {
+                  const value =
+                    event.target.value;
+
+                  setDateFrom(value);
+
+                  if (value > dateTo) {
+                    setDateTo(value);
+                  }
+                }}
+              />
+            </label>
+
+            <label className="space-y-1">
+              <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                <CalendarDays className="h-3.5 w-3.5" />
+                Hasta
+              </span>
+
+              <Input
+                type="date"
+                value={dateTo}
+                min={dateFrom}
+                onChange={(event) => {
+                  const value =
+                    event.target.value;
+
+                  setDateTo(value);
+
+                  if (value < dateFrom) {
+                    setDateFrom(value);
+                  }
+                }}
+              />
+            </label>
+
+            <div className="flex items-end">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={resetDateFilters}
+              >
+                Hoy
+              </Button>
+            </div>
+
+            <div className="flex items-end justify-start lg:justify-end">
+              <p className="pb-2 text-xs text-muted-foreground">
+                {totalInDateRange}{" "}
+                {totalInDateRange === 1
+                  ? "pedido"
+                  : "pedidos"}{" "}
+                en el período
+              </p>
+            </div>
           </div>
 
-          <Select value={status} onValueChange={setStatus}>
-            <SelectTrigger className="w-52">
-              <SelectValue placeholder="Seleccionar estado" />
-            </SelectTrigger>
+          {/* BÚSQUEDA + ESTADO */}
+          <div className="flex flex-wrap gap-3">
+            <div className="relative min-w-56 flex-1">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
 
-            <SelectContent>
-              <SelectItem value="todos">
-                Todos los estados
-              </SelectItem>
+              <Input
+                className="pl-9"
+                placeholder="Buscar por cliente, teléfono o número"
+                value={search}
+                onChange={(event) =>
+                  setSearch(
+                    event.target.value,
+                  )
+                }
+              />
+            </div>
 
-              {ORDER_STATES.map((orderStatus) => (
-                <SelectItem
-                  key={orderStatus}
-                  value={orderStatus}
-                >
-                  {orderStateLabel(orderStatus)}
+            <Select
+              value={status}
+              onValueChange={setStatus}
+            >
+              <SelectTrigger className="w-52">
+                <SelectValue placeholder="Seleccionar estado" />
+              </SelectTrigger>
+
+              <SelectContent>
+                <SelectItem value="todos">
+                  Todos los estados
                 </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+
+                {ORDER_STATES.map(
+                  (orderStatus) => (
+                    <SelectItem
+                      key={orderStatus}
+                      value={orderStatus}
+                    >
+                      {orderStateLabel(
+                        orderStatus,
+                      )}
+                    </SelectItem>
+                  ),
+                )}
+              </SelectContent>
+            </Select>
+          </div>
         </CardContent>
       </Card>
 
+      {/* PEDIDOS */}
       {isLoading ? (
         <EmptyState
           title="Cargando pedidos"
@@ -303,22 +606,33 @@ function OrdersPage() {
               : "No se encontraron pedidos"
           }
           description={
-            status === "nuevo"
-              ? "Cuando la IA cierre una nueva venta, aparecerá automáticamente aquí."
-              : "No existen pedidos que coincidan con el estado o la búsqueda seleccionada."
+            totalInDateRange === 0
+              ? "No existen pedidos registrados dentro del rango de fechas seleccionado."
+              : status === "nuevo"
+                ? "No hay pedidos nuevos que coincidan con los filtros seleccionados."
+                : "No existen pedidos que coincidan con el estado, la búsqueda o las fechas seleccionadas."
           }
         />
       ) : (
-        <div className="grid gap-4 xl:grid-cols-2">
+        <div
+          className="
+            grid
+            grid-cols-1
+            gap-4
+            lg:grid-cols-2
+            2xl:grid-cols-3
+          "
+        >
           {filtered.map((order) => {
             const isDeleting =
               deleteOrderMutation.isPending &&
-              deleteOrderMutation.variables === order.id;
+              deleteOrderMutation.variables ===
+                order.id;
 
             return (
               <div
                 key={order.id}
-                className="relative"
+                className="relative min-w-0"
               >
                 <div className="absolute right-3 top-3 z-10">
                   <Button
@@ -341,7 +655,9 @@ function OrdersPage() {
                   </Button>
                 </div>
 
-                <OrderCard order={order} />
+                <OrderCard
+                  order={order}
+                />
               </div>
             );
           })}
