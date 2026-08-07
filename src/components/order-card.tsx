@@ -112,9 +112,29 @@ export function OrderCard({ order }: { order: Order }) {
       return;
     }
     try {
-      const url = order.receipt_url.startsWith("http")
-        ? order.receipt_url
-        : await getSignedUrl("receipts", order.receipt_url);
+      let url: string;
+
+      if (order.receipt_url.startsWith("http")) {
+        url = order.receipt_url;
+      } else {
+        /*
+         * Los comprobantes recibidos por WhatsApp quedan guardados en chat-media.
+         * Mantenemos fallback a receipts para comprobantes antiguos/subidos manualmente.
+         */
+        try {
+          const { data, error } = await supabase.storage
+            .from("chat-media")
+            .createSignedUrl(order.receipt_url, 60 * 60);
+
+          if (error || !data?.signedUrl) {
+            throw error ?? new Error("No se pudo generar la URL del comprobante");
+          }
+
+          url = data.signedUrl;
+        } catch {
+          url = await getSignedUrl("receipts", order.receipt_url);
+        }
+      }
       if (download) {
         const a = document.createElement("a");
         a.href = url;
@@ -250,7 +270,16 @@ export function OrderCard({ order }: { order: Order }) {
           <Button size="sm" variant="outline" onClick={() => setChatOpen(true)}>
             <Eye className="mr-1 h-4 w-4" /> Vista previa
           </Button>
-          <Button size="sm" variant="outline" onClick={() => openReceipt(false)}>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => openReceipt(false)}
+            className={
+              order.receipt_url
+                ? "border-emerald-600 bg-emerald-600 text-white hover:border-emerald-700 hover:bg-emerald-700 hover:text-white"
+                : undefined
+            }
+          >
             <FileText className="mr-1 h-4 w-4" /> Comprobante
           </Button>
           <Button size="sm" variant="outline" onClick={() => openReceipt(true)}>
@@ -309,7 +338,19 @@ export function OrderCard({ order }: { order: Order }) {
             <DialogDescription>Pedido {order.order_number}</DialogDescription>
           </DialogHeader>
           {receiptUrl && (
-            <img src={receiptUrl} alt={`Comprobante del pedido ${order.order_number}`} className="w-full rounded-lg" />
+            receiptUrl.toLowerCase().includes(".pdf") ? (
+              <iframe
+                src={receiptUrl}
+                title={`Comprobante del pedido ${order.order_number}`}
+                className="h-[70vh] w-full rounded-lg border"
+              />
+            ) : (
+              <img
+                src={receiptUrl}
+                alt={`Comprobante del pedido ${order.order_number}`}
+                className="max-h-[70vh] w-full rounded-lg object-contain"
+              />
+            )
           )}
         </DialogContent>
       </Dialog>
