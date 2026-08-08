@@ -600,7 +600,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
   let { data: conversation, error: conversationLookupError } =
     await supabaseAdmin
       .from("conversations")
-      .select("id, ai_paused, product_id, is_closed, sale_closed")
+      .select("id, ai_paused, product_id, is_closed, sale_closed, ad_id")
       .eq("workspace_id", workspaceId)
       .eq("contact_id", contact.id)
       .order("created_at", { ascending: true })
@@ -629,7 +629,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
           ad_media_url: referral.mediaUrl,
           ad_media_type: referral.mediaType,
         })
-        .select("id, ai_paused, product_id, is_closed, sale_closed")
+        .select("id, ai_paused, product_id, is_closed, sale_closed, ad_id")
         .single();
 
     if (createConversationError) {
@@ -645,7 +645,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       const { data: concurrentConversation, error: concurrentLookupError } =
         await supabaseAdmin
           .from("conversations")
-          .select("id, ai_paused, product_id, is_closed, sale_closed")
+          .select("id, ai_paused, product_id, is_closed, sale_closed, ad_id")
           .eq("workspace_id", workspaceId)
           .eq("contact_id", contact.id)
           .single();
@@ -690,7 +690,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       })
       .eq("id", conversation.id)
       .eq("workspace_id", workspaceId)
-      .select("id, ai_paused, product_id, is_closed, sale_closed")
+      .select("id, ai_paused, product_id, is_closed, sale_closed, ad_id")
       .single();
 
     if (reopenError) throw reopenError;
@@ -700,6 +700,14 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
   if (!conversation) {
     throw new Error("No se pudo crear ni recuperar la conversación");
   }
+
+  /*
+   * Snapshot de atribución: cada mensaje conserva el anuncio vigente en ESTE
+   * momento. Si Meta trae referral, ese anuncio gana; si no, se hereda el
+   * anuncio actual de la conversación. Así un referral futuro no reescribe
+   * históricamente los mensajes anteriores.
+   */
+  const attributedAdId = referral.adId ?? conversation.ad_id ?? null;
 
   if (media) {
     if (!conn.access_token) {
@@ -734,6 +742,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       workspace_id: workspaceId,
       user_id: ownerId,
       conversation_id: conversation.id,
+      ad_id: attributedAdId,
       direction: "inbound",
       sender: "customer",
       body,
@@ -848,6 +857,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     workspaceId,
     ownerId,
     conversationId: conversation.id,
+    adId: attributedAdId,
     conn,
     phone,
     text: body,
@@ -908,6 +918,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       workspace_id: workspaceId,
       user_id: ownerId,
       conversation_id: conversation.id,
+      ad_id: attributedAdId,
       direction: "outbound",
       sender: "ai",
       body: safeReply,
@@ -950,6 +961,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         conversationId: conversation.id,
         contactId: contact.id,
         phone,
+        adId: attributedAdId,
         productId: detectedProduct,
         sourceMessageId: message.id,
         order: completedOrder,
@@ -1059,6 +1071,7 @@ async function createOrderFromAi(args: {
   conversationId: string;
   contactId: string;
   phone: string;
+  adId: string | null;
   productId: string | null;
   sourceMessageId: string;
   order: NonNullable<Awaited<ReturnType<typeof generateAiReply>>["order"]>;
@@ -1112,7 +1125,7 @@ async function createOrderFromAi(args: {
 
   const { data: existingOrder, error: existingOrderError } = await supabaseAdmin
     .from("orders")
-    .select("id, order_number")
+    .select("id, order_number, ad_id")
     .eq("workspace_id", args.workspaceId)
     .eq("order_number", orderNumber)
     .maybeSingle();
@@ -1134,29 +1147,14 @@ async function createOrderFromAi(args: {
 
   if (existingOrder) {
     /*
-     * Si el pedido ya existía (por reintento del mismo webhook), aprovechamos
-     * para reparar su relación con la conversación y el anuncio si faltaba.
+     * Reintento del mismo webhook: repara conversation_id, pero NUNCA pisa un
+     * ad_id ya guardado. El anuncio del pedido es un snapshot histórico.
      */
-    const { data: existingConversation, error: existingConversationError } =
-      await supabaseAdmin
-        .from("conversations")
-        .select("id, ad_id")
-        .eq("id", args.conversationId)
-        .eq("workspace_id", args.workspaceId)
-        .maybeSingle();
-
-    if (existingConversationError) {
-      console.error("[Pedidos] No se pudo resolver el anuncio del pedido existente", {
-        conversationId: args.conversationId,
-        error: existingConversationError.message,
-      });
-    }
-
     const { error: repairExistingOrderError } = await supabaseAdmin
       .from("orders")
       .update({
         conversation_id: args.conversationId,
-        ad_id: existingConversation?.ad_id ?? null,
+        ad_id: existingOrder.ad_id ?? args.adId,
       })
       .eq("id", existingOrder.id)
       .eq("workspace_id", args.workspaceId);
@@ -1174,7 +1172,7 @@ async function createOrderFromAi(args: {
       sourceMessageId,
       orderId: existingOrder.id,
       orderNumber: existingOrder.order_number,
-      adId: existingConversation?.ad_id ?? null,
+      adId: existingOrder.ad_id ?? args.adId,
     });
 
     return existingOrder;
@@ -1350,34 +1348,16 @@ async function createOrderFromAi(args: {
   const paymentMethod = cleanOrderText(args.order.payment_method);
 
   /*
-   * Resolvemos el anuncio directamente desde la conversación de origen.
-   * Así cada pedido nuevo queda atribuido al anuncio correcto en el Dashboard.
+   * El ad_id llega como snapshot desde el mensaje que está cerrando la venta.
+   * No volvemos a leer conversations.ad_id aquí porque otro referral concurrente
+   * podría cambiarlo y atribuir la venta al anuncio equivocado.
    */
-  const { data: orderConversation, error: orderConversationError } =
-    await supabaseAdmin
-      .from("conversations")
-      .select("id, ad_id")
-      .eq("id", args.conversationId)
-      .eq("workspace_id", args.workspaceId)
-      .maybeSingle();
-
-  if (orderConversationError) {
-    await logOrderIssue({
-      workspaceId: args.workspaceId,
-      ownerId: args.ownerId,
-      message:
-        `No se pudo resolver el anuncio de la conversación antes de crear el pedido. ` +
-        `Conversación: ${args.conversationId}. ${orderConversationError.message}`,
-    });
-
-    throw orderConversationError;
-  }
 
   const orderPayload = {
     workspace_id: args.workspaceId,
     user_id: args.ownerId,
     conversation_id: args.conversationId,
-    ad_id: orderConversation?.ad_id ?? null,
+    ad_id: args.adId,
     contact_id: args.contactId,
     order_number: orderNumber,
     customer_name: customerName,
@@ -1552,7 +1532,7 @@ async function createOrderFromAi(args: {
     id: created.id,
     orderNumber: created.order_number,
     conversationId: args.conversationId,
-    adId: orderConversation?.ad_id ?? null,
+    adId: args.adId,
     workspaceId: args.workspaceId,
   });
 
@@ -1748,6 +1728,7 @@ async function sendCatalogByKeyword(args: {
   workspaceId: string;
   ownerId: string;
   conversationId: string;
+  adId: string | null;
   conn: Conn;
   phone: string;
   text: string;
@@ -1922,6 +1903,7 @@ ${match.products.description ?? ""}`.trim();
           workspace_id: args.workspaceId,
           user_id: args.ownerId,
           conversation_id: args.conversationId,
+          ad_id: args.adId,
           direction: "outbound",
           sender: "ai",
           body: caption || `[${type}] ${match.products.name}`,
@@ -1957,6 +1939,7 @@ ${match.products.description ?? ""}`.trim();
         workspace_id: args.workspaceId,
         user_id: args.ownerId,
         conversation_id: args.conversationId,
+        ad_id: args.adId,
         direction: "outbound",
         sender: "ai",
         body: copy,
@@ -1992,5 +1975,5 @@ ${match.products.description ?? ""}`.trim();
     })
     .eq("id", args.conversationId);
 
-  return productId;
+  return { productId, sent: copySent || sentMediaCount > 0 };
 }
