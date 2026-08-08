@@ -106,15 +106,10 @@ function normalizeText(value: unknown) {
 function isInboundMessageSender(sender: unknown) {
   const normalizedSender = normalizeText(sender);
 
-  if (!normalizedSender) return false;
-
-  return ![
-    "ai",
-    "agent",
-    "assistant",
-    "bot",
-    "system",
-  ].includes(normalizedSender);
+  // En tu webhook los mensajes entrantes se guardan como sender="customer".
+  // Se aceptan algunos valores legacy, pero nunca se considera inbound a un
+  // valor desconocido porque eso inflaría la métrica de mensajes recibidos.
+  return ["customer", "client", "contact", "user"].includes(normalizedSender);
 }
 
 function hasOrderTag(tags: unknown, expectedTag: string) {
@@ -196,6 +191,7 @@ function DashboardPage() {
         id: string;
         conversation_id: string | null;
         sender: string | null;
+        ad_id: string | null;
         created_at: string | null;
       }> = [];
 
@@ -208,14 +204,20 @@ function DashboardPage() {
 
         const messagePage = await supabase
           .from("messages")
-          .select("id, conversation_id, sender, created_at")
+          .select("*")
           .eq("workspace_id", workspaceId!)
           .order("created_at", { ascending: true })
           .range(from, to);
 
         if (messagePage.error) throw messagePage.error;
 
-        const rows = messagePage.data ?? [];
+        const rows = (messagePage.data ?? []) as unknown as Array<{
+          id: string;
+          conversation_id: string | null;
+          sender: string | null;
+          ad_id: string | null;
+          created_at: string | null;
+        }>;
         allMessages.push(...rows);
 
         if (rows.length < pageSize) break;
@@ -312,21 +314,20 @@ function DashboardPage() {
       );
 
   /*
-   * Una conversación equivale a un conversation_id único que tuvo
-   * al menos un mensaje dentro del periodo seleccionado.
-   * Varios mensajes del mismo chat siguen contando como 1 conversación.
+   * "Conversaciones recibidas" cuenta chats únicos que realmente recibieron
+   * al menos un mensaje del cliente en el periodo. Las respuestas de IA por sí
+   * solas no crean una conversación recibida.
    */
-  const activeConversationIds = new Set(
-    rangeMessages
-      .map((message) => message.conversation_id)
-      .filter(
-        (conversationId): conversationId is string =>
-          Boolean(conversationId),
-      ),
+  const customerRangeMessages = rangeMessages.filter((message) =>
+    isInboundMessageSender(message.sender),
   );
 
-  const activeConversations = data.conversations.filter((conversation) =>
-    activeConversationIds.has(conversation.id),
+  const activeConversationIds = new Set(
+    customerRangeMessages
+      .map((message) => message.conversation_id)
+      .filter(
+        (conversationId): conversationId is string => Boolean(conversationId),
+      ),
   );
 
   const totalConversations = activeConversationIds.size;
@@ -334,11 +335,8 @@ function DashboardPage() {
   // Fuente oficial de ventas: pedidos no cancelados creados en el periodo.
   const closedSales = rangeOrders.length;
 
-  // Mensajes recibidos: solo mensajes entrantes del cliente.
-  // Excluye respuestas de IA, agentes y mensajes del sistema.
-  const customerMessages = rangeMessages.filter((message) =>
-    isInboundMessageSender(message.sender),
-  ).length;
+  // Mensajes recibidos: únicamente mensajes entrantes del cliente.
+  const customerMessages = customerRangeMessages.length;
 
   const conversion = totalConversations
     ? Math.round((closedSales / totalConversations) * 100)
@@ -385,10 +383,24 @@ function DashboardPage() {
   );
 
   /*
-   * Resuelve el anuncio real de cada pedido:
-   * 1. Usa orders.ad_id cuando está guardado directamente.
-   * 2. Si no existe, usa orders.conversation_id y busca el ad_id del chat.
-   * 3. Si no hay relación, el pedido queda como venta sin atribuir.
+   * Para datos NUEVOS, messages.ad_id es la fuente histórica correcta.
+   * Para mensajes viejos (anteriores a la migración) usamos conversations.ad_id
+   * únicamente como fallback de compatibilidad. Ese fallback no puede reconstruir
+   * con certeza un referral histórico que nunca fue guardado.
+   */
+  const getMessageAdId = (message: (typeof rangeMessages)[number]) => {
+    if (message.ad_id) return message.ad_id;
+
+    if (message.conversation_id) {
+      return conversationById.get(message.conversation_id)?.ad_id ?? null;
+    }
+
+    return null;
+  };
+
+  /*
+   * Los pedidos ya guardan su propio ad_id. Solo recurrimos al ad_id actual de
+   * la conversación para registros legacy donde orders.ad_id todavía sea null.
    */
   const getOrderAdId = (order: (typeof rangeOrders)[number]) => {
     if (order.ad_id) return order.ad_id;
@@ -402,8 +414,9 @@ function DashboardPage() {
 
   const adIdsInPeriod = new Set<string>();
 
-  activeConversations.forEach((conversation) => {
-    if (conversation.ad_id) adIdsInPeriod.add(conversation.ad_id);
+  customerRangeMessages.forEach((message) => {
+    const messageAdId = getMessageAdId(message);
+    if (messageAdId) adIdsInPeriod.add(messageAdId);
   });
 
   rangeOrders.forEach((order) => {
@@ -414,27 +427,31 @@ function DashboardPage() {
   const adMetrics = Array.from(adIdsInPeriod)
     .map((adId) => {
       const registeredAd = registeredAdByExternalId.get(adId);
-      const adConversations = activeConversations.filter(
-        (conversation) => conversation.ad_id === adId,
+
+      const adCustomerMessages = customerRangeMessages.filter(
+        (message) => getMessageAdId(message) === adId,
       );
+
       const adConversationIds = new Set(
-        adConversations.map((conversation) => conversation.id),
+        adCustomerMessages
+          .map((message) => message.conversation_id)
+          .filter(
+            (conversationId): conversationId is string => Boolean(conversationId),
+          ),
       );
+
       const conversations = adConversationIds.size;
-      const messages = rangeMessages.filter(
-        (message) =>
-          isInboundMessageSender(message.sender) &&
-          Boolean(message.conversation_id) &&
-          adConversationIds.has(message.conversation_id!),
-      ).length;
-      // Fuente oficial de ventas por anuncio: pedidos no cancelados
-      // creados en el periodo y relacionados con este anuncio.
+      const messages = adCustomerMessages.length;
+
+      // Fuente oficial de ventas por anuncio: el snapshot guardado en orders.ad_id.
       const sales = rangeOrders.filter(
         (order) => getOrderAdId(order) === adId,
       ).length;
+
       const conversion = conversations
         ? Math.round((sales / conversations) * 1000) / 10
         : 0;
+
       const relatedProducts = registeredAd?.products as
         | { name?: string | null }
         | Array<{ name?: string | null }>
@@ -461,9 +478,14 @@ function DashboardPage() {
       a.name.localeCompare(b.name),
     );
 
-  const conversationsWithoutAd = activeConversations.filter(
-    (conversation) => !conversation.ad_id,
-  ).length;
+  const conversationsWithoutAd = new Set(
+    customerRangeMessages
+      .filter((message) => !getMessageAdId(message))
+      .map((message) => message.conversation_id)
+      .filter(
+        (conversationId): conversationId is string => Boolean(conversationId),
+      ),
+  ).size;
 
   const unattributedSales = rangeOrders.filter(
     (order) => !getOrderAdId(order),
