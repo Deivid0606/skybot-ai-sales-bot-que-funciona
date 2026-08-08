@@ -866,7 +866,83 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
   if (catalogResult) {
     conversation.product_id = catalogResult.productId;
 
+    /*
+     * Si el catálogo/copy se acaba de enviar en este mismo turno, enviamos
+     * inmediatamente una oferta corta construida con los precios REALES del
+     * producto detectado. Así cada producto recibe su propio mensaje breve
+     * después del catálogo, sin volver a ejecutar generateAiReply() ni repetir
+     * el copy largo.
+     */
     if (catalogResult.sent) {
+      try {
+        const ctx = await buildWorkspaceAiContext(
+          supabaseAdmin,
+          workspaceId,
+          [],
+          catalogResult.productId,
+          phone,
+        );
+
+        const shortOffer = buildShortProductOffer({
+          products: ctx.products,
+          productId: catalogResult.productId,
+          lastCustomerMessage: body,
+        });
+
+        const shortOfferWamid = await sendWhatsAppText(
+          conn,
+          phone,
+          shortOffer,
+        );
+
+        const { error: shortOfferInsertError } = await supabaseAdmin
+          .from("messages")
+          .insert({
+            workspace_id: workspaceId,
+            user_id: ownerId,
+            conversation_id: conversation.id,
+            ad_id: attributedAdId,
+            direction: "outbound",
+            sender: "ai",
+            body: shortOffer,
+            wamid: shortOfferWamid,
+            status: "sent",
+          });
+
+        if (shortOfferInsertError) {
+          console.error(
+            "[Catálogo] Se envió la oferta corta, pero no pudo guardarse en messages",
+            {
+              conversationId: conversation.id,
+              productId: catalogResult.productId,
+              error: shortOfferInsertError.message,
+            },
+          );
+        }
+
+        await supabaseAdmin
+          .from("conversations")
+          .update({
+            last_message: shortOffer,
+            last_message_at: new Date().toISOString(),
+            product_id: catalogResult.productId,
+            unread_count: 0,
+          })
+          .eq("id", conversation.id)
+          .eq("workspace_id", workspaceId);
+      } catch (error) {
+        /*
+         * El catálogo ya fue enviado correctamente. Si por cualquier motivo
+         * falla la oferta corta, no volvemos a ejecutar generateAiReply()
+         * porque eso podría duplicar el copy largo.
+         */
+        console.error("[Catálogo] Error enviando oferta corta del producto", {
+          conversationId: conversation.id,
+          productId: catalogResult.productId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+
       return;
     }
   }
