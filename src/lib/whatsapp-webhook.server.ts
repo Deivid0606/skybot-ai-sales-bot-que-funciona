@@ -889,6 +889,12 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
           lastCustomerMessage: body,
         });
 
+        // Meta puede aceptar la multimedia antes de que WhatsApp termine de
+        // entregarla/renderizarla en el teléfono. Damos un pequeño margen para
+        // que la imagen + copy aparezcan primero y recién después enviamos la
+        // oferta corta.
+        await new Promise((resolve) => setTimeout(resolve, 1800));
+
         const shortOfferWamid = await sendWhatsAppText(
           conn,
           phone,
