@@ -240,11 +240,21 @@ export function buildEcommerceUrl(
   );
 
   /**
-   * SOLO nombre del producto en observaciones.
+   * Observaciones enviadas a Ecommerce:
+   * - nombre del producto
+   * - observación real dejada por el cliente
    */
-  const observacion = order.product_title
-    ? `Producto: ${order.product_title}`
-    : "";
+  const observacion = [
+    order.product_title
+      ? `Producto: ${order.product_title}`
+      : "",
+
+    order.observations
+      ? `Observación del cliente: ${order.observations}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join(" | ");
 
   const entries: Record<string, string> = {
     origen: "seller-skyline",
