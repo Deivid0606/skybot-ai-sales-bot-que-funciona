@@ -44,9 +44,6 @@ export function orderStateLabel(state: string) {
 export const ECOMMERCE_BASE_URL =
   "https://www.el-ecommercedcanpgroup.com/";
 
-/**
- * Departamentos usados internamente por BOT SKY.
- */
 export const DEPARTAMENTOS_PY = [
   "Asunción",
   "Concepción",
@@ -102,12 +99,6 @@ const DEPT_ALIASES: Record<string, string> = {
   amambay: "Amambay",
 };
 
-/**
- * Ciudades frecuentes → departamento.
- *
- * Se usa como respaldo cuando el pedido no tiene
- * departamento guardado.
- */
 const CITY_TO_DEPT: Record<string, string> = {
   asuncion: "Asunción",
 
@@ -167,9 +158,9 @@ const CITY_TO_DEPT: Record<string, string> = {
   tobatii: "Cordillera",
   tobato: "Cordillera",
   tobata: "Cordillera",
-  tob ati: "Cordillera",
-  tob atí: "Cordillera",
-  "tobatí": "Cordillera",
+  "tob ati": "Cordillera",
+  "tob atí": "Cordillera",
+  tobati: "Cordillera",
 
   "benjamin aceval": "Presidente Hayes",
   "benjamín aceval": "Presidente Hayes",
@@ -185,13 +176,6 @@ const norm = (value: string) =>
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/\s+/g, " ");
 
-/**
- * Devuelve el departamento completo a partir de:
- *
- * 1. order.departamento
- * 2. alias
- * 3. ciudad
- */
 export function resolveDepartamento(
   departamento?: string | null,
   city?: string | null,
@@ -231,14 +215,6 @@ export function resolveDepartamento(
   return CITY_TO_DEPT[cityKey] ?? "";
 }
 
-/**
- * La otra plataforma llama "Capital" al departamento
- * correspondiente a Asunción.
- *
- * BOT SKY usa "Asunción".
- *
- * Convertimos solamente al generar la URL externa.
- */
 function departamentoForEcommerce(
   departamento?: string | null,
   city?: string | null,
@@ -255,35 +231,6 @@ function departamentoForEcommerce(
   return resolved;
 }
 
-/**
- * Construye la URL que abre el formulario de la
- * plataforma Ecommerce.
- *
- * Enviamos:
- *
- * - cliente
- * - teléfono
- * - departamento
- * - ciudad
- * - calle
- * - barrio
- * - referencia
- * - producto
- * - product_id
- * - sku
- * - cantidad
- * - precio
- * - total
- * - forma de pago
- * - estado de pago
- * - pedido original
- * - anuncio
- * - comprobante
- * - observaciones
- *
- * La app receptora puede utilizar product_id, sku o
- * producto para identificar automáticamente el artículo.
- */
 export function buildEcommerceUrl(
   order: Tables<"orders">,
 ) {
@@ -293,63 +240,21 @@ export function buildEcommerceUrl(
   );
 
   /**
-   * Observación completa.
-   *
-   * Mandamos también los datos importantes dentro de
-   * observación como respaldo, pero la app receptora
-   * debe usar primero los parámetros específicos.
+   * SOLO nombre del producto en observaciones.
    */
-  const observacion = [
-    order.observations ?? "",
-
-    order.product_title
-      ? `Producto: ${order.product_title}`
-      : "",
-
-    order.payment_method
-      ? `Forma de pago: ${order.payment_method}`
-      : "",
-
-    order.district
-      ? `Barrio: ${order.district}`
-      : "",
-
-    order.reference
-      ? `Referencia: ${order.reference}`
-      : "",
-
-    order.sku
-      ? `SKU: ${order.sku}`
-      : "",
-
-    order.order_number
-      ? `Pedido BOT SKY: ${order.order_number}`
-      : "",
-  ]
-    .filter(Boolean)
-    .join(" | ");
+  const observacion = order.product_title
+    ? `Producto: ${order.product_title}`
+    : "";
 
   const entries: Record<string, string> = {
-    /**
-     * Identificador obligatorio.
-     */
     origen: "seller-skyline",
 
-    /**
-     * Cliente.
-     */
     nombre: order.customer_name ?? "",
     cliente: order.customer_name ?? "",
 
-    /**
-     * Teléfono.
-     */
     telefono: order.phone ?? "",
     phone: order.phone ?? "",
 
-    /**
-     * Ubicación.
-     */
     departamento,
     depto: departamento,
 
@@ -365,16 +270,6 @@ export function buildEcommerceUrl(
     referencia: order.reference ?? "",
     reference: order.reference ?? "",
 
-    /**
-     * Producto.
-     *
-     * Se mandan varias formas para que la app receptora
-     * pueda identificar el producto con prioridad:
-     *
-     * 1. product_id
-     * 2. sku
-     * 3. título
-     */
     producto: order.product_title ?? "",
     product_title: order.product_title ?? "",
 
@@ -383,9 +278,6 @@ export function buildEcommerceUrl(
 
     sku: order.sku ?? "",
 
-    /**
-     * Cantidad y precios.
-     */
     cantidad: String(order.quantity ?? 1),
     qty: String(order.quantity ?? 1),
 
@@ -395,64 +287,31 @@ export function buildEcommerceUrl(
     total: String(order.total ?? 0),
     total_gs: String(order.total ?? 0),
 
-    /**
-     * Pago.
-     */
     pago: order.payment_method ?? "",
     payment_method: order.payment_method ?? "",
 
-    estado_pago:
-      order.payment_status ?? "",
+    estado_pago: order.payment_status ?? "",
+    payment_status: order.payment_status ?? "",
 
-    payment_status:
-      order.payment_status ?? "",
-
-    /**
-     * Pedido de origen.
-     */
     pedido: order.order_number ?? "",
-    order_number:
-      order.order_number ?? "",
+    order_number: order.order_number ?? "",
 
-    /**
-     * Anuncio.
-     */
     anuncio: order.ad_id ?? "",
     ad_id: order.ad_id ?? "",
 
-    /**
-     * Comprobante.
-     */
-    comprobante:
-      order.receipt_url ?? "",
+    comprobante: order.receipt_url ?? "",
+    receipt_url: order.receipt_url ?? "",
 
-    receipt_url:
-      order.receipt_url ?? "",
-
-    /**
-     * Actualmente orders no tiene email del cliente,
-     * por eso queda vacío.
-     */
     email: "",
 
-    /**
-     * Observación.
-     */
     obs: observacion,
-    observacion,
+    observacion: observacion,
   };
 
   const params = new URLSearchParams();
 
-  /**
-   * No mandamos parámetros vacíos.
-   */
-  for (const [key, value] of Object.entries(
-    entries,
-  )) {
-    const cleanValue = String(
-      value ?? "",
-    ).trim();
+  for (const [key, value] of Object.entries(entries)) {
+    const cleanValue = String(value ?? "").trim();
 
     if (cleanValue) {
       params.set(key, cleanValue);
