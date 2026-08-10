@@ -748,4 +748,3 @@ export async function generateAiReply(
 
   return generateWithGateway(ctx);
 }
-
