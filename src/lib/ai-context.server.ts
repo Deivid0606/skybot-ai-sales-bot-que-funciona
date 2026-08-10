@@ -1,8 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Database } from "@/integrations/supabase/types";
 import type { AiContext } from "@/lib/ai.server";
 
-type Client = SupabaseClient<Database>;
+type Client = SupabaseClient;
 
 const DEFAULT_TIME_ZONE = "America/Asuncion";
 
@@ -39,8 +38,7 @@ function getCurrentTimeContext(
   const getPart = (
     type: Intl.DateTimeFormatPartTypes,
   ): string =>
-    parts.find((part) => part.type === type)?.value ??
-    "";
+    parts.find((part) => part.type === type)?.value ?? "";
 
   const hour = Number(getPart("hour"));
   const minute = Number(getPart("minute"));
@@ -172,14 +170,16 @@ export async function buildWorkspaceAiContext(
      * Los precios reales del catálogo se encuentran
      * en product_prices.
      *
-     * products.price y products.promo_price se conservan
-     * solamente por compatibilidad con productos antiguos.
+     * IMPORTANTE:
+     * También recuperamos SKU para que el pedido guarde
+     * una copia del SKU vigente del producto.
      */
     supabase
       .from("products")
       .select(`
         id,
         name,
+        sku,
         price,
         promo_price,
         stock,
@@ -231,10 +231,14 @@ export async function buildWorkspaceAiContext(
       ]
         .map((priceOption) => ({
           id: priceOption.id,
-          label: String(priceOption.label ?? "").trim(),
+          label: String(
+            priceOption.label ?? "",
+          ).trim(),
           quantity: Math.max(
             1,
-            Math.floor(Number(priceOption.quantity) || 1),
+            Math.floor(
+              Number(priceOption.quantity) || 1,
+            ),
           ),
           price: Number(priceOption.price) || 0,
           sort_order:
@@ -254,14 +258,13 @@ export async function buildWorkspaceAiContext(
       /*
        * Precio heredado para mantener compatibilidad
        * con partes antiguas de la IA.
-       *
-       * Si existe product_prices, usamos como referencia
-       * la primera opción válida.
        */
       const firstPriceOption =
         productPrices[0] ?? null;
 
-      const legacyPrice = Number(product.price);
+      const legacyPrice =
+        Number(product.price);
+
       const legacyPromoPrice =
         product.promo_price === null
           ? null
@@ -278,9 +281,23 @@ export async function buildWorkspaceAiContext(
             ? legacyPrice
             : 0);
 
+      /*
+       * Normalizamos el SKU.
+       *
+       * Si por alguna razón viene vacío, se usa null.
+       */
+      const sku =
+        String(product.sku ?? "").trim() || null;
+
       return {
         id: product.id,
         name: product.name,
+
+        /*
+         * SKU del producto.
+         * createOrderFromAi lo copiará a orders.sku.
+         */
+        sku,
 
         /*
          * Se mantiene price para no romper ai.server.ts.
@@ -324,9 +341,10 @@ export async function buildWorkspaceAiContext(
     geminiApiKey:
       aiSettingsResult.data?.gemini_api_key ?? null,
 
-    model: aiSettingsResult.data?.autodetect_model
-      ? null
-      : (aiSettingsResult.data?.model ?? null),
+    model:
+      aiSettingsResult.data?.autodetect_model
+        ? null
+        : (aiSettingsResult.data?.model ?? null),
 
     customerPhone,
 
@@ -338,7 +356,8 @@ export async function buildWorkspaceAiContext(
 
     products,
 
-    training: trainingResult.data ?? [],
+    training:
+      trainingResult.data ?? [],
 
     history,
 
