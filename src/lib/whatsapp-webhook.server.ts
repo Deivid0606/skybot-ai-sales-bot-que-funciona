@@ -1160,6 +1160,7 @@ async function createOrderFromAi(args: {
   products: {
     id: string;
     name: string;
+    sku: string | null;
     price: number;
     promo_price: number | null;
     product_prices?: {
@@ -1430,6 +1431,13 @@ async function createOrderFromAi(args: {
   const paymentMethod = cleanOrderText(args.order.payment_method);
 
   /*
+   * Snapshot del SKU vigente del producto al momento de crear el pedido.
+   * Si el SKU cambia después en products, el pedido histórico conserva
+   * el SKU con el que se realizó la venta.
+   */
+  const productSku = cleanOrderText(product.sku) || null;
+
+  /*
    * El ad_id llega como snapshot desde el mensaje que está cerrando la venta.
    * No volvemos a leer conversations.ad_id aquí porque otro referral concurrente
    * podría cambiarlo y atribuir la venta al anuncio equivocado.
@@ -1452,6 +1460,7 @@ async function createOrderFromAi(args: {
     payment_method: paymentMethod,
     product_id: args.productId,
     product_title: product.name,
+    sku: productSku,
     quantity,
     price: unitPrice,
     total,
@@ -1572,7 +1581,9 @@ async function createOrderFromAi(args: {
           departamento,
           district,
           street,
+          product_id: args.productId,
           product: product.name,
+          sku: productSku,
           price_option: selectedPriceLabel,
           quantity,
           unit_price: unitPrice,
