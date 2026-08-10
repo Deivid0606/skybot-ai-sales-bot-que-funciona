@@ -539,6 +539,283 @@ async function attachPaymentReceiptToLatestOrder(args: {
   return true;
 }
 
+
+/**
+ * Recupera un comprobante que el cliente pudo haber enviado ANTES de que
+ * el pedido terminara de crearse.
+ *
+ * Esto cubre el caso:
+ * 1. Cliente elige transferencia/pago anticipado.
+ * 2. Envía el comprobante.
+ * 3. Todavía faltaba algún dato del pedido.
+ * 4. En un mensaje posterior se completa la venta y recién ahí se crea orders.
+ *
+ * Reglas de seguridad:
+ * - Solo trabaja con pedidos de pago anticipado/transferencia/depósito/giro.
+ * - No toca pedidos que ya tengan receipt_url.
+ * - Solo considera mensajes inbound con imagen/documento.
+ * - Excluye archivos que ya estén asociados como receipt_url a cualquier pedido
+ *   de esta misma conversación.
+ * - Prefiere mensajes cuyo texto/transcripción parezca realmente un comprobante.
+ * - Como fallback, usa el archivo inbound no utilizado más reciente únicamente
+ *   si fue enviado dentro de los 30 minutos anteriores a la creación del pedido.
+ */
+async function recoverRecentPaymentReceiptForOrder(args: {
+  workspaceId: string;
+  ownerId: string;
+  conversationId: string;
+  orderId: string;
+}) {
+  const { data: order, error: orderError } = await supabaseAdmin
+    .from("orders")
+    .select(
+      "id, order_number, payment_method, payment_status, receipt_url, total, status, created_at",
+    )
+    .eq("workspace_id", args.workspaceId)
+    .eq("conversation_id", args.conversationId)
+    .eq("id", args.orderId)
+    .maybeSingle();
+
+  if (orderError) {
+    console.error(
+      "[Comprobante recuperación] Error buscando el pedido recién creado",
+      {
+        workspaceId: args.workspaceId,
+        conversationId: args.conversationId,
+        orderId: args.orderId,
+        error: orderError.message,
+      },
+    );
+    return false;
+  }
+
+  if (!order || order.receipt_url || order.status === "cancelado") {
+    return false;
+  }
+
+  const paymentMethod = normalizeIntentText(order.payment_method ?? "");
+
+  const isAdvancePayment =
+    paymentMethod.includes("anticipado") ||
+    paymentMethod.includes("transferencia") ||
+    paymentMethod.includes("transfer") ||
+    paymentMethod.includes("deposito") ||
+    paymentMethod.includes("giro") ||
+    paymentMethod.includes("bancari");
+
+  if (!isAdvancePayment) {
+    return false;
+  }
+
+  const orderCreatedAt = new Date(order.created_at);
+
+  if (Number.isNaN(orderCreatedAt.getTime())) {
+    console.warn(
+      "[Comprobante recuperación] created_at inválido en pedido",
+      {
+        orderId: order.id,
+        orderNumber: order.order_number,
+        createdAt: order.created_at,
+      },
+    );
+    return false;
+  }
+
+  /*
+   * Buscamos hasta 3 horas hacia atrás. Es una ventana suficientemente amplia
+   * para conversaciones donde el cliente tarda en terminar de pasar sus datos,
+   * pero evita rescatar imágenes antiguas de compras anteriores.
+   */
+  const lookbackStart = new Date(
+    orderCreatedAt.getTime() - 3 * 60 * 60 * 1000,
+  ).toISOString();
+
+  const { data: candidateMessages, error: messagesError } =
+    await supabaseAdmin
+      .from("messages")
+      .select(
+        "id, media_url, media_type, transcript, body, created_at, direction, sender",
+      )
+      .eq("workspace_id", args.workspaceId)
+      .eq("conversation_id", args.conversationId)
+      .eq("direction", "inbound")
+      .not("media_url", "is", null)
+      .in("media_type", ["image", "document"])
+      .gte("created_at", lookbackStart)
+      .lte("created_at", order.created_at)
+      .order("created_at", { ascending: false })
+      .limit(30);
+
+  if (messagesError) {
+    console.error(
+      "[Comprobante recuperación] Error buscando multimedia reciente del chat",
+      {
+        orderId: order.id,
+        orderNumber: order.order_number,
+        error: messagesError.message,
+      },
+    );
+    return false;
+  }
+
+  if (!candidateMessages?.length) {
+    return false;
+  }
+
+  /*
+   * No reutilizamos un archivo que ya esté enlazado a otro pedido
+   * de la misma conversación.
+   */
+  const { data: ordersWithReceipt, error: usedReceiptsError } =
+    await supabaseAdmin
+      .from("orders")
+      .select("id, receipt_url")
+      .eq("workspace_id", args.workspaceId)
+      .eq("conversation_id", args.conversationId)
+      .not("receipt_url", "is", null);
+
+  if (usedReceiptsError) {
+    console.error(
+      "[Comprobante recuperación] No se pudieron verificar comprobantes ya usados",
+      {
+        orderId: order.id,
+        error: usedReceiptsError.message,
+      },
+    );
+    return false;
+  }
+
+  const usedReceiptUrls = new Set(
+    (ordersWithReceipt ?? [])
+      .filter((candidate) => candidate.id !== order.id)
+      .map((candidate) => candidate.receipt_url)
+      .filter((value): value is string => Boolean(value)),
+  );
+
+  const availableMessages = candidateMessages.filter(
+    (candidate) =>
+      Boolean(candidate.media_url) &&
+      !usedReceiptUrls.has(candidate.media_url as string),
+  );
+
+  if (!availableMessages.length) {
+    return false;
+  }
+
+  function looksLikePaymentReceipt(candidate: {
+    body?: string | null;
+    transcript?: string | null;
+  }) {
+    const normalized = normalizeIntentText(
+      `${candidate.body ?? ""} ${candidate.transcript ?? ""}`,
+    );
+
+    const paymentSignals = [
+      "comprobante",
+      "transferencia",
+      "transferido",
+      "transferi",
+      "pago realizado",
+      "pague",
+      "pagado",
+      "pago",
+      "deposito",
+      "depositado",
+      "giro",
+      "banco",
+      "bancaria",
+      "operacion",
+      "transaccion",
+      "recibo",
+      "importe",
+      "monto",
+      "gs",
+      "pyg",
+      "guaran",
+    ];
+
+    return paymentSignals.some((signal) =>
+      normalized.includes(signal),
+    );
+  }
+
+  /*
+   * Primero preferimos una imagen/documento que la interpretación de IA,
+   * el caption o el texto del mensaje identifique como pago/comprobante.
+   */
+  let selectedMessage =
+    availableMessages.find((candidate) =>
+      looksLikePaymentReceipt(candidate),
+    ) ?? null;
+
+  /*
+   * Fallback:
+   * si la IA no pudo interpretar la imagen, permitimos tomar el archivo inbound
+   * más reciente no utilizado, pero SOLO si llegó como máximo 30 minutos antes
+   * de la creación del pedido.
+   */
+  if (!selectedMessage) {
+    const fallback = availableMessages[0] ?? null;
+
+    if (fallback?.created_at) {
+      const mediaCreatedAt = new Date(fallback.created_at);
+      const ageMs =
+        orderCreatedAt.getTime() - mediaCreatedAt.getTime();
+
+      if (
+        Number.isFinite(ageMs) &&
+        ageMs >= 0 &&
+        ageMs <= 30 * 60 * 1000
+      ) {
+        selectedMessage = fallback;
+      }
+    }
+  }
+
+  if (!selectedMessage?.media_url) {
+    console.info(
+      "[Comprobante recuperación] No se encontró un archivo reciente suficientemente confiable",
+      {
+        orderId: order.id,
+        orderNumber: order.order_number,
+        conversationId: args.conversationId,
+      },
+    );
+    return false;
+  }
+
+  const mediaType =
+    selectedMessage.media_type === "document"
+      ? "document"
+      : "image";
+
+  console.info(
+    "[Comprobante recuperación] Recuperando comprobante enviado antes de crear el pedido",
+    {
+      orderId: order.id,
+      orderNumber: order.order_number,
+      conversationId: args.conversationId,
+      messageId: selectedMessage.id,
+      mediaUrl: selectedMessage.media_url,
+      mediaType,
+    },
+  );
+
+  /*
+   * Reutilizamos la misma función central. Como el pedido recién creado es
+   * el más reciente compatible y aún no tiene receipt_url, quedará asociado
+   * al pedido correcto y también se registrará payment_receipts.
+   */
+  return attachPaymentReceiptToLatestOrder({
+    workspaceId: args.workspaceId,
+    ownerId: args.ownerId,
+    conversationId: args.conversationId,
+    mediaPath: selectedMessage.media_url,
+    mediaType,
+    transcript: selectedMessage.transcript ?? null,
+  });
+}
+
 export async function handleWhatsAppWebhook(payload: WebhookPayload) {
   for (const entry of payload.entry ?? []) {
     for (const change of entry.changes ?? []) {
@@ -1082,7 +1359,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         phone,
       };
 
-      await createOrderFromAi({
+      const createdOrder = await createOrderFromAi({
         workspaceId,
         ownerId,
         conversationId: conversation.id,
@@ -1096,6 +1373,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       });
 
       /*
+       * CASO 1:
        * Si el mismo mensaje que terminó de confirmar el pedido contenía el
        * comprobante, en el primer intento todavía no existía la orden.
        * Reintentamos ahora que createOrderFromAi() ya la creó.
@@ -1110,6 +1388,22 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
           transcript,
         });
       }
+
+      /*
+       * CASO 2:
+       * El cliente pudo haber enviado el comprobante ANTES de completar todos
+       * los datos necesarios para crear el pedido. En ese caso el archivo ya
+       * existe en messages.media_url, pero todavía no existía orders.
+       *
+       * Esta recuperación busca ese comprobante reciente y lo enlaza al pedido.
+       * Si el CASO 1 ya lo enlazó, esta función detecta receipt_url y no hace nada.
+       */
+      await recoverRecentPaymentReceiptForOrder({
+        workspaceId,
+        ownerId,
+        conversationId: conversation.id,
+        orderId: createdOrder.id,
+      });
     } else if (result.sale_closed && !result.order) {
       await logOrderIssue({
         workspaceId,
