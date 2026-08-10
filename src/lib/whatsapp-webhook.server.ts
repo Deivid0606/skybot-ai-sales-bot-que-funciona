@@ -362,71 +362,105 @@ async function attachPaymentReceiptToLatestOrder(args: {
   mediaType: "image" | "audio" | "video" | "document";
   transcript?: string | null;
 }) {
-  if (args.mediaType !== "image" && args.mediaType !== "document") {
-    return false;
-  }
-
-  const { data: order, error: orderError } = await supabaseAdmin
-    .from("orders")
-    .select(
-      "id, order_number, payment_method, payment_status, receipt_url, total",
-    )
-    .eq("workspace_id", args.workspaceId)
-    .eq("conversation_id", args.conversationId)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (orderError) {
-    console.error("[Comprobante] Error buscando el pedido de la conversación", {
-      workspaceId: args.workspaceId,
-      conversationId: args.conversationId,
-      error: orderError.message,
-    });
-    return false;
-  }
-
-  if (!order) {
-    return false;
-  }
-
-  const paymentMethod = normalizeIntentText(order.payment_method ?? "");
-
-  const isAdvancePayment =
-    paymentMethod.includes("anticipado") ||
-    paymentMethod.includes("transferencia") ||
-    paymentMethod.includes("transfer") ||
-    paymentMethod.includes("deposito") ||
-    paymentMethod.includes("giro") ||
-    paymentMethod.includes("bancari");
-
-  if (!isAdvancePayment) {
+  if (
+    args.mediaType !== "image" &&
+    args.mediaType !== "document"
+  ) {
     return false;
   }
 
   /*
-   * No reemplazamos un comprobante ya asociado. Esto evita que cualquier
-   * imagen/documento posterior del mismo cliente pise el comprobante correcto.
+   * Una misma conversación puede contener varias compras del mismo cliente.
+   * Por eso NO tomamos simplemente el último pedido: buscamos entre los pedidos
+   * recientes el último que realmente sea compatible con pago anticipado,
+   * todavía no tenga comprobante y no esté cancelado.
    */
-  if (order.receipt_url) {
+  const { data: recentOrders, error: ordersError } =
+    await supabaseAdmin
+      .from("orders")
+      .select(
+        "id, order_number, payment_method, payment_status, receipt_url, total, status, created_at",
+      )
+      .eq("workspace_id", args.workspaceId)
+      .eq("conversation_id", args.conversationId)
+      .order("created_at", { ascending: false })
+      .limit(20);
+
+  if (ordersError) {
+    console.error(
+      "[Comprobante] Error buscando pedidos de la conversación",
+      {
+        workspaceId: args.workspaceId,
+        conversationId: args.conversationId,
+        error: ordersError.message,
+      },
+    );
+
     return false;
   }
+
+  const order =
+    (recentOrders ?? []).find((candidate) => {
+      const paymentMethod = normalizeIntentText(
+        candidate.payment_method ?? "",
+      );
+
+      const isAdvancePayment =
+        paymentMethod.includes("anticipado") ||
+        paymentMethod.includes("transferencia") ||
+        paymentMethod.includes("transfer") ||
+        paymentMethod.includes("deposito") ||
+        paymentMethod.includes("giro") ||
+        paymentMethod.includes("bancari");
+
+      return (
+        isAdvancePayment &&
+        !candidate.receipt_url &&
+        candidate.status !== "cancelado"
+      );
+    }) ?? null;
+
+  if (!order) {
+    console.warn(
+      "[Comprobante] No se encontró un pedido compatible para asociar el comprobante",
+      {
+        workspaceId: args.workspaceId,
+        conversationId: args.conversationId,
+        mediaPath: args.mediaPath,
+      },
+    );
+
+    return false;
+  }
+
+  /*
+   * Si el pedido ya estaba validado como pagado, conservamos ese estado.
+   * En los demás casos pasa a anticipado porque ya existe un comprobante real.
+   */
+  const nextPaymentStatus =
+    order.payment_status === "pagado"
+      ? "pagado"
+      : "anticipado";
 
   const { error: updateError } = await supabaseAdmin
     .from("orders")
     .update({
       receipt_url: args.mediaPath,
-      payment_status: "anticipado",
+      payment_status: nextPaymentStatus,
     })
     .eq("id", order.id)
     .eq("workspace_id", args.workspaceId);
 
   if (updateError) {
-    console.error("[Comprobante] No se pudo asociar el archivo al pedido", {
-      orderId: order.id,
-      orderNumber: order.order_number,
-      error: updateError.message,
-    });
+    console.error(
+      "[Comprobante] No se pudo asociar el archivo al pedido",
+      {
+        orderId: order.id,
+        orderNumber: order.order_number,
+        error: updateError.message,
+      },
+    );
+
     return false;
   }
 
@@ -445,16 +479,24 @@ async function attachPaymentReceiptToLatestOrder(args: {
       .maybeSingle();
 
   if (existingReceiptError) {
-    console.error("[Comprobante] No se pudo verificar payment_receipts", {
-      orderId: order.id,
-      error: existingReceiptError.message,
-    });
+    console.error(
+      "[Comprobante] No se pudo verificar payment_receipts",
+      {
+        orderId: order.id,
+        error: existingReceiptError.message,
+      },
+    );
   } else if (!existingReceipt) {
-    const noteParts = ["Comprobante recibido por WhatsApp"];
+    const noteParts = [
+      "Comprobante recibido por WhatsApp",
+    ];
+
     const cleanTranscript = args.transcript?.trim();
 
     if (cleanTranscript) {
-      noteParts.push(cleanTranscript.slice(0, 1200));
+      noteParts.push(
+        cleanTranscript.slice(0, 1200),
+      );
     }
 
     const { error: receiptError } = await supabaseAdmin
@@ -484,12 +526,15 @@ async function attachPaymentReceiptToLatestOrder(args: {
     }
   }
 
-  console.info("[Comprobante] Comprobante asociado correctamente", {
-    orderId: order.id,
-    orderNumber: order.order_number,
-    conversationId: args.conversationId,
-    receiptUrl: args.mediaPath,
-  });
+  console.info(
+    "[Comprobante] Comprobante asociado correctamente",
+    {
+      orderId: order.id,
+      orderNumber: order.order_number,
+      conversationId: args.conversationId,
+      receiptUrl: args.mediaPath,
+    },
+  );
 
   return true;
 }
