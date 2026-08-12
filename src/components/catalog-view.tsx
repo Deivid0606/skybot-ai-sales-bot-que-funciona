@@ -25,106 +25,185 @@ import type {
    TIPOS
 ========================================================= */
 
-type PriceTier = {
+type CatalogPrice = {
+  id?: string;
+  label: string;
   quantity: number;
   price: number;
+  sort_order: number;
 };
 
-type CatalogProductWithTiers = CatalogProduct & {
-  price_tiers?: PriceTier[] | null;
+type CatalogProductWithPrices = CatalogProduct & {
+  product_prices?: CatalogPrice[] | null;
 };
 
 /* =========================================================
-   HELPERS DE PRECIO
+   PRECIOS
 ========================================================= */
 
-function getBasePrice(product: CatalogProduct) {
-  const hasPromo =
-    product.promo_price !== null &&
-    product.promo_price !== undefined &&
-    product.promo_price > 0;
+function getLegacyPrice(product: CatalogProduct) {
+  const promo = Number(product.promo_price ?? 0);
+  const regular = Number(product.price ?? 0);
 
-  return hasPromo ? product.promo_price : product.price;
+  if (promo > 0) {
+    return promo;
+  }
+
+  return regular;
 }
 
-function getProductTiers(
-  product: CatalogProductWithTiers,
-): PriceTier[] {
-  const rawTiers = Array.isArray(product.price_tiers)
-    ? product.price_tiers
+function getProductPrices(
+  product: CatalogProductWithPrices,
+): CatalogPrice[] {
+  const prices = Array.isArray(product.product_prices)
+    ? product.product_prices
     : [];
 
-  const validTiers = rawTiers
-    .filter(
-      (tier) =>
-        Number.isFinite(Number(tier.quantity)) &&
-        Number.isFinite(Number(tier.price)) &&
-        Number(tier.quantity) > 0 &&
-        Number(tier.price) > 0,
-    )
-    .map((tier) => ({
-      quantity: Number(tier.quantity),
-      price: Number(tier.price),
+  const normalized = prices
+    .map((item, index) => ({
+      id: item.id,
+      label:
+        String(item.label ?? "").trim() ||
+        `${Number(item.quantity) || 1} ${
+          Number(item.quantity) === 1
+            ? "unidad"
+            : "unidades"
+        }`,
+      quantity: Math.max(
+        1,
+        Number(item.quantity) || 1,
+      ),
+      price: Number(item.price) || 0,
+      sort_order: Number(item.sort_order ?? index),
     }))
-    .sort((a, b) => a.quantity - b.quantity);
+    .filter((item) => item.price > 0)
+    .sort((a, b) => {
+      if (a.sort_order !== b.sort_order) {
+        return a.sort_order - b.sort_order;
+      }
+
+      return a.quantity - b.quantity;
+    });
 
   /*
-   * Si el producto todavía no tiene price_tiers,
-   * usamos el precio normal/promoción como 1 unidad.
+   * Compatibilidad con productos antiguos.
+   *
+   * Tu sistema nuevo guarda los precios en product_prices.
+   * Pero si existe algún producto viejo que todavía tenga
+   * products.price / products.promo_price, evitamos romperlo.
    */
-  if (validTiers.length === 0) {
-    return [
-      {
-        quantity: 1,
-        price: getBasePrice(product),
-      },
-    ];
+  if (normalized.length === 0) {
+    const legacyPrice = getLegacyPrice(product);
+
+    if (legacyPrice > 0) {
+      return [
+        {
+          label: "1 unidad",
+          quantity: 1,
+          price: legacyPrice,
+          sort_order: 0,
+        },
+      ];
+    }
   }
 
-  return validTiers;
+  return normalized;
 }
 
-function getSingleUnitPrice(
-  product: CatalogProductWithTiers,
-  tiers: PriceTier[],
-) {
-  const singleTier = tiers.find((tier) => tier.quantity === 1);
+function getPricePerUnit(price: CatalogPrice) {
+  return Math.round(
+    price.price / Math.max(price.quantity, 1),
+  );
+}
 
-  if (singleTier) {
-    return singleTier.price;
+function getReferenceUnitPrice(
+  product: CatalogProductWithPrices,
+  prices: CatalogPrice[],
+) {
+  const oneUnit = prices.find(
+    (item) => item.quantity === 1,
+  );
+
+  if (oneUnit) {
+    return oneUnit.price;
   }
 
-  return getBasePrice(product);
+  /*
+   * Si no existe una opción de cantidad 1,
+   * usamos el precio unitario de la primera opción
+   * únicamente como referencia.
+   */
+  const first = prices[0];
+
+  if (first) {
+    return getPricePerUnit(first);
+  }
+
+  return getLegacyPrice(product);
 }
 
 function getSavings(
-  product: CatalogProductWithTiers,
-  tiers: PriceTier[],
-  tier: PriceTier,
+  product: CatalogProductWithPrices,
+  prices: CatalogPrice[],
+  selectedPrice: CatalogPrice,
 ) {
-  if (tier.quantity <= 1) return 0;
+  if (selectedPrice.quantity <= 1) {
+    return 0;
+  }
 
-  const unitPrice = getSingleUnitPrice(product, tiers);
-  const regularTotal = unitPrice * tier.quantity;
+  const unitReference = getReferenceUnitPrice(
+    product,
+    prices,
+  );
 
-  return Math.max(regularTotal - tier.price, 0);
+  if (unitReference <= 0) {
+    return 0;
+  }
+
+  const normalTotal =
+    unitReference * selectedPrice.quantity;
+
+  return Math.max(
+    normalTotal - selectedPrice.price,
+    0,
+  );
 }
 
-function getPricePerUnit(tier: PriceTier) {
-  return Math.round(tier.price / tier.quantity);
+function getPopularPriceIndex(
+  prices: CatalogPrice[],
+) {
+  /*
+   * Para una oferta con:
+   *
+   * 1 unidad
+   * 2 unidades
+   * 3 unidades
+   *
+   * marcamos la segunda como MÁS ELEGIDO.
+   */
+  if (prices.length >= 2) {
+    return 1;
+  }
+
+  return 0;
 }
 
-function getBestTierIndex(tiers: PriceTier[]) {
-  if (tiers.length <= 1) return 0;
+function getBestPriceIndex(
+  prices: CatalogPrice[],
+) {
+  if (prices.length === 0) {
+    return -1;
+  }
 
   let bestIndex = 0;
-  let lowestUnitPrice = Infinity;
+  let bestUnitPrice = Infinity;
 
-  tiers.forEach((tier, index) => {
-    const unitPrice = tier.price / tier.quantity;
+  prices.forEach((item, index) => {
+    const unitPrice =
+      item.price / Math.max(item.quantity, 1);
 
-    if (unitPrice < lowestUnitPrice) {
-      lowestUnitPrice = unitPrice;
+    if (unitPrice < bestUnitPrice) {
+      bestUnitPrice = unitPrice;
       bestIndex = index;
     }
   });
@@ -132,46 +211,52 @@ function getBestTierIndex(tiers: PriceTier[]) {
   return bestIndex;
 }
 
-function getPopularTierIndex(tiers: PriceTier[]) {
-  /*
-   * Si hay 2 o más opciones, marcamos normalmente
-   * la segunda como "Más elegido".
-   */
-  if (tiers.length >= 2) {
-    return 1;
-  }
-
-  return 0;
-}
-
 /* =========================================================
    WHATSAPP
 ========================================================= */
 
 export function buyMessage(
-  product: CatalogProductWithTiers,
-  selectedTier?: PriceTier,
+  product: CatalogProductWithPrices,
+  selectedPrice?: CatalogPrice,
 ) {
-  const tiers = getProductTiers(product);
+  const prices = getProductPrices(product);
 
-  const tier = selectedTier ?? tiers[0];
+  const price =
+    selectedPrice ??
+    prices[0];
 
   const keyword =
     product.keywords?.[0]?.trim() ||
     product.name;
 
+  /*
+   * Fallback por seguridad.
+   */
+  if (!price) {
+    return [
+      "Hola 👋 Quiero realizar un pedido:",
+      "",
+      `🛍️ Producto: ${product.name}`,
+      "",
+      "Quiero consultar las opciones disponibles.",
+      "",
+      keyword,
+    ].join("\n");
+  }
+
   const lines = [
     "Hola 👋 Quiero realizar este pedido:",
     "",
     `🛍️ Producto: ${product.name}`,
-    `📦 Cantidad: ${tier.quantity}`,
-    `💰 Precio: ${formatGs(tier.price)}`,
+    `🏷️ Opción: ${price.label}`,
+    `📦 Cantidad: ${price.quantity}`,
+    `💰 Total: ${formatGs(price.price)}`,
   ];
 
-  if (tier.quantity > 1) {
+  if (price.quantity > 1) {
     lines.push(
-      `🏷️ Precio por unidad: ${formatGs(
-        getPricePerUnit(tier),
+      `💵 Precio por unidad: ${formatGs(
+        getPricePerUnit(price),
       )}`,
     );
   }
@@ -188,38 +273,59 @@ export function buyMessage(
 
 export function buyLink(
   phone: string | null,
-  product: CatalogProductWithTiers,
-  selectedTier?: PriceTier,
+  product: CatalogProductWithPrices,
+  selectedPrice?: CatalogPrice,
 ) {
-  if (!phone) return null;
+  if (!phone) {
+    return null;
+  }
 
-  const cleanPhone = String(phone).replace(/\D/g, "");
+  const cleanPhone = String(phone).replace(
+    /\D/g,
+    "",
+  );
 
-  if (!cleanPhone) return null;
+  if (!cleanPhone) {
+    return null;
+  }
 
   return `https://wa.me/${cleanPhone}?text=${encodeURIComponent(
-    buyMessage(product, selectedTier),
+    buyMessage(product, selectedPrice),
   )}`;
 }
 
 /* =========================================================
-   BOTÓN DE COMPRA
+   BOTÓN WHATSAPP
 ========================================================= */
 
 function BuyButton({
   phone,
   product,
-  selectedTier,
-  label = "Comprar ahora",
+  selectedPrice,
 }: {
   phone: string | null;
-  product: CatalogProductWithTiers;
-  selectedTier?: PriceTier;
-  label?: string;
+  product: CatalogProductWithPrices;
+  selectedPrice?: CatalogPrice;
 }) {
-  const href = buyLink(phone, product, selectedTier);
+  const href = buyLink(
+    phone,
+    product,
+    selectedPrice,
+  );
 
-  if (!href) return null;
+  if (!href) {
+    return (
+      <Button
+        type="button"
+        disabled
+        size="lg"
+        className="h-12 w-full rounded-xl text-base font-bold"
+      >
+        <MessageCircle className="mr-2 h-5 w-5" />
+        WhatsApp no disponible
+      </Button>
+    );
+  }
 
   return (
     <Button
@@ -233,7 +339,7 @@ function BuyButton({
         rel="noopener noreferrer"
       >
         <MessageCircle className="mr-2 h-5 w-5" />
-        {label}
+        Comprar por WhatsApp
       </a>
     </Button>
   );
@@ -278,7 +384,7 @@ function Media({
           <img
             src={images[0].url}
             alt={product.name}
-            className="h-full w-full object-cover transition duration-300 hover:scale-[1.02]"
+            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
             loading="lazy"
           />
         </div>
@@ -286,7 +392,9 @@ function Media({
         <div
           className={[
             "flex aspect-square items-center justify-center bg-muted",
-            compact ? "rounded-xl" : "rounded-2xl",
+            compact
+              ? "rounded-xl"
+              : "rounded-2xl",
           ].join(" ")}
         >
           <ShoppingBag className="h-12 w-12 text-muted-foreground/40" />
@@ -295,19 +403,21 @@ function Media({
 
       {!compact && images.length > 1 && (
         <div className="grid grid-cols-4 gap-2">
-          {images.slice(1, 5).map((item, index) => (
-            <div
-              key={`${item.url}-${index}`}
-              className="aspect-square overflow-hidden rounded-lg bg-muted"
-            >
-              <img
-                src={item.url}
-                alt={`${product.name} ${index + 2}`}
-                className="h-full w-full object-cover"
-                loading="lazy"
-              />
-            </div>
-          ))}
+          {images
+            .slice(1, 5)
+            .map((item, index) => (
+              <div
+                key={`${item.url}-${index}`}
+                className="aspect-square overflow-hidden rounded-lg bg-muted"
+              >
+                <img
+                  src={item.url}
+                  alt={`${product.name} ${index + 2}`}
+                  className="h-full w-full object-cover"
+                  loading="lazy"
+                />
+              </div>
+            ))}
         </div>
       )}
 
@@ -347,68 +457,64 @@ function Media({
 }
 
 /* =========================================================
-   PRECIO SIMPLE
+   BADGES DE PRECIO
 ========================================================= */
 
-function SimplePrice({
-  product,
+function PriceBadges({
+  isPopular,
+  isBest,
 }: {
-  product: CatalogProduct;
+  isPopular: boolean;
+  isBest: boolean;
 }) {
-  const hasPromo =
-    product.promo_price !== null &&
-    product.promo_price !== undefined &&
-    product.promo_price > 0 &&
-    product.promo_price < product.price;
-
   return (
-    <div className="flex flex-wrap items-end gap-x-2 gap-y-1">
-      <span className="text-2xl font-black tracking-tight">
-        {formatGs(
-          hasPromo
-            ? product.promo_price!
-            : product.price,
-        )}
-      </span>
-
-      {hasPromo && (
-        <span className="pb-0.5 text-sm text-muted-foreground line-through">
-          {formatGs(product.price)}
-        </span>
+    <>
+      {isPopular && (
+        <Badge className="h-5 px-1.5 text-[9px]">
+          MÁS ELEGIDO
+        </Badge>
       )}
-    </div>
+
+      {isBest && (
+        <Badge
+          variant="secondary"
+          className="h-5 px-1.5 text-[9px]"
+        >
+          MEJOR PRECIO
+        </Badge>
+      )}
+    </>
   );
 }
 
 /* =========================================================
-   RESUMEN DE PRECIOS EN CARD
+   PRECIOS EN EL CATÁLOGO PRINCIPAL
 ========================================================= */
 
 function ProductPricePreview({
   product,
 }: {
-  product: CatalogProductWithTiers;
+  product: CatalogProductWithPrices;
 }) {
-  const tiers = getProductTiers(product);
+  const prices = getProductPrices(product);
 
-  /*
-   * Si solo hay una opción, mostramos el precio tradicional.
-   */
-  if (
-    tiers.length === 1 &&
-    (!product.price_tiers ||
-      product.price_tiers.length === 0)
-  ) {
-    return <SimplePrice product={product} />;
+  if (prices.length === 0) {
+    return (
+      <div className="rounded-xl border border-dashed p-3 text-center">
+        <p className="text-xs text-muted-foreground">
+          Consultá el precio por WhatsApp
+        </p>
+      </div>
+    );
   }
 
-  const visibleTiers = tiers.slice(0, 3);
+  const visiblePrices = prices.slice(0, 3);
 
   const popularIndex =
-    getPopularTierIndex(visibleTiers);
+    getPopularPriceIndex(prices);
 
   const bestIndex =
-    getBestTierIndex(visibleTiers);
+    getBestPriceIndex(prices);
 
   return (
     <div className="space-y-2">
@@ -420,27 +526,30 @@ function ProductPricePreview({
         </p>
       </div>
 
-      {visibleTiers.map((tier, index) => {
+      {visiblePrices.map((item, index) => {
         const savings = getSavings(
           product,
-          tiers,
-          tier,
+          prices,
+          item,
         );
 
         const isPopular =
-          index === popularIndex &&
-          visibleTiers.length > 1;
+          prices.length > 1 &&
+          index === popularIndex;
 
         const isBest =
+          prices.length > 1 &&
           index === bestIndex &&
-          index !== popularIndex &&
-          tier.quantity > 1;
+          index !== popularIndex;
 
         return (
           <div
-            key={tier.quantity}
+            key={
+              item.id ??
+              `${item.quantity}-${item.price}`
+            }
             className={[
-              "rounded-xl border px-3 py-2.5",
+              "rounded-xl border px-3 py-2.5 transition",
               isPopular
                 ? "border-primary bg-primary/5"
                 : "bg-muted/20",
@@ -450,55 +559,43 @@ function ProductPricePreview({
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <span className="text-sm font-semibold">
-                    {tier.quantity}{" "}
-                    {tier.quantity === 1
-                      ? "unidad"
-                      : "unidades"}
+                    {item.label}
                   </span>
 
-                  {isPopular && (
-                    <Badge className="h-5 px-1.5 text-[9px]">
-                      MÁS ELEGIDO
-                    </Badge>
-                  )}
-
-                  {isBest && (
-                    <Badge
-                      variant="secondary"
-                      className="h-5 px-1.5 text-[9px]"
-                    >
-                      MEJOR PRECIO
-                    </Badge>
-                  )}
+                  <PriceBadges
+                    isPopular={isPopular}
+                    isBest={isBest}
+                  />
                 </div>
 
-                {tier.quantity > 1 && (
+                {item.quantity > 1 && (
                   <p className="mt-0.5 text-[11px] text-muted-foreground">
                     {formatGs(
-                      getPricePerUnit(tier),
+                      getPricePerUnit(item),
                     )}{" "}
                     c/u
                   </p>
                 )}
 
                 {savings > 0 && (
-                  <p className="mt-0.5 text-[11px] font-semibold">
-                    Ahorrás {formatGs(savings)}
+                  <p className="mt-0.5 text-[11px] font-bold">
+                    Ahorrás{" "}
+                    {formatGs(savings)}
                   </p>
                 )}
               </div>
 
               <span className="shrink-0 text-base font-black">
-                {formatGs(tier.price)}
+                {formatGs(item.price)}
               </span>
             </div>
           </div>
         );
       })}
 
-      {tiers.length > 3 && (
+      {prices.length > 3 && (
         <p className="text-center text-xs text-muted-foreground">
-          + {tiers.length - 3} opciones disponibles
+          + {prices.length - 3} opciones disponibles
         </p>
       )}
     </div>
@@ -506,39 +603,78 @@ function ProductPricePreview({
 }
 
 /* =========================================================
-   SELECTOR DE OFERTA
+   SELECTOR DEL DETALLE
 ========================================================= */
 
 function PriceSelector({
   product,
   phone,
 }: {
-  product: CatalogProductWithTiers;
+  product: CatalogProductWithPrices;
   phone: string | null;
 }) {
-  const tiers = useMemo(
-    () => getProductTiers(product),
+  const prices = useMemo(
+    () => getProductPrices(product),
     [product],
   );
 
-  const popularIndex = getPopularTierIndex(tiers);
-  const bestIndex = getBestTierIndex(tiers);
+  const popularIndex =
+    getPopularPriceIndex(prices);
 
-  const defaultTier =
-    tiers[popularIndex] ??
-    tiers[0];
+  const bestIndex =
+    getBestPriceIndex(prices);
 
-  const [selectedQuantity, setSelectedQuantity] =
-    useState(defaultTier.quantity);
+  /*
+   * Si hay más de una opción, dejamos seleccionada
+   * la segunda porque será la opción "Más elegido".
+   *
+   * Si solo existe una, seleccionamos esa.
+   */
+  const defaultPrice =
+    prices[popularIndex] ??
+    prices[0];
 
-  const selectedTier =
-    tiers.find(
-      (tier) =>
-        tier.quantity === selectedQuantity,
-    ) ?? tiers[0];
+  const [
+    selectedPriceKey,
+    setSelectedPriceKey,
+  ] = useState(
+    defaultPrice
+      ? `${defaultPrice.quantity}-${defaultPrice.price}-${defaultPrice.sort_order}`
+      : "",
+  );
+
+  const selectedPrice =
+    prices.find(
+      (item) =>
+        `${item.quantity}-${item.price}-${item.sort_order}` ===
+        selectedPriceKey,
+    ) ??
+    defaultPrice ??
+    prices[0];
+
+  if (prices.length === 0) {
+    return (
+      <div className="space-y-4">
+        <div>
+          <h2 className="text-lg font-black">
+            Consultá disponibilidad
+          </h2>
+
+          <p className="mt-1 text-sm text-muted-foreground">
+            Este producto no tiene precios publicados.
+          </p>
+        </div>
+
+        <BuyButton
+          phone={phone}
+          product={product}
+        />
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <div>
         <div className="flex items-center gap-2">
           <Sparkles className="h-5 w-5" />
@@ -549,37 +685,39 @@ function PriceSelector({
         </div>
 
         <p className="mt-1 text-sm text-muted-foreground">
-          Cuantas más unidades llevás, mejor puede ser
-          el precio.
+          Seleccioná la opción que querés comprar.
         </p>
       </div>
 
-      <div className="space-y-2.5">
-        {tiers.map((tier, index) => {
+      <div className="space-y-3">
+        {prices.map((item, index) => {
+          const key = `${item.quantity}-${item.price}-${item.sort_order}`;
+
           const active =
-            selectedTier.quantity === tier.quantity;
+            selectedPrice &&
+            key === selectedPriceKey;
 
           const savings = getSavings(
             product,
-            tiers,
-            tier,
+            prices,
+            item,
           );
 
           const isPopular =
-            index === popularIndex &&
-            tiers.length > 1;
+            prices.length > 1 &&
+            index === popularIndex;
 
           const isBest =
+            prices.length > 1 &&
             index === bestIndex &&
-            index !== popularIndex &&
-            tier.quantity > 1;
+            index !== popularIndex;
 
           return (
             <button
-              key={tier.quantity}
+              key={item.id ?? key}
               type="button"
               onClick={() =>
-                setSelectedQuantity(tier.quantity)
+                setSelectedPriceKey(key)
               }
               className={[
                 "relative w-full rounded-2xl border p-4 text-left transition-all",
@@ -622,18 +760,19 @@ function PriceSelector({
                 </div>
 
                 <div className="flex min-w-0 flex-1 items-center justify-between gap-4">
-                  <div>
+                  <div className="min-w-0">
                     <p className="font-bold">
-                      {tier.quantity}{" "}
-                      {tier.quantity === 1
-                        ? "unidad"
-                        : "unidades"}
+                      {item.label}
                     </p>
 
-                    {tier.quantity > 1 && (
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      Cantidad: {item.quantity}
+                    </p>
+
+                    {item.quantity > 1 && (
                       <p className="mt-0.5 text-xs text-muted-foreground">
                         {formatGs(
-                          getPricePerUnit(tier),
+                          getPricePerUnit(item),
                         )}{" "}
                         por unidad
                       </p>
@@ -649,7 +788,7 @@ function PriceSelector({
 
                   <div className="shrink-0 text-right">
                     <p className="text-xl font-black">
-                      {formatGs(tier.price)}
+                      {formatGs(item.price)}
                     </p>
                   </div>
                 </div>
@@ -659,39 +798,47 @@ function PriceSelector({
         })}
       </div>
 
-      <div className="rounded-2xl bg-muted/40 p-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <p className="text-xs text-muted-foreground">
-              Total seleccionado
-            </p>
+      {selectedPrice && (
+        <div className="rounded-2xl border bg-muted/40 p-4">
+          <div className="flex items-center justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-xs text-muted-foreground">
+                Tu selección
+              </p>
 
-            <p className="font-semibold">
-              {selectedTier.quantity}{" "}
-              {selectedTier.quantity === 1
-                ? "unidad"
-                : "unidades"}
+              <p className="truncate font-bold">
+                {selectedPrice.label}
+              </p>
+
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                {selectedPrice.quantity}{" "}
+                {selectedPrice.quantity === 1
+                  ? "unidad"
+                  : "unidades"}
+              </p>
+            </div>
+
+            <p className="shrink-0 text-2xl font-black">
+              {formatGs(selectedPrice.price)}
             </p>
           </div>
-
-          <p className="text-2xl font-black">
-            {formatGs(selectedTier.price)}
-          </p>
         </div>
-      </div>
+      )}
 
       <BuyButton
         phone={phone}
         product={product}
-        selectedTier={selectedTier}
-        label="Comprar por WhatsApp"
+        selectedPrice={selectedPrice}
       />
 
-      <p className="text-center text-[11px] leading-relaxed text-muted-foreground">
-        Al tocar el botón enviaremos automáticamente
-        el producto, la cantidad y el precio que
-        seleccionaste.
-      </p>
+      <div className="flex items-center justify-center gap-1.5 text-center text-[11px] text-muted-foreground">
+        <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
+
+        <span>
+          Enviaremos producto, opción, cantidad y precio
+          automáticamente.
+        </span>
+      </div>
     </div>
   );
 }
@@ -708,7 +855,7 @@ function TrustBenefits({
   return (
     <div className="grid gap-2 sm:grid-cols-3">
       {deliveryInfo && (
-        <div className="flex items-start gap-2 rounded-xl border bg-muted/20 p-3">
+        <div className="flex items-start gap-2 rounded-xl border bg-background p-3">
           <Truck className="mt-0.5 h-4 w-4 shrink-0" />
 
           <div>
@@ -716,14 +863,14 @@ function TrustBenefits({
               Entrega
             </p>
 
-            <p className="mt-0.5 text-xs text-muted-foreground">
+            <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
               {deliveryInfo}
             </p>
           </div>
         </div>
       )}
 
-      <div className="flex items-start gap-2 rounded-xl border bg-muted/20 p-3">
+      <div className="flex items-start gap-2 rounded-xl border bg-background p-3">
         <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
 
         <div>
@@ -731,13 +878,13 @@ function TrustBenefits({
             Compra segura
           </p>
 
-          <p className="mt-0.5 text-xs text-muted-foreground">
+          <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
             Atención directa por WhatsApp.
           </p>
         </div>
       </div>
 
-      <div className="flex items-start gap-2 rounded-xl border bg-muted/20 p-3">
+      <div className="flex items-start gap-2 rounded-xl border bg-background p-3">
         <MessageCircle className="mt-0.5 h-4 w-4 shrink-0" />
 
         <div>
@@ -745,7 +892,7 @@ function TrustBenefits({
             Atención rápida
           </p>
 
-          <p className="mt-0.5 text-xs text-muted-foreground">
+          <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
             Realizá tu pedido fácilmente.
           </p>
         </div>
@@ -794,7 +941,7 @@ function ProductCard({
   product,
   workspaceId,
 }: {
-  product: CatalogProductWithTiers;
+  product: CatalogProductWithPrices;
   workspaceId: string;
 }) {
   const description =
@@ -802,11 +949,17 @@ function ProductCard({
     product.description ||
     "";
 
-  const hasPromo =
-    product.promo_price !== null &&
-    product.promo_price !== undefined &&
-    product.promo_price > 0 &&
-    product.promo_price < product.price;
+  const prices =
+    getProductPrices(product);
+
+  const lowestUnitPrice =
+    prices.length > 0
+      ? Math.min(
+          ...prices.map((item) =>
+            getPricePerUnit(item),
+          ),
+        )
+      : 0;
 
   return (
     <Card className="group overflow-hidden rounded-2xl border bg-background shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg">
@@ -824,8 +977,8 @@ function ProductCard({
             compact
           />
 
-          {hasPromo && (
-            <Badge className="absolute left-5 top-5 shadow">
+          {prices.length > 1 && (
+            <Badge className="absolute left-5 top-5 shadow-sm">
               OFERTA
             </Badge>
           )}
@@ -851,7 +1004,20 @@ function ProductCard({
             )}
           </div>
 
-          <ProductPricePreview product={product} />
+          {lowestUnitPrice > 0 &&
+            prices.length > 1 && (
+              <p className="text-xs text-muted-foreground">
+                Desde{" "}
+                <span className="font-bold text-foreground">
+                  {formatGs(lowestUnitPrice)}
+                </span>{" "}
+                por unidad
+              </p>
+            )}
+
+          <ProductPricePreview
+            product={product}
+          />
 
           {product.delivery_info && (
             <div className="flex items-start gap-2 rounded-xl bg-muted/40 px-3 py-2.5">
@@ -876,7 +1042,7 @@ function ProductCard({
               }}
             >
               <ShoppingBag className="mr-2 h-4 w-4" />
-              Ver oferta
+              Ver ofertas
             </Link>
           </Button>
         </div>
@@ -886,7 +1052,7 @@ function ProductCard({
 }
 
 /* =========================================================
-   GRID PRINCIPAL
+   CATÁLOGO PRINCIPAL
 ========================================================= */
 
 export function CatalogGrid({
@@ -897,7 +1063,7 @@ export function CatalogGrid({
   workspaceId: string;
 }) {
   const products =
-    data.products as CatalogProductWithTiers[];
+    data.products as CatalogProductWithPrices[];
 
   return (
     <div className="min-h-screen bg-muted/10">
@@ -909,7 +1075,8 @@ export function CatalogGrid({
             </h1>
 
             <p className="text-xs text-muted-foreground">
-              Catálogo online · {products.length}{" "}
+              Catálogo online ·{" "}
+              {products.length}{" "}
               {products.length === 1
                 ? "producto"
                 : "productos"}
@@ -961,7 +1128,7 @@ export function CatalogGrid({
 }
 
 /* =========================================================
-   DETALLE DE PRODUCTO
+   DETALLE DEL PRODUCTO
 ========================================================= */
 
 export function CatalogDetail({
@@ -974,7 +1141,7 @@ export function CatalogDetail({
   product: CatalogProduct;
 }) {
   const typedProduct =
-    product as CatalogProductWithTiers;
+    product as CatalogProductWithPrices;
 
   const description =
     product.sales_copy ||
@@ -991,6 +1158,7 @@ export function CatalogDetail({
             className="inline-flex items-center gap-1 text-sm font-medium text-muted-foreground transition hover:text-foreground"
           >
             <ChevronLeft className="h-4 w-4" />
+
             {data.workspaceName}
           </Link>
         </div>
@@ -998,17 +1166,9 @@ export function CatalogDetail({
 
       <main className="mx-auto max-w-6xl px-4 py-6 md:py-10">
         <div className="grid items-start gap-8 lg:grid-cols-[1.1fr_0.9fr]">
-          {/* =========================
-              MULTIMEDIA
-          ========================== */}
-
           <div className="min-w-0">
             <Media product={product} />
           </div>
-
-          {/* =========================
-              INFORMACIÓN + COMPRA
-          ========================== */}
 
           <div className="space-y-6 lg:sticky lg:top-6">
             <div className="space-y-3">
@@ -1040,10 +1200,13 @@ export function CatalogDetail({
             </Card>
 
             <TrustBenefits
-              deliveryInfo={product.delivery_info}
+              deliveryInfo={
+                product.delivery_info
+              }
             />
 
-            {product.keywords?.length > 0 && (
+            {product.keywords?.length >
+              0 && (
               <div className="flex flex-wrap gap-1.5">
                 {product.keywords.map(
                   (keyword, index) => (
