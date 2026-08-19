@@ -3,7 +3,6 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowRight,
-  Bot,
   Building2,
   CalendarDays,
   CheckCircle2,
@@ -71,20 +70,6 @@ function parseLocalDate(value: string, endOfDay = false) {
   );
 }
 
-function isWithinLocalDateRange(
-  createdAt: string | null,
-  dateFrom: string,
-  dateTo: string,
-) {
-  if (!createdAt || !dateFrom || !dateTo) return false;
-
-  const createdDate = new Date(createdAt);
-  const from = parseLocalDate(dateFrom);
-  const to = parseLocalDate(dateTo, true);
-
-  return createdDate >= from && createdDate <= to;
-}
-
 function formatDisplayDate(value: string) {
   if (!value) return "";
 
@@ -101,15 +86,6 @@ function normalizeText(value: unknown) {
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
-}
-
-function isInboundMessageSender(sender: unknown) {
-  const normalizedSender = normalizeText(sender);
-
-  // En tu webhook los mensajes entrantes se guardan como sender="customer".
-  // Se aceptan algunos valores legacy, pero nunca se considera inbound a un
-  // valor desconocido porque eso inflaría la métrica de mensajes recibidos.
-  return ["customer", "client", "contact", "user"].includes(normalizedSender);
 }
 
 function hasOrderTag(tags: unknown, expectedTag: string) {
@@ -145,110 +121,136 @@ function DashboardPage() {
   const [dateFrom, setDateFrom] = useState(today);
   const [dateTo, setDateTo] = useState(today);
 
-  const { data, isLoading, isError, error } = useQuery({
-    queryKey: ["dashboard", workspaceId],
-    enabled: Boolean(workspaceId),
+  const hasInvalidRange = dateFrom > dateTo;
+
+  const { data, isLoading, isFetching, isError, error } = useQuery({
+    queryKey: ["dashboard", workspaceId, dateFrom, dateTo],
+    enabled:
+      Boolean(workspaceId) &&
+      Boolean(dateFrom) &&
+      Boolean(dateTo) &&
+      !hasInvalidRange,
+    staleTime: 30_000,
+    gcTime: 5 * 60_000,
     refetchInterval: 60_000,
+    refetchOnWindowFocus: false,
+    placeholderData: (previousData) => previousData,
 
     queryFn: async () => {
-      const [conversations, orders, balance, ads, messages] = await Promise.all([
-        supabase
-          .from("conversations")
-          .select("*")
-          .eq("workspace_id", workspaceId!),
+      if (!workspaceId) {
+        throw new Error("Workspace no disponible.");
+      }
 
-        supabase
-          .from("orders")
-          // Se usa "*" para incluir conversation_id o ad_id cuando existan
-          // en la tabla. La atribución por anuncio funciona con cualquiera
-          // de las dos columnas y mantiene compatibilidad con datos antiguos.
-          .select("*")
-          .eq("workspace_id", workspaceId!),
+      const startIso = parseLocalDate(dateFrom).toISOString();
+      const endIso = parseLocalDate(dateTo, true).toISOString();
+
+      type ConversationRow = {
+        id: string;
+        status: string | null;
+        sale_closed: boolean | null;
+        created_at: string | null;
+        ad_id: string | null;
+      };
+
+      type OrderRow = {
+        id: string;
+        total: number | string | null;
+        status: string | null;
+        created_at: string | null;
+        product_title: string | null;
+        city: string | null;
+        departamento: string | null;
+        payment_status: string | null;
+        payment_method: string | null;
+        tags: unknown;
+        conversation_id: string | null;
+        ad_id: string | null;
+      };
+
+      async function fetchAllPages<T>(
+        buildQuery: (from: number, to: number) => PromiseLike<{
+          data: T[] | null;
+          error: unknown;
+        }>,
+      ): Promise<T[]> {
+        const rows: T[] = [];
+        const pageSize = 1000;
+        let page = 0;
+
+        while (true) {
+          const from = page * pageSize;
+          const to = from + pageSize - 1;
+
+          const result = await buildQuery(from, to);
+
+          if (result.error) {
+            throw result.error;
+          }
+
+          const pageRows = result.data ?? [];
+          rows.push(...pageRows);
+
+          if (pageRows.length < pageSize) {
+            break;
+          }
+
+          page += 1;
+        }
+
+        return rows;
+      }
+
+      const [conversations, orders, balance, ads] = await Promise.all([
+        fetchAllPages<ConversationRow>((from, to) =>
+          supabase
+            .from("conversations")
+            .select("id, status, sale_closed, created_at, ad_id")
+            .eq("workspace_id", workspaceId)
+            .gte("created_at", startIso)
+            .lte("created_at", endIso)
+            .order("created_at", { ascending: true })
+            .range(from, to) as unknown as PromiseLike<{
+              data: ConversationRow[] | null;
+              error: unknown;
+            }>,
+        ),
+
+        fetchAllPages<OrderRow>((from, to) =>
+          supabase
+            .from("orders")
+            .select(
+              "id, total, status, created_at, product_title, city, departamento, payment_status, payment_method, tags, conversation_id, ad_id",
+            )
+            .eq("workspace_id", workspaceId)
+            .gte("created_at", startIso)
+            .lte("created_at", endIso)
+            .order("created_at", { ascending: true })
+            .range(from, to) as unknown as PromiseLike<{
+              data: OrderRow[] | null;
+              error: unknown;
+            }>,
+        ),
 
         supabase
           .from("conversation_balances")
           .select("available, consumed, purchased")
-          .eq("workspace_id", workspaceId!)
+          .eq("workspace_id", workspaceId)
           .maybeSingle(),
 
         supabase
           .from("ads")
           .select("id, ad_id, name, media_url, products(name)")
-          .eq("workspace_id", workspaceId!),
-
-        // Los mensajes se cargan abajo con paginación para no perder datos
-        // cuando el workspace supera el límite de filas de Supabase.
-        Promise.resolve({ data: null, error: null }),
+          .eq("workspace_id", workspaceId),
       ]);
 
-      if (conversations.error) throw conversations.error;
-      if (orders.error) throw orders.error;
       if (balance.error) throw balance.error;
       if (ads.error) throw ads.error;
-      if (messages.error) throw messages.error;
-
-      const allMessages: Array<{
-        id: string;
-        conversation_id: string | null;
-        sender: string | null;
-        ad_id: string | null;
-        created_at: string | null;
-      }> = [];
-
-      const pageSize = 1000;
-      let page = 0;
-
-      while (true) {
-        const from = page * pageSize;
-        const to = from + pageSize - 1;
-
-        const messagePage = await supabase
-          .from("messages")
-          .select("*")
-          .eq("workspace_id", workspaceId!)
-          .order("created_at", { ascending: true })
-          .range(from, to);
-
-        if (messagePage.error) throw messagePage.error;
-
-        const rows = (messagePage.data ?? []) as unknown as Array<{
-          id: string;
-          conversation_id: string | null;
-          sender: string | null;
-          ad_id: string | null;
-          created_at: string | null;
-        }>;
-        allMessages.push(...rows);
-
-        if (rows.length < pageSize) break;
-        page += 1;
-      }
 
       return {
-        conversations: (conversations.data ?? []) as Array<{
-          id: string;
-          status: string | null;
-          sale_closed: boolean | null;
-          created_at: string | null;
-          ad_id: string | null;
-        }>,
-        orders: (orders.data ?? []) as Array<{
-          id: string;
-          total: number | string | null;
-          status: string | null;
-          created_at: string | null;
-          product_title: string | null;
-          city: string | null;
-          departamento: string | null;
-          payment_status: string | null;
-          payment_method: string | null;
-          tags: unknown;
-          conversation_id?: string | null;
-          ad_id?: string | null;
-        }>,
+        conversations,
+        orders,
         balance: balance.data,
         ads: ads.data ?? [],
-        messages: allMessages,
       };
     },
   });
@@ -297,61 +299,38 @@ function DashboardPage() {
     );
   }
 
-  const hasInvalidRange = dateFrom > dateTo;
-
   const rangeOrders = hasInvalidRange
     ? []
-    : data.orders.filter(
-        (order) =>
-          order.status !== "cancelado" &&
-          isWithinLocalDateRange(order.created_at, dateFrom, dateTo),
-      );
-
-  const rangeMessages = hasInvalidRange
-    ? []
-    : data.messages.filter((message) =>
-        isWithinLocalDateRange(message.created_at, dateFrom, dateTo),
-      );
+    : data.orders.filter((order) => order.status !== "cancelado");
 
   /*
-   * "Conversaciones recibidas" cuenta chats únicos que realmente recibieron
-   * al menos un mensaje del cliente en el periodo. Las respuestas de IA por sí
-   * solas no crean una conversación recibida.
+   * SIN CONSULTAR MESSAGES:
+   * "Conversaciones recibidas" usa las conversaciones creadas en el período.
+   * Esto permite que el dashboard sea mucho más liviano y rápido.
    */
-  const customerRangeMessages = rangeMessages.filter((message) =>
-    isInboundMessageSender(message.sender),
-  );
+  const totalConversations = hasInvalidRange ? 0 : data.conversations.length;
 
-  const activeConversationIds = new Set(
-    customerRangeMessages
-      .map((message) => message.conversation_id)
-      .filter(
-        (conversationId): conversationId is string => Boolean(conversationId),
-      ),
-  );
-
-  const totalConversations = activeConversationIds.size;
-
-  // Fuente oficial de ventas: pedidos no cancelados creados en el periodo.
+  // Fuente oficial de ventas: pedidos no cancelados creados en el período.
   const closedSales = rangeOrders.length;
-
-  // Mensajes recibidos: únicamente mensajes entrantes del cliente.
-  const customerMessages = customerRangeMessages.length;
 
   const conversion = totalConversations
     ? Math.round((closedSales / totalConversations) * 100)
     : 0;
+
   const rangeRevenue = rangeOrders.reduce(
     (total, order) => total + Number(order.total ?? 0),
     0,
   );
+
   const loadedOrders = rangeOrders.filter(
     (order) => order.status === "cargado",
   ).length;
+
   const centralOrders = rangeOrders.filter((order) => {
     const departamento = resolveDepartamento(order.departamento, order.city);
     return departamento === "Central";
   }).length;
+
   const prepaidOrders = rangeOrders.filter((order) => {
     const paymentStatus = normalizeText(order.payment_status);
     const paymentMethod = normalizeText(order.payment_method);
@@ -362,6 +341,7 @@ function DashboardPage() {
       hasOrderTag(order.tags, "Pago anticipado")
     );
   }).length;
+
   const pendingPaymentOrders = rangeOrders.filter((order) => {
     const paymentStatus = normalizeText(order.payment_status);
 
@@ -370,37 +350,21 @@ function DashboardPage() {
       hasOrderTag(order.tags, "Pendiente de pago")
     );
   }).length;
-  const aiMessages = rangeMessages.filter(
-    (message) => message.sender === "ai",
-  ).length;
 
   const conversationById = new Map(
     data.conversations.map((conversation) => [conversation.id, conversation]),
   );
 
   const registeredAdByExternalId = new Map(
-    data.ads.map((ad) => [ad.ad_id, ad]),
+    data.ads
+      .filter((ad) => Boolean(ad.ad_id))
+      .map((ad) => [ad.ad_id as string, ad]),
   );
 
   /*
-   * Para datos NUEVOS, messages.ad_id es la fuente histórica correcta.
-   * Para mensajes viejos (anteriores a la migración) usamos conversations.ad_id
-   * únicamente como fallback de compatibilidad. Ese fallback no puede reconstruir
-   * con certeza un referral histórico que nunca fue guardado.
-   */
-  const getMessageAdId = (message: (typeof rangeMessages)[number]) => {
-    if (message.ad_id) return message.ad_id;
-
-    if (message.conversation_id) {
-      return conversationById.get(message.conversation_id)?.ad_id ?? null;
-    }
-
-    return null;
-  };
-
-  /*
-   * Los pedidos ya guardan su propio ad_id. Solo recurrimos al ad_id actual de
-   * la conversación para registros legacy donde orders.ad_id todavía sea null.
+   * El pedido usa su ad_id guardado.
+   * Si es un registro legacy sin ad_id, intenta usar el ad_id de la conversación
+   * cuando esa conversación pertenece al período cargado.
    */
   const getOrderAdId = (order: (typeof rangeOrders)[number]) => {
     if (order.ad_id) return order.ad_id;
@@ -412,41 +376,49 @@ function DashboardPage() {
     return null;
   };
 
-  const adIdsInPeriod = new Set<string>();
+  /*
+   * Se construyen las métricas por anuncio en una sola pasada.
+   * Evita hacer .filter() repetidamente por cada anuncio.
+   */
+  const conversationCountByAd = new Map<string, number>();
+  let conversationsWithoutAd = 0;
 
-  customerRangeMessages.forEach((message) => {
-    const messageAdId = getMessageAdId(message);
-    if (messageAdId) adIdsInPeriod.add(messageAdId);
+  data.conversations.forEach((conversation) => {
+    if (!conversation.ad_id) {
+      conversationsWithoutAd += 1;
+      return;
+    }
+
+    conversationCountByAd.set(
+      conversation.ad_id,
+      (conversationCountByAd.get(conversation.ad_id) ?? 0) + 1,
+    );
   });
+
+  const salesCountByAd = new Map<string, number>();
+  let unattributedSales = 0;
 
   rangeOrders.forEach((order) => {
-    const orderAdId = getOrderAdId(order);
-    if (orderAdId) adIdsInPeriod.add(orderAdId);
+    const adId = getOrderAdId(order);
+
+    if (!adId) {
+      unattributedSales += 1;
+      return;
+    }
+
+    salesCountByAd.set(adId, (salesCountByAd.get(adId) ?? 0) + 1);
   });
+
+  const adIdsInPeriod = new Set<string>([
+    ...conversationCountByAd.keys(),
+    ...salesCountByAd.keys(),
+  ]);
 
   const adMetrics = Array.from(adIdsInPeriod)
     .map((adId) => {
       const registeredAd = registeredAdByExternalId.get(adId);
-
-      const adCustomerMessages = customerRangeMessages.filter(
-        (message) => getMessageAdId(message) === adId,
-      );
-
-      const adConversationIds = new Set(
-        adCustomerMessages
-          .map((message) => message.conversation_id)
-          .filter(
-            (conversationId): conversationId is string => Boolean(conversationId),
-          ),
-      );
-
-      const conversations = adConversationIds.size;
-      const messages = adCustomerMessages.length;
-
-      // Fuente oficial de ventas por anuncio: el snapshot guardado en orders.ad_id.
-      const sales = rangeOrders.filter(
-        (order) => getOrderAdId(order) === adId,
-      ).length;
+      const conversations = conversationCountByAd.get(adId) ?? 0;
+      const sales = salesCountByAd.get(adId) ?? 0;
 
       const conversion = conversations
         ? Math.round((sales / conversations) * 1000) / 10
@@ -457,6 +429,7 @@ function DashboardPage() {
         | Array<{ name?: string | null }>
         | null
         | undefined;
+
       const productName = Array.isArray(relatedProducts)
         ? relatedProducts[0]?.name
         : relatedProducts?.name;
@@ -467,29 +440,16 @@ function DashboardPage() {
         name: registeredAd?.name?.trim() || "Anuncio sin registrar",
         productName: productName?.trim() || "Sin producto asignado",
         conversations,
-        messages,
         sales,
         conversion,
       };
     })
-    .sort((a, b) =>
-      b.sales - a.sales ||
-      b.conversations - a.conversations ||
-      a.name.localeCompare(b.name),
+    .sort(
+      (a, b) =>
+        b.sales - a.sales ||
+        b.conversations - a.conversations ||
+        a.name.localeCompare(b.name),
     );
-
-  const conversationsWithoutAd = new Set(
-    customerRangeMessages
-      .filter((message) => !getMessageAdId(message))
-      .map((message) => message.conversation_id)
-      .filter(
-        (conversationId): conversationId is string => Boolean(conversationId),
-      ),
-  ).size;
-
-  const unattributedSales = rangeOrders.filter(
-    (order) => !getOrderAdId(order),
-  ).length;
 
   const topProducts = Object.entries(
     rangeOrders.reduce<Record<string, number>>((accumulator, order) => {
@@ -528,13 +488,7 @@ function DashboardPage() {
       label: "Conversaciones recibidas",
       value: totalConversations,
       icon: MessageSquare,
-      helper: "Chats únicos activos en el periodo",
-    },
-    {
-      label: "Mensajes recibidos",
-      value: customerMessages,
-      icon: MessageSquare,
-      helper: "Mensajes enviados por clientes",
+      helper: "Conversaciones iniciadas en el periodo",
     },
     {
       label: "Ventas cerradas",
@@ -546,7 +500,7 @@ function DashboardPage() {
       label: "Conversión",
       value: `${conversion}%`,
       icon: TrendingUp,
-      helper: "Pedidos sobre conversaciones activas",
+      helper: "Pedidos sobre conversaciones",
     },
     {
       label: "Ingresos",
@@ -673,6 +627,11 @@ function DashboardPage() {
                 <span>
                   Periodo: {formatDisplayDate(dateFrom)} — {formatDisplayDate(dateTo)}
                 </span>
+                {isFetching && !isLoading && (
+                  <Badge variant="outline" className="ml-auto">
+                    Actualizando…
+                  </Badge>
+                )}
               </div>
 
               {hasInvalidRange && (
@@ -684,7 +643,7 @@ function DashboardPage() {
           </div>
         </section>
 
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           {primaryStats.map((stat) => (
             <Card
               key={stat.label}
@@ -740,39 +699,21 @@ function DashboardPage() {
           ))}
         </div>
 
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Card className="rounded-2xl border-border/70 shadow-sm">
-            <CardContent className="flex items-center gap-4 p-5">
-              <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400">
-                <CreditCard className="h-5 w-5" />
-              </span>
-              <div>
-                <p className="text-sm font-medium text-muted-foreground">
-                  Pendientes de pago
-                </p>
-                <p className="mt-1 font-display text-2xl font-bold">
-                  {pendingPaymentOrders}
-                </p>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="rounded-2xl border-border/70 shadow-sm">
-            <CardContent className="flex items-center gap-4 p-5">
-              <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-violet-500/10 text-violet-600 dark:text-violet-400">
-                <Bot className="h-5 w-5" />
-              </span>
-              <div>
-                <p className="text-sm font-medium text-muted-foreground">
-                  Respuestas de IA
-                </p>
-                <p className="mt-1 font-display text-2xl font-bold">
-                  {aiMessages}
-                </p>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+        <Card className="rounded-2xl border-border/70 shadow-sm">
+          <CardContent className="flex items-center gap-4 p-5">
+            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400">
+              <CreditCard className="h-5 w-5" />
+            </span>
+            <div>
+              <p className="text-sm font-medium text-muted-foreground">
+                Pendientes de pago
+              </p>
+              <p className="mt-1 font-display text-2xl font-bold">
+                {pendingPaymentOrders}
+              </p>
+            </div>
+          </CardContent>
+        </Card>
 
         <Card className="rounded-2xl border-border/70 shadow-sm">
           <CardContent className="p-5 sm:p-6">
@@ -785,7 +726,7 @@ function DashboardPage() {
                   </h2>
                 </div>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  Conversaciones, mensajes recibidos y ventas cerradas por cada anuncio.
+                  Conversaciones y ventas cerradas por cada anuncio.
                 </p>
               </div>
 
@@ -808,13 +749,12 @@ function DashboardPage() {
               {adMetrics.length === 0 ? (
                 <EmptyState text="No hay conversaciones provenientes de anuncios en este periodo." />
               ) : (
-                <table className="w-full min-w-[820px] text-sm">
+                <table className="w-full min-w-[720px] text-sm">
                   <thead>
                     <tr className="border-b text-left text-xs text-muted-foreground">
                       <th className="pb-3 pr-4 font-semibold">Anuncio</th>
                       <th className="pb-3 pr-4 font-semibold">Producto</th>
                       <th className="pb-3 px-3 text-center font-semibold">Conversaciones</th>
-                      <th className="pb-3 px-3 text-center font-semibold">Mensajes</th>
                       <th className="pb-3 px-3 text-center font-semibold">Ventas</th>
                       <th className="pb-3 pl-3 text-right font-semibold">Conversión</th>
                     </tr>
@@ -833,9 +773,6 @@ function DashboardPage() {
                         </td>
                         <td className="px-3 py-4 text-center font-medium">
                           {ad.conversations}
-                        </td>
-                        <td className="px-3 py-4 text-center font-medium">
-                          {ad.messages}
                         </td>
                         <td className="px-3 py-4 text-center">
                           <Badge>{ad.sales}</Badge>
