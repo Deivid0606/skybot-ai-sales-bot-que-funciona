@@ -9,6 +9,8 @@ import {
   CalendarDays,
   Loader2,
   MessageSquare,
+  MapPin,
+  ExternalLink,
   Search,
   Save,
   Send,
@@ -88,6 +90,20 @@ export const Route = createFileRoute("/_authenticated/inbox")({
   }),
   component: InboxPage,
 });
+
+function getGoogleMapsUrl(
+  latitude?: number | string | null,
+  longitude?: number | string | null,
+) {
+  if (latitude == null || longitude == null) return null;
+
+  const lat = Number(latitude);
+  const lng = Number(longitude);
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+
+  return `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
+}
 
 function InboxPage() {
   const { c: initialConversationId } = Route.useSearch();
@@ -870,6 +886,8 @@ function InboxPage() {
 
                 {messages?.map((m) => {
                   const isSelected = selected.includes(m.id);
+                  const googleMapsUrl = getGoogleMapsUrl(m.latitude, m.longitude);
+                  const isLocation = Boolean(googleMapsUrl);
                   const toggleSelect = () =>
                     setSelected((prev) =>
                       prev.includes(m.id) ? prev.filter((id) => id !== m.id) : [...prev, m.id],
@@ -912,13 +930,48 @@ function InboxPage() {
                           </p>
                         ) : null}
 
-                        {m.body &&
+                        {isLocation && googleMapsUrl ? (
+                          <div className="min-w-[230px] space-y-2">
+                            <div className="flex items-start gap-2">
+                              <MapPin className="mt-0.5 h-4 w-4 shrink-0" />
+                              <div className="min-w-0">
+                                <p className="font-semibold">Ubicación del cliente</p>
+
+                                {m.location_name && (
+                                  <p className="mt-1 text-xs">{m.location_name}</p>
+                                )}
+
+                                {m.location_address && (
+                                  <p className="text-xs opacity-80">{m.location_address}</p>
+                                )}
+
+                                <p className="mt-1 break-all text-[10px] opacity-60">
+                                  {m.latitude}, {m.longitude}
+                                </p>
+                              </div>
+                            </div>
+
+                            <a
+                              href={googleMapsUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(event) => event.stopPropagation()}
+                              className="flex w-full items-center justify-center gap-2 rounded-lg bg-background/20 px-3 py-2 text-xs font-semibold transition-colors hover:bg-background/30"
+                            >
+                              <MapPin className="h-3.5 w-3.5" />
+                              Abrir en Google Maps
+                              <ExternalLink className="h-3.5 w-3.5" />
+                            </a>
+                          </div>
+                        ) : (
+                          m.body &&
                           !(
                             m.media_type === "audio" &&
                             (m.body === "[audio]" || m.body === "[voice]")
                           ) && (
                             <p className="whitespace-pre-wrap break-words">{m.body}</p>
-                          )}
+                          )
+                        )}
 
                         {m.transcript && (
                           <div className="mt-1 rounded-md bg-background/20 p-2 text-xs">
