@@ -13,6 +13,12 @@ type IncomingMessage = {
   type: string;
   text?: { body: string };
   interactive?: { button_reply?: { title: string }; list_reply?: { title: string } };
+  location?: {
+    latitude?: number;
+    longitude?: number;
+    name?: string;
+    address?: string;
+  };
   referral?: {
     source_id?: string;
     source_url?: string;
@@ -871,7 +877,44 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
 
   const media = mediaOf(message);
   const referral = referralOf(message);
-  let body = media?.part.caption?.trim() || textOf(message);
+
+  const latitude =
+    message.type === "location" && typeof message.location?.latitude === "number"
+      ? message.location.latitude
+      : null;
+
+  const longitude =
+    message.type === "location" && typeof message.location?.longitude === "number"
+      ? message.location.longitude
+      : null;
+
+  const locationName =
+    message.type === "location"
+      ? message.location?.name?.trim() || null
+      : null;
+
+  const locationAddress =
+    message.type === "location"
+      ? message.location?.address?.trim() || null
+      : null;
+
+  const isLocation = latitude !== null && longitude !== null;
+
+  const googleMapsUrl = isLocation
+    ? `https://www.google.com/maps/search/?api=1&query=${latitude},${longitude}`
+    : null;
+
+  let body = isLocation
+    ? [
+        "📍 Ubicación compartida",
+        locationName,
+        locationAddress,
+        googleMapsUrl,
+      ]
+        .filter(Boolean)
+        .join("\n")
+    : media?.part.caption?.trim() || textOf(message);
+
   let mediaPath: string | null = null;
   let transcript: string | null = null;
 
@@ -1071,6 +1114,10 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       transcript,
       media_url: mediaPath,
       media_type: media?.type ?? null,
+      latitude,
+      longitude,
+      location_name: locationName,
+      location_address: locationAddress,
       wamid: message.id,
       status: "received",
     })
