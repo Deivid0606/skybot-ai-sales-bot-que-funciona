@@ -3,7 +3,6 @@ import { formatTime } from "@/lib/format";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  AlertTriangle,
   Bot,
   BotOff,
   CheckCircle2,
@@ -123,7 +122,6 @@ function InboxPage() {
   const fileRef = useRef<HTMLInputElement>(null);
   const [adName, setAdName] = useState("");
   const [adProductId, setAdProductId] = useState("");
-  const [now, setNow] = useState(() => Date.now());
 
 
   const { data: conversations } = useQuery({
@@ -142,33 +140,6 @@ function InboxPage() {
       return data;
     },
   });
-
-  const pendingCandidates = (conversations ?? []).filter(
-    (conversation) =>
-      Number(conversation.unread_count ?? 0) > 0 &&
-      !conversation.ai_paused &&
-      !conversation.sale_closed,
-  );
-
-  const pendingCount = pendingCandidates.length;
-
-  const oldestPendingAt = pendingCandidates.reduce<string | null>(
-    (oldest, conversation) => {
-      const value = conversation.last_message_at ?? conversation.created_at ?? null;
-
-      if (!value) return oldest;
-      if (!oldest) return value;
-
-      return new Date(value).getTime() < new Date(oldest).getTime()
-        ? value
-        : oldest;
-    },
-    null,
-  );
-
-  const possibleAiFailure =
-    Boolean(oldestPendingAt) &&
-    now - new Date(oldestPendingAt as string).getTime() >= 3 * 60 * 1000;
 
   const { data: labels } = useQuery({
     queryKey: ["labels", workspaceId],
@@ -232,31 +203,6 @@ function InboxPage() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages?.length]);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      setNow(Date.now());
-    }, 15000);
-
-    return () => window.clearInterval(timer);
-  }, []);
-
-  const aiFailureToastShownRef = useRef(false);
-
-  useEffect(() => {
-    if (possibleAiFailure && !aiFailureToastShownRef.current) {
-      toast.error(
-        `Posible fallo de IA: hay ${pendingCount} conversación${
-          pendingCount === 1 ? "" : "es"
-        } pendiente${pendingCount === 1 ? "" : "s"}.`,
-      );
-      aiFailureToastShownRef.current = true;
-    }
-
-    if (!possibleAiFailure) {
-      aiFailureToastShownRef.current = false;
-    }
-  }, [possibleAiFailure, pendingCount]);
 
   const active = conversations?.find((c) => c.id === activeId) ?? null;
 
@@ -421,128 +367,6 @@ function InboxPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
-  const aiReplyAll = useMutation({
-    mutationFn: async () => {
-      if (!workspaceId) {
-        throw new Error("No se encontró el workspace.");
-      }
-
-      if (pendingCandidates.length === 0) {
-        return {
-          totalCandidates: 0,
-          verifiedPending: 0,
-          success: 0,
-          failed: 0,
-        };
-      }
-
-      const verifiedPendingIds: string[] = [];
-
-      // Verificación exacta SOLO al hacer clic:
-      // se revisa el último mensaje real de cada conversación candidata.
-      for (const conversation of pendingCandidates) {
-        const { data, error } = await supabase
-          .from("messages")
-          .select("direction, created_at")
-          .eq("conversation_id", conversation.id)
-          .order("created_at", { ascending: false })
-          .limit(1)
-          .maybeSingle();
-
-        if (error) {
-          console.error(
-            `No se pudo verificar la conversación ${conversation.id}:`,
-            error,
-          );
-          continue;
-        }
-
-        if (data?.direction === "inbound") {
-          verifiedPendingIds.push(conversation.id);
-        }
-      }
-
-      if (verifiedPendingIds.length === 0) {
-        return {
-          totalCandidates: pendingCandidates.length,
-          verifiedPending: 0,
-          success: 0,
-          failed: 0,
-        };
-      }
-
-      let success = 0;
-      let failed = 0;
-      const BATCH_SIZE = 5;
-
-      for (let i = 0; i < verifiedPendingIds.length; i += BATCH_SIZE) {
-        const batch = verifiedPendingIds.slice(i, i + BATCH_SIZE);
-
-        const results = await Promise.allSettled(
-          batch.map((conversationId) =>
-            aiReplyNow({
-              data: {
-                conversationId,
-              },
-            }),
-          ),
-        );
-
-        results.forEach((result) => {
-          if (result.status === "fulfilled") {
-            success++;
-          } else {
-            failed++;
-            console.error("Error respondiendo conversación:", result.reason);
-          }
-        });
-      }
-
-      return {
-        totalCandidates: pendingCandidates.length,
-        verifiedPending: verifiedPendingIds.length,
-        success,
-        failed,
-      };
-    },
-
-    onSuccess: (result) => {
-      if (!result || result.totalCandidates === 0) {
-        toast.info("No hay conversaciones pendientes");
-        return;
-      }
-
-      if (result.verifiedPending === 0) {
-        toast.info(
-          "No se encontraron chats cuyo último mensaje siga siendo del cliente.",
-        );
-        queryClient.invalidateQueries({ queryKey: ["conversations"] });
-        return;
-      }
-
-      if (result.failed === 0) {
-        toast.success(
-          `IA respondió ${result.success} conversación${
-            result.success === 1 ? "" : "es"
-          } pendiente${result.success === 1 ? "" : "s"}.`,
-        );
-      } else {
-        toast.warning(
-          `Respondidas: ${result.success} · Fallaron: ${result.failed}`,
-        );
-      }
-
-      queryClient.invalidateQueries({ queryKey: ["messages"] });
-      queryClient.invalidateQueries({ queryKey: ["conversations"] });
-    },
-
-    onError: (error: Error) => {
-      toast.error(
-        `No se pudieron procesar las respuestas pendientes: ${error.message}`,
-      );
-    },
-  });
-
   const removeMessages = useMutation({
     mutationFn: async (ids: string[]) => {
       await deleteMessages({ data: { ids } });
@@ -687,114 +511,6 @@ function InboxPage() {
         )}
       >
         <div className="space-y-3 border-b border-border bg-card/60 p-3 backdrop-blur">
-          <div className="grid grid-cols-2 gap-2">
-            <div className="rounded-xl border border-border bg-background p-3">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] font-medium text-muted-foreground">
-                  Respuestas pendientes
-                </span>
-                <MessageSquare className="h-4 w-4 text-muted-foreground" />
-              </div>
-
-              <div className="mt-1 flex items-end gap-2">
-                <span className="text-2xl font-bold">{pendingCount}</span>
-                <span className="pb-1 text-[10px] text-muted-foreground">
-                  por revisar
-                </span>
-              </div>
-            </div>
-
-            <div
-              className={cn(
-                "rounded-xl border p-3",
-                possibleAiFailure
-                  ? "border-destructive/50 bg-destructive/10"
-                  : "border-border bg-background",
-              )}
-            >
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] font-medium text-muted-foreground">
-                  Estado IA
-                </span>
-
-                {possibleAiFailure ? (
-                  <AlertTriangle className="h-4 w-4 text-destructive" />
-                ) : (
-                  <Bot className="h-4 w-4 text-muted-foreground" />
-                )}
-              </div>
-
-              <div className="mt-1">
-                <span
-                  className={cn(
-                    "text-sm font-semibold",
-                    possibleAiFailure && "text-destructive",
-                  )}
-                >
-                  {possibleAiFailure ? "Revisar IA" : "Sin alertas"}
-                </span>
-
-                <p className="mt-0.5 text-[10px] text-muted-foreground">
-                  {possibleAiFailure
-                    ? "Hay pendientes de +3 min"
-                    : "No hay atrasos detectados"}
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <Button
-            type="button"
-            className="w-full"
-            variant={possibleAiFailure ? "destructive" : "default"}
-            disabled={aiReplyAll.isPending || pendingCount === 0}
-            onClick={() => {
-              if (pendingCount === 0) {
-                toast.info("No hay conversaciones pendientes");
-                return;
-              }
-
-              const confirmed = window.confirm(
-                `Hay ${pendingCount} conversación${
-                  pendingCount === 1 ? "" : "es"
-                } por revisar. Antes de responder, el sistema verificará una por una y SOLO responderá aquellas cuyo último mensaje real sea del cliente. ¿Continuar?`,
-              );
-
-              if (confirmed) {
-                aiReplyAll.mutate();
-              }
-            }}
-          >
-            {aiReplyAll.isPending ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Verificando y respondiendo...
-              </>
-            ) : (
-              <>
-                <Sparkles className="mr-2 h-4 w-4" />
-                Responder pendientes ({pendingCount})
-              </>
-            )}
-          </Button>
-
-          {possibleAiFailure && (
-            <div className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
-
-              <div>
-                <p className="text-xs font-semibold text-destructive">
-                  Posible fallo de la IA
-                </p>
-                <p className="text-[11px] text-muted-foreground">
-                  Hay conversaciones pendientes desde hace más de 3 minutos.
-                  Usá “Responder pendientes” para verificar cuáles siguen sin
-                  respuesta y reanudar solamente esas.
-                </p>
-              </div>
-            </div>
-          )}
-
           <div className="relative">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
