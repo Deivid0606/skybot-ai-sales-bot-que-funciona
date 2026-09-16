@@ -59,21 +59,22 @@ function getTodayDate() {
   return `${year}-${month}-${day}`;
 }
 
-function isWithinLocalDateRange(
-  value: string | null | undefined,
+function getLocalDateRange(
   dateFrom: string,
   dateTo: string,
 ) {
-  if (!value || !dateFrom || !dateTo) return false;
+  if (!dateFrom || !dateTo) return null;
 
-  const date = new Date(value);
   const [fromYear, fromMonth, fromDay] = dateFrom.split("-").map(Number);
   const [toYear, toMonth, toDay] = dateTo.split("-").map(Number);
 
   const start = new Date(fromYear, fromMonth - 1, fromDay, 0, 0, 0, 0);
-  const end = new Date(toYear, toMonth - 1, toDay, 23, 59, 59, 999);
+  const endExclusive = new Date(toYear, toMonth - 1, toDay + 1, 0, 0, 0, 0);
 
-  return date >= start && date <= end;
+  return {
+    start: start.toISOString(),
+    endExclusive: endExclusive.toISOString(),
+  };
 }
 
 export const Route = createFileRoute("/_authenticated/inbox")({
@@ -144,6 +145,112 @@ function InboxPage() {
     },
   });
 
+  const {
+    data: dateConversationIds,
+    isLoading: isLoadingDateConversationIds,
+    error: dateConversationIdsError,
+  } = useQuery({
+    queryKey: [
+      "inbox-conversation-ids-by-message-date",
+      workspaceId,
+      dateFrom,
+      dateTo,
+    ],
+    enabled: Boolean(workspaceId && dateFrom && dateTo),
+    queryFn: async () => {
+      const range = getLocalDateRange(dateFrom, dateTo);
+      if (!range) return [] as string[];
+
+      const conversationIds = new Set<string>();
+      const pageSize = 1000;
+      let page = 0;
+
+      // Pagina todos los mensajes del período para no perder resultados por
+      // el límite de 1000 filas de Supabase.
+      while (true) {
+        const from = page * pageSize;
+        const to = from + pageSize - 1;
+
+        const { data, error } = await supabase
+          .from("messages")
+          .select("id, conversation_id, created_at")
+          .gte("created_at", range.start)
+          .lt("created_at", range.endExclusive)
+          .not("conversation_id", "is", null)
+          .order("created_at", { ascending: true })
+          .order("id", { ascending: true })
+          .range(from, to);
+
+        if (error) throw error;
+
+        for (const message of data ?? []) {
+          if (message.conversation_id) {
+            conversationIds.add(message.conversation_id);
+          }
+        }
+
+        if (!data || data.length < pageSize) break;
+        page += 1;
+      }
+
+      return Array.from(conversationIds);
+    },
+  });
+
+  const {
+    data: dateConversations,
+    isLoading: isLoadingDateConversations,
+    error: dateConversationsError,
+  } = useQuery({
+    queryKey: [
+      "inbox-conversations-by-message-date",
+      workspaceId,
+      dateFrom,
+      dateTo,
+      dateConversationIds,
+    ],
+    enabled: Boolean(
+      workspaceId &&
+        dateConversationIds &&
+        dateConversationIds.length > 0,
+    ),
+    queryFn: async () => {
+      const allConversations = [] as NonNullable<typeof conversations>;
+      const ids = dateConversationIds ?? [];
+      const batchSize = 100;
+
+      for (let index = 0; index < ids.length; index += batchSize) {
+        const batch = ids.slice(index, index + batchSize);
+        const { data, error } = await supabase
+          .from("conversations")
+          .select(
+            "*, contacts(name, phone, city), products(name, sales_copy), conversation_labels(label_id, labels(name, color))",
+          )
+          .eq("workspace_id", workspaceId!)
+          .in("id", batch);
+
+        if (error) throw error;
+        allConversations.push(...(data ?? []));
+      }
+
+      return allConversations.sort((a, b) => {
+        const aTime = a.last_message_at
+          ? new Date(a.last_message_at).getTime()
+          : 0;
+        const bTime = b.last_message_at
+          ? new Date(b.last_message_at).getTime()
+          : 0;
+        return bTime - aTime;
+      });
+    },
+  });
+
+  const isLoadingDateFilter =
+    isLoadingDateConversationIds ||
+    (Boolean(dateConversationIds?.length) && isLoadingDateConversations);
+  const dateFilterError =
+    dateConversationIdsError ?? dateConversationsError;
+
   const { data: labels } = useQuery({
     queryKey: ["labels", workspaceId],
     enabled: Boolean(workspaceId),
@@ -176,13 +283,36 @@ function InboxPage() {
     queryKey: ["messages", activeId],
     enabled: Boolean(activeId),
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("messages")
-        .select("*")
-        .eq("conversation_id", activeId!)
-        .order("created_at");
-      if (error) throw error;
-      return data;
+      const pageSize = 1000;
+
+      const loadMessagesPage = async (page: number) => {
+        const from = page * pageSize;
+        const to = from + pageSize - 1;
+        const { data, error } = await supabase
+          .from("messages")
+          .select("*")
+          .eq("conversation_id", activeId!)
+          .order("created_at", { ascending: true })
+          .order("id", { ascending: true })
+          .range(from, to);
+
+        if (error) throw error;
+        return data ?? [];
+      };
+
+      // Carga el historial completo del chat, incluso cuando supera las 1000
+      // filas que Supabase suele devolver por consulta.
+      let page = 0;
+      let pageMessages = await loadMessagesPage(page);
+      const allMessages = [...pageMessages];
+
+      while (pageMessages.length === pageSize) {
+        page += 1;
+        pageMessages = await loadMessagesPage(page);
+        allMessages.push(...pageMessages);
+      }
+
+      return allMessages;
     },
   });
 
@@ -193,9 +323,18 @@ function InboxPage() {
       .on("postgres_changes", { event: "*", schema: "public", table: "messages" }, () => {
         queryClient.invalidateQueries({ queryKey: ["messages"] });
         queryClient.invalidateQueries({ queryKey: ["conversations"] });
+        queryClient.invalidateQueries({
+          queryKey: ["inbox-conversation-ids-by-message-date"],
+        });
+        queryClient.invalidateQueries({
+          queryKey: ["inbox-conversations-by-message-date"],
+        });
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "conversations" }, () => {
         queryClient.invalidateQueries({ queryKey: ["conversations"] });
+        queryClient.invalidateQueries({
+          queryKey: ["inbox-conversations-by-message-date"],
+        });
       })
       .subscribe();
     return () => {
@@ -215,7 +354,18 @@ function InboxPage() {
     return () => window.clearInterval(intervalId);
   }, []);
 
-  const active = conversations?.find((c) => c.id === activeId) ?? null;
+  const knownConversationsById = new Map(
+    (conversations ?? []).map((conversation) => [conversation.id, conversation]),
+  );
+
+  for (const conversation of dateConversations ?? []) {
+    knownConversationsById.set(conversation.id, conversation);
+  }
+
+  const allKnownConversations = Array.from(knownConversationsById.values());
+  const active =
+    allKnownConversations.find((conversation) => conversation.id === activeId) ??
+    null;
 
   const { data: ad } = useQuery({
     queryKey: ["ad", workspaceId, active?.ad_id],
@@ -378,7 +528,7 @@ function InboxPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
-  const unreadCandidates = (conversations ?? []).filter(
+  const unreadCandidates = allKnownConversations.filter(
     (conversation) =>
       Number(conversation.unread_count ?? 0) > 0 &&
       !conversation.ai_paused &&
@@ -704,7 +854,7 @@ function InboxPage() {
     }
   }, [hasPossibleAiFailure, possibleAiFailures.length]);
 
-  const filtered = (conversations ?? []).filter((c) => {
+  const filtered = (dateConversations ?? []).filter((c) => {
     const q = search.trim().toLowerCase();
 
     const matchesSearch =
@@ -713,12 +863,6 @@ function InboxPage() {
       (c.contacts?.phone ?? "").includes(q) ||
       (c.last_message ?? "").toLowerCase().includes(q);
 
-    const matchesDate = isWithinLocalDateRange(
-      c.created_at,
-      dateFrom,
-      dateTo,
-    );
-
     const matchesLabel =
       selectedLabelId === "all" ||
       c.conversation_labels.some(
@@ -726,7 +870,7 @@ function InboxPage() {
           conversationLabel.label_id === selectedLabelId,
       );
 
-    return matchesSearch && matchesDate && matchesLabel;
+    return matchesSearch && matchesLabel;
   });
 
   const resetFilters = () => {
@@ -922,15 +1066,32 @@ function InboxPage() {
           </div>
 
           <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-            <span>Mostrando {filtered.length} conversación{filtered.length === 1 ? "" : "es"}</span>
+            <span>
+              {isLoadingDateFilter
+                ? "Buscando mensajes del período..."
+                : `Mostrando ${filtered.length} conversación${
+                    filtered.length === 1 ? "" : "es"
+                  }`}
+            </span>
             <span>{dateFrom === dateTo ? dateFrom : `${dateFrom} — ${dateTo}`}</span>
           </div>
         </div>
         <ScrollArea className="flex-1">
-          {filtered.length === 0 && (
+          {dateFilterError && (
+            <p className="p-4 text-sm text-destructive">
+              No se pudieron cargar los mensajes de la fecha seleccionada. Volvé a intentar.
+            </p>
+          )}
+          {!dateFilterError && isLoadingDateFilter && (
+            <div className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Buscando todos los mensajes de la fecha seleccionada...
+            </div>
+          )}
+          {!dateFilterError && !isLoadingDateFilter && filtered.length === 0 && (
             <p className="p-4 text-sm text-muted-foreground">No hay conversaciones que coincidan con los filtros.</p>
           )}
-          {filtered.map((c) => (
+          {!dateFilterError && !isLoadingDateFilter && filtered.map((c) => (
             <button
               key={c.id}
               onClick={() => setActiveId(c.id)}
