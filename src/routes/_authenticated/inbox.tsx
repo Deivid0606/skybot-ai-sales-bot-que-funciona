@@ -123,6 +123,8 @@ function InboxPage() {
   const [adName, setAdName] = useState("");
   const [adProductId, setAdProductId] = useState("");
   const [statusNow, setStatusNow] = useState(() => Date.now());
+  const [verifiedPendingIds, setVerifiedPendingIds] = useState<string[] | null>(null);
+  const [isCheckingPending, setIsCheckingPending] = useState(false);
 
 
   const { data: conversations } = useQuery({
@@ -376,14 +378,101 @@ function InboxPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
-  // Se calcula con los datos que la pantalla ya cargó. No agrega consultas
-  // durante la apertura del Inbox, por lo que no afecta su estabilidad.
-  const pendingCandidates = (conversations ?? []).filter(
+  const unreadCandidates = (conversations ?? []).filter(
     (conversation) =>
       Number(conversation.unread_count ?? 0) > 0 &&
       !conversation.ai_paused &&
       !conversation.sale_closed,
   );
+
+  const unreadCandidatesSignature = unreadCandidates
+    .map(
+      (conversation) =>
+        `${conversation.id}:${conversation.last_message_at ?? ""}`,
+    )
+    .join("|");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!workspaceId || unreadCandidates.length === 0) {
+      setVerifiedPendingIds([]);
+      setIsCheckingPending(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setIsCheckingPending(true);
+
+    const verifyPendingConversations = async () => {
+      const confirmedPendingIds: string[] = [];
+      const batchSize = 10;
+
+      // Se verifica en tandas para obtener el último mensaje real sin bloquear
+      // ni sobrecargar la carga normal del Inbox.
+      for (let index = 0; index < unreadCandidates.length; index += batchSize) {
+        if (cancelled) return;
+
+        const batch = unreadCandidates.slice(index, index + batchSize);
+        const results = await Promise.allSettled(
+          batch.map(async (conversation) => {
+            const { data: lastMessage, error } = await supabase
+              .from("messages")
+              .select("direction")
+              .eq("conversation_id", conversation.id)
+              .order("created_at", { ascending: false })
+              .limit(1)
+              .maybeSingle();
+
+            if (error) throw error;
+
+            return lastMessage?.direction === "inbound"
+              ? conversation.id
+              : null;
+          }),
+        );
+
+        results.forEach((result) => {
+          if (result.status === "fulfilled" && result.value) {
+            confirmedPendingIds.push(result.value);
+          } else if (result.status === "rejected") {
+            console.error(
+              "No se pudo verificar una conversación pendiente:",
+              result.reason,
+            );
+          }
+        });
+      }
+
+      if (!cancelled) {
+        setVerifiedPendingIds(confirmedPendingIds);
+        setIsCheckingPending(false);
+      }
+    };
+
+    void verifyPendingConversations();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [workspaceId, unreadCandidatesSignature]);
+
+  const verifiedPendingIdSet = new Set(verifiedPendingIds ?? []);
+  const pendingCandidates = unreadCandidates.filter((conversation) =>
+    verifiedPendingIdSet.has(conversation.id),
+  );
+
+  const removeVerifiedPendingIds = (conversationIds: string[]) => {
+    if (conversationIds.length === 0) return;
+
+    const resolvedIds = new Set(conversationIds);
+
+    setVerifiedPendingIds((current) =>
+      current?.filter((conversationId) => !resolvedIds.has(conversationId)) ??
+      current,
+    );
+  };
 
   const aiReplyAll = useMutation({
     mutationFn: async () => {
@@ -418,27 +507,41 @@ function InboxPage() {
             if (error) throw error;
 
             if (!lastMessage || lastMessage.direction !== "inbound") {
-              return "skipped" as const;
+              return {
+                status: "skipped" as const,
+                conversationId: conversation.id,
+              };
             }
 
             await aiReplyNow({
               data: { conversationId: conversation.id },
             });
 
-            return "responded" as const;
+            return {
+              status: "responded" as const,
+              conversationId: conversation.id,
+            };
           }),
         );
+
+        const resolvedInThisBatch: string[] = [];
 
         results.forEach((result) => {
           if (result.status === "rejected") {
             failed += 1;
             console.error("Error al responder una conversación pendiente:", result.reason);
-          } else if (result.value === "responded") {
+          } else if (result.value.status === "responded") {
             responded += 1;
+            resolvedInThisBatch.push(result.value.conversationId);
           } else {
             skipped += 1;
+            resolvedInThisBatch.push(result.value.conversationId);
           }
         });
+
+        // Actualiza el KPI después de cada tanda para que el número vaya bajando
+        // inmediatamente, sin esperar a que termine todo el proceso.
+        removeVerifiedPendingIds(resolvedInThisBatch);
       }
 
       return {
@@ -648,13 +751,17 @@ function InboxPage() {
               <p className="text-[11px] font-medium text-muted-foreground">
                 Respuestas pendientes
               </p>
-              <p className="mt-1 text-2xl font-bold">{pendingCandidates.length}</p>
+              <p className="mt-1 text-2xl font-bold">
+                {isCheckingPending ? "…" : pendingCandidates.length}
+              </p>
             </div>
 
             <div
               className={cn(
                 "rounded-lg border p-3",
-                hasPossibleAiFailure
+                isCheckingPending
+                  ? "border-border bg-muted/40"
+                  : hasPossibleAiFailure
                   ? "border-destructive/50 bg-destructive/10"
                   : "border-emerald-500/30 bg-emerald-500/10",
               )}
@@ -663,10 +770,18 @@ function InboxPage() {
               <p
                 className={cn(
                   "mt-1 text-sm font-bold",
-                  hasPossibleAiFailure ? "text-destructive" : "text-emerald-600",
+                  isCheckingPending
+                    ? "text-muted-foreground"
+                    : hasPossibleAiFailure
+                      ? "text-destructive"
+                      : "text-emerald-600",
                 )}
               >
-                {hasPossibleAiFailure ? "Posible fallo" : "Sin alertas"}
+                {isCheckingPending
+                  ? "Verificando..."
+                  : hasPossibleAiFailure
+                    ? "Posible fallo"
+                    : "Sin alertas"}
               </p>
             </div>
           </div>
@@ -690,7 +805,11 @@ function InboxPage() {
           <Button
             type="button"
             className="w-full"
-            disabled={aiReplyAll.isPending || pendingCandidates.length === 0}
+            disabled={
+              isCheckingPending ||
+              aiReplyAll.isPending ||
+              pendingCandidates.length === 0
+            }
             onClick={() => {
               if (pendingCandidates.length === 0) {
                 toast.info("No hay respuestas pendientes");
@@ -708,7 +827,12 @@ function InboxPage() {
               }
             }}
           >
-            {aiReplyAll.isPending ? (
+            {isCheckingPending ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Verificando pendientes...
+              </>
+            ) : aiReplyAll.isPending ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                 Comprobando y respondiendo...
