@@ -143,89 +143,32 @@ function InboxPage() {
     },
   });
 
-  const pendingCandidateIds = (conversations ?? [])
-    .filter(
-      (conversation) =>
-        conversation.unread_count > 0 &&
-        !conversation.ai_paused &&
-        !conversation.sale_closed,
-    )
-    .map((conversation) => conversation.id);
-
-  const {
-    data: pendingAiConversations = [],
-    isLoading: pendingAiLoading,
-  } = useQuery({
-    queryKey: [
-      "pending-ai-conversations",
-      workspaceId,
-      pendingCandidateIds.join(","),
-    ],
-    enabled: Boolean(workspaceId && pendingCandidateIds.length > 0),
-    queryFn: async () => {
-      if (pendingCandidateIds.length === 0) return [];
-
-      const { data, error } = await supabase
-        .from("messages")
-        .select("conversation_id, direction, created_at")
-        .in("conversation_id", pendingCandidateIds)
-        .order("created_at", { ascending: false })
-        .limit(2000);
-
-      if (error) {
-        console.error("No se pudo verificar respuestas pendientes:", error);
-        return [];
-      }
-
-      const latestByConversation = new Map<
-        string,
-        {
-          conversationId: string;
-          createdAt: string;
-          direction: string;
-        }
-      >();
-
-      for (const message of data ?? []) {
-        if (!latestByConversation.has(message.conversation_id)) {
-          latestByConversation.set(message.conversation_id, {
-            conversationId: message.conversation_id,
-            createdAt: message.created_at,
-            direction: message.direction,
-          });
-        }
-      }
-
-      return Array.from(latestByConversation.values())
-        .filter((item) => item.direction === "inbound")
-        .map((item) => ({
-          conversationId: item.conversationId,
-          createdAt: item.createdAt,
-        }));
-    },
-    refetchInterval: 15000,
-  });
-
-  const pendingAiIds = new Set(
-    pendingAiConversations.map((item) => item.conversationId),
+  const pendingCandidates = (conversations ?? []).filter(
+    (conversation) =>
+      Number(conversation.unread_count ?? 0) > 0 &&
+      !conversation.ai_paused &&
+      !conversation.sale_closed,
   );
 
-  const pendingAiCount = pendingAiConversations.length;
+  const pendingCount = pendingCandidates.length;
 
-  const oldestPendingAiAt =
-    pendingAiConversations.length > 0
-      ? pendingAiConversations.reduce(
-          (oldest, item) =>
-            new Date(item.createdAt).getTime() < new Date(oldest).getTime()
-              ? item.createdAt
-              : oldest,
-          pendingAiConversations[0].createdAt,
-        )
-      : null;
+  const oldestPendingAt = pendingCandidates.reduce<string | null>(
+    (oldest, conversation) => {
+      const value = conversation.last_message_at ?? conversation.created_at ?? null;
+
+      if (!value) return oldest;
+      if (!oldest) return value;
+
+      return new Date(value).getTime() < new Date(oldest).getTime()
+        ? value
+        : oldest;
+    },
+    null,
+  );
 
   const possibleAiFailure =
-    Boolean(oldestPendingAiAt) &&
-    now - new Date(oldestPendingAiAt!).getTime() >= 3 * 60 * 1000;
+    Boolean(oldestPendingAt) &&
+    now - new Date(oldestPendingAt as string).getTime() >= 3 * 60 * 1000;
 
   const { data: labels } = useQuery({
     queryKey: ["labels", workspaceId],
@@ -276,11 +219,9 @@ function InboxPage() {
       .on("postgres_changes", { event: "*", schema: "public", table: "messages" }, () => {
         queryClient.invalidateQueries({ queryKey: ["messages"] });
         queryClient.invalidateQueries({ queryKey: ["conversations"] });
-        queryClient.invalidateQueries({ queryKey: ["pending-ai-conversations"] });
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "conversations" }, () => {
         queryClient.invalidateQueries({ queryKey: ["conversations"] });
-        queryClient.invalidateQueries({ queryKey: ["pending-ai-conversations"] });
       })
       .subscribe();
     return () => {
@@ -305,21 +246,17 @@ function InboxPage() {
   useEffect(() => {
     if (possibleAiFailure && !aiFailureToastShownRef.current) {
       toast.error(
-        `Posible fallo de IA: hay ${pendingAiCount} conversación${
-          pendingAiCount === 1 ? "" : "es"
-        } esperando respuesta hace más de 3 minutos.`,
-        {
-          duration: 10000,
-        },
+        `Posible fallo de IA: hay ${pendingCount} conversación${
+          pendingCount === 1 ? "" : "es"
+        } pendiente${pendingCount === 1 ? "" : "s"}.`,
       );
-
       aiFailureToastShownRef.current = true;
     }
 
     if (!possibleAiFailure) {
       aiFailureToastShownRef.current = false;
     }
-  }, [possibleAiFailure, pendingAiCount]);
+  }, [possibleAiFailure, pendingCount]);
 
   const active = conversations?.find((c) => c.id === activeId) ?? null;
 
@@ -480,7 +417,6 @@ function InboxPage() {
       toast.success("Respuesta de IA enviada");
       queryClient.invalidateQueries({ queryKey: ["messages"] });
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
-      queryClient.invalidateQueries({ queryKey: ["pending-ai-conversations"] });
     },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -491,13 +427,45 @@ function InboxPage() {
         throw new Error("No se encontró el workspace.");
       }
 
-      const conversationsToReply = (conversations ?? []).filter(
-        (conversation) => pendingAiIds.has(conversation.id),
-      );
-
-      if (conversationsToReply.length === 0) {
+      if (pendingCandidates.length === 0) {
         return {
-          total: 0,
+          totalCandidates: 0,
+          verifiedPending: 0,
+          success: 0,
+          failed: 0,
+        };
+      }
+
+      const verifiedPendingIds: string[] = [];
+
+      // Verificación exacta SOLO al hacer clic:
+      // se revisa el último mensaje real de cada conversación candidata.
+      for (const conversation of pendingCandidates) {
+        const { data, error } = await supabase
+          .from("messages")
+          .select("direction, created_at")
+          .eq("conversation_id", conversation.id)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (error) {
+          console.error(
+            `No se pudo verificar la conversación ${conversation.id}:`,
+            error,
+          );
+          continue;
+        }
+
+        if (data?.direction === "inbound") {
+          verifiedPendingIds.push(conversation.id);
+        }
+      }
+
+      if (verifiedPendingIds.length === 0) {
+        return {
+          totalCandidates: pendingCandidates.length,
+          verifiedPending: 0,
           success: 0,
           failed: 0,
         };
@@ -507,14 +475,14 @@ function InboxPage() {
       let failed = 0;
       const BATCH_SIZE = 5;
 
-      for (let i = 0; i < conversationsToReply.length; i += BATCH_SIZE) {
-        const batch = conversationsToReply.slice(i, i + BATCH_SIZE);
+      for (let i = 0; i < verifiedPendingIds.length; i += BATCH_SIZE) {
+        const batch = verifiedPendingIds.slice(i, i + BATCH_SIZE);
 
         const results = await Promise.allSettled(
-          batch.map((conversation) =>
+          batch.map((conversationId) =>
             aiReplyNow({
               data: {
-                conversationId: conversation.id,
+                conversationId,
               },
             }),
           ),
@@ -531,23 +499,32 @@ function InboxPage() {
       }
 
       return {
-        total: conversationsToReply.length,
+        totalCandidates: pendingCandidates.length,
+        verifiedPending: verifiedPendingIds.length,
         success,
         failed,
       };
     },
 
     onSuccess: (result) => {
-      if (!result || result.total === 0) {
-        toast.info("No hay respuestas pendientes");
+      if (!result || result.totalCandidates === 0) {
+        toast.info("No hay conversaciones pendientes");
+        return;
+      }
+
+      if (result.verifiedPending === 0) {
+        toast.info(
+          "No se encontraron chats cuyo último mensaje siga siendo del cliente.",
+        );
+        queryClient.invalidateQueries({ queryKey: ["conversations"] });
         return;
       }
 
       if (result.failed === 0) {
         toast.success(
-          `IA reanudada correctamente en ${result.success} conversación${
+          `IA respondió ${result.success} conversación${
             result.success === 1 ? "" : "es"
-          }`,
+          } pendiente${result.success === 1 ? "" : "s"}.`,
         );
       } else {
         toast.warning(
@@ -557,12 +534,11 @@ function InboxPage() {
 
       queryClient.invalidateQueries({ queryKey: ["messages"] });
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
-      queryClient.invalidateQueries({ queryKey: ["pending-ai-conversations"] });
     },
 
     onError: (error: Error) => {
       toast.error(
-        `No se pudo responder a las conversaciones: ${error.message}`,
+        `No se pudieron procesar las respuestas pendientes: ${error.message}`,
       );
     },
   });
@@ -721,11 +697,9 @@ function InboxPage() {
               </div>
 
               <div className="mt-1 flex items-end gap-2">
-                <span className="text-2xl font-bold">
-                  {pendingAiLoading ? "…" : pendingAiCount}
-                </span>
+                <span className="text-2xl font-bold">{pendingCount}</span>
                 <span className="pb-1 text-[10px] text-muted-foreground">
-                  sin responder
+                  por revisar
                 </span>
               </div>
             </div>
@@ -757,12 +731,12 @@ function InboxPage() {
                     possibleAiFailure && "text-destructive",
                   )}
                 >
-                  {possibleAiFailure ? "Posible fallo" : "Sin alertas"}
+                  {possibleAiFailure ? "Revisar IA" : "Sin alertas"}
                 </span>
 
                 <p className="mt-0.5 text-[10px] text-muted-foreground">
                   {possibleAiFailure
-                    ? "Hay clientes esperando +3 min"
+                    ? "Hay pendientes de +3 min"
                     : "No hay atrasos detectados"}
                 </p>
               </div>
@@ -773,21 +747,17 @@ function InboxPage() {
             type="button"
             className="w-full"
             variant={possibleAiFailure ? "destructive" : "default"}
-            disabled={
-              aiReplyAll.isPending ||
-              pendingAiLoading ||
-              pendingAiCount === 0
-            }
+            disabled={aiReplyAll.isPending || pendingCount === 0}
             onClick={() => {
-              if (pendingAiCount === 0) {
-                toast.info("No hay respuestas pendientes");
+              if (pendingCount === 0) {
+                toast.info("No hay conversaciones pendientes");
                 return;
               }
 
               const confirmed = window.confirm(
-                `La IA responderá únicamente ${pendingAiCount} conversación${
-                  pendingAiCount === 1 ? "" : "es"
-                } cuyo último mensaje es del cliente y todavía no tiene respuesta posterior. ¿Continuar?`,
+                `Hay ${pendingCount} conversación${
+                  pendingCount === 1 ? "" : "es"
+                } por revisar. Antes de responder, el sistema verificará una por una y SOLO responderá aquellas cuyo último mensaje real sea del cliente. ¿Continuar?`,
               );
 
               if (confirmed) {
@@ -798,12 +768,12 @@ function InboxPage() {
             {aiReplyAll.isPending ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Respondiendo pendientes...
+                Verificando y respondiendo...
               </>
             ) : (
               <>
                 <Sparkles className="mr-2 h-4 w-4" />
-                Responder pendientes ({pendingAiCount})
+                Responder pendientes ({pendingCount})
               </>
             )}
           </Button>
@@ -816,10 +786,10 @@ function InboxPage() {
                 <p className="text-xs font-semibold text-destructive">
                   Posible fallo de la IA
                 </p>
-
                 <p className="text-[11px] text-muted-foreground">
-                  Hay al menos una conversación cuyo último mensaje es del cliente
-                  y lleva más de 3 minutos sin respuesta.
+                  Hay conversaciones pendientes desde hace más de 3 minutos.
+                  Usá “Responder pendientes” para verificar cuáles siguen sin
+                  respuesta y reanudar solamente esas.
                 </p>
               </div>
             </div>
