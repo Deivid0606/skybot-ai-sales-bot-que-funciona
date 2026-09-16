@@ -1,4 +1,4 @@
-
+import { useEffect, useRef, useState } from "react";
 import { formatTime } from "@/lib/format";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -123,6 +123,7 @@ function InboxPage() {
   const fileRef = useRef<HTMLInputElement>(null);
   const [adName, setAdName] = useState("");
   const [adProductId, setAdProductId] = useState("");
+  const [now, setNow] = useState(() => Date.now());
 
 
   const { data: conversations } = useQuery({
@@ -151,39 +152,56 @@ function InboxPage() {
     )
     .map((conversation) => conversation.id);
 
-  const { data: pendingAiConversations = [], isLoading: pendingAiLoading } = useQuery({
-    queryKey: ["pending-ai-conversations", workspaceId, pendingCandidateIds.join(",")],
+  const {
+    data: pendingAiConversations = [],
+    isLoading: pendingAiLoading,
+  } = useQuery({
+    queryKey: [
+      "pending-ai-conversations",
+      workspaceId,
+      pendingCandidateIds.join(","),
+    ],
     enabled: Boolean(workspaceId && pendingCandidateIds.length > 0),
     queryFn: async () => {
-      const checks = await Promise.all(
-        pendingCandidateIds.map(async (conversationId) => {
-          const { data, error } = await supabase
-            .from("messages")
-            .select("conversation_id, direction, sender, created_at")
-            .eq("conversation_id", conversationId)
-            .order("created_at", { ascending: false })
-            .limit(1)
-            .maybeSingle();
+      if (pendingCandidateIds.length === 0) return [];
 
-          if (error) throw error;
+      const { data, error } = await supabase
+        .from("messages")
+        .select("conversation_id, direction, created_at")
+        .in("conversation_id", pendingCandidateIds)
+        .order("created_at", { ascending: false })
+        .limit(2000);
 
-          return data?.direction === "inbound"
-            ? {
-                conversationId,
-                createdAt: data.created_at,
-              }
-            : null;
-        }),
-      );
+      if (error) {
+        console.error("No se pudo verificar respuestas pendientes:", error);
+        return [];
+      }
 
-      return checks.filter(
-        (
-          item,
-        ): item is {
+      const latestByConversation = new Map<
+        string,
+        {
           conversationId: string;
           createdAt: string;
-        } => Boolean(item),
-      );
+          direction: string;
+        }
+      >();
+
+      for (const message of data ?? []) {
+        if (!latestByConversation.has(message.conversation_id)) {
+          latestByConversation.set(message.conversation_id, {
+            conversationId: message.conversation_id,
+            createdAt: message.created_at,
+            direction: message.direction,
+          });
+        }
+      }
+
+      return Array.from(latestByConversation.values())
+        .filter((item) => item.direction === "inbound")
+        .map((item) => ({
+          conversationId: item.conversationId,
+          createdAt: item.createdAt,
+        }));
     },
     refetchInterval: 15000,
   });
@@ -196,16 +214,18 @@ function InboxPage() {
 
   const oldestPendingAiAt =
     pendingAiConversations.length > 0
-      ? pendingAiConversations.reduce((oldest, item) =>
-          new Date(item.createdAt).getTime() < new Date(oldest).getTime()
-            ? item.createdAt
-            : oldest,
-        pendingAiConversations[0].createdAt)
+      ? pendingAiConversations.reduce(
+          (oldest, item) =>
+            new Date(item.createdAt).getTime() < new Date(oldest).getTime()
+              ? item.createdAt
+              : oldest,
+          pendingAiConversations[0].createdAt,
+        )
       : null;
 
   const possibleAiFailure =
     Boolean(oldestPendingAiAt) &&
-    Date.now() - new Date(oldestPendingAiAt!).getTime() >= 3 * 60 * 1000;
+    now - new Date(oldestPendingAiAt!).getTime() >= 3 * 60 * 1000;
 
   const { data: labels } = useQuery({
     queryKey: ["labels", workspaceId],
@@ -272,6 +292,14 @@ function InboxPage() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages?.length]);
 
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setNow(Date.now());
+    }, 15000);
+
+    return () => window.clearInterval(timer);
+  }, []);
+
   const aiFailureToastShownRef = useRef(false);
 
   useEffect(() => {
@@ -284,6 +312,7 @@ function InboxPage() {
           duration: 10000,
         },
       );
+
       aiFailureToastShownRef.current = true;
     }
 
@@ -690,6 +719,7 @@ function InboxPage() {
                 </span>
                 <MessageSquare className="h-4 w-4 text-muted-foreground" />
               </div>
+
               <div className="mt-1 flex items-end gap-2">
                 <span className="text-2xl font-bold">
                   {pendingAiLoading ? "…" : pendingAiCount}
@@ -712,12 +742,14 @@ function InboxPage() {
                 <span className="text-[11px] font-medium text-muted-foreground">
                   Estado IA
                 </span>
+
                 {possibleAiFailure ? (
                   <AlertTriangle className="h-4 w-4 text-destructive" />
                 ) : (
                   <Bot className="h-4 w-4 text-muted-foreground" />
                 )}
               </div>
+
               <div className="mt-1">
                 <span
                   className={cn(
@@ -727,6 +759,7 @@ function InboxPage() {
                 >
                   {possibleAiFailure ? "Posible fallo" : "Sin alertas"}
                 </span>
+
                 <p className="mt-0.5 text-[10px] text-muted-foreground">
                   {possibleAiFailure
                     ? "Hay clientes esperando +3 min"
@@ -740,7 +773,11 @@ function InboxPage() {
             type="button"
             className="w-full"
             variant={possibleAiFailure ? "destructive" : "default"}
-            disabled={aiReplyAll.isPending || pendingAiLoading || pendingAiCount === 0}
+            disabled={
+              aiReplyAll.isPending ||
+              pendingAiLoading ||
+              pendingAiCount === 0
+            }
             onClick={() => {
               if (pendingAiCount === 0) {
                 toast.info("No hay respuestas pendientes");
@@ -774,10 +811,12 @@ function InboxPage() {
           {possibleAiFailure && (
             <div className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+
               <div>
                 <p className="text-xs font-semibold text-destructive">
                   Posible fallo de la IA
                 </p>
+
                 <p className="text-[11px] text-muted-foreground">
                   Hay al menos una conversación cuyo último mensaje es del cliente
                   y lleva más de 3 minutos sin respuesta.
