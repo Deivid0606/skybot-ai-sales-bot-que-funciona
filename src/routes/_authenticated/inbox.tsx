@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+
 import { formatTime } from "@/lib/format";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  AlertTriangle,
   Bot,
   BotOff,
   CheckCircle2,
@@ -141,6 +142,71 @@ function InboxPage() {
     },
   });
 
+  const pendingCandidateIds = (conversations ?? [])
+    .filter(
+      (conversation) =>
+        conversation.unread_count > 0 &&
+        !conversation.ai_paused &&
+        !conversation.sale_closed,
+    )
+    .map((conversation) => conversation.id);
+
+  const { data: pendingAiConversations = [], isLoading: pendingAiLoading } = useQuery({
+    queryKey: ["pending-ai-conversations", workspaceId, pendingCandidateIds.join(",")],
+    enabled: Boolean(workspaceId && pendingCandidateIds.length > 0),
+    queryFn: async () => {
+      const checks = await Promise.all(
+        pendingCandidateIds.map(async (conversationId) => {
+          const { data, error } = await supabase
+            .from("messages")
+            .select("conversation_id, direction, sender, created_at")
+            .eq("conversation_id", conversationId)
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (error) throw error;
+
+          return data?.direction === "inbound"
+            ? {
+                conversationId,
+                createdAt: data.created_at,
+              }
+            : null;
+        }),
+      );
+
+      return checks.filter(
+        (
+          item,
+        ): item is {
+          conversationId: string;
+          createdAt: string;
+        } => Boolean(item),
+      );
+    },
+    refetchInterval: 15000,
+  });
+
+  const pendingAiIds = new Set(
+    pendingAiConversations.map((item) => item.conversationId),
+  );
+
+  const pendingAiCount = pendingAiConversations.length;
+
+  const oldestPendingAiAt =
+    pendingAiConversations.length > 0
+      ? pendingAiConversations.reduce((oldest, item) =>
+          new Date(item.createdAt).getTime() < new Date(oldest).getTime()
+            ? item.createdAt
+            : oldest,
+        pendingAiConversations[0].createdAt)
+      : null;
+
+  const possibleAiFailure =
+    Boolean(oldestPendingAiAt) &&
+    Date.now() - new Date(oldestPendingAiAt!).getTime() >= 3 * 60 * 1000;
+
   const { data: labels } = useQuery({
     queryKey: ["labels", workspaceId],
     enabled: Boolean(workspaceId),
@@ -190,9 +256,11 @@ function InboxPage() {
       .on("postgres_changes", { event: "*", schema: "public", table: "messages" }, () => {
         queryClient.invalidateQueries({ queryKey: ["messages"] });
         queryClient.invalidateQueries({ queryKey: ["conversations"] });
+        queryClient.invalidateQueries({ queryKey: ["pending-ai-conversations"] });
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "conversations" }, () => {
         queryClient.invalidateQueries({ queryKey: ["conversations"] });
+        queryClient.invalidateQueries({ queryKey: ["pending-ai-conversations"] });
       })
       .subscribe();
     return () => {
@@ -203,6 +271,26 @@ function InboxPage() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages?.length]);
+
+  const aiFailureToastShownRef = useRef(false);
+
+  useEffect(() => {
+    if (possibleAiFailure && !aiFailureToastShownRef.current) {
+      toast.error(
+        `Posible fallo de IA: hay ${pendingAiCount} conversación${
+          pendingAiCount === 1 ? "" : "es"
+        } esperando respuesta hace más de 3 minutos.`,
+        {
+          duration: 10000,
+        },
+      );
+      aiFailureToastShownRef.current = true;
+    }
+
+    if (!possibleAiFailure) {
+      aiFailureToastShownRef.current = false;
+    }
+  }, [possibleAiFailure, pendingAiCount]);
 
   const active = conversations?.find((c) => c.id === activeId) ?? null;
 
@@ -363,8 +451,91 @@ function InboxPage() {
       toast.success("Respuesta de IA enviada");
       queryClient.invalidateQueries({ queryKey: ["messages"] });
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
+      queryClient.invalidateQueries({ queryKey: ["pending-ai-conversations"] });
     },
     onError: (e: Error) => toast.error(e.message),
+  });
+
+  const aiReplyAll = useMutation({
+    mutationFn: async () => {
+      if (!workspaceId) {
+        throw new Error("No se encontró el workspace.");
+      }
+
+      const conversationsToReply = (conversations ?? []).filter(
+        (conversation) => pendingAiIds.has(conversation.id),
+      );
+
+      if (conversationsToReply.length === 0) {
+        return {
+          total: 0,
+          success: 0,
+          failed: 0,
+        };
+      }
+
+      let success = 0;
+      let failed = 0;
+      const BATCH_SIZE = 5;
+
+      for (let i = 0; i < conversationsToReply.length; i += BATCH_SIZE) {
+        const batch = conversationsToReply.slice(i, i + BATCH_SIZE);
+
+        const results = await Promise.allSettled(
+          batch.map((conversation) =>
+            aiReplyNow({
+              data: {
+                conversationId: conversation.id,
+              },
+            }),
+          ),
+        );
+
+        results.forEach((result) => {
+          if (result.status === "fulfilled") {
+            success++;
+          } else {
+            failed++;
+            console.error("Error respondiendo conversación:", result.reason);
+          }
+        });
+      }
+
+      return {
+        total: conversationsToReply.length,
+        success,
+        failed,
+      };
+    },
+
+    onSuccess: (result) => {
+      if (!result || result.total === 0) {
+        toast.info("No hay respuestas pendientes");
+        return;
+      }
+
+      if (result.failed === 0) {
+        toast.success(
+          `IA reanudada correctamente en ${result.success} conversación${
+            result.success === 1 ? "" : "es"
+          }`,
+        );
+      } else {
+        toast.warning(
+          `Respondidas: ${result.success} · Fallaron: ${result.failed}`,
+        );
+      }
+
+      queryClient.invalidateQueries({ queryKey: ["messages"] });
+      queryClient.invalidateQueries({ queryKey: ["conversations"] });
+      queryClient.invalidateQueries({ queryKey: ["pending-ai-conversations"] });
+    },
+
+    onError: (error: Error) => {
+      toast.error(
+        `No se pudo responder a las conversaciones: ${error.message}`,
+      );
+    },
   });
 
   const removeMessages = useMutation({
@@ -511,6 +682,110 @@ function InboxPage() {
         )}
       >
         <div className="space-y-3 border-b border-border bg-card/60 p-3 backdrop-blur">
+          <div className="grid grid-cols-2 gap-2">
+            <div className="rounded-xl border border-border bg-background p-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-medium text-muted-foreground">
+                  Respuestas pendientes
+                </span>
+                <MessageSquare className="h-4 w-4 text-muted-foreground" />
+              </div>
+              <div className="mt-1 flex items-end gap-2">
+                <span className="text-2xl font-bold">
+                  {pendingAiLoading ? "…" : pendingAiCount}
+                </span>
+                <span className="pb-1 text-[10px] text-muted-foreground">
+                  sin responder
+                </span>
+              </div>
+            </div>
+
+            <div
+              className={cn(
+                "rounded-xl border p-3",
+                possibleAiFailure
+                  ? "border-destructive/50 bg-destructive/10"
+                  : "border-border bg-background",
+              )}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-medium text-muted-foreground">
+                  Estado IA
+                </span>
+                {possibleAiFailure ? (
+                  <AlertTriangle className="h-4 w-4 text-destructive" />
+                ) : (
+                  <Bot className="h-4 w-4 text-muted-foreground" />
+                )}
+              </div>
+              <div className="mt-1">
+                <span
+                  className={cn(
+                    "text-sm font-semibold",
+                    possibleAiFailure && "text-destructive",
+                  )}
+                >
+                  {possibleAiFailure ? "Posible fallo" : "Sin alertas"}
+                </span>
+                <p className="mt-0.5 text-[10px] text-muted-foreground">
+                  {possibleAiFailure
+                    ? "Hay clientes esperando +3 min"
+                    : "No hay atrasos detectados"}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <Button
+            type="button"
+            className="w-full"
+            variant={possibleAiFailure ? "destructive" : "default"}
+            disabled={aiReplyAll.isPending || pendingAiLoading || pendingAiCount === 0}
+            onClick={() => {
+              if (pendingAiCount === 0) {
+                toast.info("No hay respuestas pendientes");
+                return;
+              }
+
+              const confirmed = window.confirm(
+                `La IA responderá únicamente ${pendingAiCount} conversación${
+                  pendingAiCount === 1 ? "" : "es"
+                } cuyo último mensaje es del cliente y todavía no tiene respuesta posterior. ¿Continuar?`,
+              );
+
+              if (confirmed) {
+                aiReplyAll.mutate();
+              }
+            }}
+          >
+            {aiReplyAll.isPending ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Respondiendo pendientes...
+              </>
+            ) : (
+              <>
+                <Sparkles className="mr-2 h-4 w-4" />
+                Responder pendientes ({pendingAiCount})
+              </>
+            )}
+          </Button>
+
+          {possibleAiFailure && (
+            <div className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+              <div>
+                <p className="text-xs font-semibold text-destructive">
+                  Posible fallo de la IA
+                </p>
+                <p className="text-[11px] text-muted-foreground">
+                  Hay al menos una conversación cuyo último mensaje es del cliente
+                  y lleva más de 3 minutos sin respuesta.
+                </p>
+              </div>
+            </div>
+          )}
+
           <div className="relative">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
