@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { FileSpreadsheet, FileText, Loader2, Plus, Trash2, Upload } from "lucide-react";
+import { FileText, FileSpreadsheet, Upload, Loader2, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { PageHeader, PageShell, EmptyState } from "@/components/page-shell";
@@ -102,6 +102,13 @@ const empty: Form = {
   is_active: true,
 };
 
+// Formato TXT legible por personas y también portable entre cuentas BOT SKY.
+// Los marcadores protegen saltos de línea, emojis y caracteres especiales.
+const START = "=== BOT_SKY_TRAINING_JSON_START ===";
+const END = "=== BOT_SKY_TRAINING_JSON_END ===";
+const PAGE_SIZE = 500;
+const MAX_IMPORT_BYTES = 5 * 1024 * 1024;
+
 type TransferEntry = {
   title: string;
   content: string;
@@ -113,19 +120,28 @@ type TransferEntry = {
   is_active: boolean;
 };
 
-type TrainingTransfer = {
-  format: "BOT_SKY_TRAINING";
-  version: 1;
-  exported_at: string;
-  entries: TransferEntry[];
+type TrainingRecord = TransferEntry & {
+  id: string;
+  product_id: string | null;
 };
 
-function normalized(value: string): string {
-  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
+const normalized = (value: string) => value.normalize("NFKC").trim().toLocaleLowerCase();
+
+function keyOf(entry: TransferEntry): string {
+  return JSON.stringify([
+    normalized(entry.title),
+    normalized(entry.content),
+    entry.category,
+    entry.scope,
+    normalized(entry.product_name ?? ""),
+    entry.priority,
+    entry.is_active,
+    entry.keywords,
+  ]);
 }
 
-function downloadText(filename: string, content: string, mime: string) {
-  const blob = new Blob(["\uFEFF", content], { type: `${mime};charset=utf-8` });
+function exportDownload(content: string, filename: string, mime: string) {
+  const blob = new Blob([content], { type: mime });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
@@ -133,16 +149,59 @@ function downloadText(filename: string, content: string, mime: string) {
   document.body.appendChild(link);
   link.click();
   link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  window.setTimeout(() => URL.revokeObjectURL(url), 30000);
 }
 
-function csvCell(value: unknown): string {
-  // Escapa fórmulas para que Google Sheets/Excel no ejecuten contenido importado.
-  let text = String(value ?? "");
-  if (/^[\s]*[=+@-]/.test(text) && !/^-?\d+(?:[.,]\d+)?$/.test(text.trim())) {
-    text = "'" + text;
+function csvCell(input: string | number | boolean | null): string {
+  let value = String(input ?? "");
+  // Evita ejecutar fórmulas al abrir contenido escrito por usuarios en hojas de cálculo.
+  if (/^[\\t\\r\n ]*[=+@-]/.test(value)) value = "'" + value;
+  return '"' + value.replace(/"/g, '""') + '"';
+}
+
+function parseTrainingTxt(raw: string): TransferEntry[] {
+  const startIndex = raw.indexOf(START);
+  const endIndex = raw.indexOf(END, startIndex + START.length);
+  if (startIndex < 0 || endIndex < 0) {
+    throw new Error("TXT no compatible. Exportá el TXT desde Entrenamiento de IA de BOT SKY.");
   }
-  return `"${text.replace(/"/g, '""')}"`;
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(raw.slice(startIndex + START.length, endIndex).trim());
+  } catch {
+    throw new Error("El TXT está incompleto o dañado: no se pudo leer el bloque de datos.");
+  }
+  if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
+    throw new Error("Formato de entrenamiento incorrecto.");
+  }
+  const documentData = decoded as { format?: unknown; version?: unknown; entries?: unknown };
+  if (documentData.format !== "BOT_SKY_TRAINING" || documentData.version !== 1 || !Array.isArray(documentData.entries)) {
+    throw new Error("Versión o estructura del entrenamiento no compatible.");
+  }
+  if (documentData.entries.length > 10000) throw new Error("El archivo supera el límite de 10.000 conocimientos.");
+  return documentData.entries.map((rawEntry: unknown, index: number) => {
+    if (!rawEntry || typeof rawEntry !== "object" || Array.isArray(rawEntry)) {
+      throw new Error(`Registro ${index + 1} inválido.`);
+    }
+    const e = rawEntry as Record<string, unknown>;
+    if (
+      typeof e.title !== "string" || !e.title.trim() || e.title.length > 140 ||
+      typeof e.content !== "string" || !e.content.trim() ||
+      typeof e.category !== "string" || !e.category.trim() ||
+      typeof e.scope !== "string" || !["global", "producto"].includes(e.scope) ||
+      (e.product_name !== null && typeof e.product_name !== "string") ||
+      !Array.isArray(e.keywords) || !e.keywords.every((k) => typeof k === "string") ||
+      typeof e.priority !== "number" || !Number.isFinite(e.priority) ||
+      typeof e.is_active !== "boolean"
+    ) {
+      throw new Error(`Registro ${index + 1} contiene campos inválidos.`);
+    }
+    return {
+      title: e.title.trim(), content: e.content.trim(), category: e.category,
+      scope: e.scope, product_name: e.product_name as string | null,
+      keywords: e.keywords as string[], priority: e.priority, is_active: e.is_active,
+    };
+  });
 }
 
 function TrainingPage() {
@@ -151,8 +210,142 @@ function TrainingPage() {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState<Form>(empty);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [transferring, setTransferring] = useState(false);
+  const uploadRef = useRef<HTMLInputElement>(null);
+  const [transferBusy, setTransferBusy] = useState(false);
+
+  // Obtiene todas las filas aunque Supabase aplique un límite de 1.000 filas por consulta.
+  const fetchEntireTraining = async () => {
+    if (!workspaceId) throw new Error("No se encontró el espacio de trabajo.");
+    const result: TrainingRecord[] = [];
+    for (let offset = 0; ; offset += PAGE_SIZE) {
+      const { data, error } = await supabase
+        .from("training_entries")
+        .select("*")
+        .eq("workspace_id", workspaceId)
+        .order("priority", { ascending: false })
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: true })
+        .range(offset, offset + PAGE_SIZE - 1);
+      if (error) throw error;
+      result.push(...((data ?? []) as TrainingRecord[]));
+      if (!data || data.length < PAGE_SIZE) break;
+    }
+    return result;
+  };
+
+  const buildTransfer = (records: TrainingRecord[], productItems: { id: string; name: string }[]): TransferEntry[] => {
+    const nameById = new Map(productItems.map((p) => [p.id, p.name]));
+    return records.map((entry) => ({
+      title: entry.title,
+      content: entry.content,
+      category: entry.category,
+      scope: entry.scope,
+      product_name: entry.product_id ? nameById.get(entry.product_id) ?? null : null,
+      keywords: Array.isArray(entry.keywords) ? entry.keywords : [],
+      priority: Number(entry.priority) || 0,
+      is_active: Boolean(entry.is_active),
+    }));
+  };
+
+  const exportTraining = async (kind: "txt" | "csv") => {
+    if (transferBusy) return;
+    setTransferBusy(true);
+    try {
+      const allRecords = await fetchEntireTraining();
+      if (!allRecords.length) { toast.error("Todavía no hay conocimientos para exportar."); return; }
+      const { data: allProducts, error: productError } = await supabase
+        .from("products").select("id, name").eq("workspace_id", workspaceId!);
+      if (productError) throw productError;
+      const portable = buildTransfer(allRecords, allProducts ?? []);
+      if (portable.some((r) => r.scope === "producto" && !r.product_name)) {
+        throw new Error("Existen reglas vinculadas a productos que ya no se encuentran. Revisá esos productos antes de exportar.");
+      }
+      const fileName = `BOT_SKY_entrenamiento_${new Date().toISOString().slice(0, 10)}`;
+      if (kind === "csv") {
+        const headers = ["Título", "Contenido", "Categoría", "Alcance", "Producto", "Palabras clave", "Prioridad", "Activo"];
+        const rows = portable.map((e) => [e.title, e.content, e.category, e.scope, e.product_name, e.keywords.join(", "), e.priority, e.is_active ? "Sí" : "No"]);
+        const csv = "\uFEFF" + [headers, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n");
+        exportDownload(csv, fileName + ".csv", "text/csv;charset=utf-8");
+      } else {
+        const readable = portable.map((e, i) => [
+          `────────── ${i + 1}. ${e.title} ──────────`,
+          `Categoría: ${e.category} | Alcance: ${e.scope}`,
+          `Producto: ${e.product_name ?? "—"} | Prioridad: ${e.priority} | Estado: ${e.is_active ? "Activo" : "Pausado"}`,
+          `Palabras clave: ${e.keywords.join(", ") || "—"}`,
+          "Contenido:", e.content, "",
+        ].join("\n")).join("\n");
+        const payload = JSON.stringify({ format: "BOT_SKY_TRAINING", version: 1, entries: portable }, null, 2);
+        const txt = `BOT SKY — ENTRENAMIENTO COMPLETO\nRegistros: ${portable.length}\nOrden: prioridad descendente\n\n${readable}\n\nNO BORRAR EL BLOQUE SIGUIENTE: permite importar automáticamente el entrenamiento en otra cuenta.\n${START}\n${payload}\n${END}\n`;
+        exportDownload(txt, fileName + ".txt", "text/plain;charset=utf-8");
+      }
+      toast.success(`${portable.length} conocimientos exportados.`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "No se pudo exportar el entrenamiento.");
+    } finally { setTransferBusy(false); }
+  };
+
+  const importTraining = async (file: File) => {
+    if (transferBusy) return;
+    setTransferBusy(true);
+    try {
+      if (!file.name.toLowerCase().endsWith(".txt")) throw new Error("Seleccioná un archivo .txt exportado de BOT SKY.");
+      if (file.size > MAX_IMPORT_BYTES) throw new Error("El TXT supera el límite de 5 MB.");
+      if (!workspaceId || !user) throw new Error("Sesión no válida.");
+      const incoming = parseTrainingTxt((await file.text()).replace(/^\uFEFF/, ""));
+      if (!incoming.length) throw new Error("El TXT no contiene conocimientos.");
+      const [current, productResponse] = await Promise.all([
+        fetchEntireTraining(),
+        supabase.from("products").select("id, name").eq("workspace_id", workspaceId),
+      ]);
+      if (productResponse.error) throw productResponse.error;
+      const availableProducts = productResponse.data ?? [];
+      const productLookup = new Map(availableProducts.map((p) => [normalized(p.name), p.id]));
+      const existing = new Set(buildTransfer(current, availableProducts).map(keyOf));
+      const pending: Array<{
+        workspace_id: string; user_id: string; created_by: string; title: string; content: string;
+        category: string; scope: string; product_id: string | null; keywords: string[];
+        priority: number; is_active: boolean;
+      }> = [];
+      let duplicates = 0;
+      const missingProducts = new Set<string>();
+      for (const item of incoming) {
+        let productId: string | null = null;
+        if (item.scope === "producto") {
+          if (!item.product_name?.trim()) {
+            missingProducts.add("(producto sin nombre)"); continue;
+          }
+          productId = productLookup.get(normalized(item.product_name)) ?? null;
+          if (!productId) { missingProducts.add(item.product_name); continue; }
+        }
+        const key = keyOf(item);
+        if (existing.has(key)) { duplicates++; continue; }
+        existing.add(key);
+        pending.push({
+          workspace_id: workspaceId, user_id: user.id, created_by: user.id,
+          title: item.title, content: item.content, category: item.category,
+          scope: item.scope, product_id: productId, keywords: item.keywords,
+          priority: item.priority, is_active: item.is_active,
+        });
+      }
+      let added = 0;
+      for (let i = 0; i < pending.length; i += 50) {
+        const batch = pending.slice(i, i + 50);
+        const { error } = await supabase.from("training_entries").insert(batch);
+        if (error) throw new Error(`${added} importados antes del error: ${error.message}`);
+        added += batch.length;
+      }
+      await queryClient.invalidateQueries({ queryKey: ["training", workspaceId] });
+      const detail = [`${added} agregados`, `${duplicates} repetidos omitidos`];
+      if (missingProducts.size) detail.push(`${incoming.length - added - duplicates} omitidos por productos no encontrados: ${Array.from(missingProducts).join(", ")}`);
+      if (missingProducts.size) toast.warning(detail.join(" · "), { duration: 12000 });
+      else toast.success(detail.join(" · "), { duration: 7000 });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "No se pudo cargar el entrenamiento.", { duration: 9000 });
+    } finally {
+      if (uploadRef.current) uploadRef.current.value = "";
+      setTransferBusy(false);
+    }
+  };
 
   const { data: entries } = useQuery({
     queryKey: ["training", workspaceId],
@@ -183,148 +376,6 @@ function TrainingPage() {
     },
   });
 
-  // Se pagina para exportar/importar sin perder entradas cuando hay más de 1000.
-  const fetchAllTraining = async () => {
-    if (!workspaceId) throw new Error("No se encontró el espacio de trabajo");
-    const all: Array<NonNullable<typeof entries>[number]> = [];
-    const pageSize = 500;
-    for (let offset = 0; ; offset += pageSize) {
-      const { data, error } = await supabase
-        .from("training_entries")
-        .select("*")
-        .eq("workspace_id", workspaceId)
-        .order("priority", { ascending: false })
-        .order("created_at", { ascending: false })
-        .range(offset, offset + pageSize - 1);
-      if (error) throw error;
-      all.push(...(data ?? []));
-      if (!data || data.length < pageSize) break;
-    }
-    return all;
-  };
-
-  const makeTransfer = async (): Promise<TrainingTransfer> => {
-    const all = await fetchAllTraining();
-    const productNames = new Map<string, string>((products ?? []).map((p) => [p.id, p.name]));
-    return {
-      format: "BOT_SKY_TRAINING",
-      version: 1,
-      exported_at: new Date().toISOString(),
-      entries: all.map((e) => ({
-        title: e.title,
-        content: e.content,
-        category: e.category,
-        scope: e.scope,
-        product_name: e.product_id ? productNames.get(e.product_id) ?? null : null,
-        keywords: Array.isArray(e.keywords) ? e.keywords.filter((k): k is string => typeof k === "string") : [],
-        priority: Number(e.priority) || 0,
-        is_active: Boolean(e.is_active),
-      })),
-    };
-  };
-
-  const exportTraining = async (format: "txt" | "csv") => {
-    if (transferring) return;
-    setTransferring(true);
-    try {
-      const transfer = await makeTransfer();
-      const date = new Date().toISOString().slice(0, 10);
-      if (format === "txt") {
-        // JSON válido guardado como .txt: importación exacta y sin perder saltos de línea.
-        downloadText(`BOT-SKY-entrenamiento-${date}.txt`, JSON.stringify(transfer, null, 2), "text/plain");
-      } else {
-        const headers = ["Título", "Contenido", "Categoría", "Alcance", "Producto", "Palabras clave", "Prioridad", "Activo"];
-        const rows = transfer.entries.map((e) => [
-          e.title, e.content, e.category, e.scope, e.product_name ?? "",
-          e.keywords.join("; "), e.priority, e.is_active ? "Sí" : "No",
-        ]);
-        const csv = [headers, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n");
-        downloadText(`BOT-SKY-entrenamiento-${date}.csv`, csv, "text/csv");
-      }
-      toast.success(`${transfer.entries.length} conocimientos exportados`);
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "No se pudo exportar");
-    } finally {
-      setTransferring(false);
-    }
-  };
-
-  const importTraining = async (file: File) => {
-    if (transferring) return;
-    setTransferring(true);
-    try {
-      if (!file.name.toLowerCase().endsWith(".txt")) throw new Error("Seleccioná un archivo TXT exportado desde BOT SKY");
-      if (file.size > 10 * 1024 * 1024) throw new Error("El archivo supera los 10 MB");
-      if (!workspaceId || !user) throw new Error("Sesión no válida");
-      const raw = (await file.text()).replace(/^\uFEFF/, "");
-      let parsed: unknown;
-      try { parsed = JSON.parse(raw); } catch { throw new Error("TXT inválido: exportalo desde BOT SKY antes de importarlo"); }
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Formato de entrenamiento inválido");
-      const transfer = parsed as Partial<TrainingTransfer>;
-      if (transfer.format !== "BOT_SKY_TRAINING" || transfer.version !== 1 || !Array.isArray(transfer.entries)) {
-        throw new Error("Este TXT no es compatible con el importador BOT SKY");
-      }
-      if (transfer.entries.length > 10000) throw new Error("El archivo contiene demasiadas entradas");
-      const current = await fetchAllTraining();
-      const known = new Set(current.map((e) => [normalized(e.title), normalized(e.category), e.scope, e.product_id ?? ""].join("|")));
-      const productByName = new Map<string, string>((products ?? []).map((p) => [normalized(p.name), p.id]));
-      const toInsert: Array<{
-        workspace_id: string; user_id: string; created_by: string; title: string; content: string;
-        category: string; scope: string; product_id: string | null; keywords: string[];
-        priority: number; is_active: boolean;
-      }> = [];
-      let skipped = 0;
-      let unmatched = 0;
-      let invalid = 0;
-      for (const item of transfer.entries) {
-        if (!item || typeof item !== "object" || typeof item.title !== "string" || typeof item.content !== "string" ||
-            typeof item.category !== "string" || typeof item.scope !== "string" ||
-            !item.title.trim() || !item.content.trim() || item.title.length > 140 ||
-            !["global", "producto"].includes(item.scope)) {
-          invalid++;
-          continue;
-        }
-        let productId: string | null = null;
-        if (item.scope === "producto") {
-          productId = typeof item.product_name === "string" ? productByName.get(normalized(item.product_name)) ?? null : null;
-          if (!productId) { unmatched++; continue; }
-        }
-        const key = [normalized(item.title), normalized(item.category), item.scope, productId ?? ""].join("|");
-        if (known.has(key)) { skipped++; continue; }
-        known.add(key);
-        toInsert.push({
-          workspace_id: workspaceId,
-          user_id: user.id,
-          created_by: user.id,
-          title: item.title.trim(),
-          content: item.content.trim(),
-          category: item.category.trim(),
-          scope: item.scope,
-          product_id: productId,
-          keywords: Array.isArray(item.keywords) ? item.keywords.filter((k): k is string => typeof k === "string").slice(0, 100) : [],
-          priority: Number.isFinite(Number(item.priority)) ? Number(item.priority) : 0,
-          is_active: item.is_active === true,
-        });
-      }
-      let imported = 0;
-      for (let i = 0; i < toInsert.length; i += 100) {
-        const batch = toInsert.slice(i, i + 100);
-        const { error } = await supabase.from("training_entries").insert(batch);
-        if (error) {
-          throw new Error(`Se importaron ${imported} entradas antes del error: ${error.message}`);
-        }
-        imported += batch.length;
-      }
-      await queryClient.invalidateQueries({ queryKey: ["training", workspaceId] });
-      toast.success(`Importadas: ${imported}. Repetidas: ${skipped}. Sin producto equivalente: ${unmatched}. Inválidas: ${invalid}.`, { duration: 9000 });
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Error al importar", { duration: 9000 });
-    } finally {
-      setTransferring(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    }
-  };
-
   const save = useMutation({
     mutationFn: async (values: Form) => {
       if (!workspaceId || !user) throw new Error("Sesión no válida");
@@ -337,7 +388,7 @@ function TrainingPage() {
         category: values.category,
         scope: values.scope,
         product_id: values.scope === "producto" && values.product_id ? values.product_id : null,
-        keywords: values.keywords.split(",").map((keyword) => keyword.trim()).filter(Boolean),
+        keywords: [] as string[],
         priority: Number(values.priority) || 0,
         is_active: values.is_active,
       };
@@ -374,27 +425,31 @@ function TrainingPage() {
         actions={
           <div className="flex flex-wrap items-center justify-end gap-2">
             <input
-              ref={fileInputRef}
+              ref={uploadRef}
               type="file"
               accept=".txt,text/plain"
               className="hidden"
-              aria-label="Seleccionar entrenamiento TXT"
+              aria-label="Seleccionar archivo TXT de entrenamiento"
               onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) void importTraining(file);
+                const selected = event.target.files?.[0];
+                if (selected) void importTraining(selected);
               }}
             />
-            <Button variant="outline" disabled={transferring} onClick={() => void exportTraining("txt")}>
-              <FileText className="mr-1 h-4 w-4" /> Exportar TXT
-            </Button>
-            <Button variant="outline" disabled={transferring} onClick={() => void exportTraining("csv")}>
-              <FileSpreadsheet className="mr-1 h-4 w-4" /> Exportar Sheet
-            </Button>
-            <Button variant="outline" disabled={transferring} onClick={() => fileInputRef.current?.click()}>
+            <Button type="button" variant="outline" disabled={transferBusy || !workspaceId}
+              onClick={() => uploadRef.current?.click()}>
               <Upload className="mr-1 h-4 w-4" /> Cargar entrenamiento
             </Button>
-            <Button onClick={() => { setForm(empty); setOpen(true); }}>
-              <Plus className="mr-1 h-4 w-4" /> Nuevo conocimiento
+            <Button type="button" variant="outline" disabled={transferBusy || !entries?.length}
+              onClick={() => void exportTraining("txt")}>
+              <FileText className="mr-1 h-4 w-4" /> Exportar TXT
+            </Button>
+            <Button type="button" variant="outline" disabled={transferBusy || !entries?.length}
+              onClick={() => void exportTraining("csv")}>
+              <FileSpreadsheet className="mr-1 h-4 w-4" /> Exportar Sheet
+            </Button>
+            <Button disabled={transferBusy} onClick={() => { setForm(empty); setOpen(true); }}>
+              {transferBusy ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Plus className="mr-1 h-4 w-4" />}
+              Nuevo conocimiento
             </Button>
           </div>
         }
@@ -442,7 +497,7 @@ function TrainingPage() {
                         category: e.category,
                         scope: e.scope,
                         product_id: e.product_id ?? "",
-                        keywords: Array.isArray(e.keywords) ? e.keywords.join(", ") : "",
+                        keywords: "",
                         priority: String(e.priority),
                         is_active: e.is_active,
                       });
