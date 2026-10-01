@@ -120,9 +120,16 @@ type TransferEntry = {
   is_active: boolean;
 };
 
-type TrainingRecord = TransferEntry & {
+type TrainingRecord = {
   id: string;
+  title: string;
+  content: string;
+  category: string;
+  scope: string;
   product_id: string | null;
+  keywords: string[] | null;
+  priority: number;
+  is_active: boolean;
 };
 
 const normalized = (value: string) => value.normalize("NFKC").trim().toLocaleLowerCase();
@@ -155,7 +162,7 @@ function exportDownload(content: string, filename: string, mime: string) {
 function csvCell(input: string | number | boolean | null): string {
   let value = String(input ?? "");
   // Evita ejecutar fórmulas al abrir contenido escrito por usuarios en hojas de cálculo.
-  if (/^[\\t\\r\n ]*[=+@-]/.test(value)) value = "'" + value;
+  if (/^[\t\r\n ]*[=+@-]/.test(value)) value = "'" + value;
   return '"' + value.replace(/"/g, '""') + '"';
 }
 
@@ -227,7 +234,31 @@ function TrainingPage() {
         .order("id", { ascending: true })
         .range(offset, offset + PAGE_SIZE - 1);
       if (error) throw error;
-      result.push(...((data ?? []) as TrainingRecord[]));
+      result.push(...(data ?? []).map((row) => ({
+        id: row.id,
+        title: row.title,
+        content: row.content,
+        category: row.category,
+        scope: row.scope,
+        product_id: row.product_id ?? null,
+        keywords: Array.isArray(row.keywords) ? row.keywords : [],
+        priority: Number(row.priority) || 0,
+        is_active: Boolean(row.is_active),
+      })));
+      if (!data || data.length < PAGE_SIZE) break;
+    }
+    return result;
+  };
+
+  const fetchAllProducts = async (): Promise<{ id: string; name: string }[]> => {
+    if (!workspaceId) throw new Error("No se encontró el espacio de trabajo.");
+    const result: { id: string; name: string }[] = [];
+    for (let offset = 0; ; offset += PAGE_SIZE) {
+      const { data, error } = await supabase.from("products")
+        .select("id, name").eq("workspace_id", workspaceId)
+        .order("id", { ascending: true }).range(offset, offset + PAGE_SIZE - 1);
+      if (error) throw error;
+      result.push(...(data ?? []));
       if (!data || data.length < PAGE_SIZE) break;
     }
     return result;
@@ -253,10 +284,7 @@ function TrainingPage() {
     try {
       const allRecords = await fetchEntireTraining();
       if (!allRecords.length) { toast.error("Todavía no hay conocimientos para exportar."); return; }
-      const { data: allProducts, error: productError } = await supabase
-        .from("products").select("id, name").eq("workspace_id", workspaceId!);
-      if (productError) throw productError;
-      const portable = buildTransfer(allRecords, allProducts ?? []);
+      const portable = buildTransfer(allRecords, await fetchAllProducts());
       if (portable.some((r) => r.scope === "producto" && !r.product_name)) {
         throw new Error("Existen reglas vinculadas a productos que ya no se encuentran. Revisá esos productos antes de exportar.");
       }
@@ -293,12 +321,9 @@ function TrainingPage() {
       if (!workspaceId || !user) throw new Error("Sesión no válida.");
       const incoming = parseTrainingTxt((await file.text()).replace(/^\uFEFF/, ""));
       if (!incoming.length) throw new Error("El TXT no contiene conocimientos.");
-      const [current, productResponse] = await Promise.all([
-        fetchEntireTraining(),
-        supabase.from("products").select("id, name").eq("workspace_id", workspaceId),
+      const [current, availableProducts] = await Promise.all([
+        fetchEntireTraining(), fetchAllProducts(),
       ]);
-      if (productResponse.error) throw productResponse.error;
-      const availableProducts = productResponse.data ?? [];
       const productLookup = new Map(availableProducts.map((p) => [normalized(p.name), p.id]));
       const existing = new Set(buildTransfer(current, availableProducts).map(keyOf));
       const pending: Array<{
@@ -331,7 +356,10 @@ function TrainingPage() {
       for (let i = 0; i < pending.length; i += 50) {
         const batch = pending.slice(i, i + 50);
         const { error } = await supabase.from("training_entries").insert(batch);
-        if (error) throw new Error(`${added} importados antes del error: ${error.message}`);
+        if (error) {
+          await queryClient.invalidateQueries({ queryKey: ["training", workspaceId] });
+          throw new Error(`${added} importados antes del error: ${error.message}`);
+        }
         added += batch.length;
       }
       await queryClient.invalidateQueries({ queryKey: ["training", workspaceId] });
