@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Plus, Trash2 } from "lucide-react";
+import { FileSpreadsheet, FileText, Loader2, Plus, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { PageHeader, PageShell, EmptyState } from "@/components/page-shell";
@@ -102,12 +102,57 @@ const empty: Form = {
   is_active: true,
 };
 
+type TransferEntry = {
+  title: string;
+  content: string;
+  category: string;
+  scope: string;
+  product_name: string | null;
+  keywords: string[];
+  priority: number;
+  is_active: boolean;
+};
+
+type TrainingTransfer = {
+  format: "BOT_SKY_TRAINING";
+  version: 1;
+  exported_at: string;
+  entries: TransferEntry[];
+};
+
+function normalized(value: string): string {
+  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
+}
+
+function downloadText(filename: string, content: string, mime: string) {
+  const blob = new Blob(["\uFEFF", content], { type: `${mime};charset=utf-8` });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function csvCell(value: unknown): string {
+  // Escapa fórmulas para que Google Sheets/Excel no ejecuten contenido importado.
+  let text = String(value ?? "");
+  if (/^[\s]*[=+@-]/.test(text) && !/^-?\d+(?:[.,]\d+)?$/.test(text.trim())) {
+    text = "'" + text;
+  }
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
 function TrainingPage() {
   const { profile, user } = useAuth();
   const workspaceId = profile?.workspace_id ?? null;
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState<Form>(empty);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [transferring, setTransferring] = useState(false);
 
   const { data: entries } = useQuery({
     queryKey: ["training", workspaceId],
@@ -138,6 +183,148 @@ function TrainingPage() {
     },
   });
 
+  // Se pagina para exportar/importar sin perder entradas cuando hay más de 1000.
+  const fetchAllTraining = async () => {
+    if (!workspaceId) throw new Error("No se encontró el espacio de trabajo");
+    const all: NonNullable<typeof entries> = [];
+    const pageSize = 500;
+    for (let offset = 0; ; offset += pageSize) {
+      const { data, error } = await supabase
+        .from("training_entries")
+        .select("*")
+        .eq("workspace_id", workspaceId)
+        .order("priority", { ascending: false })
+        .order("created_at", { ascending: false })
+        .range(offset, offset + pageSize - 1);
+      if (error) throw error;
+      all.push(...(data ?? []));
+      if (!data || data.length < pageSize) break;
+    }
+    return all;
+  };
+
+  const makeTransfer = async (): Promise<TrainingTransfer> => {
+    const all = await fetchAllTraining();
+    const productNames = new Map((products ?? []).map((p) => [p.id, p.name]));
+    return {
+      format: "BOT_SKY_TRAINING",
+      version: 1,
+      exported_at: new Date().toISOString(),
+      entries: all.map((e) => ({
+        title: e.title,
+        content: e.content,
+        category: e.category,
+        scope: e.scope,
+        product_name: e.product_id ? productNames.get(e.product_id) ?? null : null,
+        keywords: Array.isArray(e.keywords) ? e.keywords.filter((k): k is string => typeof k === "string") : [],
+        priority: Number(e.priority) || 0,
+        is_active: Boolean(e.is_active),
+      })),
+    };
+  };
+
+  const exportTraining = async (format: "txt" | "csv") => {
+    if (transferring) return;
+    setTransferring(true);
+    try {
+      const transfer = await makeTransfer();
+      const date = new Date().toISOString().slice(0, 10);
+      if (format === "txt") {
+        // JSON válido guardado como .txt: importación exacta y sin perder saltos de línea.
+        downloadText(`BOT-SKY-entrenamiento-${date}.txt`, JSON.stringify(transfer, null, 2), "text/plain");
+      } else {
+        const headers = ["Título", "Contenido", "Categoría", "Alcance", "Producto", "Palabras clave", "Prioridad", "Activo"];
+        const rows = transfer.entries.map((e) => [
+          e.title, e.content, e.category, e.scope, e.product_name ?? "",
+          e.keywords.join("; "), e.priority, e.is_active ? "Sí" : "No",
+        ]);
+        const csv = [headers, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n");
+        downloadText(`BOT-SKY-entrenamiento-${date}.csv`, csv, "text/csv");
+      }
+      toast.success(`${transfer.entries.length} conocimientos exportados`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "No se pudo exportar");
+    } finally {
+      setTransferring(false);
+    }
+  };
+
+  const importTraining = async (file: File) => {
+    if (transferring) return;
+    setTransferring(true);
+    try {
+      if (!file.name.toLowerCase().endsWith(".txt")) throw new Error("Seleccioná un archivo TXT exportado desde BOT SKY");
+      if (file.size > 10 * 1024 * 1024) throw new Error("El archivo supera los 10 MB");
+      if (!workspaceId || !user) throw new Error("Sesión no válida");
+      const raw = (await file.text()).replace(/^\uFEFF/, "");
+      let parsed: unknown;
+      try { parsed = JSON.parse(raw); } catch { throw new Error("TXT inválido: exportalo desde BOT SKY antes de importarlo"); }
+      if (!parsed || typeof parsed !== "object") throw new Error("Formato de entrenamiento inválido");
+      const transfer = parsed as Partial<TrainingTransfer>;
+      if (transfer.format !== "BOT_SKY_TRAINING" || transfer.version !== 1 || !Array.isArray(transfer.entries)) {
+        throw new Error("Este TXT no es compatible con el importador BOT SKY");
+      }
+      if (transfer.entries.length > 10000) throw new Error("El archivo contiene demasiadas entradas");
+      const current = await fetchAllTraining();
+      const known = new Set(current.map((e) => [normalized(e.title), normalized(e.category), e.scope, e.product_id ?? ""].join("|")));
+      const productByName = new Map((products ?? []).map((p) => [normalized(p.name), p.id]));
+      const toInsert: Array<{
+        workspace_id: string; user_id: string; created_by: string; title: string; content: string;
+        category: string; scope: string; product_id: string | null; keywords: string[];
+        priority: number; is_active: boolean;
+      }> = [];
+      let skipped = 0;
+      let unmatched = 0;
+      let invalid = 0;
+      for (const item of transfer.entries) {
+        if (!item || typeof item !== "object" || typeof item.title !== "string" || typeof item.content !== "string" ||
+            typeof item.category !== "string" || typeof item.scope !== "string" ||
+            !item.title.trim() || !item.content.trim() || item.title.length > 140 ||
+            !["global", "producto"].includes(item.scope)) {
+          invalid++;
+          continue;
+        }
+        let productId: string | null = null;
+        if (item.scope === "producto") {
+          productId = typeof item.product_name === "string" ? productByName.get(normalized(item.product_name)) ?? null : null;
+          if (!productId) { unmatched++; continue; }
+        }
+        const key = [normalized(item.title), normalized(item.category), item.scope, productId ?? ""].join("|");
+        if (known.has(key)) { skipped++; continue; }
+        known.add(key);
+        toInsert.push({
+          workspace_id: workspaceId,
+          user_id: user.id,
+          created_by: user.id,
+          title: item.title.trim(),
+          content: item.content.trim(),
+          category: item.category.trim(),
+          scope: item.scope,
+          product_id: productId,
+          keywords: Array.isArray(item.keywords) ? item.keywords.filter((k): k is string => typeof k === "string").slice(0, 100) : [],
+          priority: Number.isFinite(Number(item.priority)) ? Number(item.priority) : 0,
+          is_active: item.is_active === true,
+        });
+      }
+      let imported = 0;
+      for (let i = 0; i < toInsert.length; i += 100) {
+        const batch = toInsert.slice(i, i + 100);
+        const { error } = await supabase.from("training_entries").insert(batch);
+        if (error) {
+          throw new Error(`Se importaron ${imported} entradas antes del error: ${error.message}`);
+        }
+        imported += batch.length;
+      }
+      await queryClient.invalidateQueries({ queryKey: ["training", workspaceId] });
+      toast.success(`Importadas: ${imported}. Repetidas: ${skipped}. Sin producto equivalente: ${unmatched}. Inválidas: ${invalid}.`, { duration: 9000 });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Error al importar", { duration: 9000 });
+    } finally {
+      setTransferring(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
   const save = useMutation({
     mutationFn: async (values: Form) => {
       if (!workspaceId || !user) throw new Error("Sesión no válida");
@@ -150,7 +337,7 @@ function TrainingPage() {
         category: values.category,
         scope: values.scope,
         product_id: values.scope === "producto" && values.product_id ? values.product_id : null,
-        keywords: [] as string[],
+        keywords: values.keywords.split(",").map((keyword) => keyword.trim()).filter(Boolean),
         priority: Number(values.priority) || 0,
         is_active: values.is_active,
       };
@@ -185,14 +372,31 @@ function TrainingPage() {
         title="Entrenamiento de IA"
         description="Todo lo que agregues aquí se convierte en el conocimiento de tu vendedor virtual."
         actions={
-          <Button
-            onClick={() => {
-              setForm(empty);
-              setOpen(true);
-            }}
-          >
-            <Plus className="mr-1 h-4 w-4" /> Nuevo conocimiento
-          </Button>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".txt,text/plain"
+              className="hidden"
+              aria-label="Seleccionar entrenamiento TXT"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) void importTraining(file);
+              }}
+            />
+            <Button variant="outline" disabled={transferring} onClick={() => void exportTraining("txt")}>
+              <FileText className="mr-1 h-4 w-4" /> Exportar TXT
+            </Button>
+            <Button variant="outline" disabled={transferring} onClick={() => void exportTraining("csv")}>
+              <FileSpreadsheet className="mr-1 h-4 w-4" /> Exportar Sheet
+            </Button>
+            <Button variant="outline" disabled={transferring} onClick={() => fileInputRef.current?.click()}>
+              <Upload className="mr-1 h-4 w-4" /> Cargar entrenamiento
+            </Button>
+            <Button onClick={() => { setForm(empty); setOpen(true); }}>
+              <Plus className="mr-1 h-4 w-4" /> Nuevo conocimiento
+            </Button>
+          </div>
         }
       />
 
@@ -238,7 +442,7 @@ function TrainingPage() {
                         category: e.category,
                         scope: e.scope,
                         product_id: e.product_id ?? "",
-                        keywords: "",
+                        keywords: Array.isArray(e.keywords) ? e.keywords.join(", ") : "",
                         priority: String(e.priority),
                         is_active: e.is_active,
                       });
