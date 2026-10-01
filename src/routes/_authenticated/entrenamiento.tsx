@@ -186,7 +186,7 @@ function TrainingPage() {
   // Se pagina para exportar/importar sin perder entradas cuando hay más de 1000.
   const fetchAllTraining = async () => {
     if (!workspaceId) throw new Error("No se encontró el espacio de trabajo");
-    const all: NonNullable<typeof entries> = [];
+    const all: Array<NonNullable<typeof entries>[number]> = [];
     const pageSize = 500;
     for (let offset = 0; ; offset += pageSize) {
       const { data, error } = await supabase
@@ -205,7 +205,7 @@ function TrainingPage() {
 
   const makeTransfer = async (): Promise<TrainingTransfer> => {
     const all = await fetchAllTraining();
-    const productNames = new Map((products ?? []).map((p) => [p.id, p.name]));
+    const productNames = new Map<string, string>((products ?? []).map((p) => [p.id, p.name]));
     return {
       format: "BOT_SKY_TRAINING",
       version: 1,
@@ -259,7 +259,7 @@ function TrainingPage() {
       const raw = (await file.text()).replace(/^\uFEFF/, "");
       let parsed: unknown;
       try { parsed = JSON.parse(raw); } catch { throw new Error("TXT inválido: exportalo desde BOT SKY antes de importarlo"); }
-      if (!parsed || typeof parsed !== "object") throw new Error("Formato de entrenamiento inválido");
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Formato de entrenamiento inválido");
       const transfer = parsed as Partial<TrainingTransfer>;
       if (transfer.format !== "BOT_SKY_TRAINING" || transfer.version !== 1 || !Array.isArray(transfer.entries)) {
         throw new Error("Este TXT no es compatible con el importador BOT SKY");
@@ -267,7 +267,7 @@ function TrainingPage() {
       if (transfer.entries.length > 10000) throw new Error("El archivo contiene demasiadas entradas");
       const current = await fetchAllTraining();
       const known = new Set(current.map((e) => [normalized(e.title), normalized(e.category), e.scope, e.product_id ?? ""].join("|")));
-      const productByName = new Map((products ?? []).map((p) => [normalized(p.name), p.id]));
+      const productByName = new Map<string, string>((products ?? []).map((p) => [normalized(p.name), p.id]));
       const toInsert: Array<{
         workspace_id: string; user_id: string; created_by: string; title: string; content: string;
         category: string; scope: string; product_id: string | null; keywords: string[];
