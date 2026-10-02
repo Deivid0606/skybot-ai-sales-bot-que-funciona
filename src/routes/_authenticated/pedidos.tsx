@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import { formatDateTime } from "@/lib/format";
 import { createFileRoute } from "@tanstack/react-router";
 import {
@@ -13,6 +13,7 @@ import {
   PackageCheck,
   Search,
   Trash2,
+  ShoppingCart,
 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import {
@@ -119,6 +120,11 @@ function isWithinLocalDateRange(
 function OrdersPage() {
   const workspaceId = useWorkspaceId();
   const queryClient = useQueryClient();
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [importing, setImporting] = useState(false);
+  const [importReport, setImportReport] = useState("");
+  const importRef = useRef<{ popup: Window; batchId: string; ids: string[] } | null>(null);
+  const ecommerceOrigin = "https://www.el-ecommercedcanpgroup.com";
 
   const [search, setSearch] = useState("");
 
@@ -156,6 +162,65 @@ function OrdersPage() {
       return data ?? [];
     },
   });
+
+  useEffect(() => {
+    const onMessage = async (event: MessageEvent) => {
+      const active = importRef.current;
+      if (!active || event.origin !== ecommerceOrigin || event.source !== active.popup) return;
+      const msg = event.data;
+      if (!msg || msg.channel !== "botsky-import-v1") return;
+      if (msg.type !== "READY" && msg.batchId !== active.batchId) return;
+      if (msg.type === "READY") {
+        const selected = (orders ?? []).filter(o => active.ids.includes(o.id));
+        if (selected.length !== active.ids.length) {
+          setImportReport("La lista cambió. Actualizá y volvé a seleccionar los pedidos.");
+          setImporting(false); importRef.current = null; return;
+        }
+        active.popup.postMessage({ channel: "botsky-import-v1", type: "ORDERS", batchId: active.batchId,
+          orders: selected.map(o => ({ source_order_id: o.id, order_number: o.order_number,
+            customer_name: o.customer_name, phone: o.phone, city: o.city,
+            departamento: o.departamento, street: o.street, district: o.district,
+            email: o.email, obs: "", sku: o.sku, product_title: o.product_title,
+            quantity: o.quantity, total: o.total, payment_method: o.payment_method,
+            payment_status: o.payment_status, receipt_url: o.receipt_url }))
+        }, ecommerceOrigin);
+      }
+      if (msg.type === "RESULT" && Array.isArray(msg.results)) {
+        if (msg.results.length !== active.ids.length || new Set(msg.results.map((r: any) => r.source_order_id)).size !== active.ids.length || msg.results.some((r: any) => !active.ids.includes(r.source_order_id))) {
+          setImportReport("La respuesta de E-commerce no coincide con el lote. No se modificaron estados.");
+          setImporting(false); importRef.current = null; return;
+        }
+        const successful = msg.results.filter((r: any) => (r.status === "created" || r.status === "already_exists") && active.ids.includes(r.source_order_id));
+        let updated = 0;
+        for (const result of successful) {
+          const { error } = await supabase.from("orders").update({ status: "cargado" })
+            .eq("workspace_id", workspaceId!).eq("id", result.source_order_id);
+          if (!error) updated++;
+        }
+        const failed = msg.results.filter((r: any) => r.status === "error");
+        setImportReport(`E-commerce: ${msg.results.filter((r:any) => r.status === "created").length} creados, ${msg.results.filter((r:any) => r.status === "already_exists").length} existentes, ${failed.length} errores. BOT SKY: ${updated} estados actualizados. ${failed.map((r:any) => `${r.source_order_id}: ${r.message}`).join(" | ")}`);
+        setSelectedIds([]); setImporting(false); importRef.current = null;
+        await queryClient.invalidateQueries({ queryKey: ["orders", workspaceId] });
+      }
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [orders, workspaceId, queryClient]);
+
+  function startBulkImport() {
+    if (importing || !selectedIds.length) return;
+    const ids = selectedIds.filter(id => (orders ?? []).some(o => o.id === id && ["nuevo", "confirmado"].includes(o.status)));
+    if (!ids.length) { window.alert("Seleccioná pedidos nuevos o confirmados."); return; }
+    if (ids.length > 100) { window.alert("Podés cargar hasta 100 pedidos por lote."); return; }
+    const popup = window.open(`${ecommerceOrigin}/?view=import-botsky`, "_blank");
+    if (!popup) { window.alert("Permití las ventanas emergentes para E-commerce."); return; }
+    const batchId = crypto.randomUUID();
+    importRef.current = { popup, batchId, ids };
+    setImportReport("Esperando que inicies sesión en E-commerce y se complete la importación…");
+    setImporting(true);
+  }
+
+
 
   const deleteOrderMutation = useMutation({
     mutationFn: async (orderId: string) => {
@@ -365,6 +430,8 @@ function OrdersPage() {
     search,
   ]);
 
+  const eligibleVisible = filtered.filter(o => ["nuevo", "confirmado"].includes(o.status));
+  const allVisibleSelected = eligibleVisible.length > 0 && eligibleVisible.every(o => selectedIds.includes(o.id));
   const totalInDateRange =
     ordersInDateRange.length;
 
@@ -894,6 +961,21 @@ function OrdersPage() {
         </CardContent>
       </Card>
 
+      <Card><CardContent className="flex flex-wrap items-center gap-3 p-3">
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={allVisibleSelected} disabled={!eligibleVisible.length || importing}
+            onChange={e => setSelectedIds(prev => e.target.checked
+              ? [...new Set([...prev, ...eligibleVisible.map(o => o.id)])]
+              : prev.filter(id => !eligibleVisible.some(o => o.id === id)))} />
+          Seleccionar todos los pendientes visibles
+        </label>
+        <Button type="button" onClick={startBulkImport} disabled={importing || selectedIds.length === 0}>
+          <ShoppingCart className="mr-2 h-4 w-4" />
+          {importing ? "Esperando E-commerce…" : `Cargar seleccionados a E-commerce (${selectedIds.length})`}
+        </Button>
+        {importReport && <p role="status" className="w-full text-sm break-words">{importReport}</p>}
+      </CardContent></Card>
+
       {/* ===================================================== */}
       {/* LISTA DE PEDIDOS                                      */}
       {/* ===================================================== */}
@@ -974,6 +1056,13 @@ function OrdersPage() {
                   </Button>
                 </div>
 
+                {(["nuevo", "confirmado"].includes(order.status)) && (
+                  <label className="absolute left-3 top-3 z-10 flex items-center gap-1 rounded bg-background/95 px-2 py-1 text-xs shadow">
+                    <input type="checkbox" checked={selectedIds.includes(order.id)} disabled={importing}
+                      onChange={e => setSelectedIds(prev => e.target.checked
+                        ? [...new Set([...prev, order.id])] : prev.filter(id => id !== order.id))} /> Seleccionar
+                  </label>
+                )}
                 <OrderCard
                   order={order}
                 />
