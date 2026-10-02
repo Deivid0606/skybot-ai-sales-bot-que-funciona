@@ -302,7 +302,19 @@ function TrainingPage() {
       if (!workspaceId || !user) throw new Error("Sesión no válida");
       const raw = (await file.text()).replace(/^\uFEFF/, "");
       let parsed: unknown;
-      try { parsed = JSON.parse(raw); } catch { throw new Error("TXT inválido: exportalo desde BOT SKY antes de importarlo"); }
+      // Acepta JSON puro y exportaciones legibles con un bloque JSON al final.
+      const beginMarker = "=== BOT_SKY_TRAINING_JSON_BEGIN ===";
+      const endMarker = "=== BOT_SKY_TRAINING_JSON_END ===";
+      const start = raw.lastIndexOf(beginMarker);
+      const end = raw.lastIndexOf(endMarker);
+      const jsonText = start >= 0 && end > start
+        ? raw.slice(start + beginMarker.length, end).trim()
+        : raw.trim();
+      try {
+        parsed = JSON.parse(jsonText);
+      } catch {
+        throw new Error("TXT inválido: no se encontró un bloque JSON compatible con BOT SKY");
+      }
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Formato de entrenamiento inválido");
       const transfer = parsed as Partial<TrainingTransfer>;
       if (transfer.format !== "BOT_SKY_TRAINING" || transfer.version !== 1 || !Array.isArray(transfer.entries)) {
