@@ -1234,92 +1234,9 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
 
   if (catalogResult) {
     conversation.product_id = catalogResult.productId;
-
-    /*
-     * Si el catálogo/copy se acaba de enviar en este mismo turno, enviamos
-     * inmediatamente una oferta corta construida con los precios REALES del
-     * producto detectado. Así cada producto recibe su propio mensaje breve
-     * después del catálogo, sin volver a ejecutar generateAiReply() ni repetir
-     * el copy largo.
-     */
-    if (catalogResult.sent) {
-      try {
-        const ctx = await buildWorkspaceAiContext(
-          supabaseAdmin,
-          workspaceId,
-          [],
-          catalogResult.productId,
-          phone,
-        );
-
-        const shortOffer = buildShortProductOffer({
-          products: ctx.products,
-          productId: catalogResult.productId,
-          lastCustomerMessage: body,
-        });
-
-        // Meta puede aceptar la multimedia antes de que WhatsApp termine de
-        // entregarla/renderizarla en el teléfono. Damos un pequeño margen para
-        // que la imagen + copy aparezcan primero y recién después enviamos la
-        // oferta corta.
-        await new Promise((resolve) => setTimeout(resolve, 1800));
-
-        const shortOfferWamid = await sendWhatsAppText(
-          conn,
-          phone,
-          shortOffer,
-        );
-
-        const { error: shortOfferInsertError } = await supabaseAdmin
-          .from("messages")
-          .insert({
-            workspace_id: workspaceId,
-            user_id: ownerId,
-            conversation_id: conversation.id,
-            ad_id: attributedAdId,
-            direction: "outbound",
-            sender: "ai",
-            body: shortOffer,
-            wamid: shortOfferWamid,
-            status: "sent",
-          });
-
-        if (shortOfferInsertError) {
-          console.error(
-            "[Catálogo] Se envió la oferta corta, pero no pudo guardarse en messages",
-            {
-              conversationId: conversation.id,
-              productId: catalogResult.productId,
-              error: shortOfferInsertError.message,
-            },
-          );
-        }
-
-        await supabaseAdmin
-          .from("conversations")
-          .update({
-            last_message: shortOffer,
-            last_message_at: new Date().toISOString(),
-            product_id: catalogResult.productId,
-            unread_count: 0,
-          })
-          .eq("id", conversation.id)
-          .eq("workspace_id", workspaceId);
-      } catch (error) {
-        /*
-         * El catálogo ya fue enviado correctamente. Si por cualquier motivo
-         * falla la oferta corta, no volvemos a ejecutar generateAiReply()
-         * porque eso podría duplicar el copy largo.
-         */
-        console.error("[Catálogo] Error enviando oferta corta del producto", {
-          conversationId: conversation.id,
-          productId: catalogResult.productId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-
-      return;
-    }
+    // El copy del catálogo es la ÚNICA respuesta comercial en este turno.
+    // No mandar oferta corta duplicada ni preguntar ciudad antes de elegir variante.
+    if (catalogResult.sent) return;
   }
 
   const { data: history } = await supabaseAdmin
@@ -1363,7 +1280,13 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       lastCustomerMessage: body,
     });
 
-    const wamid = await sendWhatsAppText(conn, phone, safeReply);
+    const optionConfirmed = isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory);
+    const productForReply = ctx.products.find((p) => p.id === detectedProduct);
+    const mustClarify = Boolean(result.order && !optionConfirmed && (productForReply?.product_prices?.length ?? 0) > 1);
+    const finalReply = mustClarify
+      ? buildVariantSelectionQuestion(productForReply!)
+      : safeReply;
+    const wamid = await sendWhatsAppText(conn, phone, finalReply);
 
     await supabaseAdmin.from("messages").insert({
       workspace_id: workspaceId,
@@ -1372,7 +1295,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       ad_id: attributedAdId,
       direction: "outbound",
       sender: "ai",
-      body: safeReply,
+      body: finalReply,
       wamid,
       status: "sent",
     });
@@ -1380,14 +1303,15 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     await supabaseAdmin
       .from("conversations")
       .update({
-        last_message: safeReply,
+        last_message: finalReply,
         last_message_at: new Date().toISOString(),
         product_id: detectedProduct,
         unread_count: 0,
       })
       .eq("id", conversation.id);
 
-    const orderReady = isOrderReady(result.order, detectedProduct);
+    const orderReady = isOrderReady(result.order, detectedProduct) &&
+      isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory);
 
     /*
      * No dependemos solamente de sale_closed.
@@ -1484,6 +1408,58 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
 
 function cleanOrderText(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+type PriceOption = { id: string; label: string; quantity: number; price: number; sort_order: number };
+
+function matchSelectedOption(
+  order: Awaited<ReturnType<typeof generateAiReply>>["order"],
+  options: PriceOption[],
+  history: { role: "user" | "assistant"; content: string }[] = [],
+): PriceOption | null {
+  if (!order || options.length === 0) return null;
+  if (options.length === 1) return options[0];
+  // Si el cliente dijo explícitamente una presentación, esa elección manda.
+  // No interpretar un número sin unidad ("5") como cinco litros.
+  const customerTurns = history.filter((h) => h.role === "user").slice(-12).reverse();
+  for (const turn of customerTurns) {
+    const message = normalizeIntentText(turn.content);
+    if (/\bno (?:quiero|me interesa|deseo|llevo)\b/.test(message)) continue;
+    const hits = options.filter((o) => {
+      const label = normalizeIntentText(o.label);
+      const token = label.match(/\b\d+(?:[.,]\d+)?\s*(?:litros?|lts?|ml|kg|gramos?|gr|cm|mm)\b/)
+        ?? label.match(/\b(?:azul|rojo|negro|blanco|verde|rosa|pequeno|mediano|grande)\b/);
+      return Boolean(token && message.includes(token[0]));
+    });
+    if (hits.length === 1) return hits[0];
+    if (hits.length > 1) return null;
+  }
+  const directId = cleanOrderText(order.product_price_id);
+  if (directId) return options.find((o) => o.id === directId) ?? null;
+  const requestedLabel = normalizeIntentText(cleanOrderText(order.price_option_label));
+  if (requestedLabel) {
+    const matched = options.filter((o) => normalizeIntentText(o.label) === requestedLabel);
+    if (matched.length === 1) return matched[0];
+  }
+  return null;
+}
+
+function isUnambiguousPriceSelection(
+  order: Awaited<ReturnType<typeof generateAiReply>>["order"],
+  productId: string | null,
+  products: AiContextProducts,
+  history: { role: "user" | "assistant"; content: string }[] = [],
+): boolean {
+  if (!order || !productId) return false;
+  const product = products.find((p) => p.id === productId);
+  if (!product) return false;
+  const options = product.product_prices ?? [];
+  return options.length === 0 || matchSelectedOption(order, options, history) !== null;
+}
+
+function buildVariantSelectionQuestion(product: AiContextProducts[number]): string {
+  const options = [...(product.product_prices ?? [])].sort((a, b) => a.sort_order - b.sort_order);
+  return `😊 Tenemos estas opciones de *${product.name}*:\n\n${options.map((o) => `• *${o.label}* — ${formatGs(o.price)}`).join("\n")}\n\n¿Cuál preferís?`;
 }
 
 function isOrderReady(
@@ -1687,6 +1663,19 @@ async function createOrderFromAi(args: {
       ? Math.floor(parsedRequestedQuantity)
       : 1;
 
+  const { data: recentCustomerMessages } = await supabaseAdmin
+    .from("messages")
+    .select("body")
+    .eq("workspace_id", args.workspaceId)
+    .eq("conversation_id", args.conversationId)
+    .eq("direction", "inbound")
+    .order("created_at", { ascending: false })
+    .limit(24);
+  const selectionHistory = (recentCustomerMessages ?? []).reverse().map((row) => ({
+    role: "user" as const,
+    content: String(row.body ?? ""),
+  }));
+
   const priceOptions = [...(product.product_prices ?? [])]
     .map((option) => ({
       id: option.id,
@@ -1705,19 +1694,10 @@ async function createOrderFromAi(args: {
     )
     .sort((a, b) => a.sort_order - b.sort_order);
 
-  /*
-   * Prioridad:
-   * 1. Opción cuya cantidad coincide exactamente con la solicitada.
-   * 2. Opción de una unidad.
-   * 3. Primera opción válida.
-   */
-  const selectedPrice =
-    priceOptions.find(
-      (option) => option.quantity === requestedQuantity,
-    ) ??
-    priceOptions.find((option) => option.quantity === 1) ??
-    priceOptions[0] ??
-    null;
+  const selectedPrice = matchSelectedOption(args.order, priceOptions, selectionHistory);
+  if (priceOptions.length > 0 && !selectedPrice) {
+    throw new Error(`No se puede cerrar pedido: falta seleccionar una variante válida de ${product.name}`);
+  }
 
   /*
    * Compatibilidad con productos antiguos:
@@ -1845,7 +1825,10 @@ async function createOrderFromAi(args: {
     observations,
     payment_method: paymentMethod,
     product_id: args.productId,
-    product_title: product.name,
+    product_title: selectedPriceLabel ? `${product.name} — ${selectedPriceLabel}` : product.name,
+    product_price_id: selectedPrice?.id ?? null,
+    price_option_label: selectedPriceLabel,
+    unit_price: unitPrice,
     sku: productSku,
     quantity,
     price: unitPrice,
@@ -2115,6 +2098,7 @@ function buildShortProductOffer(args: {
 
   const options = [...(product.product_prices ?? [])]
     .map((option) => ({
+      label: String(option.label ?? "").trim(),
       quantity: Math.max(1, Math.floor(Number(option.quantity) || 1)),
       price: Number(option.price),
       sortOrder: Number(option.sort_order) || 0,
@@ -2137,7 +2121,7 @@ function buildShortProductOffer(args: {
     priceText = `! 🔥\n\n${options
       .map(
         (option) =>
-          `${option.quantity} ${option.quantity === 1 ? "unidad" : "unidades"} — ${formatGs(option.price)}`,
+          `${option.label || `${option.quantity} unidades`} — ${formatGs(option.price)}`,
       )
       .join("\n")}`;
   } else {
@@ -2151,9 +2135,11 @@ function buildShortProductOffer(args: {
     }
   }
 
-  const question = isGreetingOrInitialInquiry(args.lastCustomerMessage)
-    ? "¿Para qué ciudad sería el envío? 📍"
-    : "¿Querés que avancemos con tu pedido? 📦";
+  const question = options.length > 1
+    ? "¿Cuál de estas opciones preferís? 😊"
+    : isGreetingOrInitialInquiry(args.lastCustomerMessage)
+      ? "¿Para qué ciudad sería el envío? 📍"
+      : "¿Querés que avancemos con tu pedido? 📦";
 
   if (options.length > 1) {
     return `¡El ${product.name} está en súper oferta${priceText}\n\n${question}`;
@@ -2293,10 +2279,27 @@ async function sendCatalogByKeyword(args: {
     return { productId, sent: false };
   }
 
-  const copy =
+  const baseCopy =
     match.products.sales_copy?.trim() ||
     `${match.products.name}
 ${match.products.description ?? ""}`.trim();
+  const { data: rawOptions } = await supabaseAdmin.from("product_prices")
+    .select("label, quantity, price, sort_order")
+    .eq("workspace_id", args.workspaceId)
+    .eq("product_id", productId)
+    .order("sort_order", { ascending: true });
+  const options = (rawOptions ?? []).filter((o) => o.label && Number(o.price) > 0);
+  const normalizedCopy = normalizeIntentText(baseCopy);
+  const missingNames = options.filter((o) => {
+    const normalizedLabel = normalizeIntentText(o.label);
+    const measure = normalizedLabel.match(/\b\d+(?:[.,]\d+)?\s*(?:litros?|lts?|ml|kg|gramos?|gr|cm|mm)\b/);
+    return !normalizedCopy.includes(normalizedLabel) && !(measure && normalizedCopy.includes(measure[0]));
+  });
+  // Nunca presentar opciones solo como "1 unidad" si las etiquetas son capacidades.
+  const variantLines = options.length > 1 && missingNames.length > 0
+    ? `\n\n💥 *Opciones disponibles:*\n${options.map((o) => `• *${o.label}* — ${formatGs(Number(o.price))}`).join("\n")}\n¿Cuál preferís?`
+    : "";
+  const copy = baseCopy + variantLines;
 
   const { sendWhatsAppMedia } = await import("@/lib/whatsapp.server");
 
@@ -2356,8 +2359,8 @@ ${match.products.description ?? ""}`.trim();
           : "document";
 
     const caption =
-      !copySentAsCaption && (type === "image" || type === "video")
-        ? copy.slice(0, 1024)
+      !copySentAsCaption && copy.length <= 1024 && (type === "image" || type === "video")
+        ? copy
         : undefined;
 
     try {
