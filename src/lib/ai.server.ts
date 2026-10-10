@@ -21,6 +21,14 @@ export type AiContext = {
     delivery_info: string | null;
     ai_instructions: string | null;
     keywords: string[];
+    sku?: string | null;
+    product_prices?: {
+      id: string;
+      label: string;
+      quantity: number;
+      price: number;
+      sort_order: number;
+    }[];
   }[];
   training: {
     title: string;
@@ -43,6 +51,10 @@ export type AiOrder = {
   district?: string;
   street?: string;
   quantity?: number;
+  /** Identificador exacto de product_prices, no la cantidad. */
+  product_price_id?: string;
+  /** Nombre de presentación, para compatibilidad con modelos que devuelven texto. */
+  price_option_label?: string;
   payment_method?: string;
   observations?: string;
 };
@@ -64,21 +76,20 @@ function buildSystemPrompt(ctx: AiContext): string {
   const detectedCustomerPhone = cleanString(ctx.customerPhone);
 
   const catalog = ctx.products
-    .map(
-      (product) =>
-        `- id:${product.id} | ${product.name} | precio:${
-          product.promo_price ?? product.price
-        } ${ctx.currency}${
-          product.promo_price
-            ? ` (antes ${product.price})`
-            : ""
-        } | stock:${product.stock} | claves:${
-          product.keywords.join(", ") || "-"
-        }
+    .map((product) => {
+      const variants = [...(product.product_prices ?? [])]
+        .sort((a, b) => a.sort_order - b.sort_order)
+        .map((option) =>
+          `    - variante_id:${option.id} | nombre:${option.label} | unidades_incluidas:${option.quantity} | precio_total:${option.price} ${ctx.currency}`,
+        )
+        .join("\n");
+      return `- id:${product.id} | ${product.name} | stock:${product.stock} | claves:${product.keywords.join(", ") || "-"}
+  variantes/precios de catálogo:
+${variants || `    - precio_unitario_heredado:${product.promo_price ?? product.price} ${ctx.currency}`}
   copy: ${product.sales_copy ?? product.description ?? "-"}
   entrega: ${product.delivery_info ?? "-"}
-  instrucciones: ${product.ai_instructions ?? "-"}`,
-    )
+  instrucciones: ${product.ai_instructions ?? "-"}`;
+    })
     .join("\n");
 
   const sortedTraining = [...ctx.training].sort(
@@ -119,7 +130,14 @@ REGLAS:
 - CANTIDADES: si el cliente escribe un número suelto, por ejemplo "2", o escribe "2 unidades", la cantidad es EXACTAMENTE ese número.
 - Nunca dupliques, concatenes ni repitas dígitos.
 - Si el cliente repite la misma cantidad, no la sumes: sigue siendo la misma.
-- TOTALES: total = precio vigente, usando promoción si existe, multiplicado por la cantidad.
+- VARIANTES: muestra SIEMPRE el nombre y precio exacto de cada opción de product_prices al presentar un producto con varias opciones, sin reemplazar nombres por "1 unidad".
+- VARIANTES: tamaño/capacidad/color/modelo NO son cantidad; "5 litros" es nombre de variante y NO significa 5 unidades.
+- VARIANTES: antes de cerrar una venta con varias opciones, el cliente debe elegir una opción inequívoca. Devuelve su variante_id exacto en order.product_price_id y su nombre en order.price_option_label.
+- Si todavía no eligió entre opciones distintas, pregunta cuál quiere y devuelve order:null y sale_closed:false, aunque ya tengas otros datos.
+- No inventes IDs, precios ni variantes. No cambies una variante elegida por otra cuando el cliente dé su dirección u otros datos.
+- Para presentaciones/promos por cantidad, product_prices.quantity es el número de unidades INCLUIDAS en esa opción, y product_prices.price su precio TOTAL. No multipliques otra vez ese precio por la cantidad incluida.
+- Para pedidos con una opción del catálogo, la cantidad y el total deben corresponder exactamente a la opción seleccionada; el backend verificará los importes.
+- TOTALES: respeta el precio total de la variante elegida y no lo recalcules ni lo alteres.
 - Calcula con cuidado y no inventes montos.
 - Antes de confirmar, relee la cantidad que dijo el cliente y usa ese valor tal cual.
 - Cuando tengas TODOS los datos, marca sale_closed=true y completa el objeto order.
@@ -162,7 +180,7 @@ Forma exacta:
 
 Cuando detectes un producto, product_id debe contener su id real del catálogo.
 Cuando cierres la venta, order debe tener esta forma:
-{"customer_name":"","phone":"","city":"","departamento":"","district":"","street":"","quantity":1,"payment_method":"","observations":""}.`;
+{"customer_name":"","phone":"","city":"","departamento":"","district":"","street":"","quantity":1,"product_price_id":"id-real-de-product_prices","price_option_label":"nombre exacto","payment_method":"","observations":""}.`;
 }
 
 function stripMarkdownCodeFence(raw: string): string {
@@ -328,6 +346,8 @@ function normalizeOrder(value: unknown): AiOrder | null {
     "street",
     "payment_method",
     "observations",
+    "product_price_id",
+    "price_option_label",
   ];
 
   for (const field of stringFields) {
