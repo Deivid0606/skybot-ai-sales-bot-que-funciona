@@ -1286,7 +1286,11 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     const finalReply = mustClarify
       ? buildVariantSelectionQuestion(productForReply!)
       : safeReply;
-    const wamid = await sendWhatsAppText(conn, phone, finalReply);
+    // No prometer que el pedido quedó registrado ANTES del INSERT.
+    const safeBeforeInsert = result.sale_closed && result.order
+      ? finalReply.replace(/(?:✅\s*)?PEDIDO CONFIRMADO/gi, "Pedido en proceso de registro")
+      : finalReply;
+    const wamid = await sendWhatsAppText(conn, phone, safeBeforeInsert);
 
     await supabaseAdmin.from("messages").insert({
       workspace_id: workspaceId,
@@ -1295,7 +1299,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       ad_id: attributedAdId,
       direction: "outbound",
       sender: "ai",
-      body: finalReply,
+      body: safeBeforeInsert,
       wamid,
       status: "sent",
     });
@@ -1303,7 +1307,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     await supabaseAdmin
       .from("conversations")
       .update({
-        last_message: finalReply,
+        last_message: safeBeforeInsert,
         last_message_at: new Date().toISOString(),
         product_id: detectedProduct,
         unread_count: 0,
@@ -1375,6 +1379,27 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         conversationId: conversation.id,
         orderId: createdOrder.id,
       });
+      // Confirmar SOLO después de que Supabase haya insertado el pedido.
+      // No afirmar que una transferencia quedó acreditada sin validarla.
+      const confirmedMessage = `✅ PEDIDO REGISTRADO\n📦 N.º ${createdOrder.order_number}\n💰 Total: ${formatGs(createdOrder.total)}\n¡Gracias por tu compra!`;
+      try {
+        const confirmationWamid = await sendWhatsAppText(conn, phone, confirmedMessage);
+        await supabaseAdmin.from("messages").insert({
+          workspace_id: workspaceId, user_id: ownerId,
+          conversation_id: conversation.id, ad_id: attributedAdId,
+          direction: "outbound", sender: "ai", body: confirmedMessage,
+          wamid: confirmationWamid, status: "sent",
+        });
+        await supabaseAdmin.from("conversations").update({
+          last_message: confirmedMessage,
+          last_message_at: new Date().toISOString(),
+        }).eq("id", conversation.id).eq("workspace_id", workspaceId);
+      } catch (confirmationError) {
+        console.error("[Pedidos] Pedido creado, pero falló el aviso de registro", {
+          orderId: createdOrder.id,
+          error: confirmationError instanceof Error ? confirmationError.message : String(confirmationError),
+        });
+      }
     } else if (result.sale_closed && !result.order) {
       await logOrderIssue({
         workspaceId,
@@ -1396,6 +1421,22 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     }
   } catch (e) {
     const messageText = e instanceof Error ? e.message : "error";
+    // Cola duradera de fallos. No vuelve a enviar mensajes automáticamente:
+    // el reprocesador debe ser idempotente y verificar orders antes de enviar.
+    try {
+      const { error: queueError } = await supabaseAdmin.from("ai_failed_messages").upsert({
+        workspace_id: workspaceId,
+        user_id: ownerId,
+        conversation_id: conversation.id,
+        wamid: message.id,
+        error_message: messageText.slice(0, 1500),
+        status: "pending",
+        updated_at: new Date().toISOString(),
+      }, { onConflict: "workspace_id,wamid" });
+      if (queueError) console.error("[AI] No se pudo guardar el mensaje pendiente", queueError);
+    } catch (queueUnexpectedError) {
+      console.error("[AI] Error inesperado registrando pendiente", queueUnexpectedError);
+    }
     await supabaseAdmin.from("integration_logs").insert({
       workspace_id: workspaceId,
       user_id: ownerId,
@@ -2281,76 +2322,25 @@ async function sendCatalogByKeyword(args: {
 
   const baseCopy =
     match.products.sales_copy?.trim() ||
-    `${match.products.name}\n${match.products.description ?? ""}`.trim();
-
-  // Siempre resolver importes desde la base de datos y NO desde el copy comercial.
-  // label identifica la presentación; quantity indica unidades, no capacidad.
-  const { data: rawOptions, error: priceOptionsError } = await supabaseAdmin
-    .from("product_prices")
+    `${match.products.name}
+${match.products.description ?? ""}`.trim();
+  const { data: rawOptions } = await supabaseAdmin.from("product_prices")
     .select("label, quantity, price, sort_order")
     .eq("workspace_id", args.workspaceId)
     .eq("product_id", productId)
     .order("sort_order", { ascending: true });
-
-  if (priceOptionsError) {
-    // Fallar cerrado: no enviar una oferta sin precios si la lectura falló.
-    console.error("[Catálogo] No se pudieron consultar los precios", {
-      productId,
-      error: priceOptionsError.message,
-    });
-    throw priceOptionsError;
-  }
-
-  const options = (rawOptions ?? [])
-    .map((option) => ({
-      label: String(option.label ?? "").trim(),
-      quantity: Math.max(1, Math.floor(Number(option.quantity) || 1)),
-      price: Number(option.price),
-      sortOrder: Number(option.sort_order) || 0,
-    }))
-    .filter((option) => option.label && Number.isFinite(option.price) && option.price > 0)
-    .sort((a, b) => a.sortOrder - b.sortOrder);
-
-  // Solo productos antiguos sin product_prices usan su precio heredado.
-  const legacyPromo = Number(match.products.promo_price);
-  const legacyRegular = Number(match.products.price);
-  const legacyPrice =
-    Number.isFinite(legacyPromo) && legacyPromo > 0
-      ? legacyPromo
-      : legacyRegular;
-
-  const priceRows = options.length
-    ? options.map((option) => `• *${option.label}* — ${formatGs(option.price)}`)
-    : Number.isFinite(legacyPrice) && legacyPrice > 0
-      ? [`💰 *Precio: ${formatGs(legacyPrice)}*`]
-      : [];
-
-  // Si el copy ya indica todos los importes correctos, no repetirlos.
-  // En cualquier otro caso, agregar bloque confiable al mismo mensaje.
-  const canonicalAmountsPresent = options.length
-    ? options.every((option) => {
-        const normalizedCopy = normalizeIntentText(baseCopy);
-        const label = normalizeIntentText(option.label);
-        const amount = String(Math.round(option.price));
-        const formatAmount = formatGs(option.price);
-        return normalizedCopy.includes(label) &&
-          (baseCopy.includes(formatAmount) || baseCopy.includes(amount) ||
-            baseCopy.includes(amount.replace(/\B(?=(\d{3})+(?!\d))/g, ".")));
-      })
-    : priceRows.length > 0 &&
-      (baseCopy.includes(formatGs(legacyPrice)) ||
-        baseCopy.includes(String(legacyPrice)) ||
-        baseCopy.includes(String(legacyPrice).replace(/\B(?=(\d{3})+(?!\d))/g, ".")));
-
-  const priceBlock = !canonicalAmountsPresent && priceRows.length
-    ? `\n\n💰 *${options.length > 1 ? "PRESENTACIONES Y PRECIOS" : "PRECIO"}:*\n${priceRows.join("\n")}`
+  const options = (rawOptions ?? []).filter((o) => o.label && Number(o.price) > 0);
+  const normalizedCopy = normalizeIntentText(baseCopy);
+  const missingNames = options.filter((o) => {
+    const normalizedLabel = normalizeIntentText(o.label);
+    const measure = normalizedLabel.match(/\b\d+(?:[.,]\d+)?\s*(?:litros?|lts?|ml|kg|gramos?|gr|cm|mm)\b/);
+    return !normalizedCopy.includes(normalizedLabel) && !(measure && normalizedCopy.includes(measure[0]));
+  });
+  // Nunca presentar opciones solo como "1 unidad" si las etiquetas son capacidades.
+  const variantLines = options.length > 1 && missingNames.length > 0
+    ? `\n\n💥 *Opciones disponibles:*\n${options.map((o) => `• *${o.label}* — ${formatGs(Number(o.price))}`).join("\n")}\n¿Cuál preferís?`
     : "";
-  const choiceQuestion = options.length > 1
-    ? /(?:cu[aá]l (?:te|prefer[ií]s)|cu[aá]l (?:quer[eé]s|quieres)|cu[aá]l (?:reservamos|eleg[ií]s))/i.test(baseCopy)
-      ? ""
-      : "\n\n📲 *¿Cuál de estas opciones preferís?*"
-    : "";
-  const copy = `${baseCopy}${priceBlock}${choiceQuestion}`.trim();
+  const copy = baseCopy + variantLines;
 
   const { sendWhatsAppMedia } = await import("@/lib/whatsapp.server");
 
