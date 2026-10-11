@@ -73,6 +73,8 @@ function SettingsPage() {
     reply_delay_seconds: 3,
     autodetect_model: true,
     gemini_api_key: "",
+    gemini_api_key_2: "",
+    gemini_api_key_3: "",
   });
   const [biz, setBiz] = useState({
     business_name: "",
@@ -118,6 +120,8 @@ function SettingsPage() {
         reply_delay_seconds: data.ai.reply_delay_seconds,
         autodetect_model: data.ai.autodetect_model,
         gemini_api_key: data.ai.gemini_api_key ?? "",
+        gemini_api_key_2: data.ai.gemini_api_key_2 ?? "",
+        gemini_api_key_3: data.ai.gemini_api_key_3 ?? "",
       });
     }
     if (data.settings) {
@@ -235,6 +239,8 @@ function SettingsPage() {
           reply_delay_seconds: Number(ai.reply_delay_seconds) || 0,
           autodetect_model: ai.autodetect_model,
           gemini_api_key: ai.gemini_api_key.trim() || null,
+          gemini_api_key_2: ai.gemini_api_key_2.trim() || null,
+          gemini_api_key_3: ai.gemini_api_key_3.trim() || null,
         });
       } else {
         await upsert("user_settings", {
@@ -487,6 +493,21 @@ function SettingsPage() {
                     Obtené tu API Key en Google AI Studio
                   </a>
                 </div>
+
+                {([2, 3] as const).map((index) => {
+                  const field = index === 2 ? "gemini_api_key_2" : "gemini_api_key_3";
+                  return (
+                    <div className="space-y-1.5" key={index}>
+                      <Label>API Key {index} — Respaldo {index - 1}</Label>
+                      <Input type="password" autoComplete="off" placeholder="AIza..."
+                        value={ai[field]}
+                        onChange={e => setAi(prev => ({ ...prev, [field]: e.target.value }))} />
+                      <p className="text-xs text-muted-foreground">
+                        Se prueba automáticamente si las claves anteriores fallan. Usá proyectos con cuota disponible e independiente.
+                      </p>
+                    </div>
+                  );
+                })}
 
                 <div className="space-y-1.5">
                   <Label>Modelo preferido</Label>
