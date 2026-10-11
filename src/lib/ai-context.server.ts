@@ -2,109 +2,26 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { AiContext } from "@/lib/ai.server";
 
 type Client = SupabaseClient;
-
 const DEFAULT_TIME_ZONE = "America/Asuncion";
 
-type CurrentTimeContext = {
-  timeZone: string;
-  weekday: string;
-  date: string;
-  time: string;
-  hour: number;
-  minute: number;
-  period: "madrugada" | "mañana" | "tarde" | "noche";
-  greeting:
-    | "Buenos días"
-    | "Buenas tardes"
-    | "Buenas noches";
-};
-
-function getCurrentTimeContext(
-  timeZone = DEFAULT_TIME_ZONE,
-): CurrentTimeContext {
+function currentTimeInstruction(): string {
   const now = new Date();
-
   const parts = new Intl.DateTimeFormat("es-PY", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    weekday: "long",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
+    timeZone: DEFAULT_TIME_ZONE, year: "numeric", month: "2-digit", day: "2-digit",
+    weekday: "long", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
   }).formatToParts(now);
-
-  const getPart = (
-    type: Intl.DateTimeFormatPartTypes,
-  ): string =>
-    parts.find((part) => part.type === type)?.value ?? "";
-
-  const hour = Number(getPart("hour"));
-  const minute = Number(getPart("minute"));
-
-  let period: CurrentTimeContext["period"];
-  let greeting: CurrentTimeContext["greeting"];
-
-  if (hour >= 5 && hour < 12) {
-    period = "mañana";
-    greeting = "Buenos días";
-  } else if (hour >= 12 && hour < 19) {
-    period = "tarde";
-    greeting = "Buenas tardes";
-  } else if (hour >= 19 || hour < 1) {
-    period = "noche";
-    greeting = "Buenas noches";
-  } else {
-    period = "madrugada";
-    greeting = "Buenas noches";
-  }
-
-  const weekday = new Intl.DateTimeFormat("es-PY", {
-    timeZone,
-    weekday: "long",
-  }).format(now);
-
-  const date = new Intl.DateTimeFormat("es-PY", {
-    timeZone,
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  }).format(now);
-
-  const time = new Intl.DateTimeFormat("es-PY", {
-    timeZone,
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).format(now);
-
-  return {
-    timeZone,
-    weekday,
-    date,
-    time,
-    hour,
-    minute,
-    period,
-    greeting,
-  };
-}
-
-function buildCurrentTimeInstruction(
-  timeZone = DEFAULT_TIME_ZONE,
-): string {
-  const current = getCurrentTimeContext(timeZone);
-
+  const get = (part: Intl.DateTimeFormatPartTypes) => parts.find(p => p.type === part)?.value ?? "";
+  const hour = Number(get("hour"));
+  const greeting = hour >= 5 && hour < 12 ? "Buenos días" : hour >= 12 && hour < 19 ? "Buenas tardes" : "Buenas noches";
+  const period = hour >= 5 && hour < 12 ? "mañana" : hour >= 12 && hour < 19 ? "tarde" : hour >= 19 || hour < 1 ? "noche" : "madrugada";
   return [
     "FECHA Y HORA ACTUAL DEL NEGOCIO:",
-    `- Zona horaria: ${current.timeZone}`,
-    `- Día actual: ${current.weekday}`,
-    `- Fecha actual: ${current.date}`,
-    `- Hora actual: ${current.time}`,
-    `- Momento del día: ${current.period}`,
-    `- Saludo apropiado: ${current.greeting}`,
-    "",
+    `- Zona horaria: ${DEFAULT_TIME_ZONE}`,
+    `- Día actual: ${get("weekday")}`,
+    `- Fecha actual: ${new Intl.DateTimeFormat("es-PY", { timeZone: DEFAULT_TIME_ZONE, year:"numeric",month:"long",day:"numeric"}).format(now)}`,
+    `- Hora actual: ${get("hour")}:${get("minute")}`,
+    `- Momento del día: ${period}`,
+    `- Saludo apropiado: ${greeting}`,
     "REGLAS TEMPORALES OBLIGATORIAS:",
     "- Usa exclusivamente la fecha y hora indicadas arriba como referencia actual.",
     "- No inventes otra fecha ni otra hora.",
@@ -117,250 +34,56 @@ function buildCurrentTimeInstruction(
   ].join("\n");
 }
 
-function mergeSystemInstruction(
-  originalInstruction: string | null | undefined,
-): string {
-  const timeInstruction = buildCurrentTimeInstruction(
-    DEFAULT_TIME_ZONE,
-  );
-
-  const original = originalInstruction?.trim() ?? "";
-
-  if (!original) {
-    return timeInstruction;
-  }
-
-  return `${timeInstruction}
-
-INSTRUCCIONES GENERALES DEL NEGOCIO:
-${original}`.trim();
-}
-
 export async function buildWorkspaceAiContext(
   supabase: Client,
   workspaceId: string,
-  history: {
-    role: "user" | "assistant";
-    content: string;
-  }[],
+  history: { role: "user" | "assistant"; content: string }[],
   activeProductId: string | null = null,
   customerPhone: string | null = null,
 ): Promise<AiContext> {
-  const [
-    aiSettingsResult,
-    settingsResult,
-    productsResult,
-    trainingResult,
-  ] = await Promise.all([
-    supabase
-      .from("ai_settings")
-      .select(
-        "system_instruction, gemini_api_key, model, autodetect_model",
-      )
-      .eq("workspace_id", workspaceId)
-      .maybeSingle(),
-
-    supabase
-      .from("user_settings")
-      .select("business_name, currency")
-      .eq("workspace_id", workspaceId)
-      .maybeSingle(),
-
-    /*
-     * Los precios reales del catálogo se encuentran
-     * en product_prices.
-     *
-     * IMPORTANTE:
-     * También recuperamos SKU para que el pedido guarde
-     * una copia del SKU vigente del producto.
-     */
-    supabase
-      .from("products")
-      .select(`
-        id,
-        name,
-        sku,
-        price,
-        promo_price,
-        stock,
-        sales_copy,
-        description,
-        delivery_info,
-        ai_instructions,
-        product_keywords (
-          keyword
-        ),
-        product_prices (
-          id,
-          label,
-          quantity,
-          price,
-          sort_order
-        )
-      `)
-      .eq("workspace_id", workspaceId)
-      .eq("is_active", true),
-
-    supabase
-      .from("training_entries")
-      .select("title, content, category, priority")
-      .eq("workspace_id", workspaceId)
-      .eq("is_active", true),
+  const [aiSettingsResult, settingsResult, productsResult, trainingResult] = await Promise.all([
+    supabase.from("ai_settings").select("system_instruction, gemini_api_key, gemini_api_key_2, gemini_api_key_3, model, autodetect_model").eq("workspace_id", workspaceId).maybeSingle(),
+    supabase.from("user_settings").select("business_name, currency").eq("workspace_id", workspaceId).maybeSingle(),
+    supabase.from("products").select(`
+      id, name, sku, price, promo_price, stock, sales_copy, description, delivery_info, ai_instructions,
+      product_keywords(keyword), product_prices(id, label, quantity, price, sort_order)
+    `).eq("workspace_id", workspaceId).eq("is_active", true),
+    supabase.from("training_entries").select("title, content, category, priority").eq("workspace_id", workspaceId).eq("is_active", true),
   ]);
-
-  if (aiSettingsResult.error) {
-    throw aiSettingsResult.error;
+  for (const result of [aiSettingsResult, settingsResult, productsResult, trainingResult]) {
+    if (result.error) throw result.error;
   }
-
-  if (settingsResult.error) {
-    throw settingsResult.error;
-  }
-
-  if (productsResult.error) {
-    throw productsResult.error;
-  }
-
-  if (trainingResult.error) {
-    throw trainingResult.error;
-  }
-
-  const products = (productsResult.data ?? []).map(
-    (product) => {
-      const productPrices = [
-        ...(product.product_prices ?? []),
-      ]
-        .map((priceOption) => ({
-          id: priceOption.id,
-          label: String(
-            priceOption.label ?? "",
-          ).trim(),
-          quantity: Math.max(
-            1,
-            Math.floor(
-              Number(priceOption.quantity) || 1,
-            ),
-          ),
-          price: Number(priceOption.price) || 0,
-          sort_order:
-            Number(priceOption.sort_order) || 0,
-        }))
-        .filter(
-          (priceOption) =>
-            Boolean(priceOption.label) &&
-            Number.isFinite(priceOption.price) &&
-            priceOption.price > 0,
-        )
-        .sort(
-          (first, second) =>
-            first.sort_order - second.sort_order,
-        );
-
-      /*
-       * Precio heredado para mantener compatibilidad
-       * con partes antiguas de la IA.
-       */
-      const firstPriceOption =
-        productPrices[0] ?? null;
-
-      const legacyPrice =
-        Number(product.price);
-
-      const legacyPromoPrice =
-        product.promo_price === null
-          ? null
-          : Number(product.promo_price);
-
-      const fallbackPrice =
-        firstPriceOption?.price ??
-        (Number.isFinite(legacyPromoPrice) &&
-        legacyPromoPrice !== null &&
-        legacyPromoPrice > 0
-          ? legacyPromoPrice
-          : Number.isFinite(legacyPrice) &&
-              legacyPrice > 0
-            ? legacyPrice
-            : 0);
-
-      /*
-       * Normalizamos el SKU.
-       *
-       * Si por alguna razón viene vacío, se usa null.
-       */
-      const sku =
-        String(product.sku ?? "").trim() || null;
-
-      return {
-        id: product.id,
-        name: product.name,
-
-        /*
-         * SKU del producto.
-         * createOrderFromAi lo copiará a orders.sku.
-         */
-        sku,
-
-        /*
-         * Se mantiene price para no romper ai.server.ts.
-         * Representa el total de la primera opción.
-         */
-        price: fallbackPrice,
-
-        promo_price:
-          Number.isFinite(legacyPromoPrice) &&
-          legacyPromoPrice !== null &&
-          legacyPromoPrice > 0
-            ? legacyPromoPrice
-            : null,
-
-        stock: product.stock,
-        sales_copy: product.sales_copy,
-        description: product.description,
-        delivery_info: product.delivery_info,
-        ai_instructions: product.ai_instructions,
-
-        keywords: (
-          product.product_keywords ?? []
-        )
-          .map((keyword) =>
-            String(keyword.keyword ?? "")
-              .trim()
-              .toLowerCase(),
-          )
-          .filter(Boolean),
-
-        product_prices: productPrices,
-      };
-    },
-  );
-
+  const products = (productsResult.data ?? []).map(product => {
+    const productPrices = [...(product.product_prices ?? [])].map(option => ({
+      id: option.id,
+      label: String(option.label ?? "").trim(),
+      quantity: Math.max(1, Math.floor(Number(option.quantity) || 1)),
+      price: Number(option.price) || 0,
+      sort_order: Number(option.sort_order) || 0,
+    })).filter(option => Boolean(option.label) && Number.isFinite(option.price) && option.price > 0)
+      .sort((a,b) => a.sort_order-b.sort_order);
+    const legacy = Number(product.price);
+    const legacyPromo = product.promo_price == null ? null : Number(product.promo_price);
+    const fallbackPrice = productPrices[0]?.price ?? (legacyPromo !== null && Number.isFinite(legacyPromo) && legacyPromo > 0 ? legacyPromo : Number.isFinite(legacy) && legacy > 0 ? legacy : 0);
+    return {
+      id: product.id, name: product.name, sku: String(product.sku ?? "").trim() || null,
+      price: fallbackPrice,
+      promo_price: legacyPromo !== null && Number.isFinite(legacyPromo) && legacyPromo > 0 ? legacyPromo : null,
+      stock: product.stock, sales_copy: product.sales_copy, description: product.description,
+      delivery_info: product.delivery_info, ai_instructions: product.ai_instructions,
+      keywords: (product.product_keywords ?? []).map(k => String(k.keyword ?? "").trim().toLowerCase()).filter(Boolean),
+      product_prices: productPrices,
+    };
+  });
   return {
-    systemInstruction: mergeSystemInstruction(
-      aiSettingsResult.data?.system_instruction,
-    ),
-
-    geminiApiKey:
-      aiSettingsResult.data?.gemini_api_key ?? null,
-
-    model:
-      aiSettingsResult.data?.autodetect_model
-        ? null
-        : (aiSettingsResult.data?.model ?? null),
-
+    systemInstruction: [currentTimeInstruction(), "INSTRUCCIONES GENERALES DEL NEGOCIO:", aiSettingsResult.data?.system_instruction ?? ""].join("\n\n"),
+    geminiApiKey: aiSettingsResult.data?.gemini_api_key ?? null,
+    geminiApiKey2: aiSettingsResult.data?.gemini_api_key_2 ?? null,
+    geminiApiKey3: aiSettingsResult.data?.gemini_api_key_3 ?? null,
+    model: aiSettingsResult.data?.autodetect_model ? null : aiSettingsResult.data?.model ?? null,
     customerPhone,
-
-    businessName:
-      settingsResult.data?.business_name ?? "",
-
-    currency:
-      settingsResult.data?.currency ?? "PYG",
-
-    products,
-
-    training:
-      trainingResult.data ?? [],
-
-    history,
-
-    activeProductId,
+    businessName: settingsResult.data?.business_name ?? "",
+    currency: settingsResult.data?.currency ?? "PYG",
+    products, training: trainingResult.data ?? [], history, activeProductId,
   };
 }
