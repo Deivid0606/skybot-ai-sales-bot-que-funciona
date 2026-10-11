@@ -6,6 +6,8 @@ const DEFAULT_GATEWAY_MODEL =
 export type AiContext = {
   systemInstruction: string;
   geminiApiKey?: string | null;
+  geminiApiKey2?: string | null;
+  geminiApiKey3?: string | null;
   model?: string | null;
   customerPhone?: string | null;
   businessName: string;
@@ -610,6 +612,12 @@ async function generateWithGemini(
           error: lastError,
         });
 
+        // Cuota o saldo agotado: otra clave/proyecto debe probarse ya.
+        if (response.status === 402 || response.status === 429 ||
+            response.status === 401 || response.status === 403) {
+          throw new Error(`gemini_key_unavailable:${response.status} ${lastError.slice(0, 350)}`);
+        }
+
         // 404: modelo inexistente/no disponible para esta cuenta.
         // No tiene sentido reintentarlo: pasa inmediatamente al siguiente.
         if (response.status === 404) {
@@ -635,6 +643,7 @@ async function generateWithGemini(
       } catch (error) {
         const message =
           error instanceof Error ? error.message : String(error);
+        if (message.startsWith("gemini_key_unavailable:")) throw error;
 
         lastError = isAbortError(error)
           ? `Tiempo de espera agotado después de ${GEMINI_REQUEST_TIMEOUT_MS} ms`
@@ -728,43 +737,37 @@ async function generateWithGateway(ctx: AiContext): Promise<AiResult> {
   );
 }
 
-export async function generateAiReply(
-  ctx: AiContext,
-): Promise<AiResult> {
-  const geminiApiKey = ctx.geminiApiKey?.trim();
+/**
+ * Failover secuencial: cada clave se prueba una sola vez por solicitud en
+ * errores de cuota/saldo/autenticación y con reintentos acotados en 5xx.
+ * Las claves con el mismo proyecto pueden compartir cuota y saldo.
+ */
+export async function generateAiReply(ctx: AiContext): Promise<AiResult> {
+  const rawKeys = [ctx.geminiApiKey, ctx.geminiApiKey2, ctx.geminiApiKey3];
+  const keys = [...new Set(rawKeys.map(k => k?.trim()).filter((k): k is string => Boolean(k)))];
+  const failures: string[] = [];
 
-  if (geminiApiKey) {
+  for (const [index, key] of keys.entries()) {
     try {
-      return await generateWithGemini(ctx, geminiApiKey);
-    } catch (geminiError) {
-      console.error(
-        "[AI] Gemini agotó reintentos/modelos; usando Lovable Gateway",
-        {
-          error:
-            geminiError instanceof Error
-              ? geminiError.message
-              : String(geminiError),
-        },
-      );
-
-      try {
-        return await generateWithGateway(ctx);
-      } catch (gatewayError) {
-        const geminiMessage =
-          geminiError instanceof Error
-            ? geminiError.message
-            : String(geminiError);
-        const gatewayMessage =
-          gatewayError instanceof Error
-            ? gatewayError.message
-            : String(gatewayError);
-
-        throw new Error(
-          `Todos los proveedores de IA fallaron. Gemini: ${geminiMessage}. Gateway: ${gatewayMessage}`,
-        );
-      }
+      return await generateWithGemini(ctx, key);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      // NO escribir ni una parte de la API key en los logs.
+      console.warn(`[AI] Gemini clave ${index + 1}/${keys.length} no disponible`, {
+        reason: reason.slice(0, 500),
+      });
+      failures.push(`Clave ${index + 1}: ${reason.slice(0, 350)}`);
     }
   }
 
-  return generateWithGateway(ctx);
+  // Mantener compatibilidad con el respaldo Lovable existente cuando haya
+  // una clave de servidor configurada, no probarlo si no hay credenciales.
+  if (process.env.LOVABLE_API_KEY?.trim()) {
+    try {
+      return await generateWithGateway(ctx);
+    } catch (error) {
+      failures.push(`Gateway: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  throw new Error(`Todas las API de IA fallaron: ${failures.join(' | ') || 'No hay claves configuradas'}`);
 }
