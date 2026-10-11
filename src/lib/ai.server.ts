@@ -8,6 +8,13 @@ export type AiContext = {
   geminiApiKey?: string | null;
   geminiApiKey2?: string | null;
   geminiApiKey3?: string | null;
+  groqApiKey?: string | null;
+  xaiApiKey?: string | null;
+  openrouterApiKey?: string | null;
+  cloudflareApiKey?: string | null;
+  cloudflareAccountId?: string | null;
+  providerOrder?: string[] | null;
+  providerModels?: Record<string, string> | null;
   model?: string | null;
   customerPhone?: string | null;
   businessName: string;
@@ -737,37 +744,83 @@ async function generateWithGateway(ctx: AiContext): Promise<AiResult> {
   );
 }
 
-/**
- * Failover secuencial: cada clave se prueba una sola vez por solicitud en
- * errores de cuota/saldo/autenticación y con reintentos acotados en 5xx.
- * Las claves con el mismo proyecto pueden compartir cuota y saldo.
- */
-export async function generateAiReply(ctx: AiContext): Promise<AiResult> {
-  const rawKeys = [ctx.geminiApiKey, ctx.geminiApiKey2, ctx.geminiApiKey3];
-  const keys = [...new Set(rawKeys.map(k => k?.trim()).filter((k): k is string => Boolean(k)))];
-  const failures: string[] = [];
+/** Proveedores externos: se solicita una única respuesta JSON compatible con AiResult. */
+async function generateWithExternalProvider(ctx: AiContext, provider: string, key: string): Promise<AiResult> {
+  const defaults: Record<string, string> = {
+    groq: "llama-3.3-70b-versatile",
+    xai: "grok-4-fast-reasoning",
+    openrouter: "openai/gpt-4o-mini",
+    cloudflare: "@cf/meta/llama-3.1-8b-instruct",
+  };
+  const model = ctx.providerModels?.[provider]?.trim() || defaults[provider];
+  if (!model) throw new Error(`Proveedor desconocido: ${provider}`);
+  const messages = [{ role: "system", content: buildSystemPrompt(ctx) }, ...ctx.history.slice(-24)];
+  let url: string;
+  let body: Record<string, unknown>;
+  let headers: Record<string, string> = {"Content-Type": "application/json", Authorization: `Bearer ${key}`};
+  if (provider === "cloudflare") {
+    const account = ctx.cloudflareAccountId?.trim();
+    if (!account || !/^[a-zA-Z0-9_-]+$/.test(account)) throw new Error("Cloudflare requiere Account ID válido");
+    if (!/^@cf\/[a-zA-Z0-9._/-]+$/.test(model)) throw new Error("Modelo Cloudflare inválido");
+    url = `https://api.cloudflare.com/client/v4/accounts/${account}/ai/run/${model}`;
+    body = {messages, max_tokens: 2048};
+  } else {
+    const endpoints: Record<string, string> = {
+      groq: "https://api.groq.com/openai/v1/chat/completions",
+      xai: "https://api.x.ai/v1/chat/completions",
+      openrouter: "https://openrouter.ai/api/v1/chat/completions",
+    };
+    url = endpoints[provider];
+    if (!url) throw new Error("Proveedor no compatible");
+    body = {model, messages, temperature: 0.25, max_tokens: 2048};
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 25000);
+  try {
+    const response = await fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: controller.signal });
+    if (!response.ok) throw new Error(`${provider} HTTP ${response.status}: ${(await readResponseText(response)).slice(0, 250)}`);
+    const data = await response.json() as {
+      choices?: {message?: {content?: string | Array<{text?: string}>}}[];
+      result?: {response?: string | {response?: string}};
+      success?: boolean;
+    };
+    if (provider === "cloudflare" && data.success === false) throw new Error("Cloudflare devolvió success=false");
+    const content = data.choices?.[0]?.message?.content;
+    const raw = typeof content === "string" ? content : Array.isArray(content) ? content.map(v => v.text ?? "").join("") :
+      typeof data.result?.response === "string" ? data.result.response :
+      data.result?.response?.response ?? "";
+    return applyDetectedPhone(ensureValidResult(parseResult(raw)), ctx.customerPhone);
+  } finally {clearTimeout(timeout);}
+}
 
-  for (const [index, key] of keys.entries()) {
+/** Intenta proveedores en el orden seleccionado, y finalmente Lovable si existe. */
+export async function generateAiReply(ctx: AiContext): Promise<AiResult> {
+  const keys: Record<string, string | null | undefined> = {
+    gemini1: ctx.geminiApiKey, gemini2: ctx.geminiApiKey2, gemini3: ctx.geminiApiKey3,
+    groq: ctx.groqApiKey, xai: ctx.xaiApiKey, openrouter: ctx.openrouterApiKey,
+    cloudflare: ctx.cloudflareApiKey,
+  };
+  const defaults = ["gemini1", "gemini2", "gemini3", "groq", "xai", "openrouter", "cloudflare"];
+  const configured = Array.isArray(ctx.providerOrder) && ctx.providerOrder.length ? ctx.providerOrder : defaults;
+  const order = [...new Set([...configured, ...defaults])].filter(p => p in keys);
+  const triedKeys = new Set<string>();
+  const failures: string[] = [];
+  for (const provider of order) {
+    const key = keys[provider]?.trim();
+    if (!key || triedKeys.has(`${provider.startsWith("gemini") ? "gemini" : provider}:${key}`)) continue;
+    triedKeys.add(`${provider.startsWith("gemini") ? "gemini" : provider}:${key}`);
     try {
-      return await generateWithGemini(ctx, key);
+      return provider.startsWith("gemini") ? await generateWithGemini(ctx, key) : await generateWithExternalProvider(ctx, provider, key);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      // NO escribir ni una parte de la API key en los logs.
-      console.warn(`[AI] Gemini clave ${index + 1}/${keys.length} no disponible`, {
-        reason: reason.slice(0, 500),
-      });
-      failures.push(`Clave ${index + 1}: ${reason.slice(0, 350)}`);
+      console.warn(`[AI] Falló ${provider}: ${reason.slice(0, 200)}`);
+      failures.push(`${provider}: ${reason.slice(0, 200)}`);
     }
   }
-
-  // Mantener compatibilidad con el respaldo Lovable existente cuando haya
-  // una clave de servidor configurada, no probarlo si no hay credenciales.
   if (process.env.LOVABLE_API_KEY?.trim()) {
-    try {
-      return await generateWithGateway(ctx);
-    } catch (error) {
-      failures.push(`Gateway: ${error instanceof Error ? error.message : String(error)}`);
+    try {return await generateWithGateway(ctx);} catch (error) {
+      failures.push(`lovable: ${error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200)}`);
     }
   }
-  throw new Error(`Todas las API de IA fallaron: ${failures.join(' | ') || 'No hay claves configuradas'}`);
+  throw new Error(`Todos los proveedores fallaron: ${failures.join(" | ") || "Sin claves configuradas"}`);
 }
