@@ -3,6 +3,12 @@ export type CustomerIntent = "price" | "order_status" | "complex" | "checkout";
 const normalize = (v: string) => v.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
 export function classifyCustomerIntent(raw: string): CustomerIntent {
   const s = normalize(raw);
+  // Ubicación compartida o recordatorio de GPS: nunca es un nombre.
+  if (/^\s*📍\s*ubicacion compartida/i.test(raw)) return "checkout";
+  if (/\b(?:ya te pase|ya le pase|ya envie|ya comparti|te mande)\b/.test(s) && /\b(?:ubicacion|localizacion|maps)\b/.test(s)) return "complex";
+  // Consultas sobre tiempo de entrega son preguntas, NO nombres, cantidades ni direcciones.
+  if (/\b(?:cuando|para cuando|en cuantos dias|cuantos dias|que dia|a que hora)\b/.test(s) && /\b(?:llega|llegaria|llegan|llegue|entrega|entregan|entregaria|envian|envio|recibo|recibir|tarda|demora)\b/.test(s)) return "complex";
+  if (/\b(?:te estoy preguntando|me estas entendiendo|no me respondiste|responde mi pregunta)\b/.test(s)) return "complex";
   if (/\b(?:mi pedido|mis pedidos|el pedido|pedido que hice|mi compra|mi envio|mi entrega|mi paquete|donde esta|cuando llega|cuando me llega|estado del pedido|seguimiento|numero de pedido|guia de envio)\b/.test(s)) return "order_status";
   if (/\b(?:precio|precios|cuanto cuesta|cuanto sale|cuanto vale|cuanto es|que cuesta|que sale|valor|costo|costos|cuanto me sale|a cuanto|y el precio|diga(?:me)? (?:el|su) precio)\b/.test(s)) return "price";
   if (/\b(?:sirve para|funciona para|como funciona|como se usa|puedo usar|puede triturar|que diferencia|cual es mejor|recomendas|recomienda|garantia|falla|defecto|devolucion|reembolso|reclamo|quiero cambiar|quiero cancelar|necesito ayuda|tengo una duda|no funciona|es compatible|material|potencia|duracion|caracteristicas|cuando entregan)\b/.test(s)) return "complex";
@@ -29,4 +35,23 @@ export async function addVerifiedOrderContext(
   return {...ctx, systemInstruction: ctx.systemInstruction +
     "\nCONSULTA SOBRE PEDIDO EXISTENTE. Usa EXCLUSIVAMENTE estos datos verificados en la tabla orders del workspace actual: " + JSON.stringify(verified) +
     "\nSi la lista está vacía, indica que no encontraste un pedido asociado a ese WhatsApp y pide número de pedido para revisión humana. Nunca inventes guía, entrega, fecha, transportista o estado. No generes un pedido nuevo ni señales sale_closed por esta consulta. Responde en español paraguayo cordial con emojis moderados."};
+}
+
+/** Añade exclusivamente el contexto de venta pendiente para que la IA pueda contestar
+ * y después invitar a continuar, sin inventar datos ni modificar el estado guardado.
+ */
+export function addPendingSaleContext(
+  ctx: import("@/lib/ai.server").AiContext,
+  sale: import("@/lib/rule-sales.server").SaleState
+): import("@/lib/ai.server").AiContext {
+  if (!sale.productId || !sale.city && !sale.quantity && !sale.customerName) return ctx;
+  const product = ctx.products.find(p => p.id === sale.productId);
+  const needed = [!sale.city ? "ciudad" : null,
+    !sale.quantity ? "cantidad" : null,
+    !sale.customerName ? "nombre y apellido" : null,
+    !sale.street ? "dirección de entrega (cuando la cobertura la requiera)" : null
+  ].filter(Boolean);
+  const resume = needed.length ? `Si corresponde retomar la compra, invitá de forma natural a facilitar únicamente lo pendiente: ${needed.join(", ")}.` : "Si la venta está completa, no solicites más datos ni confirmes un pedido sin comprobar que fue registrado.";
+  return {...ctx, systemInstruction: ctx.systemInstruction + `
+CONVERSACIÓN HÍBRIDA: El cliente acaba de realizar una CONSULTA; respondé su pregunta PRIMERO, de forma clara y cordial con emojis moderados. No trates preguntas como nombres o direcciones. Podés cerrar tu respuesta con UNA invitación breve a seguir comprando, sin insistir. No inventes fechas/plazos, cobertura, precios ni estados. Si un plazo no está explícitamente en el entrenamiento, indicá que depende de la ciudad y la logística y que no hay fecha confirmada. No afirmes que el pedido está registrado si no consultaste PEDIDOS. No crees un pedido desde esta consulta. Producto en curso: ${product?.name ?? "no determinado"}. Ciudad aportada: ${sale.city ?? "sin indicar"}. Nombre aportado: ${sale.customerName ? "sí" : "no"}. Cantidad aportada: ${sale.quantity ?? "sin indicar"}. Dirección aportada: ${sale.street ? "sí" : "no"}. ${resume}`};
 }
