@@ -11,6 +11,8 @@ export type SaleState = {
   quantity?: number | null;
   city?: string | null;
   department?: string | null;
+  cityVerified?: boolean;
+  coverageStatus?: "covered" | "uncovered" | "unknown";
   customerName?: string | null;
   street?: string | null;
   locationUrl?: string | null;
@@ -48,9 +50,9 @@ export function parseCoverage(training: AiContext["training"]): Coverage[] {
   }); };
   for (const raw of lines) {
     const line = raw.trim();
-    if (/^ZONAS CON COBERTURA$/i.test(line)) { section="yes"; continue; }
-    if (/^ZONAS SIN COBERTURA$/i.test(line)) { section="no"; continue; }
-    if (/^FIN DEL ENTRENAMIENTO/i.test(line)) { push(); break; }
+    if (/^ZONAS CON COBERTURA$/i.test(line)) { push(); cur=null; section="yes"; continue; }
+    if (/^ZONAS SIN COBERTURA$/i.test(line)) { push(); cur=null; section="no"; continue; }
+    if (/^FIN DEL ENTRENAMIENTO/i.test(line)) { push(); cur=null; break; }
     if (!section) continue;
     if (line.startsWith("📍")) { push(); cur={ city:line.slice(2).trim(), aliases:[], active:section==="yes" }; continue; }
     if (!cur) continue;
@@ -61,7 +63,7 @@ export function parseCoverage(training: AiContext["training"]): Coverage[] {
     else if (/^DIRECCI[OÓ]N_REQUERIDA\s*:/i.test(line)) cur.addressRequired=/^\s*s[ií]\s*$/i.test(line.split(":").slice(1).join(":"));
   }
   // Si no hay marcador final, conservar el último bloque.
-  if (out.length === 0 && cur?.city) push();
+  if (cur?.city) push();
   return out;
 }
 function cityIn(text:string, coverage:Coverage[]): Coverage | null {
@@ -71,6 +73,13 @@ function cityIn(text:string, coverage:Coverage[]): Coverage | null {
     return n.length>=3 && (` ${normalized} `.includes(` ${n} `));
   }));
   return hits.length===1?hits[0]:null;
+}
+/** Solo usar para ciudad/departamento devueltos por geocodificación confiable. */
+export function verifiedCoverage(city:string, department:string, coverage:Coverage[]):Coverage|null {
+  const ci=norm(city), dep=norm(department);
+  const depEquivalent=(a:string,b:string)=>a===b || (ci==="asuncion" && ["asuncion","distrito capital","capital"].includes(a) && ["asuncion","distrito capital","capital"].includes(b));
+  const matches=coverage.filter(c => [c.city,...c.aliases].some(a=>norm(a)===ci) && depEquivalent(norm(c.department),dep));
+  return matches.length===1 ? matches[0] : null;
 }
 function selectProduct(ctx:AiContext,text:string):Product|null {
   const n=norm(text);
@@ -237,12 +246,13 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   }
   const coverage=parseCoverage(ctx.training);
   const match=cityIn(text,coverage);
-  if(match){s.city=match.city;s.department=match.department;}
-  else if(s.awaiting==="city" && !gpsUrl && n.length>=3 && n.length<=55 && /^[a-z ]+$/.test(n)) {
-    // Una ciudad ausente de la lista NO significa cobertura, pero se conserva
-    // la respuesta del cliente para tramitar un envío fuera de cobertura.
-    s.city=text.trim(); s.department=null;
+  if(match && (!gpsUrl || !s.cityVerified)){s.city=match.city;s.department=match.department;s.cityVerified=true;s.coverageStatus=match.active?"covered":"uncovered";}
+  else if(s.awaiting==="city" && !gpsUrl && !s.cityVerified && n.length>=3 && n.length<=55 && /^[a-z ]+$/.test(n)) {
+    // Puede ser una ciudad no registrada o una frase ambigua. No inventar cobertura.
+    // No conservar como ciudad verificada ni convertirla en pago anticipado.
+    s.coverageStatus="unknown";
   }
+
   if(s.awaiting==="details" || s.awaiting==="address") {
     const details=extractCheckoutDetails(text,true);
     if(details.name && !s.customerName)s.customerName=details.name;
@@ -261,14 +271,20 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   };
   if(variants.length>1&&!selected)return answer(`📦✨ *${p.name}*\n\n${variants.map(o=>`• *${o.label}* — ${money(o.price)} 💰`).join("\n")}\n\n😍 ¡Elegí la opción que más te guste! ¿Cuál preferís?`,"variant");
   if(variants.length===1)s.optionId=variants[0].id;
-  if(!s.city)return answer("🚚 ¡Genial! 😊 ¿En qué ciudad estás para verificar la entrega?","city");
-  const location=coverage.find(c=>c.city===s.city&&norm(c.department)===norm(s.department));
+  if(!s.city || !s.cityVerified || !s.department){
+    if(s.awaiting==="city" && !gpsUrl && !/^\s*📍/.test(text)) {
+      return answer("📍 Todavía no pude confirmar tu ciudad con nuestra lista de cobertura. 😊 Un asesor puede verificarla; no te pediré pago anticipado sin confirmación.",null,false,true);
+    }
+    return answer(s.locationUrl ? "📍 ¡Ya tengo tu ubicación guardada! 😊 ¿En qué *ciudad* estás para confirmar la cobertura? 🚚" : "🚚 ¡Genial! 😊 ¿En qué ciudad estás para verificar la entrega?","city");
+  }
+  const location=coverage.find(c=>norm(c.city)===norm(s.city)&&norm(c.department)===norm(s.department));
+  if(!location) return answer("📍 Necesito verificar tu ciudad y departamento antes de informar cobertura o formas de pago. ¿Podés confirmar tu ciudad? 😊", "city");
+  if(!location.active) return answer("📍 Tu ciudad está identificada, pero actualmente no figura en las zonas de contraentrega. Un asesor puede revisar opciones disponibles; no voy a pedirte pago anticipado sin tu elección. 😊",null,false,true);
   if(!location && !s.city)return answer("📍 ¿Me confirmás tu ciudad para verificar si llegamos hasta vos? 😊","city");
   const bank=ctx.training.find(t=>norm(t.title)==="datos bancarios")?.content?.trim()??"";
-  const allowsOutsideAdvance=ctx.training.some(t=>/sin cobertura/i.test(t.content) && /pago anticipado/i.test(t.content));
   if(!s.paymentMethod){
     if(location?.active && /CONTRA ENTREGA/i.test(location.method))s.paymentMethod="contraentrega";
-    else if(!location && allowsOutsideAdvance && bank)s.paymentMethod="anticipado";
+    // Nunca activar pago anticipado por falta de coincidencia de cobertura.
     else if(location && /ANTICIPADO|TRANSFERENCIA/i.test(location.method))s.paymentMethod="anticipado";
     else return answer("📍 ¡Gracias por pasarme tu ciudad! 😊 Un asesor necesita revisar la modalidad de entrega para darte una información correcta. 🙌",null,false,true);
   }
