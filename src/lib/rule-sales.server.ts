@@ -85,11 +85,12 @@ function selectOption(text:string, options:Option[], awaiting=false):Option|null
   // Un pedido de 1 o 2 unidades es selección del paquete comercial,
   // incluso cuando el estado "awaiting=variant" aún no se persistió.
   // No hacer esto para etiquetas de capacidad como "2 litros".
-  const packages = options.every(o => /\b(?:unidades?|piezas?)\b/.test(norm(o.label)));
+  const packages = options.every(o => /\b(?:unidad(?:es)?|piezas?)\b/.test(norm(o.label)));
   if (packages) {
     const wordNumbers: Record<string, number> = {un:1,uno:1,una:1,dos:2,tres:3,cuatro:4,cinco:5};
-    const numberPhrase = n.match(/^(?:(?:yo\s+)?(?:quiero|dame|llevo|mandame|necesito|pido|me llevo|quiero llevar)\s+)?(\d{1,3}|un|uno|una|dos|tres|cuatro|cinco)(?:\s+(?:unidades?|piezas?|quiero|por ahora|nom[aá]s|nada mas|por favor))?$/)
-      ?? n.match(/^(?:el|la)\s+de\s+(\d{1,3})\s+unidades?$/);
+    const numberPhrase = n.match(/^(?:(?:yo\s+)?(?:quiero|dame|llevo|mandame|necesito|pido|me llevo|quiero llevar)\s+)?(\d{1,3}|un|uno|una|dos|tres|cuatro|cinco)(?:\s+(?:unidad(?:es)?|piezas?|quiero|por ahora|nom[aá]s|nada mas|por favor))?$/)
+      ?? n.match(/^(?:el|la)\s+de\s+(\d{1,3})\s+unidad(?:es)?$/)
+      ?? n.match(/^(\d{1,3}|un|uno|una|dos|tres|cuatro|cinco)\s+(?:quiero|por ahora|nomas|nada mas)$/);
     if (numberPhrase) {
       const count = wordNumbers[numberPhrase[1]] ?? Number(numberPhrase[1]);
       const selectedPackages = options.filter(o => o.quantity === count);
@@ -117,12 +118,12 @@ function selectOption(text:string, options:Option[], awaiting=false):Option|null
     if (byPrice.length === 1) return byPrice[0];
     // Si las variantes son paquetes de unidades («1 unidad», «2 unidades»),
     // «uno quiero» y «1» eligen el paquete. NO aplicar a «2 litros».
-    const unitOptions = options.every(o => /\b(?:unidades?|piezas?)\b/.test(norm(o.label)));
+    const unitOptions = options.every(o => /\b(?:unidad(?:es)?|piezas?)\b/.test(norm(o.label)));
     if (unitOptions) {
       const unitWord: Record<string,number>={un:1,uno:1,una:1,dos:2,tres:3,cuatro:4,cinco:5};
-      const m=n.match(/^(?:(?:quiero|dame|llevo|mandame|necesito|pido)\s+)?(\d{1,3}|un|uno|una|dos|tres|cuatro|cinco)(?:\s+(?:quiero|unidades?|piezas?|por favor))?$/);
+      const m=n.match(/^(?:(?:quiero|dame|llevo|mandame|necesito|pido)\s+)?(\d{1,3}|un|uno|una|dos|tres|cuatro|cinco)(?:\s+(?:quiero|unidad(?:es)?|piezas?|por favor))?$/);
       if(m){const count=unitWord[m[1]]??Number(m[1]);
-        const byCount=options.filter(o=>o.quantity===count && /\b(?:unidades?|piezas?)\b/.test(norm(o.label)));
+        const byCount=options.filter(o=>o.quantity===count && /\b(?:unidad(?:es)?|piezas?)\b/.test(norm(o.label)));
         if(byCount.length===1)return byCount[0];
       }
     }
@@ -134,7 +135,7 @@ function selectOption(text:string, options:Option[], awaiting=false):Option|null
 function countOf(text:string, expecting:boolean):number|null {
   const n=norm(text);
   const word:Record<string,number>={un:1,uno:1,una:1,dos:2,tres:3,cuatro:4,cinco:5,seis:6};
-  const m=n.match(/\b(\d{1,3}|un|uno|una|dos|tres|cuatro|cinco|seis)\s*(?:unidades?|piezas?)\b/)
+  const m=n.match(/\b(\d{1,3}|un|uno|una|dos|tres|cuatro|cinco|seis)\s*(?:unidad(?:es)?|piezas?)\b/)
     ?? n.match(/\b(?:quiero|llevo|dame|necesito|mandame|pido)\s+(\d{1,3}|un|uno|una|dos|tres|cuatro|cinco|seis)\b/)
     ?? (expecting ? n.match(/^(\d{1,3}|un|uno|una|dos|tres|cuatro|cinco|seis)$/) : null);
   if(!m)return null;
@@ -222,7 +223,7 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   if(chosen) {
     s.optionId=chosen.id;
     // Una opción etiquetada «N unidades» es un paquete, distinto de «N litros».
-    if (/\b(?:unidades?|piezas?)\b/.test(norm(chosen.label))) s.quantity=chosen.quantity;
+    if (/\b(?:unidad(?:es)?|piezas?)\b/.test(norm(chosen.label))) s.quantity=chosen.quantity;
   }
   // NO interpretar "5 litros" como cantidad cinco.
   const expectingQuantity=s.awaiting==="quantity";
