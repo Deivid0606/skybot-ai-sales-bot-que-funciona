@@ -164,7 +164,7 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
       const nearest = [...variants].sort((a,b) => Math.abs(a.price-amounts[0])-Math.abs(b.price-amounts[0]))[0];
       if (nearest && Math.abs(nearest.price - amounts[0]) <= Math.max(1000,nearest.price * 0.02)) {
         s.awaiting="variant";
-        return {reply:`¿Te referís a *${nearest.label}*, que cuesta *${money(nearest.price)}*? Respondé con *${nearest.label}* o *${money(nearest.price)}* para elegirla.`, state:s, productId:p.id, complete:false, needsAi:false};
+        return {reply:`😊 ¿Te referís a *${nearest.label}* por *${money(nearest.price)}*? 💰 Confirmame esa opción y seguimos con tu pedido. 🙌`, state:s, productId:p.id, complete:false, needsAi:false};
       }
     }
   }
@@ -202,30 +202,30 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   const answer=(reply:string,awaitKey:string|null,complete=false,needsAi=false):SaleStep=>{
     s.awaiting=awaitKey;return {reply,state:s,productId:p.id,complete,needsAi};
   };
-  if(variants.length>1&&!selected)return answer(`📦 *${p.name}*\n${variants.map(o=>`• ${o.label}: ${money(o.price)}`).join("\n")}\n¿Cuál presentación preferís?`,"variant");
+  if(variants.length>1&&!selected)return answer(`📦✨ *${p.name}*\n\n${variants.map(o=>`• *${o.label}* — ${money(o.price)} 💰`).join("\n")}\n\n😍 ¡Elegí la opción que más te guste! ¿Cuál preferís?`,"variant");
   if(variants.length===1)s.optionId=variants[0].id;
-  if(!s.city)return answer("¿En qué ciudad estás para verificar la entrega?","city");
+  if(!s.city)return answer("🚚 ¡Genial! 😊 ¿En qué ciudad estás para verificar la entrega?","city");
   const location=coverage.find(c=>c.city===s.city&&norm(c.department)===norm(s.department));
-  if(!location && !s.city)return answer("¿Me confirmás tu ciudad para verificar cobertura?","city");
+  if(!location && !s.city)return answer("📍 ¿Me confirmás tu ciudad para verificar si llegamos hasta vos? 😊","city");
   const bank=ctx.training.find(t=>norm(t.title)==="datos bancarios")?.content?.trim()??"";
   const allowsOutsideAdvance=ctx.training.some(t=>/sin cobertura/i.test(t.content) && /pago anticipado/i.test(t.content));
   if(!s.paymentMethod){
     if(location?.active && /CONTRA ENTREGA/i.test(location.method))s.paymentMethod="contraentrega";
     else if(!location && allowsOutsideAdvance && bank)s.paymentMethod="anticipado";
     else if(location && /ANTICIPADO|TRANSFERENCIA/i.test(location.method))s.paymentMethod="anticipado";
-    else return answer("La modalidad de entrega de tu ciudad necesita revisión. Un asesor te ayudará a confirmar cómo recibir el producto.",null,false,true);
+    else return answer("📍 ¡Gracias por pasarme tu ciudad! 😊 Un asesor necesita revisar la modalidad de entrega para darte una información correcta. 🙌",null,false,true);
   }
-  if(s.paymentMethod==="contraentrega" && (!location || !location.active))return answer("Esta ciudad no figura entre las zonas habilitadas para pago al recibir. ¿Preferís consultar un envío por transportadora?",null,false,true);
-  if(!s.quantity)return answer(`¿Cuántas unidades querés llevar${selected?` de ${selected.label}`:""}?`,"quantity");
+  if(s.paymentMethod==="contraentrega" && (!location || !location.active))return answer("🚚 Por ahora, esa ciudad no figura en nuestras zonas habilitadas para pagar al recibir. 😊 ¿Querés que consultemos si hay otra forma de envío?",null,false,true);
+  if(!s.quantity)return answer(`📦 ¡Buenísimo! 😍 ¿Cuántas unidades querés llevar${selected?` de *${selected.label}*`:""}?`,"quantity");
   const total=priceFor(p,selected,s.quantity);
-  if(!total)return answer("No encuentro un precio válido para esa cantidad. Un asesor debe revisar el pedido.",null,false,true);
+  if(!total)return answer("💰 Para esa cantidad todavía no tengo un precio confirmado. 😊 Un asesor puede revisarlo para evitar cobrarte de más.",null,false,true);
   if(s.paymentMethod==="anticipado"){
-    if(!bank)return answer("No tengo datos bancarios confirmados para tu negocio. Un asesor debe continuar.",null,false,true);
-    if(!s.receiptPath)return answer(`💳 *Pago anticipado*\nProducto: ${p.name}${selected?` (${selected.label})`:""}\nCantidad: ${s.quantity}\nTotal: ${money(total)}\n\n${bank.slice(0,1600)}\n\nEnviame una foto o archivo del comprobante para adjuntarlo al pedido. El vendedor verificará la acreditación.`,"receipt");
-    if(!s.customerName)return answer("Recibí el archivo para revisión. ¿Me indicás tu nombre y apellido?","name");
-    return answer(`Comprobante adjunto para revisión. Pedido listo para registrar: *${p.name}* (${selected?.label??"presentación estándar"}), total ${money(total)}.`,null,true);
+    if(!bank)return answer("💳 Todavía no tengo los datos bancarios confirmados. 😊 Un asesor te ayudará a continuar de forma segura.",null,false,true);
+    if(!s.receiptPath)return answer(`💳✨ *¡Ya casi está tu pedido!*\n\n📦 *Producto:* ${p.name}${selected?` (${selected.label})`:""}\n🔢 *Cantidad:* ${s.quantity}\n💰 *Total:* ${money(total)}\n\n🏦 *Datos para el pago:*\n${bank.slice(0,1600)}\n\n📸 Cuando hagas la transferencia, enviame el comprobante para adjuntarlo. 😊 El vendedor revisará la acreditación antes de confirmarla.`,"receipt");
+    if(!s.customerName)return answer("📸 ¡Recibí tu comprobante! 😊 Quedará pendiente de verificación. ¿Me indicás tu nombre y apellido para completar el pedido?","name");
+    return answer(`✅📸 ¡Gracias! Tu comprobante quedó adjunto para revisión. 📦 *${p.name}* (${selected?.label??"presentación estándar"}), total *${money(total)}*. El vendedor verificará el pago. 😊`,null,true);
   }
-  if(!s.customerName)return answer("¿Me indicás tu nombre y apellido?","name");
-  if(location?.addressRequired&&!s.street)return answer("¿Cuál es la dirección de entrega y alguna referencia?","address");
-  return answer(`Pedido listo para registrar: *${p.name}*${selected?` (${selected.label})`:""}, ${s.quantity} unidad(es), total ${money(total)}.`,null,true);
+  if(!s.customerName)return answer("😊 ¡Perfecto! ¿Me indicás tu nombre y apellido para preparar el pedido?","name");
+  if(location?.addressRequired&&!s.street)return answer("📍 ¡Gracias! 😊 ¿Me pasás la dirección de entrega y alguna referencia cercana (colegio, negocio o número de casa)? 🏠","address");
+  return answer(`📦✨ *¡Ya tengo los datos de tu pedido!*\n🛍️ ${p.name}${selected?` (${selected.label})`:""}\n🔢 Cantidad: ${s.quantity}\n💰 Total: *${money(total)}*\n✅ Voy a registrarlo ahora. 😊`,null,true);
 }
