@@ -163,7 +163,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     const mode = aiSettings?.hybrid_mode === "ai_first" || aiSettings?.hybrid_mode === "rules_only"
       ? aiSettings.hybrid_mode : "hybrid";
     const text = String(newest.body ?? "");
-    const {coordinatesFromText}=await import("@/lib/geo-coverage.server");
+    const {coordinatesFromText}=await import("@/lib/hybrid-intent.server");
     const {parseCoverage,verifiedCoverage}=await import("@/lib/rule-sales.server");
     const coordinates=coordinatesFromText(text);
     const isGpsMessage=Boolean(coordinates || /https?:\/\/(?:maps\.app\.goo\.gl|goo\.gl\/maps|(?:www\.)?google\.[^\s/]+\/maps)/i.test(text));
