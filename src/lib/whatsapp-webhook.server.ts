@@ -5,6 +5,8 @@ import { generateAiReply } from "@/lib/ai.server";
 import { decideHybridReply } from "@/lib/hybrid-rules.server";
 import { advanceRuleSale, type SaleState } from "@/lib/rule-sales.server";
 import { classifyCustomerIntent, addVerifiedOrderContext, addPendingSaleContext } from "@/lib/hybrid-intent.server";
+import { coordinatesFromText, validCoords } from "@/lib/geo-coverage.server";
+import { parseCoverage, verifiedCoverage } from "@/lib/rule-sales.server";
 import { sendWhatsAppText } from "@/lib/whatsapp.server";
 import { detectComplaint, COMPLAINT_REASON_LABELS } from "@/lib/complaints";
 
@@ -902,7 +904,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       ? message.location?.address?.trim() || null
       : null;
 
-  const isLocation = latitude !== null && longitude !== null;
+  const isLocation = latitude !== null && longitude !== null && validCoords(latitude,longitude);
 
   const googleMapsUrl = isLocation
     ? `https://www.google.com/maps/search/?api=1&query=${latitude},${longitude}`
@@ -1277,13 +1279,46 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       .eq("workspace_id", workspaceId).eq("conversation_id", conversation.id).maybeSingle();
     if (saleReadError) throw saleReadError;
     const previousSale = (saleRow?.state ?? {}) as SaleState;
-    const intent = classifyCustomerIntent(body);
+    // GPS se conserva incluso si la IA responde a continuación. Datos geográficos
+    // del mensaje NO son una ciudad confirmada hasta verificar la geocodificación.
+    const explicitCoordinates = isLocation && latitude !== null && longitude !== null
+      ? { latitude, longitude } : coordinatesFromText(body);
+    const isGpsMessage = Boolean(explicitCoordinates || googleMapsUrl || /https?:\/\/(?:maps\.app\.goo\.gl|goo\.gl\/maps|(?:www\.)?google\.[^\s/]+\/maps)/i.test(body));
+    const gpsUrl = googleMapsUrl || (explicitCoordinates
+      ? `https://www.google.com/maps/search/?api=1&query=${explicitCoordinates.latitude},${explicitCoordinates.longitude}`
+      : null);
+    if (gpsUrl) previousSale.locationUrl = gpsUrl;
+    // No deducimos la ciudad a partir de coordenadas: el cliente la confirma.
+    // Si una ciudad ya estaba confirmada en ESTA conversación, se conserva.
+    if (isGpsMessage && !previousSale.cityVerified) {
+      previousSale.city = null;
+      previousSale.department = null;
+      previousSale.coverageStatus = "unknown";
+      previousSale.awaiting = "city";
+    }
+    if (isGpsMessage) {
+      const { error: gpsSaveError } = await supabaseAdmin.from("bot_sale_states").upsert({
+        workspace_id:workspaceId,conversation_id:conversation.id,state:previousSale,
+        updated_at:new Date().toISOString()
+      },{onConflict:"workspace_id,conversation_id"});
+      if(gpsSaveError) throw gpsSaveError;
+    }
+    const intent = isGpsMessage ? "checkout" : classifyCustomerIntent(body);
+    // No permitir que texto libre en el nombre/dirección de la ubicación se
+    // confunda con ciudades o información del checkout.
+    const saleInput = isGpsMessage ? `📍 Ubicación compartida${gpsUrl?`\n${gpsUrl}`:""}` : body;
     const bypassSale = intent !== "checkout";
     const answerContext = intent === "order_status" && hybridMode !== "rules_only"
       ? await addVerifiedOrderContext(supabaseAdmin, ctx, workspaceId, phone)
-      : ctx;
+      : isGpsMessage ? {...ctx, systemInstruction:ctx.systemInstruction +
+          `\nUBICACIÓN RECIBIDA: GPS guardado: ${Boolean(previousSale.locationUrl)}. `+
+          `Ciudad verificada: ${previousSale.cityVerified ? previousSale.city : "NO VERIFICADA"}. `+
+          `Estado de cobertura: ${previousSale.coverageStatus??"unknown"}. `+
+          `No inventes ciudad, departamento ni cobertura. Si está NO VERIFICADA, pedí ciudad. `+
+          `Nunca pidas pago anticipado por una ubicación desconocida. `+
+          `La IA no puede registrar un pedido ni modificar precios a partir de la ubicación.`} : ctx;
     const ruleStep = hybridMode !== "ai_first" && !bypassSale
-      ? advanceRuleSale(ctx, body, previousSale, media && (media.type === "image" || media.type === "document") ? mediaPath : null, googleMapsUrl)
+      ? advanceRuleSale(ctx, saleInput, previousSale, media && (media.type === "image" || media.type === "document") ? mediaPath : null, gpsUrl)
       : null;
     let saveStep = ruleStep;
     let safeDecision = ruleStep && !ruleStep.needsAi
@@ -1293,6 +1328,18 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         : decideHybridReply({ctx, text: body, mode: hybridMode});
     let result: Awaited<ReturnType<typeof generateAiReply>>;
     let responseOrigin = "ai";
+    // En modo híbrido la IA redacta la respuesta al GPS con hechos verificados.
+    // La respuesta determinista queda como respaldo y nunca se autoriza un pedido por este evento.
+    if (isGpsMessage && hybridMode !== "rules_only" && ruleStep && !ruleStep.needsAi) {
+      safeDecision = null;
+    }
+    if (isGpsMessage) {
+      const msg = previousSale.cityVerified && previousSale.city
+        ? `📍 ¡Recibí y guardé tu ubicación! 😊 Ya tengo tu ciudad confirmada: *${previousSale.city}*. Seguimos con tu pedido. 💚`
+        : "📍 ¡Recibí y guardé tu ubicación! 😊🚚 Para confirmar nuestra cobertura, ¿me indicás *en qué ciudad* estás?";
+      safeDecision = {reply:msg,productId:previousSale.productId??conversation.product_id,reason:"ubicacion_ciudad_confirmacion"};
+      saveStep = null;
+    }
     if (safeDecision) {
       result = {reply: safeDecision.reply, product_id: safeDecision.productId, sale_closed: false, order: null};
       responseOrigin = `code:${safeDecision.reason}`;
@@ -1305,7 +1352,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         result = await generateAiReply(answerContext);
       } catch (aiError) {
         if (aiSettings?.hybrid_fallback_enabled === false) throw aiError;
-        saveStep = bypassSale ? null : advanceRuleSale(ctx, body, previousSale, media && (media.type === "image" || media.type === "document") ? mediaPath : null, googleMapsUrl);
+        saveStep = bypassSale ? null : advanceRuleSale(ctx, saleInput, previousSale, media && (media.type === "image" || media.type === "document") ? mediaPath : null, gpsUrl);
         const fallback = saveStep && !saveStep.needsAi
           ? {reply:saveStep.reply, productId:saveStep.productId, reason:"venta_reglas_respaldo"}
           : decideHybridReply({ctx, text:body, mode:hybridMode, fallback:true});
@@ -1319,14 +1366,17 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       }
     }
     // Consultar precio/garantía/seguimiento no debe completar ni crear pedidos.
-    if (bypassSale) result = {...result, sale_closed:false, order:null};
+    if (isGpsMessage && ruleStep && !ruleStep.needsAi && /(?:sin cobertura|no tenemos cobertura|pago anticipado|datos bancarios)/i.test(result.reply) && previousSale.coverageStatus !== "uncovered") {
+      result = {...result,reply:ruleStep.reply};
+    }
+    if (bypassSale || isGpsMessage) result = {...result, sale_closed:false, order:null};
     if (saveStep && !saveStep.needsAi) {
       const {error: saveStateError} = await supabaseAdmin.from("bot_sale_states")
         .upsert({workspace_id:workspaceId,conversation_id:conversation.id,
           state:saveStep.state,updated_at:new Date().toISOString()},
           {onConflict:"workspace_id,conversation_id"});
       if(saveStateError) throw saveStateError;
-      if(saveStep.complete && !conversation.sale_closed) {
+      if(saveStep.complete && !isGpsMessage && !conversation.sale_closed) {
         const st=saveStep.state;
         result = {reply:saveStep.reply,product_id:saveStep.productId,sale_closed:true,
           order:{customer_name:st.customerName!,city:st.city!,departamento:st.department!,
@@ -1415,7 +1465,9 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
      * otra orden. Una compra nueva primero reinicia sale_closed=false mediante
      * isNewPurchaseIntent() y recién entonces puede registrar otro pedido.
      */
-    if (!conversation.sale_closed && result.order && orderReady) {
+    const verifiedOrderCoverage = result.order ? verifiedCoverage(
+      String(result.order.city??""),String(result.order.departamento??""),parseCoverage(ctx.training)) : null;
+    if (!conversation.sale_closed && result.order && orderReady && !isGpsMessage && verifiedOrderCoverage?.active && (!previousSale.city || (previousSale.cityVerified && previousSale.coverageStatus === "covered"))) {
       const completedOrder = {
         ...result.order,
         phone,
