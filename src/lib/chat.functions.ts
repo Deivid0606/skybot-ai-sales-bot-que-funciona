@@ -127,6 +127,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     const { buildWorkspaceAiContext } = await import("@/lib/ai-context.server");
     const { generateAiReply } = await import("@/lib/ai.server");
     const { decideHybridReply } = await import("@/lib/hybrid-rules.server");
+    const { advanceRuleSale } = await import("@/lib/rule-sales.server");
     const { createOrderFromAi, isOrderReady, isUnambiguousPriceSelection,
       recoverRecentPaymentReceiptForOrder } = await import("@/lib/whatsapp-webhook.server");
     const { supabase } = context;
@@ -138,7 +139,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     if (conversation.ai_paused || conversation.is_closed) return { skipped: true, reply: "" };
 
     const { data: history, error: historyError } = await supabase.from("messages")
-      .select("id, wamid, sender, direction, body, created_at")
+      .select("id, wamid, sender, direction, body, media_url, media_type, created_at")
       .eq("workspace_id", conversation.workspace_id)
       .eq("conversation_id", conversation.id)
       .order("created_at", { ascending: false }).limit(24);
@@ -161,19 +162,41 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     const mode = aiSettings?.hybrid_mode === "ai_first" || aiSettings?.hybrid_mode === "rules_only"
       ? aiSettings.hybrid_mode : "hybrid";
     const text = String(newest.body ?? "");
-    const decision = decideHybridReply({ ctx, text, mode });
+    const {data: saved, error: stateError} = await supabase.from("bot_sale_states")
+      .select("state").eq("workspace_id",conversation.workspace_id)
+      .eq("conversation_id",conversation.id).maybeSingle();
+    if(stateError)throw stateError;
+    const previous=(saved?.state??{}) as import("@/lib/rule-sales.server").SaleState;
+    let step=mode!=="ai_first"?advanceRuleSale(ctx,text,previous, (newest.media_type === "image" || newest.media_type === "document") ? newest.media_url : null):null;
+    const decision=step&&!step.needsAi?{reply:step.reply,productId:step.productId}:decideHybridReply({ctx,text,mode});
     let result: Awaited<ReturnType<typeof generateAiReply>>;
-    if (decision) result = { reply: decision.reply, product_id: decision.productId, sale_closed: false, order: null };
+    let fromRules=Boolean(step&&!step.needsAi);
+    if (decision) result={reply:decision.reply,product_id:decision.productId,sale_closed:false,order:null};
     else if (mode === "rules_only") {
-      const back = decideHybridReply({ ctx, text, mode, fallback: true });
-      result = { reply: back?.reply ?? "Un asesor debe revisar tu consulta.", product_id: back?.productId ?? conversation.product_id, sale_closed: false, order: null };
+      const back=decideHybridReply({ctx,text,mode,fallback:true});
+      result={reply:back?.reply??"Un asesor debe revisar tu consulta.",product_id:back?.productId??conversation.product_id,sale_closed:false,order:null};
     } else {
-      try { result = await generateAiReply(ctx); }
+      try {result=await generateAiReply(ctx);}
       catch (err) {
-        if (aiSettings?.hybrid_fallback_enabled === false) throw err;
-        const back = decideHybridReply({ ctx, text, mode, fallback: true });
-        if (!back) throw err;
-        result = { reply: back.reply, product_id: back.productId, sale_closed: false, order: null };
+        if(aiSettings?.hybrid_fallback_enabled===false)throw err;
+        step=advanceRuleSale(ctx,text,previous, (newest.media_type === "image" || newest.media_type === "document") ? newest.media_url : null);
+        const back=step&&!step.needsAi?{reply:step.reply,productId:step.productId}:decideHybridReply({ctx,text,mode,fallback:true});
+        if(!back)throw err;
+        result={reply:back.reply,product_id:back.productId,sale_closed:false,order:null};
+        fromRules=Boolean(step&&!step.needsAi);
+      }
+    }
+    if(fromRules&&step&&!step.needsAi){
+      const {error: stateSaveError}=await supabase.from("bot_sale_states").upsert({
+        workspace_id:conversation.workspace_id,conversation_id:conversation.id,
+        state:step.state,updated_at:new Date().toISOString()
+      },{onConflict:"workspace_id,conversation_id"});
+      if(stateSaveError)throw stateSaveError;
+      if(step.complete){const st=step.state;
+        result={reply:step.reply,product_id:step.productId,sale_closed:true,
+          order:{customer_name:st.customerName!,city:st.city!,departamento:st.department!,
+            street:st.street??undefined,quantity:st.quantity!,product_price_id:st.optionId??undefined,
+            payment_method:st.paymentMethod!,phone:conversation.contacts?.phone??""}};
       }
     }
     const detectedProduct = result.product_id && ctx.products.some(p => p.id === result.product_id)
@@ -206,6 +229,8 @@ export const aiReplyNow = createServerFn({ method: "POST" })
         conversationId: conversation.id,
         orderId: createdOrder.id,
       });
+      await supabase.from("bot_sale_states").delete()
+        .eq("workspace_id",conversation.workspace_id).eq("conversation_id",conversation.id);
     }
 
     const { data: conn } = await supabase.from("whatsapp_connections")
