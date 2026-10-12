@@ -13,6 +13,7 @@ export type SaleState = {
   department?: string | null;
   customerName?: string | null;
   street?: string | null;
+  alternatePhone?: string | null;
   paymentMethod?: string | null;
   awaiting?: string | null;
   receiptPath?: string | null;
@@ -145,6 +146,33 @@ function humanName(text:string, expecting:boolean):string|null {
   if(/\b(?:quiero|litros|gracias|buenas|cuanto|precio|ciudad|calle)\b/i.test(cleaned))return null;
   return cleaned;
 }
+/** Extrae solo información reconocible, sin adivinar nombres o domicilios. */
+function extractCheckoutDetails(raw:string, expecting:boolean):{name?:string;street?:string;alternatePhone?:string} {
+  const text=raw.trim();
+  if(!expecting || !text) return {};
+  const output:{name?:string;street?:string;alternatePhone?:string}={};
+  // WhatsApp: si se incluye un número secundario, es opcional. Nunca se exige.
+  const phone=text.match(/(?:otro\s+n[uú]mero|n[uú]mero\s+alternativo|tel[eé]fono\s+alternativo|contacto\s+alternativo)\s*(?::|es)?\s*(\+?\d[\d\s-]{7,17}\d)/i);
+  if(phone) output.alternatePhone=phone[1].replace(/[^\d+]/g, "");
+  const cleaned=text.replace(/(?:otro\s+n[uú]mero|n[uú]mero\s+alternativo|tel[eé]fono\s+alternativo|contacto\s+alternativo)\s*(?::|es)?\s*\+?\d[\d\s-]{7,17}\d/ig, "").trim();
+  // Admite: "Juan Pérez, calle ...", "Soy Juan Pérez, vivo en ...", y campos etiquetados.
+  const nameLabel=cleaned.match(/(?:nombre(?:\s+y\s+apellido)?\s*[:=-]\s*|me\s+llamo\s+|soy\s+)([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+(?:[ '-]+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+){1,4})(?=\s*[,;\n]|\s+(?:direcci[oó]n|calle|av(?:enida)?\.?|vivo\s+en)\b|$)/i);
+  const parts=cleaned.split(/[,;\n]+/).map(t=>t.trim()).filter(Boolean);
+  const first=parts[0]?.replace(/^(?:mi\s+nombre\s+es|nombre\s*[:=-]|soy)\s*/i, "");
+  const rawName=nameLabel?.[1] || (first && humanName(first,true) ? first : null);
+  if(rawName && humanName(rawName,true)) output.name=rawName.trim();
+  let addr=cleaned.match(/(?:direcci[oó]n\s*[:=-]\s*|vivo\s+en\s+)(.+)$/i)?.[1]?.trim();
+  if(!addr && parts.length>1 && output.name) addr=parts.slice(1).join(", ");
+  if(!addr && !output.name && /\b(?:calle|avenida|av\.|ruta|barrio|casa|frente|esquina|casi)\b/i.test(cleaned)) addr=cleaned;
+  const map=cleaned.match(/https?:\/\/(?:www\.)?(?:maps\.app\.goo\.gl|goo\.gl\/maps|google\.[^\s/]+\/maps|maps\.google\.[^\s/]+)\/[^\s,;]+/i);
+  if(map) addr=[addr && !addr.includes(map[0]) ? addr : null, map[0]].filter(Boolean).join(" | ");
+  if(addr) {
+    addr=addr.replace(/(?:otro\s+n[uú]mero|contacto\s+alternativo)\s*[:=-]?.*$/i,"").trim();
+    if(addr.length>=8 && !/^(?:no\s+tengo|no\s+hay|no\s+se)$/i.test(addr)) output.street=addr;
+  }
+  return output;
+}
+
 function priceFor(p:Product,option:Option|null,quantity:number):number|null {
   if(option){
     // En product_prices.quantity está la cantidad de unidades de un paquete.
@@ -206,6 +234,12 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     // la respuesta del cliente para tramitar un envío fuera de cobertura.
     s.city=text.trim(); s.department=null;
   }
+  if(s.awaiting==="details" || s.awaiting==="address") {
+    const details=extractCheckoutDetails(text,true);
+    if(details.name && !s.customerName)s.customerName=details.name;
+    if(details.street && !s.street)s.street=details.street;
+    if(details.alternatePhone)s.alternatePhone=details.alternatePhone;
+  }
   if(s.awaiting==="name" || /^\s*(?:me llamo|mi nombre es)\b/i.test(text)) {
     const name=humanName(text,s.awaiting==="name");if(name)s.customerName=name;
   }
@@ -239,7 +273,15 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     if(!s.customerName)return answer("📸 ¡Recibí tu comprobante! 😊 Quedará pendiente de verificación. ¿Me indicás tu nombre y apellido para completar el pedido?","name");
     return answer(`✅📸 ¡Gracias! Tu comprobante quedó adjunto para revisión. 📦 *${p.name}* (${selected?.label??"presentación estándar"}), total *${money(total)}*. El vendedor verificará el pago. 😊`,null,true);
   }
-  if(!s.customerName)return answer("😊 ¡Perfecto! ¿Me indicás tu nombre y apellido para preparar el pedido?","name");
-  if(location?.addressRequired&&!s.street)return answer("📍 ¡Gracias! 😊 ¿Me pasás la dirección de entrega y alguna referencia cercana (colegio, negocio o número de casa)? 🏠","address");
+  // Un solo mensaje de requisitos una vez elegidos producto, precio, cantidad y ciudad.
+  // El contacto alternativo NO bloquea el cierre. La ciudad ya debe haberse verificado.
+  const needsAddress=location?.addressRequired !== false;
+  if(!s.customerName || (needsAddress && !s.street)) {
+    if(s.awaiting==="details" || s.awaiting==="address") {
+      if(!s.customerName && s.street)return answer("¡Recibí tu dirección! 🏠💚 Solo me falta tu *nombre y apellido* para registrar el pedido. 😊","details");
+      if(s.customerName && needsAddress && !s.street)return answer(`¡Gracias, ${s.customerName}! 😍 Solo me falta tu *dirección completa* o ubicación de Google Maps. 📍 Si tenés, agregá una referencia cercana.`,"details");
+    }
+    return answer(`¡Oikoite! 😍🚚 Tenemos cobertura en *${s.city}*.\n\n📦 *¡Ya estamos a un paso de preparar tu pedido!*\n\nPara procesarlo, pasame estos datos *juntos*, por favor:\n\n👤 *Nombre y apellido*\n🏠 *Dirección de entrega y número de casa* (si tiene)\n📍 *Referencia cercana o ubicación de Google Maps*\n📱 *Otro número de contacto (opcional)*, solo si tenés.\n\n✅ Una vez que me pases los datos necesarios, tu pedido será registrado para su procesamiento. ¡Pagás al recibir! 💚`,"details");
+  }
   return answer(`📦✨ *¡Ya tengo los datos de tu pedido!*\n🛍️ ${p.name}${selected?` (${selected.label})`:""}\n🔢 Cantidad: ${s.quantity}\n💰 Total: *${money(total)}*\n✅ Voy a registrarlo ahora. 😊`,null,true);
 }
