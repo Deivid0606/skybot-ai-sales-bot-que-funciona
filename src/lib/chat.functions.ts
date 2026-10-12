@@ -128,6 +128,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     const { generateAiReply } = await import("@/lib/ai.server");
     const { decideHybridReply } = await import("@/lib/hybrid-rules.server");
     const { advanceRuleSale } = await import("@/lib/rule-sales.server");
+    const { classifyCustomerIntent, addVerifiedOrderContext } = await import("@/lib/hybrid-intent.server");
     const { createOrderFromAi, isOrderReady, isUnambiguousPriceSelection,
       recoverRecentPaymentReceiptForOrder } = await import("@/lib/whatsapp-webhook.server");
     const { supabase } = context;
@@ -162,13 +163,18 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     const mode = aiSettings?.hybrid_mode === "ai_first" || aiSettings?.hybrid_mode === "rules_only"
       ? aiSettings.hybrid_mode : "hybrid";
     const text = String(newest.body ?? "");
+    const intent = classifyCustomerIntent(text);
+    const bypassSale = intent !== "checkout";
+    const answerContext = intent === "order_status" && mode !== "rules_only"
+      ? await addVerifiedOrderContext(supabase,ctx,conversation.workspace_id,conversation.contacts?.phone)
+      : ctx;
     const {data: saved, error: stateError} = await supabase.from("bot_sale_states")
       .select("state").eq("workspace_id",conversation.workspace_id)
       .eq("conversation_id",conversation.id).maybeSingle();
     if(stateError)throw stateError;
     const previous=(saved?.state??{}) as import("@/lib/rule-sales.server").SaleState;
-    let step=mode!=="ai_first"?advanceRuleSale(ctx,text,previous, (newest.media_type === "image" || newest.media_type === "document") ? newest.media_url : null):null;
-    const decision=step&&!step.needsAi?{reply:step.reply,productId:step.productId}:decideHybridReply({ctx,text,mode});
+    let step=mode!=="ai_first"&&!bypassSale?advanceRuleSale(ctx,text,previous, (newest.media_type === "image" || newest.media_type === "document") ? newest.media_url : null):null;
+    const decision=step&&!step.needsAi?{reply:step.reply,productId:step.productId}:((intent==="complex"||intent==="order_status")&&mode!=="rules_only"?null:decideHybridReply({ctx,text,mode}));
     let result: Awaited<ReturnType<typeof generateAiReply>>;
     let fromRules=Boolean(step&&!step.needsAi);
     if (decision) result={reply:decision.reply,product_id:decision.productId,sale_closed:false,order:null};
@@ -176,16 +182,17 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       const back=decideHybridReply({ctx,text,mode,fallback:true});
       result={reply:back?.reply??"Un asesor debe revisar tu consulta.",product_id:back?.productId??conversation.product_id,sale_closed:false,order:null};
     } else {
-      try {result=await generateAiReply(ctx);}
+      try {result=await generateAiReply(answerContext);}
       catch (err) {
         if(aiSettings?.hybrid_fallback_enabled===false)throw err;
-        step=advanceRuleSale(ctx,text,previous, (newest.media_type === "image" || newest.media_type === "document") ? newest.media_url : null);
+        step=bypassSale?null:advanceRuleSale(ctx,text,previous, (newest.media_type === "image" || newest.media_type === "document") ? newest.media_url : null);
         const back=step&&!step.needsAi?{reply:step.reply,productId:step.productId}:decideHybridReply({ctx,text,mode,fallback:true});
         if(!back)throw err;
         result={reply:back.reply,product_id:back.productId,sale_closed:false,order:null};
         fromRules=Boolean(step&&!step.needsAi);
       }
     }
+    if(bypassSale)result={...result,sale_closed:false,order:null};
     if(fromRules&&step&&!step.needsAi){
       const {error: stateSaveError}=await supabase.from("bot_sale_states").upsert({
         workspace_id:conversation.workspace_id,conversation_id:conversation.id,
