@@ -196,7 +196,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       ? addPendingSaleContext(orderContext, previous) : orderContext;
     const saleText=isGpsMessage ? `📍 Ubicación compartida${previous.locationUrl?`\n${previous.locationUrl}`:""}` : text;
     let step=mode!=="ai_first"&&!bypassSale?advanceRuleSale(ctx,saleText,previous, (newest.media_type === "image" || newest.media_type === "document") ? newest.media_url : null,previous.locationUrl):null;
-    const decision=(!isGpsMessage || mode==="rules_only")&&step&&!step.needsAi?{reply:step.reply,productId:step.productId}:((intent==="complex"||intent==="order_status")&&mode!=="rules_only"?null:decideHybridReply({ctx,text,mode}));
+    const decision=(!isGpsMessage || mode==="rules_only")&&step&&!step.needsAi?{reply:step.reply,productId:step.productId}:((intent==="complex"||intent==="order_status"||intent==="price")&&mode!=="rules_only"?null:decideHybridReply({ctx,text,mode}));
     let result: Awaited<ReturnType<typeof generateAiReply>>;
     let fromRules=Boolean(step&&!step.needsAi);
     const gpsReply = previous.cityVerified && previous.city
