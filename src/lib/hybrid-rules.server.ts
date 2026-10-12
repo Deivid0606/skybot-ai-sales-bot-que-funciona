@@ -47,13 +47,13 @@ export function decideHybridReply(args: {
     const options = [...(p.product_prices ?? [])].filter(o => o.price > 0)
       .sort((a,b) => a.sort_order-b.sort_order);
     if (asksStock && Number(p.stock) <= 0) return {
-      reply: `Por el momento *${p.name}* figura sin stock. ¿Querés consultar otro producto?`,
+      reply: `😔 Por ahora *${p.name}* figura sin stock. 📦 ¿Querés que te ayude a encontrar otra opción? 😊`,
       productId: p.id, reason: "catalogo_stock"
     };
     const list = options.length
       ? options.map(o => `• *${o.label}* — ${money(o.price, ctx.currency)}`).join("\n")
       : `• ${money(Number(p.promo_price ?? p.price), ctx.currency)}`;
-    return {reply:`📦 *${p.name}*\n${list}\n\n¿Cuál opción preferís?`,productId:p.id,reason:"catalogo_precio"};
+    return {reply:`📦✨ *${p.name}*\n\n${list}\n\n😍 ¡Elegí la opción ideal para vos! ¿Cuál preferís?`,productId:p.id,reason:"catalogo_precio"};
   }
   // Preguntas frecuentes: solo la coincidencia del título completo, nunca fragmentos cortos.
   const faq = ctx.training.filter(t => !["reglas", "correccion"].includes(t.category)
@@ -64,12 +64,12 @@ export function decideHybridReply(args: {
   if (/^(hola|buenas|buen dia|buenos dias|buenas tardes|buenas noches|hola buenas)$/.test(normalized)) {
     // No saludar de nuevo si ya hubo una interacción del asistente en la conversación.
     if (ctx.history.some(h => h.role === "assistant")) return null;
-    return {reply:`¡Hola! 😊 Bienvenido/a a ${ctx.businessName || "nuestra tienda"}. ¿Qué producto te interesa?`,
+    return {reply:`¡Holaa! 👋😊 ¡Bienvenido/a a *${ctx.businessName || "nuestra tienda"}*! 🛍️ ¿Qué producto estás buscando? Estoy para ayudarte. 🙌`,
       productId:ctx.activeProductId,reason:"saludo"};
   }
   if (args.fallback) {
     if (p && (asksPrice || asksStock)) return null; // manejado arriba
-    return {reply: "Gracias por escribirnos. 😊 Ahora mismo no puedo verificar esa consulta automáticamente. Un asesor debe revisarla para darte una respuesta correcta. Si querés, indicame el producto que te interesa.",
+    return {reply: "¡Gracias por escribirnos! 😊💛 Esa consulta necesita una revisión para darte una respuesta segura. 🙌 Un asesor podrá ayudarte. Mientras tanto, ¿qué producto te interesa? 📦",
       productId: ctx.activeProductId,reason:"respaldo_seguro"};
   }
   return null;
