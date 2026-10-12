@@ -126,83 +126,115 @@ export const aiReplyNow = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     const { buildWorkspaceAiContext } = await import("@/lib/ai-context.server");
     const { generateAiReply } = await import("@/lib/ai.server");
-    const { supabase, userId } = context;
-
+    const { decideHybridReply } = await import("@/lib/hybrid-rules.server");
+    const { createOrderFromAi, isOrderReady, isUnambiguousPriceSelection,
+      recoverRecentPaymentReceiptForOrder } = await import("@/lib/whatsapp-webhook.server");
+    const { supabase } = context;
     const { data: conversation, error } = await supabase
       .from("conversations")
-      .select("id, workspace_id, product_id, contacts(phone)")
-      .eq("id", data.conversationId)
-      .single();
+      .select("id, workspace_id, user_id, contact_id, product_id, ad_id, ai_paused, is_closed, sale_closed, contacts(phone)")
+      .eq("id", data.conversationId).single();
     if (error || !conversation) throw new Error("Conversación no encontrada");
+    if (conversation.ai_paused || conversation.is_closed) return { skipped: true, reply: "" };
 
-    const { data: history } = await supabase
-      .from("messages")
-      .select("sender, body")
-      .eq("conversation_id", conversation.id)
-      .order("created_at", { ascending: false })
-      .limit(24);
-
-    const chatHistory = (history ?? [])
-      .reverse()
-      .filter((m) => Boolean(m.body))
-      .map((m) => ({
-        role: m.sender === "customer" ? ("user" as const) : ("assistant" as const),
-        content: m.body as string,
-      }));
-
-    if (chatHistory.length === 0) throw new Error("No hay mensajes para responder");
-
-    const ctx = await buildWorkspaceAiContext(
-      supabase,
-      conversation.workspace_id,
-      chatHistory,
-      conversation.product_id,
-    );
-    const result = await generateAiReply(ctx);
-
-    const { data: conn } = await supabase
-      .from("whatsapp_connections")
-      .select("phone_number_id, access_token")
+    const { data: history, error: historyError } = await supabase.from("messages")
+      .select("id, wamid, sender, direction, body, created_at")
       .eq("workspace_id", conversation.workspace_id)
-      .maybeSingle();
-
-    let wamid: string | null = null;
-    let sendError: string | null = null;
-    const phone = conversation.contacts?.phone;
-
-    if (conn?.phone_number_id && conn.access_token && phone) {
-      try {
-        wamid = await sendWhatsAppText(conn, phone, result.reply);
-      } catch (e) {
-        sendError = e instanceof Error ? e.message : "Error de envío";
-      }
+      .eq("conversation_id", conversation.id)
+      .order("created_at", { ascending: false }).limit(24);
+    if (historyError) throw historyError;
+    const newest = history?.[0];
+    if (!newest || newest.direction !== "inbound" || newest.sender !== "customer") {
+      return { skipped: true, reply: "" };
+    }
+    // No responder de nuevo si otro trabajador ya respondió a este inbound.
+    const chatHistory = [...(history ?? [])].reverse().filter(m => Boolean(m.body)).map(m => ({
+      role: m.sender === "customer" ? ("user" as const) : ("assistant" as const),
+      content: m.body as string,
+    }));
+    const { data: aiSettings } = await supabase.from("ai_settings")
+      .select("ai_enabled, hybrid_mode, hybrid_fallback_enabled")
+      .eq("workspace_id", conversation.workspace_id).maybeSingle();
+    if (!aiSettings?.ai_enabled) return { skipped: true, reply: "" };
+    const ctx = await buildWorkspaceAiContext(supabase, conversation.workspace_id,
+      chatHistory, conversation.product_id, conversation.contacts?.phone ?? null);
+    const mode = aiSettings?.hybrid_mode === "ai_first" || aiSettings?.hybrid_mode === "rules_only"
+      ? aiSettings.hybrid_mode : "hybrid";
+    const text = String(newest.body ?? "");
+    const decision = decideHybridReply({ ctx, text, mode });
+    let result: Awaited<ReturnType<typeof generateAiReply>>;
+    if (decision) result = { reply: decision.reply, product_id: decision.productId, sale_closed: false, order: null };
+    else if (mode === "rules_only") {
+      const back = decideHybridReply({ ctx, text, mode, fallback: true });
+      result = { reply: back?.reply ?? "Un asesor debe revisar tu consulta.", product_id: back?.productId ?? conversation.product_id, sale_closed: false, order: null };
     } else {
-      sendError = "WhatsApp no está conectado";
+      try { result = await generateAiReply(ctx); }
+      catch (err) {
+        if (aiSettings?.hybrid_fallback_enabled === false) throw err;
+        const back = decideHybridReply({ ctx, text, mode, fallback: true });
+        if (!back) throw err;
+        result = { reply: back.reply, product_id: back.productId, sale_closed: false, order: null };
+      }
+    }
+    const detectedProduct = result.product_id && ctx.products.some(p => p.id === result.product_id)
+      ? result.product_id : conversation.product_id;
+    const phone = conversation.contacts?.phone;
+    if (!phone) throw new Error("El contacto no tiene teléfono");
+
+    // Los pedidos desde Inbox deben guardar primero, confirmar después.
+    // NUNCA reutilizar la compra de una conversación ya cerrada.
+    let createdOrder: { id: string; order_number: string } | null = null;
+    const valid = !conversation.sale_closed && Boolean(result.order) &&
+      isOrderReady(result.order, detectedProduct) &&
+      isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory);
+    if (valid && result.order && detectedProduct) {
+      createdOrder = await createOrderFromAi({
+        workspaceId: conversation.workspace_id,
+        ownerId: conversation.user_id,
+        conversationId: conversation.id,
+        contactId: conversation.contact_id,
+        phone,
+        adId: conversation.ad_id ?? null,
+        productId: detectedProduct,
+        sourceMessageId: newest.wamid || newest.id,
+        order: { ...result.order, phone },
+        products: ctx.products,
+      });
+      await recoverRecentPaymentReceiptForOrder({
+        workspaceId: conversation.workspace_id,
+        ownerId: conversation.user_id,
+        conversationId: conversation.id,
+        orderId: createdOrder.id,
+      });
     }
 
+    const { data: conn } = await supabase.from("whatsapp_connections")
+      .select("phone_number_id, access_token")
+      .eq("workspace_id", conversation.workspace_id).maybeSingle();
+    if (!conn?.phone_number_id || !conn.access_token) throw new Error("WhatsApp no conectado");
+
+    // Si falta una variante, no repetir un falso cierre.
+    const needsVariant = Boolean(result.order && detectedProduct &&
+      (ctx.products.find(p => p.id === detectedProduct)?.product_prices?.length ?? 0) > 1 &&
+      !isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory));
+    const options = ctx.products.find(p => p.id === detectedProduct)?.product_prices ?? [];
+    const reply = createdOrder
+      ? `✅ PEDIDO REGISTRADO\n📦 N.º ${createdOrder.order_number}\n${(result.order?.payment_method ?? "").toLowerCase().includes("anticip") ? "💳 Comprobante sujeto a verificación por el vendedor." : "¡Gracias por tu compra!"}`
+      : needsVariant
+        ? `¿Cuál variante preferís?\n${options.map(o => `• ${o.label}: Gs. ${o.price.toLocaleString("es-PY")}`).join("\n")}`
+        : result.reply.replace(/(?:✅\s*)?PEDIDO CONFIRMADO/gi, "Estamos verificando los datos del pedido");
+    const wamid = await sendWhatsAppText(conn, phone, reply);
     const { error: insertError } = await supabase.from("messages").insert({
-      workspace_id: conversation.workspace_id,
-      user_id: userId,
-      conversation_id: conversation.id,
-      direction: "outbound",
-      sender: "ai",
-      body: result.reply,
-      wamid,
-      status: sendError ? "failed" : "sent",
-      error: sendError,
+      workspace_id: conversation.workspace_id, user_id: conversation.user_id,
+      conversation_id: conversation.id, direction: "outbound", sender: "ai", body: reply,
+      wamid, status: "sent",
     });
     if (insertError) throw insertError;
-
-    await supabase
-      .from("conversations")
-      .update({
-        last_message: result.reply,
-        last_message_at: new Date().toISOString(),
-      })
-      .eq("id", conversation.id);
-
-    if (sendError) throw new Error(sendError);
-    return { reply: result.reply };
+    await supabase.from("conversations").update({
+      last_message: reply, last_message_at: new Date().toISOString(),
+      unread_count: 0, product_id: detectedProduct,
+    }).eq("id", conversation.id).eq("workspace_id", conversation.workspace_id);
+    return { reply, orderId: createdOrder?.id ?? null };
   });
 
 const DeleteInput = z.object({ ids: z.array(z.string().uuid()).min(1).max(200) });
