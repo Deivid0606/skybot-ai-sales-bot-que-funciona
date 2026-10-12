@@ -55,3 +55,18 @@ export function addPendingSaleContext(
   return {...ctx, systemInstruction: ctx.systemInstruction + `
 CONVERSACIÓN HÍBRIDA: El cliente acaba de realizar una CONSULTA; respondé su pregunta PRIMERO, de forma clara y cordial con emojis moderados. No trates preguntas como nombres o direcciones. Podés cerrar tu respuesta con UNA invitación breve a seguir comprando, sin insistir. No inventes fechas/plazos, cobertura, precios ni estados. Si un plazo no está explícitamente en el entrenamiento, indicá que depende de la ciudad y la logística y que no hay fecha confirmada. No afirmes que el pedido está registrado si no consultaste PEDIDOS. No crees un pedido desde esta consulta. Producto en curso: ${product?.name ?? "no determinado"}. Ciudad aportada: ${sale.city ?? "sin indicar"}. Nombre aportado: ${sale.customerName ? "sí" : "no"}. Cantidad aportada: ${sale.quantity ?? "sin indicar"}. Dirección aportada: ${sale.street ? "sí" : "no"}. ${resume}`};
 }
+
+
+/** BOT SKY: GPS sin geocodificación. El cliente confirma la ciudad. Sin APIs ni cartografía. */
+export function validCoords(latitude:number,longitude:number):boolean {
+  return Number.isFinite(latitude)&&Number.isFinite(longitude)&&latitude>=-90&&latitude<=90&&longitude>=-180&&longitude<=180;
+}
+export function coordinatesFromText(text:string):{latitude:number;longitude:number}|null {
+  let decoded=text;
+  try {decoded=decodeURIComponent(text);}catch { /* Enlaces sin codificación válida */ }
+  const m=decoded.match(/(?:[?&](?:query|q|ll|center)=|\/@)(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)/i)
+    ?? decoded.match(/\b(-?2[0-9]\.\d{4,})\s*,\s*(-?5[4-9]\.\d{4,})\b/);
+  if(!m)return null;
+  const latitude=Number(m[1]), longitude=Number(m[2]);
+  return validCoords(latitude,longitude)?{latitude,longitude}:null;
+}
