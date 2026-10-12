@@ -203,6 +203,9 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   // Barrera adicional: una pregunta nunca se almacena como nombre o dirección,
   // incluso si está pendiente un dato personal. El enrutador híbrido la atenderá.
   if ((/[¿?]/.test(text) && !/https?:\/\//i.test(text)) || /\b(?:cuando me llega|cuando me llegaria|cuando llegaria|cuando entregan|cuando me entregan|cuanto tarda|cuanto demora|te estoy preguntando|dime el precio|decime el precio|y el precio|que garantia|tiene garantia)\b/.test(n)) return null;
+  // Consultas de delivery no deben disparar la selección de variantes.
+  if (/\b(?:delivery|delibery|delibari|envio|entrega|flete)\b/.test(n) &&
+      /\b(?:cuando|cuanto|cuantos|cuanta|sale|seria|costo|precio|tarda|demora|llega|llegaria)\b/.test(n)) return null;
   let s:SaleState={...existing};
   // Una ubicación GPS válida pertenece a esta conversación; no es un nombre ni una ciudad.
   const gpsUrl = sharedLocationUrl || (text.match(/https?:\/\/www\.google\.com\/maps\/search\/\?api=1&query=-?\d+(?:\.\d+)?,-?\d+(?:\.\d+)?/i)?.[0] ?? null);
