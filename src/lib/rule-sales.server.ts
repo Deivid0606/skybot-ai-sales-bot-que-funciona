@@ -104,7 +104,7 @@ function selectOption(text:string, options:Option[], awaiting=false):Option|null
     const unitOptions = options.every(o => /\b(?:unidades?|piezas?)\b/.test(norm(o.label)));
     if (unitOptions) {
       const unitWord: Record<string,number>={un:1,uno:1,una:1,dos:2,tres:3,cuatro:4,cinco:5};
-      const m=n.match(/^(?:(?:quiero|dame|llevo|mandame)\s+)?(\d{1,3}|un|uno|una|dos|tres|cuatro|cinco)(?:\s+(?:quiero|unidades?|piezas?|por favor))?$/);
+      const m=n.match(/^(?:(?:quiero|dame|llevo|mandame|necesito|pido)\s+)?(\d{1,3}|un|uno|una|dos|tres|cuatro|cinco)(?:\s+(?:quiero|unidades?|piezas?|por favor))?$/);
       if(m){const count=unitWord[m[1]]??Number(m[1]);
         const byCount=options.filter(o=>o.quantity===count && /\b(?:unidades?|piezas?)\b/.test(norm(o.label)));
         if(byCount.length===1)return byCount[0];
@@ -153,6 +153,21 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   if(!p)return null;
   s.productId=p.id;
   const variants=opts(p);
+  // Cuando se esperaba una variante y el cliente escribió un precio inexistente,
+  // aclarar la diferencia sin volver a enviar el mismo listado completo.
+  // Solo tratar como precio cifras de al menos 4 dígitos (nunca "quiero 1").
+  if (s.awaiting === "variant" && variants.length > 1) {
+    const amounts = (text.match(/\d[\d.,]*/g) ?? [])
+      .map(raw => Number(raw.replace(/[^0-9]/g, "")))
+      .filter(value => Number.isFinite(value) && value >= 1000);
+    if (amounts.length === 1 && !variants.some(o => Math.round(o.price) === amounts[0])) {
+      const nearest = [...variants].sort((a,b) => Math.abs(a.price-amounts[0])-Math.abs(b.price-amounts[0]))[0];
+      if (nearest && Math.abs(nearest.price - amounts[0]) <= Math.max(1000,nearest.price * 0.02)) {
+        s.awaiting="variant";
+        return {reply:`¿Te referís a *${nearest.label}*, que cuesta *${money(nearest.price)}*? Respondé con *${nearest.label}* o *${money(nearest.price)}* para elegirla.`, state:s, productId:p.id, complete:false, needsAi:false};
+      }
+    }
+  }
   const chosen=selectOption(text,variants,s.awaiting==="variant");
   if(chosen) {
     s.optionId=chosen.id;
