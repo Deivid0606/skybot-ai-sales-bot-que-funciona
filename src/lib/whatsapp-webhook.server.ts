@@ -1308,22 +1308,24 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     // confunda con ciudades o información del checkout.
     const saleInput = isGpsMessage ? `📍 Ubicación compartida${gpsUrl?`\n${gpsUrl}`:""}` : body;
     const bypassSale = intent !== "checkout";
-    const answerContext = intent === "order_status" && hybridMode !== "rules_only"
+    const answerContextBase = intent === "order_status" && hybridMode !== "rules_only"
       ? await addVerifiedOrderContext(supabaseAdmin, ctx, workspaceId, phone)
-      : isGpsMessage ? {...ctx, systemInstruction:ctx.systemInstruction +
+      : ctx;
+    const answerContext = isGpsMessage ? {...answerContextBase, systemInstruction:answerContextBase.systemInstruction +
           `\nUBICACIÓN RECIBIDA: GPS guardado: ${Boolean(previousSale.locationUrl)}. `+
           `Ciudad verificada: ${previousSale.cityVerified ? previousSale.city : "NO VERIFICADA"}. `+
           `Estado de cobertura: ${previousSale.coverageStatus??"unknown"}. `+
           `No inventes ciudad, departamento ni cobertura. Si está NO VERIFICADA, pedí ciudad. `+
           `Nunca pidas pago anticipado por una ubicación desconocida. `+
-          `La IA no puede registrar un pedido ni modificar precios a partir de la ubicación.`} : ctx;
+          `La IA no puede registrar un pedido ni modificar precios a partir de la ubicación.`}
+      : bypassSale && hybridMode !== "rules_only" ? addPendingSaleContext(answerContextBase, previousSale) : answerContextBase;
     const ruleStep = hybridMode !== "ai_first" && !bypassSale
       ? advanceRuleSale(ctx, saleInput, previousSale, media && (media.type === "image" || media.type === "document") ? mediaPath : null, gpsUrl)
       : null;
     let saveStep = ruleStep;
     let safeDecision = ruleStep && !ruleStep.needsAi
       ? {reply:ruleStep.reply, productId:ruleStep.productId, reason:"venta_reglas"}
-      : (intent === "order_status" || intent === "complex") && hybridMode !== "rules_only"
+      : (intent === "order_status" || intent === "complex" || intent === "price") && hybridMode !== "rules_only"
         ? null
         : decideHybridReply({ctx, text: body, mode: hybridMode});
     let result: Awaited<ReturnType<typeof generateAiReply>>;
@@ -1395,7 +1397,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     // Segunda barrera anti-repetición:
     // si la IA intenta volver a mandar prácticamente el mismo copy largo del
     // catálogo, lo reemplazamos por una oferta breve con los precios reales.
-    const safeReply = buildSafeAiReply({
+    const safeReply = bypassSale && hybridMode !== "rules_only" ? result.reply : buildSafeAiReply({
       reply: result.reply,
       history: chatHistory,
       products: ctx.products,
