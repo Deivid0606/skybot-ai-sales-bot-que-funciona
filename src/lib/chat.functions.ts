@@ -128,7 +128,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     const { generateAiReply } = await import("@/lib/ai.server");
     const { decideHybridReply } = await import("@/lib/hybrid-rules.server");
     const { advanceRuleSale } = await import("@/lib/rule-sales.server");
-    const { classifyCustomerIntent, addVerifiedOrderContext } = await import("@/lib/hybrid-intent.server");
+    const { classifyCustomerIntent, addVerifiedOrderContext, addPendingSaleContext } = await import("@/lib/hybrid-intent.server");
     const { createOrderFromAi, isOrderReady, isUnambiguousPriceSelection,
       recoverRecentPaymentReceiptForOrder } = await import("@/lib/whatsapp-webhook.server");
     const { supabase } = context;
@@ -165,7 +165,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     const text = String(newest.body ?? "");
     const intent = classifyCustomerIntent(text);
     const bypassSale = intent !== "checkout";
-    const answerContext = intent === "order_status" && mode !== "rules_only"
+    const orderContext = intent === "order_status" && mode !== "rules_only"
       ? await addVerifiedOrderContext(supabase,ctx,conversation.workspace_id,conversation.contacts?.phone)
       : ctx;
     const {data: saved, error: stateError} = await supabase.from("bot_sale_states")
@@ -173,6 +173,8 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       .eq("conversation_id",conversation.id).maybeSingle();
     if(stateError)throw stateError;
     const previous=(saved?.state??{}) as import("@/lib/rule-sales.server").SaleState;
+    const answerContext = bypassSale && mode !== "rules_only"
+      ? addPendingSaleContext(orderContext, previous) : orderContext;
     let step=mode!=="ai_first"&&!bypassSale?advanceRuleSale(ctx,text,previous, (newest.media_type === "image" || newest.media_type === "document") ? newest.media_url : null):null;
     const decision=step&&!step.needsAi?{reply:step.reply,productId:step.productId}:((intent==="complex"||intent==="order_status")&&mode!=="rules_only"?null:decideHybridReply({ctx,text,mode}));
     let result: Awaited<ReturnType<typeof generateAiReply>>;
