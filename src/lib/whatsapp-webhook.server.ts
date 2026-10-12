@@ -5,7 +5,7 @@ import { generateAiReply } from "@/lib/ai.server";
 import { decideHybridReply } from "@/lib/hybrid-rules.server";
 import { advanceRuleSale, type SaleState } from "@/lib/rule-sales.server";
 import { classifyCustomerIntent, addVerifiedOrderContext, addPendingSaleContext } from "@/lib/hybrid-intent.server";
-import { coordinatesFromText, validCoords } from "@/lib/geo-coverage.server";
+import { coordinatesFromText, validCoords } from "@/lib/hybrid-intent.server";
 import { parseCoverage, verifiedCoverage } from "@/lib/rule-sales.server";
 import { sendWhatsAppText } from "@/lib/whatsapp.server";
 import { detectComplaint, COMPLAINT_REASON_LABELS } from "@/lib/complaints";
