@@ -4,6 +4,7 @@ import { buildWorkspaceAiContext } from "@/lib/ai-context.server";
 import { generateAiReply } from "@/lib/ai.server";
 import { decideHybridReply } from "@/lib/hybrid-rules.server";
 import { advanceRuleSale, type SaleState } from "@/lib/rule-sales.server";
+import { classifyCustomerIntent, addVerifiedOrderContext } from "@/lib/hybrid-intent.server";
 import { sendWhatsAppText } from "@/lib/whatsapp.server";
 import { detectComplaint, COMPLAINT_REASON_LABELS } from "@/lib/complaints";
 
@@ -1276,13 +1277,20 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       .eq("workspace_id", workspaceId).eq("conversation_id", conversation.id).maybeSingle();
     if (saleReadError) throw saleReadError;
     const previousSale = (saleRow?.state ?? {}) as SaleState;
-    const ruleStep = hybridMode !== "ai_first"
+    const intent = classifyCustomerIntent(body);
+    const bypassSale = intent !== "checkout";
+    const answerContext = intent === "order_status" && hybridMode !== "rules_only"
+      ? await addVerifiedOrderContext(supabaseAdmin, ctx, workspaceId, phone)
+      : ctx;
+    const ruleStep = hybridMode !== "ai_first" && !bypassSale
       ? advanceRuleSale(ctx, body, previousSale, media && (media.type === "image" || media.type === "document") ? mediaPath : null)
       : null;
     let saveStep = ruleStep;
     let safeDecision = ruleStep && !ruleStep.needsAi
       ? {reply:ruleStep.reply, productId:ruleStep.productId, reason:"venta_reglas"}
-      : decideHybridReply({ctx, text: body, mode: hybridMode});
+      : (intent === "order_status" || intent === "complex") && hybridMode !== "rules_only"
+        ? null
+        : decideHybridReply({ctx, text: body, mode: hybridMode});
     let result: Awaited<ReturnType<typeof generateAiReply>>;
     let responseOrigin = "ai";
     if (safeDecision) {
@@ -1294,10 +1302,10 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       responseOrigin = "code:rules_only";
     } else {
       try {
-        result = await generateAiReply(ctx);
+        result = await generateAiReply(answerContext);
       } catch (aiError) {
         if (aiSettings?.hybrid_fallback_enabled === false) throw aiError;
-        saveStep = advanceRuleSale(ctx, body, previousSale, media && (media.type === "image" || media.type === "document") ? mediaPath : null);
+        saveStep = bypassSale ? null : advanceRuleSale(ctx, body, previousSale, media && (media.type === "image" || media.type === "document") ? mediaPath : null);
         const fallback = saveStep && !saveStep.needsAi
           ? {reply:saveStep.reply, productId:saveStep.productId, reason:"venta_reglas_respaldo"}
           : decideHybridReply({ctx, text:body, mode:hybridMode, fallback:true});
@@ -1310,6 +1318,8 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         });
       }
     }
+    // Consultar precio/garantía/seguimiento no debe completar ni crear pedidos.
+    if (bypassSale) result = {...result, sale_closed:false, order:null};
     if (saveStep && !saveStep.needsAi) {
       const {error: saveStateError} = await supabaseAdmin.from("bot_sale_states")
         .upsert({workspace_id:workspaceId,conversation_id:conversation.id,
