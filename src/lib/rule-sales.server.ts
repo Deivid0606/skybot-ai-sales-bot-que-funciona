@@ -80,6 +80,20 @@ function selectProduct(ctx:AiContext,text:string):Product|null {
 function selectOption(text:string, options:Option[], awaiting=false):Option|null {
   if (options.length===1) return options[0];
   const n=norm(text);
+  // Un pedido de 1 o 2 unidades es selección del paquete comercial,
+  // incluso cuando el estado "awaiting=variant" aún no se persistió.
+  // No hacer esto para etiquetas de capacidad como "2 litros".
+  const packages = options.every(o => /\b(?:unidades?|piezas?)\b/.test(norm(o.label)));
+  if (packages) {
+    const wordNumbers: Record<string, number> = {un:1,uno:1,una:1,dos:2,tres:3,cuatro:4,cinco:5};
+    const numberPhrase = n.match(/^(?:(?:yo\s+)?(?:quiero|dame|llevo|mandame|necesito|pido|me llevo|quiero llevar)\s+)?(\d{1,3}|un|uno|una|dos|tres|cuatro|cinco)(?:\s+(?:unidades?|piezas?|quiero|por ahora|nom[aá]s|nada mas|por favor))?$/)
+      ?? n.match(/^(?:el|la)\s+de\s+(\d{1,3})\s+unidades?$/);
+    if (numberPhrase) {
+      const count = wordNumbers[numberPhrase[1]] ?? Number(numberPhrase[1]);
+      const selectedPackages = options.filter(o => o.quantity === count);
+      if (selectedPackages.length === 1) return selectedPackages[0];
+    }
+  }
   const matches=options.filter(o=>{
     const label=norm(o.label), specific=units(label);
     if(specific){const digits=specific[0].match(/\d+(?:[.,]\d+)?/)?.[0]??"";
@@ -91,7 +105,7 @@ function selectOption(text:string, options:Option[], awaiting=false):Option|null
     return label.length>=3&&` ${n} `.includes(` ${label} `);
   });
   if(matches.length===1)return matches[0];
-  if(awaiting){
+  if(awaiting || packages){
     // Precio escrito por el cliente: «el de 179.900», «179900», «Gs 179.900».
     // Exigir una sola opción coincidente; nunca tomar montos parciales.
     const priceNumbers = (text.match(/\d[\d.,]*/g) ?? [])
