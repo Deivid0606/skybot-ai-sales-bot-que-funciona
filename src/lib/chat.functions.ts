@@ -167,6 +167,37 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     const {parseCoverage,verifiedCoverage}=await import("@/lib/rule-sales.server");
     const coordinates=coordinatesFromText(text);
     const isGpsMessage=Boolean(coordinates || /https?:\/\/(?:maps\.app\.goo\.gl|goo\.gl\/maps|(?:www\.)?google\.[^\s/]+\/maps)/i.test(text));
+    if (conversation.sale_closed && isGpsMessage) {
+      const {attachPostSaleGpsToLatestOrder} = await import("@/lib/whatsapp-webhook.server");
+      const postSaleUrl = coordinates
+        ? `https://www.google.com/maps/search/?api=1&query=${coordinates.latitude},${coordinates.longitude}`
+        : text.match(/https?:\/\/\S+/i)?.[0] ?? null;
+      let attached = false;
+      if(postSaleUrl) {
+        try { attached = await attachPostSaleGpsToLatestOrder({
+          workspaceId:conversation.workspace_id,conversationId:conversation.id,gpsUrl:postSaleUrl,
+        }); } catch(error){ console.error("[Inbox postventa] GPS no asociado",error); }
+      }
+      const reply = attached
+        ? "📍 ¡Perfecto! 😊 Guardé tu ubicación en tu pedido ya registrado. No necesitás volver a confirmar la ciudad. ¡Gracias! 🚚💚"
+        : "📍 Recibí tu ubicación. Tu pedido ya está registrado; un asesor verificará que quede asociada a la entrega. 💚";
+      const {data:conn} = await supabase.from("whatsapp_connections")
+        .select("phone_number_id,access_token")
+        .eq("workspace_id",conversation.workspace_id).maybeSingle();
+      const phone = conversation.contacts?.phone;
+      if(!phone || !conn?.phone_number_id || !conn.access_token)throw new Error("WhatsApp no conectado");
+      const wamid=await sendWhatsAppText(conn,phone,reply);
+      const {error:insertError}=await supabase.from("messages").insert({
+        workspace_id:conversation.workspace_id,user_id:conversation.user_id,
+        conversation_id:conversation.id,direction:"outbound",sender:"ai",body:reply,
+        wamid,status:"sent",
+      });
+      if(insertError)throw insertError;
+      await supabase.from("conversations").update({
+        last_message:reply,last_message_at:new Date().toISOString(),unread_count:0,
+      }).eq("workspace_id",conversation.workspace_id).eq("id",conversation.id);
+      return {reply,orderId:null};
+    }
     const intent = isGpsMessage ? "checkout" : classifyCustomerIntent(text);
     const bypassSale = intent !== "checkout";
     const orderContext = intent === "order_status" && mode !== "rules_only"
