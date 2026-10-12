@@ -68,6 +68,8 @@ function SettingsPage() {
   });
   const [ai, setAi] = useState({
     ai_enabled: true,
+    hybrid_mode: "hybrid" as "hybrid" | "ai_first" | "rules_only",
+    hybrid_fallback_enabled: true,
     model: "gemini-2.5-flash",
     system_instruction: "",
     reply_delay_seconds: 3,
@@ -119,6 +121,8 @@ function SettingsPage() {
     if (data.ai) {
       setAi({
         ai_enabled: data.ai.ai_enabled,
+        hybrid_mode: (["hybrid", "ai_first", "rules_only"].includes(data.ai.hybrid_mode) ? data.ai.hybrid_mode : "hybrid") as "hybrid" | "ai_first" | "rules_only",
+        hybrid_fallback_enabled: data.ai.hybrid_fallback_enabled !== false,
         model: normalizeGeminiModel(data.ai.model),
         system_instruction: data.ai.system_instruction,
         reply_delay_seconds: data.ai.reply_delay_seconds,
@@ -241,6 +245,8 @@ function SettingsPage() {
       } else if (section === "ai") {
         await upsert("ai_settings", {
           ai_enabled: ai.ai_enabled,
+          hybrid_mode: ai.hybrid_mode,
+          hybrid_fallback_enabled: ai.hybrid_fallback_enabled,
           model: ai.autodetect_model
             ? "gemini-2.5-flash"
             : normalizeGeminiModel(ai.model),
@@ -467,6 +473,23 @@ function SettingsPage() {
         <TabsContent value="ia" className="mt-4">
           <Card>
             <CardContent className="space-y-5 p-5">
+              <div className="space-y-3 rounded-lg border p-4">
+                <p className="font-semibold text-sm">Motor híbrido de respuestas</p>
+                <Label>Modo de funcionamiento</Label>
+                <select className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  value={ai.hybrid_mode}
+                  onChange={e => setAi(prev => ({...prev, hybrid_mode: e.target.value as typeof prev.hybrid_mode}))}>
+                  <option value="hybrid">Híbrido: código primero, IA para lo complejo (recomendado)</option>
+                  <option value="ai_first">IA primero, código de respaldo</option>
+                  <option value="rules_only">Solo código, sin llamadas de texto a IA</option>
+                </select>
+                <div className="flex items-center gap-2">
+                  <Switch checked={ai.hybrid_fallback_enabled}
+                    onCheckedChange={v => setAi(prev => ({...prev, hybrid_fallback_enabled: v}))}/>
+                  <Label>Responder con reglas seguras si todas las APIs fallan</Label>
+                </div>
+                <p className="text-xs text-muted-foreground">El código resuelve saludos iniciales, precios, stock y preguntas entrenadas de coincidencia exacta. Las ventas complejas siguen pasando por la función habitual de pedidos; el respaldo no confirma ventas ni pagos que no pudo verificar. Los audios e imágenes pueden seguir usando servicios de IA independientes.</p>
+              </div>
               <div className="space-y-1.5">
                 <Label>Tiempo de respuesta del bot</Label>
                 <div className="flex items-center gap-2">
