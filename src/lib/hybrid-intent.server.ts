@@ -6,6 +6,14 @@ export function classifyCustomerIntent(raw: string): CustomerIntent {
   // Ubicación compartida o recordatorio de GPS: nunca es un nombre.
   if (/^\s*📍\s*ubicacion compartida/i.test(raw)) return "checkout";
   if (/\b(?:ya te pase|ya le pase|ya envie|ya comparti|te mande)\b/.test(s) && /\b(?:ubicacion|localizacion|maps)\b/.test(s)) return "complex";
+  // Preguntas de delivery: palabras coloquiales, sin signos y con errores de tipeo.
+  // «cuando seria el delivery en san lorenzo» es ambigua (costo vs fecha): la IA pregunta.
+  if (/\b(?:delivery|delibery|delibari|envio|envios|flete|entrega|encomienda|reparto)\b/.test(s) &&
+      /\b(?:cuando|cuanto|cuantos|cuanta|cuantas|costo|precio|sale|seria|serian|cobra|cobran|tarda|demora|llega|llegaria|dia|fecha|hora|horario|gratis|gratuito|pago|pagar)\b/.test(s)) return "complex";
+  if (/\b(?:cuanto|cuando|como|que|cual)\b/.test(s) &&
+      /\b(?:a domicilio|hasta mi casa|hasta san lorenzo|hasta asuncion|me traen|me envian)\b/.test(s)) return "complex";
+  // «Cuánto cuesta» tras una aclaración de delivery corresponde a la consulta anterior;
+  // el enrutador conserva el historial para resolver el referente.
   // Consultas sobre tiempo de entrega son preguntas, NO nombres, cantidades ni direcciones.
   if (/\b(?:cuando|para cuando|en cuantos dias|cuantos dias|que dia|a que hora)\b/.test(s) && /\b(?:llega|llegaria|llegan|llegue|entrega|entregan|entregaria|envian|envio|recibo|recibir|tarda|demora)\b/.test(s)) return "complex";
   if (/\b(?:te estoy preguntando|me estas entendiendo|no me respondiste|responde mi pregunta)\b/.test(s)) return "complex";
@@ -44,7 +52,7 @@ export function addPendingSaleContext(
   ctx: import("@/lib/ai.server").AiContext,
   sale: import("@/lib/rule-sales.server").SaleState
 ): import("@/lib/ai.server").AiContext {
-  if (!sale.productId || !sale.city && !sale.quantity && !sale.customerName) return ctx;
+  if (!sale.productId && !sale.city && !sale.quantity && !sale.customerName) return ctx;
   const product = ctx.products.find(p => p.id === sale.productId);
   const needed = [!sale.city ? "ciudad" : null,
     !sale.quantity ? "cantidad" : null,
@@ -53,7 +61,9 @@ export function addPendingSaleContext(
   ].filter(Boolean);
   const resume = needed.length ? `Si corresponde retomar la compra, invitá de forma natural a facilitar únicamente lo pendiente: ${needed.join(", ")}.` : "Si la venta está completa, no solicites más datos ni confirmes un pedido sin comprobar que fue registrado.";
   return {...ctx, systemInstruction: ctx.systemInstruction + `
-CONVERSACIÓN HÍBRIDA: El cliente acaba de realizar una CONSULTA; respondé su pregunta PRIMERO, de forma clara y cordial con emojis moderados. No trates preguntas como nombres o direcciones. Podés cerrar tu respuesta con UNA invitación breve a seguir comprando, sin insistir. No inventes fechas/plazos, cobertura, precios ni estados. Si un plazo no está explícitamente en el entrenamiento, indicá que depende de la ciudad y la logística y que no hay fecha confirmada. No afirmes que el pedido está registrado si no consultaste PEDIDOS. No crees un pedido desde esta consulta. Producto en curso: ${product?.name ?? "no determinado"}. Ciudad aportada: ${sale.city ?? "sin indicar"}. Nombre aportado: ${sale.customerName ? "sí" : "no"}. Cantidad aportada: ${sale.quantity ?? "sin indicar"}. Dirección aportada: ${sale.street ? "sí" : "no"}. ${resume}`};
+CONVERSACIÓN HÍBRIDA: El cliente acaba de realizar una CONSULTA;
+CONSULTAS DE DELIVERY: «cuándo sería el delivery» puede referirse al COSTO o al DÍA. Interpretá usando el historial completo; si sigue ambiguo, preguntá brevemente «¿Querés saber cuánto cuesta o cuándo llega?». Si responde «cuánto cuesta», referite al costo del DELIVERY y no al precio del producto. Nunca inventes una tarifa. Si no hay tarifa verificada en entrenamiento, indicá que un asesor debe confirmarla. No repitas promociones ni el catálogo para contestar una duda de envío.
+ respondé su pregunta PRIMERO, de forma clara y cordial con emojis moderados. No trates preguntas como nombres o direcciones. Podés cerrar tu respuesta con UNA invitación breve a seguir comprando, sin insistir. No inventes fechas/plazos, cobertura, precios ni estados. Si un plazo no está explícitamente en el entrenamiento, indicá que depende de la ciudad y la logística y que no hay fecha confirmada. No afirmes que el pedido está registrado si no consultaste PEDIDOS. No crees un pedido desde esta consulta. Producto en curso: ${product?.name ?? "no determinado"}. Ciudad aportada: ${sale.city ?? "sin indicar"}. Nombre aportado: ${sale.customerName ? "sí" : "no"}. Cantidad aportada: ${sale.quantity ?? "sin indicar"}. Dirección aportada: ${sale.street ? "sí" : "no"}. ${resume}`};
 }
 
 
