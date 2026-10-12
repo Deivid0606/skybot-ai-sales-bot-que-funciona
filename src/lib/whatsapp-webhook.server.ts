@@ -2,6 +2,7 @@ import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { formatGs } from "@/lib/format";
 import { buildWorkspaceAiContext } from "@/lib/ai-context.server";
 import { generateAiReply } from "@/lib/ai.server";
+import { decideHybridReply } from "@/lib/hybrid-rules.server";
 import { sendWhatsAppText } from "@/lib/whatsapp.server";
 import { detectComplaint, COMPLAINT_REASON_LABELS } from "@/lib/complaints";
 
@@ -566,7 +567,7 @@ async function attachPaymentReceiptToLatestOrder(args: {
  * - Como fallback, usa el archivo inbound no utilizado más reciente únicamente
  *   si fue enviado dentro de los 30 minutos anteriores a la creación del pedido.
  */
-async function recoverRecentPaymentReceiptForOrder(args: {
+export async function recoverRecentPaymentReceiptForOrder(args: {
   workspaceId: string;
   ownerId: string;
   conversationId: string;
@@ -1213,7 +1214,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
 
   const { data: aiSettings } = await supabaseAdmin
     .from("ai_settings")
-    .select("ai_enabled, reply_delay_seconds")
+    .select("ai_enabled, reply_delay_seconds, hybrid_mode, hybrid_fallback_enabled")
     .eq("workspace_id", workspaceId)
     .maybeSingle();
 
@@ -1262,7 +1263,34 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       conversation.product_id,
       phone,
     );
-    const result = await generateAiReply(ctx);
+    const hybridMode = (aiSettings?.hybrid_mode === "rules_only" || aiSettings?.hybrid_mode === "ai_first")
+      ? aiSettings.hybrid_mode : "hybrid";
+    const safeDecision = decideHybridReply({ctx, text: body, mode: hybridMode});
+    let result: Awaited<ReturnType<typeof generateAiReply>>;
+    let responseOrigin = "ai";
+    if (safeDecision) {
+      result = {reply: safeDecision.reply, product_id: safeDecision.productId, sale_closed: false, order: null};
+      responseOrigin = `code:${safeDecision.reason}`;
+    } else if (hybridMode === "rules_only") {
+      const fallback = decideHybridReply({ctx, text: body, mode: hybridMode, fallback: true});
+      result = {reply: fallback?.reply ?? "Un asesor necesita revisar tu consulta. 😊", product_id: fallback?.productId ?? conversation.product_id, sale_closed:false, order:null};
+      responseOrigin = "code:rules_only";
+    } else {
+      try {
+        result = await generateAiReply(ctx);
+      } catch (aiError) {
+        if (aiSettings?.hybrid_fallback_enabled === false) throw aiError;
+        const fallback = decideHybridReply({ctx, text:body, mode:hybridMode, fallback:true});
+        if (!fallback) throw aiError;
+        result = {reply:fallback.reply, product_id:fallback.productId, sale_closed:false, order:null};
+        responseOrigin = `code:${fallback.reason}`;
+        console.warn("[BOT SKY híbrido] APIs agotadas; respondió el respaldo determinista", {
+          workspaceId, conversationId:conversation.id,
+          reason:aiError instanceof Error ? aiError.message.slice(0, 160) : "error"
+        });
+      }
+    }
+    console.info("[BOT SKY híbrido] respuesta", {workspaceId, conversationId:conversation.id, origin:responseOrigin});
 
     const detectedProduct =
       result.product_id && ctx.products.some((p) => p.id === result.product_id)
@@ -1485,7 +1513,7 @@ function matchSelectedOption(
   return null;
 }
 
-function isUnambiguousPriceSelection(
+export function isUnambiguousPriceSelection(
   order: Awaited<ReturnType<typeof generateAiReply>>["order"],
   productId: string | null,
   products: AiContextProducts,
@@ -1503,7 +1531,7 @@ function buildVariantSelectionQuestion(product: AiContextProducts[number]): stri
   return `😊 Tenemos estas opciones de *${product.name}*:\n\n${options.map((o) => `• *${o.label}* — ${formatGs(o.price)}`).join("\n")}\n\n¿Cuál preferís?`;
 }
 
-function isOrderReady(
+export function isOrderReady(
   order: Awaited<ReturnType<typeof generateAiReply>>["order"],
   productId: string | null,
 ): order is NonNullable<Awaited<ReturnType<typeof generateAiReply>>["order"]> {
@@ -1550,7 +1578,7 @@ async function logOrderIssue(args: {
   }
 }
 
-async function createOrderFromAi(args: {
+export async function createOrderFromAi(args: {
   workspaceId: string;
   ownerId: string;
   conversationId: string;
@@ -1829,7 +1857,7 @@ async function createOrderFromAi(args: {
   const observations = [
     baseObservations,
     selectedPriceLabel
-      ? `Opción de precio: ${selectedPriceLabel}`
+      ? `Variante seleccionada: ${selectedPriceLabel}`
       : null,
   ]
     .filter(Boolean)
@@ -1866,10 +1894,7 @@ async function createOrderFromAi(args: {
     observations,
     payment_method: paymentMethod,
     product_id: args.productId,
-    product_title: selectedPriceLabel ? `${product.name} — ${selectedPriceLabel}` : product.name,
-    product_price_id: selectedPrice?.id ?? null,
-    price_option_label: selectedPriceLabel,
-    unit_price: unitPrice,
+    product_title: product.name,
     sku: productSku,
     quantity,
     price: unitPrice,
