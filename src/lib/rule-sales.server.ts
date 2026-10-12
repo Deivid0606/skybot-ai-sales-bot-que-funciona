@@ -91,8 +91,28 @@ function selectOption(text:string, options:Option[], awaiting=false):Option|null
     return label.length>=3&&` ${n} `.includes(` ${label} `);
   });
   if(matches.length===1)return matches[0];
-  if(awaiting){const ordinal=n.match(/^(?:opcion|alternativa|presentacion)\s+(\d+)$/);
-    if(ordinal)return options[Number(ordinal[1])-1]??null;}
+  if(awaiting){
+    // Precio escrito por el cliente: «el de 179.900», «179900», «Gs 179.900».
+    // Exigir una sola opción coincidente; nunca tomar montos parciales.
+    const priceNumbers = (text.match(/\d[\d.,]*/g) ?? [])
+      .map(x => Number(x.replace(/[^0-9]/g, "")))
+      .filter(x => Number.isFinite(x));
+    const byPrice = options.filter(o => priceNumbers.includes(Math.round(o.price)));
+    if (byPrice.length === 1) return byPrice[0];
+    // Si las variantes son paquetes de unidades («1 unidad», «2 unidades»),
+    // «uno quiero» y «1» eligen el paquete. NO aplicar a «2 litros».
+    const unitOptions = options.every(o => /\b(?:unidades?|piezas?)\b/.test(norm(o.label)));
+    if (unitOptions) {
+      const unitWord: Record<string,number>={un:1,uno:1,una:1,dos:2,tres:3,cuatro:4,cinco:5};
+      const m=n.match(/^(?:(?:quiero|dame|llevo|mandame)\s+)?(\d{1,3}|un|uno|una|dos|tres|cuatro|cinco)(?:\s+(?:quiero|unidades?|piezas?|por favor))?$/);
+      if(m){const count=unitWord[m[1]]??Number(m[1]);
+        const byCount=options.filter(o=>o.quantity===count && /\b(?:unidades?|piezas?)\b/.test(norm(o.label)));
+        if(byCount.length===1)return byCount[0];
+      }
+    }
+    const ordinal=n.match(/^(?:opcion|alternativa|presentacion)\s+(\d+)$/);
+    if(ordinal)return options[Number(ordinal[1])-1]??null;
+  }
   return null;
 }
 function countOf(text:string, expecting:boolean):number|null {
@@ -134,7 +154,11 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   s.productId=p.id;
   const variants=opts(p);
   const chosen=selectOption(text,variants,s.awaiting==="variant");
-  if(chosen)s.optionId=chosen.id;
+  if(chosen) {
+    s.optionId=chosen.id;
+    // Una opción etiquetada «N unidades» es un paquete, distinto de «N litros».
+    if (/\b(?:unidades?|piezas?)\b/.test(norm(chosen.label))) s.quantity=chosen.quantity;
+  }
   // NO interpretar "5 litros" como cantidad cinco.
   const expectingQuantity=s.awaiting==="quantity";
   if(!units(n)) {
