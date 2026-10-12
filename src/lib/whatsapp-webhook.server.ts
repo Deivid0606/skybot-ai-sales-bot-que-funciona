@@ -4,7 +4,7 @@ import { buildWorkspaceAiContext } from "@/lib/ai-context.server";
 import { generateAiReply } from "@/lib/ai.server";
 import { decideHybridReply } from "@/lib/hybrid-rules.server";
 import { advanceRuleSale, type SaleState } from "@/lib/rule-sales.server";
-import { classifyCustomerIntent, addVerifiedOrderContext } from "@/lib/hybrid-intent.server";
+import { classifyCustomerIntent, addVerifiedOrderContext, addPendingSaleContext } from "@/lib/hybrid-intent.server";
 import { sendWhatsAppText } from "@/lib/whatsapp.server";
 import { detectComplaint, COMPLAINT_REASON_LABELS } from "@/lib/complaints";
 
@@ -1283,7 +1283,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       ? await addVerifiedOrderContext(supabaseAdmin, ctx, workspaceId, phone)
       : ctx;
     const ruleStep = hybridMode !== "ai_first" && !bypassSale
-      ? advanceRuleSale(ctx, body, previousSale, media && (media.type === "image" || media.type === "document") ? mediaPath : null)
+      ? advanceRuleSale(ctx, body, previousSale, media && (media.type === "image" || media.type === "document") ? mediaPath : null, googleMapsUrl)
       : null;
     let saveStep = ruleStep;
     let safeDecision = ruleStep && !ruleStep.needsAi
@@ -1305,7 +1305,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         result = await generateAiReply(answerContext);
       } catch (aiError) {
         if (aiSettings?.hybrid_fallback_enabled === false) throw aiError;
-        saveStep = bypassSale ? null : advanceRuleSale(ctx, body, previousSale, media && (media.type === "image" || media.type === "document") ? mediaPath : null);
+        saveStep = bypassSale ? null : advanceRuleSale(ctx, body, previousSale, media && (media.type === "image" || media.type === "document") ? mediaPath : null, googleMapsUrl);
         const fallback = saveStep && !saveStep.needsAi
           ? {reply:saveStep.reply, productId:saveStep.productId, reason:"venta_reglas_respaldo"}
           : decideHybridReply({ctx, text:body, mode:hybridMode, fallback:true});
