@@ -3,6 +3,7 @@ import { formatGs } from "@/lib/format";
 import { buildWorkspaceAiContext } from "@/lib/ai-context.server";
 import { generateAiReply } from "@/lib/ai.server";
 import { decideHybridReply } from "@/lib/hybrid-rules.server";
+import { advanceRuleSale, type SaleState } from "@/lib/rule-sales.server";
 import { sendWhatsAppText } from "@/lib/whatsapp.server";
 import { detectComplaint, COMPLAINT_REASON_LABELS } from "@/lib/complaints";
 
@@ -169,6 +170,7 @@ async function ingestMedia(args: {
   accessToken: string;
   mediaId: string;
   type: "image" | "audio" | "video" | "document";
+  allowAiInterpretation?: boolean;
 }) {
   const { downloadWhatsAppMediaUrl } = await import("@/lib/whatsapp.server");
   const { transcribeAudio, describeImage, toBase64 } = await import(
@@ -302,9 +304,9 @@ async function ingestMedia(args: {
     let transcript: string | null = null;
 
     try {
-      const base64 = toBase64(bytes);
+      const base64 = args.allowAiInterpretation === false ? null : toBase64(bytes);
 
-      if (args.type === "audio") {
+      if (base64 && args.type === "audio") {
         const result = await transcribeAudio(base64, mime);
         transcript = result?.trim() || null;
 
@@ -314,7 +316,7 @@ async function ingestMedia(args: {
             mime,
           });
         }
-      } else if (args.type === "image") {
+      } else if (base64 && args.type === "image") {
         const result = await describeImage(base64, mime);
         transcript = result?.trim() || null;
 
@@ -1083,11 +1085,14 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         type: media.type,
       });
     } else {
+      const {data: mediaMode} = await supabaseAdmin.from("ai_settings")
+        .select("hybrid_mode").eq("workspace_id",workspaceId).maybeSingle();
       const ingested = await ingestMedia({
         workspaceId,
         accessToken: conn.access_token,
         mediaId: media.part.id!,
         type: media.type,
+        allowAiInterpretation: mediaMode?.hybrid_mode !== "rules_only",
       });
 
       mediaPath = ingested.storagePath;
@@ -1265,7 +1270,19 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     );
     const hybridMode = (aiSettings?.hybrid_mode === "rules_only" || aiSettings?.hybrid_mode === "ai_first")
       ? aiSettings.hybrid_mode : "hybrid";
-    const safeDecision = decideHybridReply({ctx, text: body, mode: hybridMode});
+    // Persistencia por conversación. El estado no depende de la memoria de Vercel.
+    const { data: saleRow, error: saleReadError } = await supabaseAdmin
+      .from("bot_sale_states").select("state")
+      .eq("workspace_id", workspaceId).eq("conversation_id", conversation.id).maybeSingle();
+    if (saleReadError) throw saleReadError;
+    const previousSale = (saleRow?.state ?? {}) as SaleState;
+    const ruleStep = hybridMode !== "ai_first"
+      ? advanceRuleSale(ctx, body, previousSale, media && (media.type === "image" || media.type === "document") ? mediaPath : null)
+      : null;
+    let saveStep = ruleStep;
+    let safeDecision = ruleStep && !ruleStep.needsAi
+      ? {reply:ruleStep.reply, productId:ruleStep.productId, reason:"venta_reglas"}
+      : decideHybridReply({ctx, text: body, mode: hybridMode});
     let result: Awaited<ReturnType<typeof generateAiReply>>;
     let responseOrigin = "ai";
     if (safeDecision) {
@@ -1280,7 +1297,10 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         result = await generateAiReply(ctx);
       } catch (aiError) {
         if (aiSettings?.hybrid_fallback_enabled === false) throw aiError;
-        const fallback = decideHybridReply({ctx, text:body, mode:hybridMode, fallback:true});
+        saveStep = advanceRuleSale(ctx, body, previousSale, media && (media.type === "image" || media.type === "document") ? mediaPath : null);
+        const fallback = saveStep && !saveStep.needsAi
+          ? {reply:saveStep.reply, productId:saveStep.productId, reason:"venta_reglas_respaldo"}
+          : decideHybridReply({ctx, text:body, mode:hybridMode, fallback:true});
         if (!fallback) throw aiError;
         result = {reply:fallback.reply, product_id:fallback.productId, sale_closed:false, order:null};
         responseOrigin = `code:${fallback.reason}`;
@@ -1288,6 +1308,21 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
           workspaceId, conversationId:conversation.id,
           reason:aiError instanceof Error ? aiError.message.slice(0, 160) : "error"
         });
+      }
+    }
+    if (saveStep && !saveStep.needsAi) {
+      const {error: saveStateError} = await supabaseAdmin.from("bot_sale_states")
+        .upsert({workspace_id:workspaceId,conversation_id:conversation.id,
+          state:saveStep.state,updated_at:new Date().toISOString()},
+          {onConflict:"workspace_id,conversation_id"});
+      if(saveStateError) throw saveStateError;
+      if(saveStep.complete && !conversation.sale_closed) {
+        const st=saveStep.state;
+        result = {reply:saveStep.reply,product_id:saveStep.productId,sale_closed:true,
+          order:{customer_name:st.customerName!,city:st.city!,departamento:st.department!,
+            street:st.street??undefined,quantity:st.quantity!,
+            product_price_id:st.optionId??undefined,payment_method:st.paymentMethod!,phone}};
+        responseOrigin="code:venta_completa";
       }
     }
     console.info("[BOT SKY híbrido] respuesta", {workspaceId, conversationId:conversation.id, origin:responseOrigin});
@@ -1342,8 +1377,22 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       })
       .eq("id", conversation.id);
 
+    // Pago anticipado: no registrar si todavía no hay archivo de comprobante.
+    // La recepción del archivo NO equivale a dinero acreditado.
+    const isAdvance = /anticip|transfer|deposit|giro/i.test(result.order?.payment_method ?? "");
+    let hasReceiptForOrder = Boolean(mediaPath && media && (media.type === "image" || media.type === "document"));
+    if (isAdvance && !hasReceiptForOrder) {
+      const {data: recentProofs} = await supabaseAdmin.from("messages")
+        .select("id").eq("workspace_id",workspaceId).eq("conversation_id",conversation.id)
+        .eq("direction","inbound").in("media_type",["image","document"])
+        .not("media_url","is",null)
+        .gte("created_at",new Date(Date.now()-3*60*60*1000).toISOString())
+        .limit(1);
+      hasReceiptForOrder=Boolean(recentProofs?.length);
+    }
     const orderReady = isOrderReady(result.order, detectedProduct) &&
-      isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory);
+      isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory) &&
+      (!isAdvance || hasReceiptForOrder);
 
     /*
      * No dependemos solamente de sale_closed.
@@ -1407,6 +1456,8 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         conversationId: conversation.id,
         orderId: createdOrder.id,
       });
+      await supabaseAdmin.from("bot_sale_states").delete()
+        .eq("workspace_id", workspaceId).eq("conversation_id", conversation.id);
       // Confirmar SOLO después de que Supabase haya insertado el pedido.
       // No afirmar que una transferencia quedó acreditada sin validarla.
       const confirmedMessage = `✅ PEDIDO REGISTRADO\n📦 N.º ${createdOrder.order_number}\n💰 Total: ${formatGs(createdOrder.total)}\n¡Gracias por tu compra!`;
@@ -1639,7 +1690,7 @@ export async function createOrderFromAi(args: {
 
   const { data: existingOrder, error: existingOrderError } = await supabaseAdmin
     .from("orders")
-    .select("id, order_number, ad_id")
+    .select("id, order_number, ad_id, total")
     .eq("workspace_id", args.workspaceId)
     .eq("order_number", orderNumber)
     .maybeSingle();
@@ -1791,9 +1842,21 @@ export async function createOrderFromAi(args: {
   let selectedPriceLabel: string | null = null;
 
   if (selectedPrice) {
-    quantity = selectedPrice.quantity;
-    total = selectedPrice.price;
-    unitPrice = total / quantity;
+    // Una opción de 1 unidad (p. ej. 5 litros) se multiplica por la
+    // cantidad explícitamente solicitada. Una promoción de paquete se
+    // mantiene con su cantidad/precio propios; nunca inventar prorrateos.
+    if (selectedPrice.quantity === 1) {
+      quantity = requestedQuantity;
+      unitPrice = selectedPrice.price;
+      total = selectedPrice.price * requestedQuantity;
+    } else {
+      if (requestedQuantity !== selectedPrice.quantity) {
+        throw new Error(`Cantidad ${requestedQuantity} incompatible con la promoción ${selectedPrice.label} (${selectedPrice.quantity} unidades)`);
+      }
+      quantity = selectedPrice.quantity;
+      total = selectedPrice.price;
+      unitPrice = total / quantity;
+    }
     selectedPriceLabel = selectedPrice.label;
   } else if (
     Number.isFinite(legacyUnitPrice) &&
