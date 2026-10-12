@@ -163,7 +163,11 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     const mode = aiSettings?.hybrid_mode === "ai_first" || aiSettings?.hybrid_mode === "rules_only"
       ? aiSettings.hybrid_mode : "hybrid";
     const text = String(newest.body ?? "");
-    const intent = classifyCustomerIntent(text);
+    const {coordinatesFromText}=await import("@/lib/geo-coverage.server");
+    const {parseCoverage,verifiedCoverage}=await import("@/lib/rule-sales.server");
+    const coordinates=coordinatesFromText(text);
+    const isGpsMessage=Boolean(coordinates || /https?:\/\/(?:maps\.app\.goo\.gl|goo\.gl\/maps|(?:www\.)?google\.[^\s/]+\/maps)/i.test(text));
+    const intent = isGpsMessage ? "checkout" : classifyCustomerIntent(text);
     const bypassSale = intent !== "checkout";
     const orderContext = intent === "order_status" && mode !== "rules_only"
       ? await addVerifiedOrderContext(supabase,ctx,conversation.workspace_id,conversation.contacts?.phone)
@@ -173,13 +177,33 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       .eq("conversation_id",conversation.id).maybeSingle();
     if(stateError)throw stateError;
     const previous=(saved?.state??{}) as import("@/lib/rule-sales.server").SaleState;
-    const answerContext = bypassSale && mode !== "rules_only"
+    if(isGpsMessage){
+      if(!previous.cityVerified){previous.city=null;previous.department=null;previous.coverageStatus="unknown";previous.awaiting="city";}
+      if(coordinates){
+        previous.locationUrl=`https://www.google.com/maps/search/?api=1&query=${coordinates.latitude},${coordinates.longitude}`;
+        // La ciudad se confirma por el cliente; no la deducimos del GPS.
+
+      } else previous.locationUrl=text.match(/https?:\/\/\S+/i)?.[0]??previous.locationUrl;
+      const {error:gpserror}=await supabase.from("bot_sale_states").upsert({
+        workspace_id:conversation.workspace_id,conversation_id:conversation.id,
+        state:previous,updated_at:new Date().toISOString()
+      },{onConflict:"workspace_id,conversation_id"});
+      if(gpserror)throw gpserror;
+    }
+    const answerContext = isGpsMessage ? {...orderContext,systemInstruction:orderContext.systemInstruction+
+      `\nUBICACIÓN RECIBIDA. GPS guardado: ${Boolean(previous.locationUrl)}. Ciudad verificada: ${previous.cityVerified?previous.city:"NO VERIFICADA"}. Cobertura: ${previous.coverageStatus??"unknown"}. No inventes ciudad ni cobertura. Sin verificación pedí ciudad, sin ofrecer pago anticipado. No crees pedidos por una ubicación.`}
+      : bypassSale && mode !== "rules_only"
       ? addPendingSaleContext(orderContext, previous) : orderContext;
-    let step=mode!=="ai_first"&&!bypassSale?advanceRuleSale(ctx,text,previous, (newest.media_type === "image" || newest.media_type === "document") ? newest.media_url : null):null;
-    const decision=step&&!step.needsAi?{reply:step.reply,productId:step.productId}:((intent==="complex"||intent==="order_status")&&mode!=="rules_only"?null:decideHybridReply({ctx,text,mode}));
+    const saleText=isGpsMessage ? `📍 Ubicación compartida${previous.locationUrl?`\n${previous.locationUrl}`:""}` : text;
+    let step=mode!=="ai_first"&&!bypassSale?advanceRuleSale(ctx,saleText,previous, (newest.media_type === "image" || newest.media_type === "document") ? newest.media_url : null,previous.locationUrl):null;
+    const decision=(!isGpsMessage || mode==="rules_only")&&step&&!step.needsAi?{reply:step.reply,productId:step.productId}:((intent==="complex"||intent==="order_status")&&mode!=="rules_only"?null:decideHybridReply({ctx,text,mode}));
     let result: Awaited<ReturnType<typeof generateAiReply>>;
     let fromRules=Boolean(step&&!step.needsAi);
-    if (decision) result={reply:decision.reply,product_id:decision.productId,sale_closed:false,order:null};
+    const gpsReply = previous.cityVerified && previous.city
+      ? `📍 ¡Recibí y guardé tu ubicación! 😊 Ciudad confirmada: *${previous.city}*. Seguimos con tu pedido. 💚`
+      : "📍 ¡Recibí y guardé tu ubicación! 😊🚚 Para confirmar nuestra cobertura, ¿me indicás *en qué ciudad* estás?";
+    if (isGpsMessage) result={reply:gpsReply,product_id:previous.productId??conversation.product_id,sale_closed:false,order:null};
+    else if (decision) result={reply:decision.reply,product_id:decision.productId,sale_closed:false,order:null};
     else if (mode === "rules_only") {
       const back=decideHybridReply({ctx,text,mode,fallback:true});
       result={reply:back?.reply??"Un asesor debe revisar tu consulta.",product_id:back?.productId??conversation.product_id,sale_closed:false,order:null};
@@ -187,21 +211,22 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       try {result=await generateAiReply(answerContext);}
       catch (err) {
         if(aiSettings?.hybrid_fallback_enabled===false)throw err;
-        step=bypassSale?null:advanceRuleSale(ctx,text,previous, (newest.media_type === "image" || newest.media_type === "document") ? newest.media_url : null);
+        step=bypassSale?null:advanceRuleSale(ctx,saleText,previous, (newest.media_type === "image" || newest.media_type === "document") ? newest.media_url : null,previous.locationUrl);
         const back=step&&!step.needsAi?{reply:step.reply,productId:step.productId}:decideHybridReply({ctx,text,mode,fallback:true});
         if(!back)throw err;
         result={reply:back.reply,product_id:back.productId,sale_closed:false,order:null};
         fromRules=Boolean(step&&!step.needsAi);
       }
     }
-    if(bypassSale)result={...result,sale_closed:false,order:null};
+    if(isGpsMessage) result={reply:gpsReply,product_id:previous.productId??conversation.product_id,sale_closed:false,order:null};
+    if(bypassSale || isGpsMessage)result={...result,sale_closed:false,order:null};
     if(fromRules&&step&&!step.needsAi){
       const {error: stateSaveError}=await supabase.from("bot_sale_states").upsert({
         workspace_id:conversation.workspace_id,conversation_id:conversation.id,
         state:step.state,updated_at:new Date().toISOString()
       },{onConflict:"workspace_id,conversation_id"});
       if(stateSaveError)throw stateSaveError;
-      if(step.complete){const st=step.state;
+      if(step.complete && !isGpsMessage){const st=step.state;
         result={reply:step.reply,product_id:step.productId,sale_closed:true,
           order:{customer_name:st.customerName!,city:st.city!,departamento:st.department!,
             street:st.street??undefined,quantity:st.quantity!,product_price_id:st.optionId??undefined,
@@ -216,7 +241,9 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     // Los pedidos desde Inbox deben guardar primero, confirmar después.
     // NUNCA reutilizar la compra de una conversación ya cerrada.
     let createdOrder: { id: string; order_number: string } | null = null;
-    const valid = !conversation.sale_closed && Boolean(result.order) &&
+    const orderCoverage=result.order ? verifiedCoverage(
+      String(result.order.city??""),String(result.order.departamento??""),parseCoverage(ctx.training)) : null;
+    const valid = !conversation.sale_closed && !isGpsMessage && Boolean(orderCoverage?.active) && (!previous.city || (previous.cityVerified && previous.coverageStatus === "covered")) && Boolean(result.order) &&
       isOrderReady(result.order, detectedProduct) &&
       isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory);
     if (valid && result.order && detectedProduct) {
