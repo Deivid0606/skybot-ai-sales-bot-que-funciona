@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Bot,
   BotOff,
+  Zap,
   CheckCircle2,
   CalendarDays,
   Loader2,
@@ -712,10 +713,10 @@ function InboxPage() {
               };
             }
 
-            const recovery = await recoverPendingWithRules({
+            const recovery = await aiReplyNow({
               data: { conversationId: conversation.id },
             });
-            if (recovery.skipped) return {status:"skipped" as const,conversationId:conversation.id};
+            if ("skipped" in recovery && recovery.skipped) return {status:"skipped" as const,conversationId:conversation.id};
 
             return {
               status: "responded" as const,
@@ -762,7 +763,7 @@ function InboxPage() {
         toast.info("No se encontraron chats cuyo último mensaje sea del cliente");
       } else {
         toast.success(
-          `Respuestas enviadas en ${result.responded} conversación${result.responded === 1 ? "" : "es"}`,
+          `Respuestas IA enviadas en ${result.responded} conversación${result.responded === 1 ? "" : "es"}`,
         );
       }
 
@@ -771,6 +772,107 @@ function InboxPage() {
     },
     onError: (error: Error) => {
       toast.error(`No se pudieron responder los chats pendientes: ${error.message}`);
+    },
+  });
+
+  const codeReplyAll = useMutation({
+    mutationFn: async () => {
+      if (!workspaceId) {
+        throw new Error("No se encontró el workspace.");
+      }
+
+      if (pendingCandidates.length === 0) {
+        return { total: 0, responded: 0, skipped: 0, failed: 0 };
+      }
+
+      let responded = 0;
+      let skipped = 0;
+      let failed = 0;
+      const batchSize = 5;
+
+      // La comprobación exacta se hace únicamente al presionar el botón.
+      // Solo responde si el último mensaje real de ese chat es del cliente.
+      for (let index = 0; index < pendingCandidates.length; index += batchSize) {
+        const batch = pendingCandidates.slice(index, index + batchSize);
+
+        const results = await Promise.allSettled(
+          batch.map(async (conversation) => {
+            const { data: lastMessage, error } = await supabase
+              .from("messages")
+              .select("direction")
+              .eq("conversation_id", conversation.id)
+              .order("created_at", { ascending: false })
+              .limit(1)
+              .maybeSingle();
+
+            if (error) throw error;
+
+            if (!lastMessage || lastMessage.direction !== "inbound") {
+              return {
+                status: "skipped" as const,
+                conversationId: conversation.id,
+              };
+            }
+
+            const recovery = await recoverPendingWithRules({
+              data: { conversationId: conversation.id },
+            });
+            if (recovery.skipped) return {status:"skipped" as const,conversationId:conversation.id};
+
+            return {
+              status: "responded" as const,
+              conversationId: conversation.id,
+            };
+          }),
+        );
+
+        const resolvedInThisBatch: string[] = [];
+
+        results.forEach((result) => {
+          if (result.status === "rejected") {
+            failed += 1;
+            console.error("Error al recuperar conversación por código:", result.reason);
+          } else if (result.value.status === "responded") {
+            responded += 1;
+            resolvedInThisBatch.push(result.value.conversationId);
+          } else {
+            skipped += 1;
+            resolvedInThisBatch.push(result.value.conversationId);
+          }
+        });
+
+        // Actualiza el KPI después de cada tanda para que el número vaya bajando
+        // inmediatamente, sin esperar a que termine todo el proceso.
+        removeVerifiedPendingIds(resolvedInThisBatch);
+      }
+
+      return {
+        total: pendingCandidates.length,
+        responded,
+        skipped,
+        failed,
+      };
+    },
+    onSuccess: (result) => {
+      if (result.total === 0) {
+        toast.info("No hay respuestas pendientes");
+      } else if (result.failed > 0) {
+        toast.warning(
+          `Respondidas: ${result.responded} · Omitidas: ${result.skipped} · Fallaron: ${result.failed}`,
+        );
+      } else if (result.responded === 0) {
+        toast.info("No se encontraron chats cuyo último mensaje sea del cliente");
+      } else {
+        toast.success(
+          `Recuperadas por código: ${result.responded} conversación${result.responded === 1 ? "" : "es"}`,
+        );
+      }
+
+      queryClient.invalidateQueries({ queryKey: ["messages"] });
+      queryClient.invalidateQueries({ queryKey: ["conversations"] });
+    },
+    onError: (error: Error) => {
+      toast.error(`No se pudieron recuperar los chats por código: ${error.message}`);
     },
   });
 
@@ -999,44 +1101,31 @@ function InboxPage() {
           <Button
             type="button"
             className="w-full"
-            disabled={
-              isCheckingPending ||
-              aiReplyAll.isPending ||
-              pendingCandidates.length === 0
-            }
+            disabled={isCheckingPending || aiReplyAll.isPending || codeReplyAll.isPending || pendingCandidates.length === 0}
             onClick={() => {
-              if (pendingCandidates.length === 0) {
-                toast.info("No hay respuestas pendientes");
-                return;
-              }
-
-              const confirmed = window.confirm(
-                `Se comprobarán ${pendingCandidates.length} conversación${
-                  pendingCandidates.length === 1 ? "" : "es"
-                }. Se intentará responder SOLO mediante código, sin consumir créditos de IA. Solo se procesarán chats cuyo último mensaje sea del cliente. ¿Continuar?`,
-              );
-
-              if (confirmed) {
+              if (!pendingCandidates.length) { toast.info("No hay respuestas pendientes"); return; }
+              if (window.confirm(`Se intentará responder con IA a ${pendingCandidates.length} conversación(es). Esta opción consume créditos de IA. ¿Continuar?`)) {
                 aiReplyAll.mutate();
               }
             }}
           >
-            {isCheckingPending ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Verificando pendientes...
-              </>
-            ) : aiReplyAll.isPending ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Comprobando y respondiendo...
-              </>
-            ) : (
-              <>
-                <Sparkles className="mr-2 h-4 w-4" />
-                Recuperar pendientes ({pendingCandidates.length})
-              </>
-            )}
+            {isCheckingPending || aiReplyAll.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
+            {aiReplyAll.isPending ? "Respondiendo con IA..." : `Responder pendientes con IA (${pendingCandidates.length})`}
+          </Button>
+
+          <Button
+            type="button"
+            className="w-full bg-lime-500 font-bold text-slate-950 hover:bg-lime-400"
+            disabled={isCheckingPending || codeReplyAll.isPending || aiReplyAll.isPending || pendingCandidates.length === 0}
+            onClick={() => {
+              if (!pendingCandidates.length) { toast.info("No hay respuestas pendientes"); return; }
+              if (window.confirm(`Se intentará recuperar ${pendingCandidates.length} conversación(es) SOLO mediante código, sin utilizar la API de IA. Las consultas que no puedan resolverse con reglas quedarán pendientes. ¿Continuar?`)) {
+                codeReplyAll.mutate();
+              }
+            }}
+          >
+            {isCheckingPending || codeReplyAll.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Zap className="mr-2 h-4 w-4" />}
+            {codeReplyAll.isPending ? "Recuperando por código..." : `⚡ RECUPERAR VENTAS Y CHATS POR CÓDIGO (${pendingCandidates.length})`}
           </Button>
 
           <div className="relative">
