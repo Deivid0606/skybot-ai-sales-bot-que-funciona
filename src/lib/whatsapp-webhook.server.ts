@@ -135,7 +135,8 @@ function normalizeIntentText(value: string) {
  * agradecimiento no deben abrir una nueva venta ni crear otro pedido.
  */
 function isNewPurchaseIntent(text: string, hasReferral: boolean) {
-  if (hasReferral) return true;
+  // Un anuncio visto otra vez no equivale a solicitar otra compra.
+  // La reapertura exige una intención explícita del cliente.
 
   const normalized = normalizeIntentText(text);
   if (!normalized || normalized.startsWith("[location")) return false;
@@ -157,7 +158,6 @@ function isNewPurchaseIntent(text: string, hasReferral: boolean) {
     "comprar de nuevo",
     "pedir nuevamente",
     "pedir de nuevo",
-    "me interesa",
     "deseo comprar",
     "deseo pedir",
     "necesito otro",
@@ -1297,6 +1297,30 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     }
   }
 
+  // POSTVENTA GENERAL: una venta cerrada no vuelve al catálogo por un saludo,
+  // reclamo, consulta logística o mensaje ambiguo. Solo una intención inequívoca
+  // de COMPRA NUEVA puede reabrir la venta (decidido antes, al cargar conversación).
+  if (conversation.sale_closed) {
+    const { data: recentHistory } = await supabaseAdmin.from("messages")
+      .select("sender,body").eq("workspace_id",workspaceId)
+      .eq("conversation_id",conversation.id)
+      .order("created_at",{ascending:false}).limit(24);
+    const history=(recentHistory??[]).reverse().filter(m=>Boolean(m.body)).map(m=>({
+      role:m.sender==="customer"?("user" as const):("assistant" as const),content:String(m.body),
+    }));
+    const ctx=await buildWorkspaceAiContext(supabaseAdmin,workspaceId,history,conversation.product_id,phone);
+    const verified=await addVerifiedOrderContext(supabaseAdmin,ctx,workspaceId,phone);
+    const safeCtx={...verified,systemInstruction:verified.systemInstruction+`\nPRIORIDAD ABSOLUTA: El cliente YA COMPRÓ (sale_closed=true). Esto es POSTVENTA. Contestá su último mensaje y su reclamo primero. PROHIBIDO reiniciar venta, ofrecer promociones, solicitar cantidad, ciudad, GPS, nombre o domicilio que ya proporcionó, o generar otro pedido. Si pide entrega hoy, solo confirmala si hay fecha exacta en datos verificados. Nunca afirmes haber avisado a logística, priorizado, coordinado o registrado cambios sin una herramienta que lo haga. Si envía un saludo o agradecimiento, responde muy brevemente. Evitá repeticiones.`};
+    let reply:string;
+    try { reply=(await generateAiReply(safeCtx)).reply?.trim() || ""; }
+    catch (error) { console.error("[BOT SKY postventa] IA no disponible",error); reply="Entiendo tu consulta sobre tu pedido. 🙏 Un asesor debe verificar con logística el estado real de entrega. No quiero prometerte una fecha sin confirmarla."; }
+    if(!reply) reply="Gracias por escribirnos. 😊 Para darte información correcta sobre tu pedido, un asesor debe verificar el estado actual.";
+    const wamid=await sendWhatsAppText(conn,phone,reply);
+    await supabaseAdmin.from("messages").insert({workspace_id:workspaceId,user_id:ownerId,conversation_id:conversation.id,ad_id:attributedAdId,direction:"outbound",sender:"ai",body:reply,wamid,status:"sent"});
+    await supabaseAdmin.from("conversations").update({last_message:reply,last_message_at:new Date().toISOString(),unread_count:0}).eq("workspace_id",workspaceId).eq("id",conversation.id);
+    return;
+  }
+
   // Palabra clave → envía la plantilla del producto (multimedia + copy).
   // Si el catálogo fue enviado AHORA, terminamos este turno para evitar que
   // generateAiReply() vuelva a mandar el mismo copy en el mismo webhook.
@@ -2335,7 +2359,6 @@ function isGreetingOrInitialInquiry(value: string) {
     "cuanto cuesta",
     "cuanto sale",
     "disponible",
-    "me interesa",
     "quiero informacion",
   ];
 
