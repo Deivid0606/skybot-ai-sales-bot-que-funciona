@@ -128,6 +128,33 @@ function OriginBadge({ origin }: { origin: ReturnType<typeof getResponseOrigin> 
   return <span className={`inline-flex max-w-full items-center rounded-md border px-2 py-0.5 text-[10px] font-bold ${styles[origin]}`}>{names[origin]}</span>;
 }
 
+
+/** Categorías de atención. Se usan datos registrados; el texto solo indica prioridades. */
+type SmartTab = "all" | "potential" | "order_query" | "complaints" | "advance" | "closed" | "closed_ai" | "closed_code" | "review";
+const SMART_TABS: {id:SmartTab;label:string;icon:string}[] = [
+  {id:"all",label:"Todos",icon:"📥"},
+  {id:"potential",label:"Clientes potenciales",icon:"🛒"},
+  {id:"order_query",label:"Consulta de pedido",icon:"📦"},
+  {id:"complaints",label:"Reclamos",icon:"🚨"},
+  {id:"advance",label:"Pago anticipado",icon:"💳"},
+  {id:"closed",label:"Ventas cerradas",icon:"✅"},
+  {id:"closed_ai",label:"Cierre IA",icon:"🧠"},
+  {id:"closed_code",label:"Cierre código",icon:"⚡"},
+  {id:"review",label:"Por revisar",icon:"❔"},
+];
+const normalizeSmartText = (value:unknown) => String(value ?? "").toLowerCase()
+  .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+function messageTopic(text:unknown):"complaint"|"order"|null {
+  const s=normalizeSmartText(text);
+  if(/\b(reclamo|queja|no (?:llega|llego|cumplieron|quieren vender|responden)|estafa|devoluci[oó]n|reembolso|demora|atrasad[oa]|supervisor|encargado|molest[oa]|no recibi|mal servicio|denuncia)\b/.test(s)) return "complaint";
+  if(/\b(donde esta mi pedido|estado de mi pedido|seguimiento|numero de guia|mi entrega|cuando llega|cuando entregan|ya hice el pedido|ya compre|pedido que hice|mi compra)\b/.test(s))return "order";
+  return null;
+}
+function isAdvanceOrder(order: {payment_method?:string|null;payment_status?:string|null;receipt_url?:string|null}){
+  const method=normalizeSmartText(order.payment_method);
+  return /anticip|transfer|deposit|giro|encomienda/.test(method) || order.payment_status === "anticipado";
+}
+
 function InboxPage() {
   const { c: initialConversationId } = Route.useSearch();
   const { profile } = useAuth();
@@ -135,6 +162,7 @@ function InboxPage() {
   const queryClient = useQueryClient();
   const [activeId, setActiveId] = useState<string | null>(initialConversationId ?? null);
   const [search, setSearch] = useState("");
+  const [smartTab, setSmartTab] = useState<SmartTab>("all");
   const [dateFrom, setDateFrom] = useState(getTodayDate);
   const [dateTo, setDateTo] = useState(getTodayDate);
   const [selectedLabelId, setSelectedLabelId] = useState("all");
@@ -323,6 +351,73 @@ function InboxPage() {
         for (const row of rows) if (row.data) {
           result[row.id] = getResponseOrigin(row.data);
         }
+      }
+      return result;
+    },
+  });
+
+  // Pedido real = venta cerrada. No utilizar sale_closed ni la última burbuja como prueba exclusiva.
+  const { data: inboxOrders, error: inboxOrdersError, isLoading: loadingInboxOrders } = useQuery({
+    queryKey: ["inbox-smart-orders", workspaceId, dateConversationIds],
+    enabled: Boolean(workspaceId && dateConversationIds?.length),
+    queryFn: async () => {
+      const ids=dateConversationIds ?? [];
+      const all: Array<{id:string;conversation_id:string|null;created_at:string;payment_method:string|null;payment_status:string|null;receipt_url:string|null;status:string|null}> = [];
+      for(let i=0;i<ids.length;i+=80){
+        const {data,error}=await supabase.from("orders")
+          .select("id,conversation_id,created_at,payment_method,payment_status,receipt_url,status")
+          .eq("workspace_id",workspaceId!).in("conversation_id",ids.slice(i,i+80));
+        if(error)throw error;
+        all.push(...(data??[]));
+      }
+      return all;
+    },
+  });
+  const { data: latestCustomerTexts, error: smartMessagesError, isLoading: loadingSmartMessages }=useQuery({
+    queryKey:["inbox-smart-last-customer",workspaceId,dateConversationIds],
+    enabled:Boolean(workspaceId && dateConversationIds?.length),
+    queryFn:async()=>{
+      const result:Record<string,string>={};
+      const ids=dateConversationIds??[];
+      for(let i=0;i<ids.length;i+=15){
+        const batch=await Promise.all(ids.slice(i,i+15).map(async(id)=>{
+          const {data,error}=await supabase.from("messages")
+            .select("body").eq("conversation_id",id).eq("direction","inbound")
+            .order("created_at",{ascending:false}).limit(1).maybeSingle();
+          if(error)throw error;
+          return {id,body:data?.body??""};
+        }));
+        for(const item of batch)result[item.id]=item.body;
+      }
+      return result;
+    },
+  });
+  // Origen del cierre: último mensaje de CONFIRMACIÓN asociado al pedido, no cualquier respuesta posterior.
+  const {data: orderClosingOrigins, error: closingOriginsError, isLoading: loadingClosingOrigins}=useQuery({
+    queryKey:["inbox-smart-closing-origin",workspaceId,inboxOrders?.map(o=>`${o.id}:${o.created_at}`).join("|")],
+    enabled:Boolean(workspaceId && inboxOrders?.length),
+    queryFn:async()=>{
+      const result:Record<string,"ai"|"code"|"unknown">={};
+      const latestByChat=new Map<string,NonNullable<typeof inboxOrders>[number]>();
+      for(const order of inboxOrders??[]){
+        if(!order.conversation_id || order.status==="cancelado")continue;
+        const old=latestByChat.get(order.conversation_id);
+        if(!old || order.created_at>old.created_at)latestByChat.set(order.conversation_id,order);
+      }
+      const all=Array.from(latestByChat.entries());
+      for(let i=0;i<all.length;i+=12){
+        const batch=await Promise.all(all.slice(i,i+12).map(async([id,order])=>{
+          const end=new Date(new Date(order.created_at).getTime()+10*60*1000).toISOString();
+          const {data,error}=await supabase.from("messages")
+            .select("body,response_origin,status")
+            .eq("conversation_id",id).eq("direction","outbound")
+            .gte("created_at",order.created_at).lte("created_at",end)
+            .order("created_at",{ascending:true}).limit(10);
+          if(error)throw error;
+          const confirmed=(data??[]).find(m=>m.status!=="failed" && /pedido\s+(?:registrado|confirmado)/i.test(m.body??""));
+          return {id,origin:confirmed?.response_origin==="code"?"code":confirmed?.response_origin==="ai"?"ai":"unknown"} as const;
+        }));
+        for(const item of batch)result[item.id]=item.origin;
       }
       return result;
     },
@@ -1006,6 +1101,35 @@ function InboxPage() {
     }
   }, [hasPossibleAiFailure, possibleAiFailures.length]);
 
+  const ordersByConversation = new Map<string, NonNullable<typeof inboxOrders>>();
+  for(const order of inboxOrders??[]){
+    if(!order.conversation_id || order.status==="cancelado")continue;
+    const existing=ordersByConversation.get(order.conversation_id)??[];
+    existing.push(order);
+    ordersByConversation.set(order.conversation_id,existing);
+  }
+  const getSmartCategories=(c:NonNullable<typeof dateConversations>[number])=>{
+    const sales=ordersByConversation.get(c.id)??[];
+    const hasSale=sales.length>0;
+    const customerText=latestCustomerTexts?.[c.id]??"";
+    const topic=messageTopic(customerText);
+    const advance=sales.some(isAdvanceOrder);
+    const origin=orderClosingOrigins?.[c.id]??"unknown";
+    return {
+      potential:!hasSale && Boolean(c.product_id || c.ad_id || /(?:precio|quiero|comprar|cuanto|pedido|envio|llevar)/.test(normalizeSmartText(customerText))),
+      order_query:topic==="order" && hasSale,
+      complaints:topic==="complaint",
+      advance,
+      closed:hasSale,
+      closed_ai:hasSale && origin==="ai",
+      closed_code:hasSale && origin==="code",
+      review:topic==="order" && !hasSale || hasSale && origin==="unknown" || !hasSale && !Boolean(c.product_id || c.ad_id) && topic!=="complaint",
+    };
+  };
+  const smartCounts=Object.fromEntries(SMART_TABS.map(tab=>[
+    tab.id,tab.id==="all"?(dateConversations??[]).length:(dateConversations??[]).filter(c=>getSmartCategories(c)[tab.id as Exclude<SmartTab,"all">]).length,
+  ])) as Record<SmartTab,number>;
+
   const filtered = (dateConversations ?? []).filter((c) => {
     const q = search.trim().toLowerCase();
 
@@ -1022,7 +1146,8 @@ function InboxPage() {
           conversationLabel.label_id === selectedLabelId,
       );
 
-    return matchesSearch && matchesLabel;
+    const matchesSmartTab=smartTab==="all" || getSmartCategories(c)[smartTab];
+    return matchesSearch && matchesLabel && matchesSmartTab;
   });
 
   const resetFilters = () => {
@@ -1031,6 +1156,7 @@ function InboxPage() {
     setDateFrom(today);
     setDateTo(today);
     setSelectedLabelId("all");
+    setSmartTab("all");
   };
 
   return (
@@ -1127,6 +1253,25 @@ function InboxPage() {
             {isCheckingPending || codeReplyAll.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Zap className="mr-2 h-4 w-4" />}
             {codeReplyAll.isPending ? "Recuperando por código..." : `⚡ RECUPERAR VENTAS Y CHATS POR CÓDIGO (${pendingCandidates.length})`}
           </Button>
+
+          {/* Pestañas de atención: no modifican ni mueven mensajes en la base. */}
+          <div className="space-y-2">
+            <p className="text-xs font-semibold">Organizar conversaciones</p>
+            <div className="flex max-h-40 flex-wrap gap-1.5 overflow-y-auto">
+              {SMART_TABS.map(tab=>(
+                <button key={tab.id} type="button" onClick={()=>setSmartTab(tab.id)}
+                  aria-pressed={smartTab===tab.id}
+                  className={cn("rounded-lg border px-2 py-1.5 text-[11px] font-semibold transition-colors",
+                    smartTab===tab.id?"border-primary bg-primary text-primary-foreground":"border-border bg-background hover:bg-accent")}
+                >{tab.icon} {tab.label} ({smartCounts[tab.id]??0})</button>
+              ))}
+            </div>
+            {(loadingInboxOrders || loadingSmartMessages || loadingClosingOrigins) &&
+              <p className="text-[11px] text-muted-foreground">Clasificando mensajes y verificando pedidos…</p>}
+            {(inboxOrdersError || smartMessagesError || closingOriginsError) &&
+              <p className="text-[11px] text-destructive">No se pudo completar la clasificación. Revisá permisos de pedidos y mensajes.</p>}
+            <p className="text-[10px] text-muted-foreground">Las categorías pueden superponerse. El origen del cierre se muestra solo cuando se puede verificar.</p>
+          </div>
 
           <div className="relative">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -1258,6 +1403,11 @@ function InboxPage() {
                  {lastReplyOrigins?.[c.id] === "human" && <span className="rounded-md border border-orange-400 bg-orange-500/25 px-2 py-0.5 text-[10px] font-bold text-orange-200">👤 HUMANO</span>}
                  {lastReplyOrigins?.[c.id] === "incoming" && <span className="rounded-md border border-red-400 bg-red-500/20 px-2 py-0.5 text-[10px] font-bold text-red-200">● CLIENTE ESPERANDO</span>}
                  {lastReplyOrigins?.[c.id] === "unknown" && <span className="rounded-md border border-slate-400 bg-slate-500/20 px-2 py-0.5 text-[10px] text-slate-200">AUTOMÁTICO · SIN ORIGEN</span>}
+                 {getSmartCategories(c).complaints && <span className="rounded border border-red-500/40 bg-red-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-red-600">🚨 Reclamo</span>}
+                 {getSmartCategories(c).order_query && <span className="rounded border border-blue-500/40 bg-blue-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-blue-600">📦 Consulta pedido</span>}
+                 {getSmartCategories(c).advance && <span className="rounded border border-violet-500/40 bg-violet-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-violet-600">💳 Anticipado</span>}
+                 {getSmartCategories(c).closed && <span className="rounded border border-emerald-500/40 bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-600">✅ Venta registrada</span>}
+                 {getSmartCategories(c).potential && <span className="rounded border border-amber-500/40 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600">🛒 Potencial</span>}
                  {c.sale_closed && (
                   <Badge variant="default" className="text-[10px]">
                     venta
