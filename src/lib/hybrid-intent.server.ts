@@ -3,6 +3,8 @@ export type CustomerIntent = "price" | "order_status" | "complex" | "checkout";
 const normalize = (v: string) => v.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
 export function classifyCustomerIntent(raw: string): CustomerIntent {
   const s = normalize(raw);
+  // Un signo aislado es seguimiento de la última etapa de compra, no consulta compleja.
+  if (/^[\s¿?!.¡]+$/.test(raw)) return "checkout";
   // Priorizar interpretación humana/IA ante solicitudes de asesor o malestar.
   if (/\b(?:supervisor|asesor|operador|persona real|atencion humana|reclamar|reclamo|no me da confianza|no confio|no quieren vender|parece que no quieren vender|no me quieren vender|me estan haciendo perder tiempo|no entiendo|no es correcto|me estas repitiendo|ya te dije|ya te pase|deja de repetir|quiero hablar con alguien)\b/.test(s)) return "complex";
   // Se debe entender como consulta, no como dato de checkout.
