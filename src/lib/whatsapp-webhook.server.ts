@@ -1372,7 +1372,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         if (!current.cityVerified && (!current.productId || current.productId === catalogResult.productId)) {
           await supabaseAdmin.from("bot_sale_states").upsert({
             workspace_id: workspaceId, conversation_id: conversation.id,
-            state: { ...current, productId: catalogResult.productId, awaiting: "city" },
+            state: { ...current, productId: catalogResult.productId, awaiting: "variant" },
             updated_at: new Date().toISOString(),
           }, { onConflict: "workspace_id,conversation_id" }).then(({ error }) => {
             if (error) throw error;
@@ -1461,17 +1461,23 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     const ruleStep = hybridMode !== "ai_first" && !bypassSale
       ? advanceRuleSale(ctx, saleInput, previousSale, media && (media.type === "image" || media.type === "document") ? mediaPath : null, gpsUrl)
       : null;
+    // Inyectar a la IA solo datos de venta efectivamente reconocidos por código.
+    const verifiedSaleState = ruleStep?.state ?? previousSale;
+    const aiAnswerContext = hybridMode === "hybrid" ? {
+      ...answerContext,
+      systemInstruction: answerContext.systemInstruction + `\nMODO HÍBRIDO BOT SKY, PRIORIDAD ALTA: Ya fue enviado por CÓDIGO el copy, la imagen y los precios del catálogo. DESDE AHORA CONVERSÁ VOS con el comprador de forma natural: resolvé una sola pregunta por vez y no repitas catálogo/precios completos ni datos ya recibidos. Cantidad y variante se capturan mediante código y deben respetarse. No confirmes pedidos sin número real generado por Supabase. El cliente puede comprar varias veces. DATOS VERIFICADOS DEL CICLO ACTUAL (no mezclar con pedidos previos): ${JSON.stringify({productId:verifiedSaleState.productId,optionId:verifiedSaleState.optionId,quantity:verifiedSaleState.quantity,city:verifiedSaleState.city,department:verifiedSaleState.department,cityVerified:verifiedSaleState.cityVerified===true,coverageStatus:verifiedSaleState.coverageStatus,customerName:verifiedSaleState.customerName,hasAddress:Boolean(verifiedSaleState.street),gpsReceived:Boolean(verifiedSaleState.locationUrl),paymentMethod:verifiedSaleState.paymentMethod,awaiting:verifiedSaleState.awaiting})}. COBERTURA: si cityVerified no es true, NUNCA digas que tenemos cobertura; consultá la ciudad si falta. GPS no prueba por sí mismo ninguna ciudad. Si recibiste GPS no vuelvas a solicitarlo; si la ciudad es verificada y falta solo referencia, pedí referencia. Si no tenés precio/variante sin ambigüedad pedí aclaración. Si está completo, el código registrará el pedido; no inventes un número de orden ni digas que está confirmado.`
+    } : answerContext;
     let saveStep = ruleStep;
     // En híbrido: reglas administran producto/ciudad/importe y siempre registran el
     // pedido si está completo. Tras la ciudad, la IA puede continuar la charla;
     // no se la invoca para una respuesta determinista inicial ni para el registro.
-    const ruleMustAnswer = hybridMode !== "hybrid" || !previousSale.cityVerified ||
-      !ruleStep?.state.cityVerified || ruleStep?.complete ||
-      ruleStep?.state.awaiting === "variant" || ruleStep?.state.awaiting === "quantity" ||
-      ruleStep?.state.awaiting === "receipt" ||
-      (previousSale.awaiting === "city" && Boolean(ruleStep?.state.cityVerified));
+    // Con híbrido, la IA responde desde la primera interacción tras el catálogo.
+    // Las reglas siguen interpretando, verificando y guardando los datos en paralelo;
+    // solo toman el mensaje de cierre si la compra está completa.
+    const ruleMustAnswer = hybridMode !== "hybrid" || Boolean(ruleStep?.complete);
     let safeDecision = ruleStep && !ruleStep.needsAi && ruleMustAnswer
       ? {reply:ruleStep.reply, productId:ruleStep.productId, reason:"venta_reglas"}
+      : hybridMode === "hybrid" ? null
       : (intent === "order_status" || intent === "complex" || intent === "price") && hybridMode !== "rules_only"
         ? null
         : decideHybridReply({ctx, text: body, mode: hybridMode});
@@ -1502,7 +1508,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       responseOrigin = "code:rules_only";
     } else {
       try {
-        result = await generateAiReply(answerContext);
+        result = await generateAiReply(aiAnswerContext);
       } catch (aiError) {
         if (aiSettings?.hybrid_fallback_enabled === false && !isAiQuotaFailure(aiError)) throw aiError;
         saveStep = bypassSale ? null : advanceRuleSale(ctx, saleInput, previousSale, media && (media.type === "image" || media.type === "document") ? mediaPath : null, gpsUrl);
