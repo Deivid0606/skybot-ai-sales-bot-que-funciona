@@ -167,6 +167,40 @@ function isNewPurchaseIntent(text: string, hasReferral: boolean) {
   return phrases.some((phrase) => normalized.includes(phrase));
 }
 
+/**
+ * Guarda una ubicación recibida DESPUÉS de una venta en el pedido más reciente
+ * de esta conversación, sin tocar la ciudad verificada, el estado de venta
+ * ni crear otra orden. Usa la columna existente orders.observations.
+ * Devuelve true únicamente cuando se ha comprobado que está almacenada.
+ */
+export async function attachPostSaleGpsToLatestOrder(args: {
+  workspaceId: string;
+  conversationId: string;
+  gpsUrl: string;
+}): Promise<boolean> {
+  const url = args.gpsUrl.trim();
+  if (!/^https:\/\//i.test(url) || url.length > 700) return false;
+  const {data: lastOrder,error: readError} = await supabaseAdmin.from("orders")
+    .select("id,observations")
+    .eq("workspace_id",args.workspaceId)
+    .eq("conversation_id",args.conversationId)
+    .neq("status","cancelado")
+    .order("created_at",{ascending:false}).limit(1).maybeSingle();
+  if(readError) throw readError;
+  if(!lastOrder) return false;
+  const observations = String(lastOrder.observations ?? "");
+  if (observations.includes(url)) return true;
+  // No borrar notas anteriores del pedido.
+  const updated = [observations,`GPS de entrega: ${url}`].filter(Boolean).join(" | ");
+  const {error: updateError} = await supabaseAdmin.from("orders")
+    .update({observations:updated})
+    .eq("workspace_id",args.workspaceId)
+    .eq("conversation_id",args.conversationId)
+    .eq("id",lastOrder.id);
+  if(updateError) throw updateError;
+  return true;
+}
+
 /** Descarga el archivo de WhatsApp, lo guarda y deja que la IA lo interprete. */
 async function ingestMedia(args: {
   workspaceId: string;
@@ -1227,6 +1261,41 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     .maybeSingle();
 
   if (!aiSettings?.ai_enabled || conversation.ai_paused || conversation.is_closed) return;
+
+  // POSTVENTA: nunca reiniciar checkout ni volver a preguntar la ciudad por un GPS.
+  // El mensaje ya fue insertado en messages (incluidas coordenadas nativas).
+  // Asociar su enlace al pedido realmente registrado, sin tocar PEDIDOS/UI.
+  if (conversation.sale_closed) {
+    const coordsAfterSale = isLocation && googleMapsUrl ? googleMapsUrl : coordinatesFromText(body);
+    const postSaleUrl = typeof coordsAfterSale === "string" ? coordsAfterSale
+      : coordsAfterSale ? `https://www.google.com/maps/search/?api=1&query=${coordsAfterSale.latitude},${coordsAfterSale.longitude}`
+      : body.match(/https?:\/\/[^\s]+/i)?.[0] ?? null;
+    const postSaleGps = Boolean(isLocation || coordsAfterSale ||
+      (postSaleUrl && /(?:maps\.app\.goo\.gl|goo\.gl\/maps|google\.[^\s/]+\/maps|maps\.google\.)/i.test(postSaleUrl)));
+    if (postSaleGps && postSaleUrl) {
+      let attached = false;
+      try {
+        attached = await attachPostSaleGpsToLatestOrder({
+          workspaceId,conversationId:conversation.id,gpsUrl:postSaleUrl,
+        });
+      } catch(error) {
+        console.error("[BOT SKY postventa] No se pudo asociar el GPS al pedido",error);
+      }
+      const reply = attached
+        ? "📍 ¡Perfecto! 😊 Guardé tu ubicación en tu pedido ya registrado. No necesitás volver a confirmar la ciudad. ¡Gracias! 🚚💚"
+        : "📍 ¡Recibí tu ubicación! 😊 Tu pedido ya está registrado, pero no pude asociar el GPS al pedido. Un asesor puede verificarlo. 💚";
+      const wamid=await sendWhatsAppText(conn,phone,reply);
+      await supabaseAdmin.from("messages").insert({
+        workspace_id:workspaceId,user_id:ownerId,conversation_id:conversation.id,
+        ad_id:attributedAdId,direction:"outbound",sender:"ai",body:reply,
+        wamid,status:"sent"
+      });
+      await supabaseAdmin.from("conversations").update({
+        last_message:reply,last_message_at:new Date().toISOString(),unread_count:0,
+      }).eq("workspace_id",workspaceId).eq("id",conversation.id);
+      return;
+    }
+  }
 
   // Palabra clave → envía la plantilla del producto (multimedia + copy).
   // Si el catálogo fue enviado AHORA, terminamos este turno para evitar que
