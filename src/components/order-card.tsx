@@ -57,6 +57,10 @@ export function OrderCard({ order }: { order: Order }) {
   const [infoOpen, setInfoOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [receiptUrl, setReceiptUrl] = useState<string | null>(null);
+  // Una compra con varias presentaciones no puede exportarse como un SKU único.
+  const isMixedVariantOrder = String(order.observations ?? "").includes(
+    "MULTIVARIANTE (MISMO PRODUCTO)",
+  );
 
   const { data: preview } = useQuery({
     queryKey: ["order-chat-preview", order.conversation_id],
@@ -168,6 +172,10 @@ export function OrderCard({ order }: { order: Order }) {
   }
 
   function sendToEcommerce() {
+    if (isMixedVariantOrder) {
+      toast.error("Este pedido contiene varias presentaciones. Cargá cada variante por separado en E-commerce para evitar productos o cantidades incorrectos.");
+      return;
+    }
     const url = buildEcommerceUrl(order);
     const a = document.createElement("a");
     a.href = url;
@@ -215,8 +223,19 @@ export function OrderCard({ order }: { order: Order }) {
           <Field label="Forma de pago" value={order.payment_method} />
           <Field label="Anuncio" value={order.ad_id} />
           <Field label="Comprobante" value={order.receipt_url ? "Sí" : "No"} />
-          <Field label="Observaciones" value={order.observations} />
         </div>
+
+        {order.observations && (
+          <div className="rounded-lg border border-border bg-muted/30 p-3">
+            <p className="mb-1 text-xs font-semibold text-foreground">Observaciones y detalle del pedido</p>
+            <p className="whitespace-pre-wrap break-words text-sm text-foreground">{order.observations}</p>
+          </div>
+        )}
+        {isMixedVariantOrder && (
+          <p className="text-xs text-amber-700 dark:text-amber-400">
+            Este pedido contiene más de una presentación: cargá cada variante manualmente en E-commerce.
+          </p>
+        )}
 
         <div className="flex flex-wrap gap-1">
           {ORDER_TAGS.map((t) => {
@@ -253,7 +272,7 @@ export function OrderCard({ order }: { order: Order }) {
             </SelectContent>
           </Select>
 
-          <Button size="sm" onClick={sendToEcommerce}>
+          <Button size="sm" onClick={sendToEcommerce} disabled={isMixedVariantOrder} title={isMixedVariantOrder ? "Variantes mezcladas: cargar manualmente en E-commerce" : "Cargar a E-commerce"}>
             <ShoppingCart className="mr-1 h-4 w-4" /> Ecommerce
           </Button>
           <Button
