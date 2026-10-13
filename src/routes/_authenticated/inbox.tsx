@@ -1160,7 +1160,64 @@ function InboxPage() {
   };
 
   return (
-    <div className="flex h-[calc(100vh-3.5rem)] w-full">
+    <div className="flex h-[calc(100vh-3.5rem)] min-w-0 w-full flex-col overflow-hidden bg-background">
+      {/* Navegación superior: se mantiene visible y utiliza el ancho del Inbox. */}
+      <header className="z-10 shrink-0 border-b border-border bg-card/95 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/85">
+        <div className="flex flex-wrap items-center justify-between gap-2 px-3 pb-2 pt-3 sm:px-5">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/10 text-primary">
+              <MessageSquare className="h-5 w-5" />
+            </span>
+            <div className="min-w-0">
+              <h1 className="truncate text-base font-bold tracking-tight sm:text-lg">Inbox inteligente</h1>
+              <p className="text-[11px] text-muted-foreground">Centro de ventas y atención · BOT SKY</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 text-xs">
+            <span className="rounded-full border border-border bg-background px-2.5 py-1 font-medium text-muted-foreground">
+              {isLoadingDateFilter ? "Actualizando…" : `${(dateConversations ?? []).length} chats`}
+            </span>
+            <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 font-semibold text-amber-700 dark:text-amber-300">
+              {isCheckingPending ? "…" : pendingCandidates.length} pendientes
+            </span>
+          </div>
+        </div>
+        <nav aria-label="Categorías del Inbox" className="px-3 pb-3 sm:px-5">
+          <div className="flex w-full min-w-0 gap-2 overflow-x-auto pb-1 [scrollbar-width:thin]">
+            {SMART_TABS.map(tab => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setSmartTab(tab.id)}
+                aria-pressed={smartTab === tab.id}
+                title={`Filtrar: ${tab.label}`}
+                className={cn(
+                  "inline-flex min-h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-xl border px-3 py-2 text-xs font-semibold transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                  smartTab === tab.id
+                    ? "border-primary bg-primary text-primary-foreground shadow-sm"
+                    : "border-border bg-background text-foreground hover:border-primary/40 hover:bg-accent",
+                )}
+              >
+                <span aria-hidden="true">{tab.icon}</span>
+                <span>{tab.label}</span>
+                <span className={cn(
+                  "rounded-md px-1.5 py-0.5 text-[10px] tabular-nums",
+                  smartTab === tab.id ? "bg-primary-foreground/20 text-primary-foreground" : "bg-muted text-muted-foreground",
+                )}>
+                  {loadingInboxOrders || loadingSmartMessages || loadingClosingOrigins ? "…" : (smartCounts[tab.id] ?? 0)}
+                </span>
+              </button>
+            ))}
+          </div>
+          {(loadingInboxOrders || loadingSmartMessages || loadingClosingOrigins) && (
+            <p className="mt-1 text-[11px] text-muted-foreground">Verificando pedidos y clasificando conversaciones…</p>
+          )}
+          {(inboxOrdersError || smartMessagesError || closingOriginsError) && (
+            <p role="alert" className="mt-1 text-[11px] text-destructive">No se pudo completar la clasificación. Revisá los permisos de pedidos y mensajes.</p>
+          )}
+        </nav>
+      </header>
+      <div className="flex min-h-0 min-w-0 flex-1">
       <aside
         className={cn(
           "flex w-full flex-col border-r border-border sm:w-80",
@@ -1253,25 +1310,6 @@ function InboxPage() {
             {isCheckingPending || codeReplyAll.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Zap className="mr-2 h-4 w-4" />}
             {codeReplyAll.isPending ? "Recuperando por código..." : `⚡ RECUPERAR VENTAS Y CHATS POR CÓDIGO (${pendingCandidates.length})`}
           </Button>
-
-          {/* Pestañas de atención: no modifican ni mueven mensajes en la base. */}
-          <div className="space-y-2">
-            <p className="text-xs font-semibold">Organizar conversaciones</p>
-            <div className="flex max-h-40 flex-wrap gap-1.5 overflow-y-auto">
-              {SMART_TABS.map(tab=>(
-                <button key={tab.id} type="button" onClick={()=>setSmartTab(tab.id)}
-                  aria-pressed={smartTab===tab.id}
-                  className={cn("rounded-lg border px-2 py-1.5 text-[11px] font-semibold transition-colors",
-                    smartTab===tab.id?"border-primary bg-primary text-primary-foreground":"border-border bg-background hover:bg-accent")}
-                >{tab.icon} {tab.label} ({smartCounts[tab.id]??0})</button>
-              ))}
-            </div>
-            {(loadingInboxOrders || loadingSmartMessages || loadingClosingOrigins) &&
-              <p className="text-[11px] text-muted-foreground">Clasificando mensajes y verificando pedidos…</p>}
-            {(inboxOrdersError || smartMessagesError || closingOriginsError) &&
-              <p className="text-[11px] text-destructive">No se pudo completar la clasificación. Revisá permisos de pedidos y mensajes.</p>}
-            <p className="text-[10px] text-muted-foreground">Las categorías pueden superponerse. El origen del cierre se muestra solo cuando se puede verificar.</p>
-          </div>
 
           <div className="relative">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -1880,6 +1918,7 @@ function InboxPage() {
 
         )}
       </section>
+      </div>
     </div>
   );
 }
