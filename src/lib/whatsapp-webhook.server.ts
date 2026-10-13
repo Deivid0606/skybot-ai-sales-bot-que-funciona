@@ -170,7 +170,13 @@ function isNewPurchaseIntent(text: string, hasReferral: boolean) {
     "necesito otra",
   ];
 
-  return phrases.some((phrase) => normalized.includes(phrase));
+  if (phrases.some((phrase) => normalized.includes(phrase))) return true;
+
+  // Consultas comerciales nuevas también deben abrir un ciclo, aun días después.
+  // Excluir postventa antes de interpretar «pedido» o «precio» como compra.
+  const postSale = /\b(?:mi pedido|mis pedidos|pedido anterior|pedido que hice|mi compra|mi entrega|mi envio|mi paquete|seguimiento|guia|reclamo|devolucion|reembolso|cuando llega|donde esta|no llego|garantia de mi|cambiar mi pedido)\b/.test(normalized);
+  if (postSale) return false;
+  return /\b(?:me interesa|estoy interesado|estoy interesada|precio|precios|cuanto cuesta|cuanto sale|cuanto vale|que precio tiene|a cuanto|quiero el|quiero la|quisiera el|quisiera la|tenes el|tienen el|tenes la|tienen la)\b/.test(normalized);
 }
 
 /**
@@ -1077,6 +1083,15 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     const startsNewPurchase =
       conversation.sale_closed &&
       isNewPurchaseIntent(body, Boolean(referral.adId));
+    // «Quiero otro igual» conserva el producto; una consulta por otro producto no.
+    const sameProductRepeat = /\b(?:quiero|dame|mandame|necesito|llevo)\s+(?:otro|otra|uno mas|una mas)(?:\s+(?:igual|del mismo|de lo mismo))?\b|\b(?:otro|otra)\s+(?:igual|del mismo)\b/i.test(normalizeIntentText(body));
+    if (startsNewPurchase) {
+      // Los campos del checkout anterior NUNCA deben contaminar la nueva compra.
+      // El historial y los registros reales en orders se conservan intactos.
+      const { error: clearStateError } = await supabaseAdmin.from("bot_sale_states")
+        .delete().eq("workspace_id",workspaceId).eq("conversation_id",conversation.id);
+      if (clearStateError) throw clearStateError;
+    }
 
     const { data: reopened, error: reopenError } = await supabaseAdmin
       .from("conversations")
@@ -1090,7 +1105,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         ...(startsNewPurchase
           ? {
               sale_closed: false,
-              product_id: null,
+              product_id: sameProductRepeat ? conversation.product_id : null,
             }
           : {}),
         ...(referral.adId ? { ad_id: referral.adId } : {}),
@@ -1548,9 +1563,15 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       ? buildVariantSelectionQuestion(productForReply!)
       : safeReply;
     // No prometer que el pedido quedó registrado ANTES del INSERT.
-    const safeBeforeInsert = result.sale_closed && result.order
-      ? finalReply.replace(/(?:✅\s*)?PEDIDO CONFIRMADO/gi, "Pedido en proceso de registro")
-      : finalReply;
+    // No permitir confirmaciones comerciales falsas, incluso si la IA no entrega
+    // result.order o sale_closed. Sólo el bloque posterior al INSERT confirmado
+    // puede anunciar "PEDIDO REGISTRADO" con número real.
+    const safeBeforeInsert = finalReply
+      .replace(/(?:✅\s*)?PEDIDO\s+(?:CONFIRMADO|REGISTRADO)/gi, "Pedido pendiente de verificación")
+      .replace(/\b(?:ya\s+)?(?:registre|registramos|tome|tomamos|agende|agendamos)\s+(?:tu|su|el)\s+pedido\b/gi,
+        "Estoy verificando los datos de tu pedido")
+      .replace(/\b(?:tu|su)\s+pedido\s+(?:ya\s+)?(?:quedo|esta)\s+(?:confirmado|registrado|agendado)\b/gi,
+        "Tu pedido está pendiente de verificación");
     const wamid = await sendWhatsAppText(conn, phone, safeBeforeInsert);
 
     await supabaseAdmin.from("messages").insert({
