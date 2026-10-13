@@ -214,7 +214,9 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       return {reply,orderId:null};
     }
     const intent = isGpsMessage ? "checkout" : classifyCustomerIntent(text);
-    const bypassSale = intent !== "checkout";
+    const reminderText=text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+    const locationReminder=!isGpsMessage && /\b(?:ya (?:te|le|les) (?:pase|envie|mande)|ya (?:comparti|envie)|ahi ya (?:te|le) pase)\b/.test(reminderText) && /\b(?:ubicacion|gps|maps|localizacion)\b/.test(reminderText);
+    let bypassSale = intent !== "checkout";
     const orderContext = intent === "order_status" && mode !== "rules_only"
       ? await addVerifiedOrderContext(supabase,ctx,conversation.workspace_id,conversation.contacts?.phone)
       : ctx;
@@ -223,6 +225,8 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       .eq("conversation_id",conversation.id).maybeSingle();
     if(stateError)throw stateError;
     const previous=(saved?.state??{}) as import("@/lib/rule-sales.server").SaleState;
+    const savedSaleReadyForFinalization=Boolean(locationReminder && previous.locationUrl && previous.cityVerified && previous.customerName && previous.productId && previous.quantity);
+    if(savedSaleReadyForFinalization)bypassSale=false;
     if(isGpsMessage){
       if(!previous.cityVerified){previous.city=null;previous.department=null;previous.coverageStatus="unknown";previous.awaiting="city";}
       if(coordinates){
@@ -240,7 +244,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       `\nUBICACIÓN RECIBIDA. GPS guardado: ${Boolean(previous.locationUrl)}. Ciudad verificada: ${previous.cityVerified?previous.city:"NO VERIFICADA"}. Cobertura: ${previous.coverageStatus??"unknown"}. No inventes ciudad ni cobertura. Sin verificación pedí ciudad, sin ofrecer pago anticipado. No crees pedidos por una ubicación.`}
       : bypassSale && mode !== "rules_only"
       ? addPendingSaleContext(orderContext, previous) : orderContext;
-    const saleText=isGpsMessage ? `📍 Ubicación compartida${previous.locationUrl?`\n${previous.locationUrl}`:""}` : text;
+    const saleText=isGpsMessage ? `📍 Ubicación compartida${previous.locationUrl?`\n${previous.locationUrl}`:""}` : savedSaleReadyForFinalization ? "Confirmo mis datos para registrar el pedido" : text;
     let step=mode!=="ai_first"&&!bypassSale?advanceRuleSale(ctx,saleText,previous, (newest.media_type === "image" || newest.media_type === "document") ? newest.media_url : null,previous.locationUrl):null;
     const decision=(!isGpsMessage || mode==="rules_only")&&step&&!step.needsAi?{reply:step.reply,productId:step.productId}:((intent==="complex"||intent==="order_status"||intent==="price")&&mode!=="rules_only"?null:decideHybridReply({ctx,text,mode}));
     let result: Awaited<ReturnType<typeof generateAiReply>>;
@@ -249,6 +253,10 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       ? `📍 ¡Recibí y guardé tu ubicación! 😊 Ciudad confirmada: *${previous.city}*. Seguimos con tu pedido. 💚`
       : "📍 ¡Recibí y guardé tu ubicación! 😊🚚 Para confirmar nuestra cobertura, ¿me indicás *en qué ciudad* estás?";
     if (isGpsMessage) result={reply:gpsReply,product_id:previous.productId??conversation.product_id,sale_closed:false,order:null};
+    else if (locationReminder && bypassSale && previous.locationUrl && mode !== "ai_first") {
+      const missing=!previous.cityVerified?"Solo falta confirmar tu ciudad para verificar la cobertura.":!previous.customerName?"Solo me falta tu nombre y apellido para completar el pedido.":"Ya tengo la ubicación guardada para tu compra; voy a revisar los demás datos.";
+      result={reply:`Tenés razón, disculpame. 🙏📍 *Tu ubicación ya está guardada*, no hace falta reenviarla. ${missing}`,product_id:previous.productId??conversation.product_id,sale_closed:false,order:null};
+    }
     else if (decision) result={reply:decision.reply,product_id:decision.productId,sale_closed:false,order:null};
     else if (mode === "rules_only") {
       const back=decideHybridReply({ctx,text,mode,fallback:true});
