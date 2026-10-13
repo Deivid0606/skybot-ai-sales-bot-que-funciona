@@ -1338,13 +1338,34 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     conn,
     phone,
     text: body,
+    cityFirst: aiSettings.hybrid_mode === "hybrid" || !aiSettings.hybrid_mode,
   });
 
   if (catalogResult) {
     conversation.product_id = catalogResult.productId;
     // El copy del catálogo es la ÚNICA respuesta comercial en este turno.
     // No mandar oferta corta duplicada ni preguntar ciudad antes de elegir variante.
-    if (catalogResult.sent) return;
+    if (catalogResult.sent) {
+      if (aiSettings.hybrid_mode === "hybrid" || !aiSettings.hybrid_mode) {
+        // La presentación comercial ya salió: persistir qué esperamos sin consumir IA.
+        // Nunca borrar otra venta activa con datos ya capturados.
+        const { data: existingState, error: stateError } = await supabaseAdmin
+          .from("bot_sale_states").select("state")
+          .eq("workspace_id", workspaceId).eq("conversation_id", conversation.id).maybeSingle();
+        if (stateError) throw stateError;
+        const current = (existingState?.state ?? {}) as SaleState;
+        if (!current.cityVerified && (!current.productId || current.productId === catalogResult.productId)) {
+          await supabaseAdmin.from("bot_sale_states").upsert({
+            workspace_id: workspaceId, conversation_id: conversation.id,
+            state: { ...current, productId: catalogResult.productId, awaiting: "city" },
+            updated_at: new Date().toISOString(),
+          }, { onConflict: "workspace_id,conversation_id" }).then(({ error }) => {
+            if (error) throw error;
+          });
+        }
+      }
+      return;
+    }
   }
 
   const { data: history } = await supabaseAdmin
@@ -1426,7 +1447,15 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       ? advanceRuleSale(ctx, saleInput, previousSale, media && (media.type === "image" || media.type === "document") ? mediaPath : null, gpsUrl)
       : null;
     let saveStep = ruleStep;
-    let safeDecision = ruleStep && !ruleStep.needsAi
+    // En híbrido: reglas administran producto/ciudad/importe y siempre registran el
+    // pedido si está completo. Tras la ciudad, la IA puede continuar la charla;
+    // no se la invoca para una respuesta determinista inicial ni para el registro.
+    const ruleMustAnswer = hybridMode !== "hybrid" || !previousSale.cityVerified ||
+      !ruleStep?.state.cityVerified || ruleStep?.complete ||
+      ruleStep?.state.awaiting === "variant" || ruleStep?.state.awaiting === "quantity" ||
+      ruleStep?.state.awaiting === "receipt" ||
+      (previousSale.awaiting === "city" && Boolean(ruleStep?.state.cityVerified));
+    let safeDecision = ruleStep && !ruleStep.needsAi && ruleMustAnswer
       ? {reply:ruleStep.reply, productId:ruleStep.productId, reason:"venta_reglas"}
       : (intent === "order_status" || intent === "complex" || intent === "price") && hybridMode !== "rules_only"
         ? null
@@ -1577,7 +1606,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
      */
     const verifiedOrderCoverage = result.order ? verifiedCoverage(
       String(result.order.city??""),String(result.order.departamento??""),parseCoverage(ctx.training)) : null;
-    if (!conversation.sale_closed && result.order && orderReady && !isGpsMessage && verifiedOrderCoverage?.active && (!previousSale.city || (previousSale.cityVerified && previousSale.coverageStatus === "covered"))) {
+    if (!conversation.sale_closed && result.order && orderReady && !isGpsMessage && (verifiedOrderCoverage?.active || (isAdvance && /ANTICIPADO|TRANSFERENCIA/i.test(verifiedOrderCoverage?.method ?? ""))) && (!previousSale.city || (previousSale.cityVerified && previousSale.coverageStatus === "covered"))) {
       const completedOrder = {
         ...result.order,
         phone,
@@ -2518,6 +2547,7 @@ async function sendCatalogByKeyword(args: {
   conn: Conn;
   phone: string;
   text: string;
+  cityFirst?: boolean;
 }): Promise<CatalogKeywordResult | null> {
   const raw = (args.text ?? "").toLowerCase().trim();
   if (!raw) return null;
@@ -2618,9 +2648,9 @@ ${match.products.description ?? ""}`.trim();
   });
   // Nunca presentar opciones solo como "1 unidad" si las etiquetas son capacidades.
   const variantLines = options.length > 1 && missingNames.length > 0
-    ? `\n\n💥 *Opciones disponibles:*\n${options.map((o) => `• *${o.label}* — ${formatGs(Number(o.price))}`).join("\n")}\n¿Cuál preferís?`
+    ? `\n\n💥 *Opciones disponibles:*\n${options.map((o) => `• *${o.label}* — ${formatGs(Number(o.price))}`).join("\n")}${args.cityFirst ? "" : "\n¿Cuál preferís?"}`
     : "";
-  const copy = baseCopy + variantLines;
+  const copy = baseCopy + variantLines + (args.cityFirst ? "\n\n📍 ¿De qué ciudad sos? Así verifico tu modalidad de entrega. 🚚" : "");
 
   const { sendWhatsAppMedia } = await import("@/lib/whatsapp.server");
 
@@ -2709,6 +2739,7 @@ ${match.products.description ?? ""}`.trim();
           ad_id: args.adId,
           direction: "outbound",
           sender: "ai",
+          response_origin: "code",
           body: caption || `[${type}] ${match.products.name}`,
           media_url: link,
           media_type: type,
@@ -2745,6 +2776,7 @@ ${match.products.description ?? ""}`.trim();
         ad_id: args.adId,
         direction: "outbound",
         sender: "ai",
+        response_origin: "code",
         body: copy,
         catalog_product_id: productId,
         status: "sent",
