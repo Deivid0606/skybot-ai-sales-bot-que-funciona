@@ -1,3 +1,9 @@
+
+function isAiQuotaFailure(error: unknown): boolean {
+  const e = error as {status?:number;code?:string;message?:string};
+  const msg = String(e?.message ?? error ?? "").toLowerCase();
+  return e?.status === 429 || /(?:insufficient[_ ]quota|resource[_ ]exhausted|quota exceeded|rate[_ -]?limit|credit[s]? exhausted|sin cr[eé]ditos|saldo de ia|429)/i.test(msg);
+}
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
@@ -189,7 +195,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       const wamid=await sendWhatsAppText(conn,phone,reply);
       const {error:insertError}=await supabase.from("messages").insert({
         workspace_id:conversation.workspace_id,user_id:conversation.user_id,
-        conversation_id:conversation.id,direction:"outbound",sender:"ai",body:reply,
+        conversation_id:conversation.id,direction:"outbound",sender:"ai",response_origin:"code",body:reply,
         wamid,status:"sent",
       });
       if(insertError)throw insertError;
@@ -264,7 +270,8 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     } else {
       try {result=await generateAiReply(answerContext);}
       catch (err) {
-        if(aiSettings?.hybrid_fallback_enabled===false)throw err;
+        // Fall back on quota/rate-limit errors even when optional general fallback is off.
+        if(aiSettings?.hybrid_fallback_enabled===false && !isAiQuotaFailure(err))throw err;
         step=bypassSale?null:advanceRuleSale(ctx,saleText,previous, (newest.media_type === "image" || newest.media_type === "document") ? newest.media_url : null,previous.locationUrl);
         const back=step&&!step.needsAi?{reply:step.reply,productId:step.productId}:decideHybridReply({ctx,text,mode,fallback:true});
         if(!back)throw err;
@@ -342,9 +349,10 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     const wamid = await sendWhatsAppText(conn, phone, reply);
     const { error: insertError } = await supabase.from("messages").insert({
       workspace_id: conversation.workspace_id, user_id: conversation.user_id,
-      conversation_id: conversation.id, direction: "outbound", sender: "ai", body: reply,
-      wamid, status: "sent",
-    });
+      conversation_id: conversation.id, direction: "outbound", sender: "ai",
+      response_origin: (isGpsMessage || Boolean(createdOrder && fromRules) || Boolean(decision) || mode === "rules_only" || (fromRules && step && !step.needsAi)) ? "code" : "ai",
+      body: reply, wamid, status: "sent",
+    } as any);
     if (insertError) throw insertError;
     await supabase.from("conversations").update({
       last_message: reply, last_message_at: new Date().toISOString(),
