@@ -252,9 +252,15 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       ? addPendingSaleContext(orderContext, previous) : orderContext;
     const saleText=isGpsMessage ? `📍 Ubicación compartida${previous.locationUrl?`\n${previous.locationUrl}`:""}` : savedSaleReadyForFinalization ? "Confirmo mis datos para registrar el pedido" : text;
     let step=mode!=="ai_first"&&!bypassSale?advanceRuleSale(ctx,saleText,previous, (newest.media_type === "image" || newest.media_type === "document") ? newest.media_url : null,previous.locationUrl):null;
-    const decision=(!isGpsMessage || mode==="rules_only")&&step&&!step.needsAi?{reply:step.reply,productId:step.productId}:((intent==="complex"||intent==="order_status"||intent==="price")&&mode!=="rules_only"?null:decideHybridReply({ctx,text,mode}));
+    const ruleMustAnswer=mode!=="hybrid"||!previous.cityVerified||!step?.state.cityVerified||
+      Boolean(step?.complete)||step?.state.awaiting==="variant"||step?.state.awaiting==="quantity"||
+      step?.state.awaiting==="receipt"||(previous.awaiting==="city"&&Boolean(step?.state.cityVerified));
+    const decision=(!isGpsMessage||mode==="rules_only")&&step&&!step.needsAi&&ruleMustAnswer
+      ?{reply:step.reply,productId:step.productId}
+      :((intent==="complex"||intent==="order_status"||intent==="price")&&mode!=="rules_only"
+        ?null:decideHybridReply({ctx,text,mode}));
     let result: Awaited<ReturnType<typeof generateAiReply>>;
-    let fromRules=Boolean(step&&!step.needsAi);
+    let fromRules=Boolean(step&&!step.needsAi&&decision);
     const gpsReply = previous.cityVerified && previous.city
       ? `📍 ¡Recibí y guardé tu ubicación! 😊 Ciudad confirmada: *${previous.city}*. Seguimos con tu pedido. 💚`
       : "📍 ¡Recibí y guardé tu ubicación! 😊🚚 Para confirmar nuestra cobertura, ¿me indicás *en qué ciudad* estás?";
@@ -281,13 +287,15 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     }
     if(isGpsMessage) result={reply:gpsReply,product_id:previous.productId??conversation.product_id,sale_closed:false,order:null};
     if(bypassSale || isGpsMessage)result={...result,sale_closed:false,order:null};
-    if(fromRules&&step&&!step.needsAi){
+    // Persistir los datos capturados por reglas incluso si la IA redacta la respuesta.
+    if(step&&!step.needsAi){
       const {error: stateSaveError}=await supabase.from("bot_sale_states").upsert({
         workspace_id:conversation.workspace_id,conversation_id:conversation.id,
         state:step.state,updated_at:new Date().toISOString()
       },{onConflict:"workspace_id,conversation_id"});
       if(stateSaveError)throw stateSaveError;
       if(step.complete && !isGpsMessage){const st=step.state;
+        fromRules=true;
         result={reply:step.reply,product_id:step.productId,sale_closed:true,
           order:{customer_name:st.customerName!,city:st.city!,departamento:st.department!,
             street:st.street??undefined,quantity:st.quantity!,product_price_id:st.optionId??undefined,
@@ -304,7 +312,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     let createdOrder: { id: string; order_number: string } | null = null;
     const orderCoverage=result.order ? verifiedCoverage(
       String(result.order.city??""),String(result.order.departamento??""),parseCoverage(ctx.training)) : null;
-    const valid = !conversation.sale_closed && !isGpsMessage && Boolean(orderCoverage?.active) && (!previous.city || (previous.cityVerified && previous.coverageStatus === "covered")) && Boolean(result.order) &&
+    const valid = !conversation.sale_closed && !isGpsMessage && Boolean(orderCoverage?.active || (/anticip|transfer|deposit|giro/i.test(result.order?.payment_method ?? "") && /ANTICIPADO|TRANSFERENCIA/i.test(orderCoverage?.method ?? ""))) && (!previous.city || (previous.cityVerified && previous.coverageStatus === "covered")) && Boolean(result.order) &&
       isOrderReady(result.order, detectedProduct) &&
       (Boolean(step?.state.cartLines?.length) || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory));
     if (valid && result.order && detectedProduct) {
