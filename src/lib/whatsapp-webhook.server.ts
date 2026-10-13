@@ -1498,7 +1498,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       lastCustomerMessage: body,
     });
 
-    const optionConfirmed = isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory);
+    const optionConfirmed = Boolean(saveStep?.state.cartLines?.length) || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory);
     const productForReply = ctx.products.find((p) => p.id === detectedProduct);
     const mustClarify = Boolean(result.order && !optionConfirmed && (productForReply?.product_prices?.length ?? 0) > 1);
     const finalReply = mustClarify
@@ -1546,7 +1546,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       hasReceiptForOrder=Boolean(recentProofs?.length);
     }
     const orderReady = isOrderReady(result.order, detectedProduct) &&
-      isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory) &&
+      (Boolean(saveStep?.state.cartLines?.length) || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory)) &&
       (!isAdvance || hasReceiptForOrder);
 
     /*
@@ -1579,6 +1579,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         sourceMessageId: message.id,
         order: completedOrder,
         products: ctx.products,
+        cartLines: saveStep?.state.cartLines,
       });
 
       /*
@@ -1796,6 +1797,7 @@ export async function createOrderFromAi(args: {
   productId: string | null;
   sourceMessageId: string;
   order: NonNullable<Awaited<ReturnType<typeof generateAiReply>>["order"]>;
+  cartLines?: Array<{ optionId: string; quantity: number }>;
   products: {
     id: string;
     name: string;
@@ -1971,8 +1973,20 @@ export async function createOrderFromAi(args: {
     )
     .sort((a, b) => a.sort_order - b.sort_order);
 
+  // El carrito se valida contra las opciones REALES del producto, nunca contra texto de IA.
+  const cartLines = args.cartLines?.length ? args.cartLines : null;
+  const cartResolved = cartLines?.map(line=>{
+    const option=priceOptions.find(o=>o.id===line.optionId);
+    if(!option||!Number.isSafeInteger(line.quantity)||line.quantity<1||line.quantity>25||option.quantity!==1){
+      throw new Error('Carrito de variantes inválido: un asesor debe revisar el pedido');
+    }
+    return {...line,label:option.label,price:option.price};
+  }) ?? null;
+  if(cartResolved && (cartResolved.length<2||new Set(cartResolved.map(x=>x.optionId)).size!==cartResolved.length)){
+    throw new Error('Carrito multivariante incompleto o con artículos repetidos');
+  }
   const selectedPrice = matchSelectedOption(args.order, priceOptions, selectionHistory);
-  if (priceOptions.length > 0 && !selectedPrice) {
+  if (priceOptions.length > 0 && !selectedPrice && !cartResolved) {
     throw new Error(`No se puede cerrar pedido: falta seleccionar una variante válida de ${product.name}`);
   }
 
@@ -1998,7 +2012,12 @@ export async function createOrderFromAi(args: {
   let total: number;
   let selectedPriceLabel: string | null = null;
 
-  if (selectedPrice) {
+  if (cartResolved) {
+    quantity=cartResolved.reduce((sum,c)=>sum+c.quantity,0);
+    total=cartResolved.reduce((sum,c)=>sum+c.quantity*c.price,0);
+    unitPrice=total/quantity;
+    selectedPriceLabel='Múltiples presentaciones';
+  } else if (selectedPrice) {
     // Una opción de 1 unidad (p. ej. 5 litros) se multiplica por la
     // cantidad explícitamente solicitada. Una promoción de paquete se
     // mantiene con su cantidad/precio propios; nunca inventar prorrateos.
@@ -2076,9 +2095,9 @@ export async function createOrderFromAi(args: {
 
   const observations = [
     baseObservations,
-    selectedPriceLabel
-      ? `Variante seleccionada: ${selectedPriceLabel}`
-      : null,
+    cartResolved
+      ? `MULTIVARIANTE (MISMO PRODUCTO): ${cartResolved.map(c=>`${c.quantity} x ${c.label} (${c.price.toLocaleString('es-PY')} Gs. c/u)`).join(' + ')}. TOTAL: ${total.toLocaleString('es-PY')} Gs.`
+      : selectedPriceLabel ? `Variante seleccionada: ${selectedPriceLabel}` : null,
   ]
     .filter(Boolean)
     .join(" | ") || null;
@@ -2090,7 +2109,9 @@ export async function createOrderFromAi(args: {
    * Si el SKU cambia después en products, el pedido histórico conserva
    * el SKU con el que se realizó la venta.
    */
-  const productSku = cleanOrderText(product.sku) || null;
+  // El pedido mixto NO representa un SKU único: bloquear exportación automática
+  // para evitar que la plataforma de destino cargue la presentación equivocada.
+  const productSku = cartResolved ? null : (cleanOrderText(product.sku) || null);
 
   /*
    * El ad_id llega como snapshot desde el mensaje que está cerrando la venta.
