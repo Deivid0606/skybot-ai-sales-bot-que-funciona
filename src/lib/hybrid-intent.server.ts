@@ -3,6 +3,10 @@ export type CustomerIntent = "price" | "order_status" | "complex" | "checkout";
 const normalize = (v: string) => v.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
 export function classifyCustomerIntent(raw: string): CustomerIntent {
   const s = normalize(raw);
+  // Priorizar interpretación humana/IA ante solicitudes de asesor o malestar.
+  if (/\b(?:supervisor|asesor|operador|persona real|atencion humana|reclamar|reclamo|no me da confianza|no confio|no entiendo|no es correcto|me estas repitiendo|ya te dije|ya te pase|deja de repetir|quiero hablar con alguien)\b/.test(s)) return "complex";
+  // Se debe entender como consulta, no como dato de checkout.
+  if (/\b(?:ser[aá] que|sera que|podrias|pueden|podran|se puede)\b/.test(s) && /\b(?:hoy|manana|delivery|entrega|envio|llegar|garantia|retirar)\b/.test(s)) return "complex";
   // RECLAMOS Y POSTVENTA: prioridad por encima de precios y checkout.
   if (/\b(?:mi pedido|mis pedidos|el pedido|hice el pedido|habia hecho|ya hice|ya pedi|hice la compra|pedido desde|pedido la semana|hace una semana|la otra semana|semana pasada|donde esta|seguimiento|guia de envio|estado del pedido|recibir mi pedido|reciba mi pedido|entrega de mi pedido|mi compra|mi paquete|me lo entregan|me van a entregar|podran entregar|pueden enviar hoy|pueden entregar hoy|vienen a traer|esperando mi pedido|pedido que hice|me llegara|ya les pase|ya te pase|ya envie mi ubicacion)\b/.test(s)) return "order_status";
   if (/\b(?:no podre confiar|no puedo confiar|perdi la confianza|voy a comprar en otro|conseguir de otro lugar|me estan dando vueltas|no cumplieron|incumplimiento|quiero reclamar|voy a cancelar|cancelen|estoy esperando|sigo esperando|ya paso|me prometieron|no me llego|aun no llega|todavia no llega|no cumplieron|molesta|enojada|reclamo|demora en entrega)\b/.test(s)) return "order_status";
