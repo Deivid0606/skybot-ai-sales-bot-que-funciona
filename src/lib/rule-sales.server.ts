@@ -284,7 +284,7 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     s.coverageStatus="unknown";
   }
 
-  if(s.awaiting==="details" || s.awaiting==="address") {
+  if(s.awaiting==="details" || s.awaiting==="address" || s.awaiting==="name") {
     const details=extractCheckoutDetails(text,true);
     if(details.name && !s.customerName)s.customerName=details.name;
     if(details.street && (!s.street || s.street === s.locationUrl))s.street=details.street;
@@ -293,7 +293,7 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   if(s.awaiting==="name" || /^\s*(?:me llamo|mi nombre es)\b/i.test(text)) {
     const name=humanName(text,s.awaiting==="name");if(name)s.customerName=name;
   }
-  if(s.awaiting==="address" && !match && !gpsUrl && n.length>=6 && !/^(?:si|no|hola|gracias|si por favor|dale|ok)$/.test(n) && !/\b(?:ubicacion|maps|pedido|precio|llega)\b/.test(n))s.street=text.trim();
+  if(s.awaiting==="address" && !match && !gpsUrl && n.length>=6 && !/^(?:si|no|hola|gracias|si por favor|dale|ok)$/.test(n) && !/\b(?:ubicacion|maps|pedido|precio|llega|ya te|ya le|pase|comparti|envie|mand[eé])\b/.test(n))s.street=text.trim();
   if(/\b(?:transferencia|transferir|anticipado|deposito|giro)\b/.test(n))s.paymentMethod="anticipado";
   if(mediaPath && (s.awaiting==="receipt" || /comprobante|transferi|pague/.test(n)))s.receiptPath=mediaPath;
   const selected=variants.find(o=>o.id===s.optionId)??null;
@@ -342,7 +342,7 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   if (s.locationUrl && !s.street) s.street=s.locationUrl;
   else if(s.locationUrl && s.street && !s.street.includes(s.locationUrl)) s.street += ` | GPS: ${s.locationUrl}`;
   if(!s.customerName || (needsAddress && !s.street)) {
-    if(s.awaiting==="details" || s.awaiting==="address") {
+    if(s.awaiting==="details" || s.awaiting==="address" || s.awaiting==="name") {
       if(!s.customerName && s.street)return answer("¡Recibí tu dirección! 🏠💚 Solo me falta tu *nombre y apellido* para registrar el pedido. 😊","details");
       if(s.customerName && needsAddress && !s.street)return answer(`¡Gracias, ${s.customerName}! 😍 Solo me falta tu *dirección completa* o ubicación de Google Maps. 📍 Si tenés, agregá una referencia cercana.`,"details");
     }
