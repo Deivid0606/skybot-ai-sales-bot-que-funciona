@@ -313,6 +313,16 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
       && !/\b(?:quiero|llevo|compro|pedir)\s+(?:\d+|un|una|dos|tres)\b/.test(n)) {
     return answer("¡Claro! 😊 Tomate tu tiempo. Ya guardé los datos que me pasaste; cuando decidas, me escribís y continuamos. 💚", "variant");
   }
+  // En híbrido, si la presentación ya pidió ciudad y el cliente la confirmó,
+  // priorizar la cobertura. Las variantes se solicitan después, sin suponer precio.
+  if (existing.awaiting === "city" && s.cityVerified && s.city &&
+      variants.length > 1 && !selected && !s.cartLines?.length) {
+    const cityCoverage = verifiedCoverage(s.city, s.department ?? "", coverage);
+    if (!cityCoverage || (!cityCoverage.active && !/ANTICIPADO|TRANSFERENCIA/i.test(cityCoverage.method))) {
+      return answer("📍 Para esa ciudad no tengo una modalidad habilitada de entrega confirmada. Un asesor revisará las opciones.", null, false, true);
+    }
+    return answer(`📍 ¡Gracias! Ciudad registrada: *${s.city}*. 🚚\n\n📦 Para continuar, elegí la presentación de *${p.name}*:\n${variants.map(v=>`• ${v.label} — ${money(v.price)}`).join("\n")}\n\n¿Cuál preferís?`, "variant");
+  }
   if(variants.length>1&&!selected&&!s.cartLines?.length)return answer(`📦✨ *${p.name}*\n\n${variants.map(o=>`• *${o.label}* — ${money(o.price)} 💰`).join("\n")}\n\n😍 ¡Elegí la opción que más te guste! ¿Cuál preferís?`,"variant");
   if(variants.length===1)s.optionId=variants[0].id;
   if(!s.city || !s.cityVerified || !s.department){
