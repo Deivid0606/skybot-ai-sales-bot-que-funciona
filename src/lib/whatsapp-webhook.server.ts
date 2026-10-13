@@ -1,3 +1,9 @@
+
+function isAiQuotaFailure(error: unknown): boolean {
+  const e = error as {status?:number;code?:string;message?:string};
+  const msg = String(e?.message ?? error ?? "").toLowerCase();
+  return e?.status === 429 || /(?:insufficient[_ ]quota|resource[_ ]exhausted|quota exceeded|rate[_ -]?limit|credit[s]? exhausted|sin cr[eé]ditos|saldo de ia|429)/i.test(msg);
+}
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { formatGs } from "@/lib/format";
 import { buildWorkspaceAiContext } from "@/lib/ai-context.server";
@@ -1399,11 +1405,11 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     const intent = isGpsMessage ? "checkout" : classifyCustomerIntent(body);
     // No permitir que texto libre en el nombre/dirección de la ubicación se
     // confunda con ciudades o información del checkout.
-    const saleInput = isGpsMessage ? `📍 Ubicación compartida${gpsUrl?`\n${gpsUrl}`:""}` : savedSaleReadyForFinalization ? "Confirmo mis datos para registrar el pedido" : body;
     const locationReminder = !isGpsMessage && /\b(?:ya (?:te|le|les) (?:pase|envie|mande)|ya (?:comparti|envie)|ahi ya (?:te|le) pase)\b/i.test(body.normalize("NFD").replace(/[\u0300-\u036f]/g,"")) && /\b(?:ubicacion|gps|maps|localizacion)\b/i.test(body.normalize("NFD").replace(/[\u0300-\u036f]/g,""));
     // Si el GPS está guardado, reconocer el dato real en vez de pedirlo otra vez.
     // El resto de mensajes complejos sigue yendo a la IA.
     const savedSaleReadyForFinalization = Boolean(locationReminder && previousSale.locationUrl && previousSale.cityVerified && previousSale.customerName && previousSale.productId && previousSale.quantity);
+    const saleInput = isGpsMessage ? `📍 Ubicación compartida${gpsUrl?`\n${gpsUrl}`:""}` : savedSaleReadyForFinalization ? "Confirmo mis datos para registrar el pedido" : body;
     const bypassSale = intent !== "checkout" && !savedSaleReadyForFinalization;
     const answerContextBase = intent === "order_status" && hybridMode !== "rules_only"
       ? await addVerifiedOrderContext(supabaseAdmin, ctx, workspaceId, phone)
@@ -1454,7 +1460,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       try {
         result = await generateAiReply(answerContext);
       } catch (aiError) {
-        if (aiSettings?.hybrid_fallback_enabled === false) throw aiError;
+        if (aiSettings?.hybrid_fallback_enabled === false && !isAiQuotaFailure(aiError)) throw aiError;
         saveStep = bypassSale ? null : advanceRuleSale(ctx, saleInput, previousSale, media && (media.type === "image" || media.type === "document") ? mediaPath : null, gpsUrl);
         const fallback = saveStep && !saveStep.needsAi
           ? {reply:saveStep.reply, productId:saveStep.productId, reason:"venta_reglas_respaldo"}
@@ -1525,10 +1531,11 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       ad_id: attributedAdId,
       direction: "outbound",
       sender: "ai",
+      response_origin: responseOrigin.startsWith("code:") ? "code" : "ai",
       body: safeBeforeInsert,
       wamid,
       status: "sent",
-    });
+    } as any);
 
     await supabaseAdmin
       .from("conversations")
