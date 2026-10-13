@@ -25,7 +25,7 @@ export function decideHybridReply(args:{ctx:AiContext;text:string;mode:Mode;fall
   const p=findProduct(ctx,text);
   const asksPrice=/\b(precio|cuanto cuesta|cuanto sale|vale|valor|promocion|oferta|opciones|presentaciones)\b/.test(normalized);
   const asksStock=/\b(stock|disponible|tienen|tenes|hay existencia)\b/.test(normalized);
-  if(p&&(asksPrice||asksStock)){
+  if(p&&(asksPrice||asksStock) && (mode === "rules_only" || args.fallback)){
     const options=[...(p.product_prices??[])].filter(o=>o.price>0).sort((a,b)=>a.sort_order-b.sort_order);
     if(asksStock&&Number(p.stock)<=0)return {reply:`😔 Por ahora *${p.name}* figura sin stock. ¿Querés que te ayude con otra opción?`,productId:p.id,reason:"catalogo_stock"};
     const list=options.length?options.map(o=>`• *${o.label}* — ${money(o.price,ctx.currency)}`).join("\n"):`• ${money(Number(p.promo_price??p.price),ctx.currency)}`;
