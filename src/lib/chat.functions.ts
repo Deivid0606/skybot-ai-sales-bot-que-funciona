@@ -198,6 +198,21 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       }).eq("workspace_id",conversation.workspace_id).eq("id",conversation.id);
       return {reply,orderId:null};
     }
+    if(conversation.sale_closed) {
+      const verified=await addVerifiedOrderContext(supabase,ctx,conversation.workspace_id,conversation.contacts?.phone);
+      const safeCtx={...verified,systemInstruction:verified.systemInstruction+"\nPOSTVENTA PRIORITARIA: YA hay pedido registrado. Respondé sobre ese pedido sin promociones, sin nuevas ventas ni pedir datos otra vez. No prometas entregas ni acciones logísticas sin verificación. Si es saludo, respondé breve."};
+      let reply:string;
+      try {reply=(await generateAiReply(safeCtx)).reply?.trim() || "";}
+      catch(error){console.error("[Inbox postventa] IA no disponible",error);reply="Entiendo tu consulta. 🙏 Un asesor debe revisar el estado real del pedido para confirmar la entrega.";}
+      if(!reply)reply="Un asesor debe verificar el estado actual de tu pedido. Gracias por tu paciencia. 🙏";
+      const {data:conn}=await supabase.from("whatsapp_connections").select("phone_number_id,access_token").eq("workspace_id",conversation.workspace_id).maybeSingle();
+      if(!conn?.phone_number_id||!conn.access_token||!conversation.contacts?.phone)throw new Error("WhatsApp no conectado");
+      const wamid=await sendWhatsAppText(conn,conversation.contacts.phone,reply);
+      const {error:insertError}=await supabase.from("messages").insert({workspace_id:conversation.workspace_id,user_id:conversation.user_id,conversation_id:conversation.id,direction:"outbound",sender:"ai",body:reply,wamid,status:"sent"});
+      if(insertError)throw insertError;
+      await supabase.from("conversations").update({last_message:reply,last_message_at:new Date().toISOString(),unread_count:0}).eq("workspace_id",conversation.workspace_id).eq("id",conversation.id);
+      return {reply,orderId:null};
+    }
     const intent = isGpsMessage ? "checkout" : classifyCustomerIntent(text);
     const bypassSale = intent !== "checkout";
     const orderContext = intent === "order_status" && mode !== "rules_only"
