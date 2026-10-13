@@ -361,6 +361,116 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     return { reply, orderId: createdOrder?.id ?? null };
   });
 
+/** Recupera un mensaje comercial usando SOLO reglas: nunca invoca generateAiReply. */
+export const recoverPendingWithRules = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input: unknown) => AiNowInput.parse(input))
+  .handler(async ({ data, context }) => {
+    const { supabase } = context;
+    const { buildWorkspaceAiContext } = await import("@/lib/ai-context.server");
+    const { decideHybridReply } = await import("@/lib/hybrid-rules.server");
+    const { advanceRuleSale, parseCoverage, verifiedCoverage } = await import("@/lib/rule-sales.server");
+    const { classifyCustomerIntent, coordinatesFromText } = await import("@/lib/hybrid-intent.server");
+    const { createOrderFromAi, isOrderReady, isUnambiguousPriceSelection, recoverRecentPaymentReceiptForOrder } = await import("@/lib/whatsapp-webhook.server");
+    const { data: convo, error: conversationError } = await supabase.from("conversations")
+      .select("id,workspace_id,user_id,contact_id,product_id,ad_id,ai_paused,is_closed,sale_closed,contacts(phone)")
+      .eq("id", data.conversationId).single();
+    if(conversationError || !convo) throw new Error("Conversación no encontrada");
+    if(convo.ai_paused || convo.is_closed) return { skipped:true, reason:"Chat pausado o cerrado" };
+    const {data: history, error: messagesError} = await supabase.from("messages")
+      .select("id,wamid,sender,direction,body,media_url,media_type,latitude,longitude,created_at")
+      .eq("workspace_id",convo.workspace_id).eq("conversation_id",convo.id)
+      .order("created_at",{ascending:false}).limit(30);
+    if(messagesError) throw messagesError;
+    const newest=history?.[0];
+    if(!newest || newest.direction!=="inbound" || newest.sender!=="customer")return {skipped:true,reason:"Ya respondido"};
+    if(!convo.contacts?.phone)throw new Error("Contacto sin teléfono");
+    const chatHistory=[...(history??[])].reverse().filter(m=>Boolean(m.body)).map(m=>({
+      role:m.sender==="customer"?("user" as const):("assistant" as const), content:String(m.body)
+    }));
+    const ctx=await buildWorkspaceAiContext(supabase,convo.workspace_id,chatHistory,convo.product_id,convo.contacts.phone);
+    const {data:saved,error:stateError}=await supabase.from("bot_sale_states")
+      .select("state").eq("workspace_id",convo.workspace_id).eq("conversation_id",convo.id).maybeSingle();
+    if(stateError)throw stateError;
+    const previous=(saved?.state??{}) as import("@/lib/rule-sales.server").SaleState;
+    const text=String(newest.body??"");
+    const coords=(newest.latitude!=null && newest.longitude!=null)
+      ? {latitude:Number(newest.latitude),longitude:Number(newest.longitude)} : coordinatesFromText(text);
+    const gpsUrl=coords && Number.isFinite(coords.latitude) && Number.isFinite(coords.longitude)
+      ? `https://www.google.com/maps/search/?api=1&query=${coords.latitude},${coords.longitude}`
+      : text.match(/https?:\/\/(?:maps\.app\.goo\.gl|goo\.gl\/maps|(?:www\.)?google\.[^\s/]+\/maps)\S*/i)?.[0]??null;
+    const isGpsMessage=Boolean(gpsUrl);
+    // No reabrir pedidos cerrados por un recuperador comercial.
+    if(convo.sale_closed)return {skipped:true,reason:"Postventa: requiere verificación"};
+    const normalized=text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+    const reminder=/\b(?:ya (?:te|le|les) (?:pase|envie|mande)|ahi ya (?:te|le) pase)\b/.test(normalized)&&/\b(?:ubicacion|gps|maps)\b/.test(normalized);
+    if(gpsUrl)previous.locationUrl=gpsUrl;
+    const intent=isGpsMessage?"checkout":classifyCustomerIntent(text);
+    const canFinalizeReminder=reminder&&previous.locationUrl&&previous.productId&&previous.quantity&&previous.cityVerified&&previous.customerName;
+    const isSale=intent==="checkout" || canFinalizeReminder;
+    const step=isSale?advanceRuleSale(ctx,canFinalizeReminder?"Confirmo mis datos para registrar el pedido":isGpsMessage?`📍 Ubicación compartida ${gpsUrl}`:text,
+      previous, ["image","document"].includes(String(newest.media_type))?newest.media_url:null,previous.locationUrl):null;
+    const decision=!step || step.needsAi ? decideHybridReply({ctx,text,mode:"rules_only",fallback:false}) : null;
+    let reply=step&&!step.needsAi?step.reply:decision?.reply??null;
+    if(isGpsMessage){
+      reply=previous.cityVerified&&previous.city
+        ? `📍 ¡Recibí tu ubicación! 😊 Ciudad confirmada: *${previous.city}*. Seguimos con tu pedido.`
+        : "📍 ¡Recibí tu ubicación! 😊 Para verificar la entrega, ¿en qué ciudad estás?";
+    }
+    if(reminder && previous.locationUrl && !reply){
+      reply=previous.cityVerified ? "📍 Ya tengo tu ubicación guardada. Si falta algún dato para finalizar el pedido, te lo solicitaré." : "📍 Ya tengo tu ubicación guardada. Solo falta confirmar tu ciudad.";
+    }
+    // Si exige razonamiento no inventar: permanecer pendiente para agente humano.
+    if(!reply)return {skipped:true,reason:"Requiere atención humana o IA"};
+    if(step && !step.needsAi && !isGpsMessage){
+      const {error:saveError}=await supabase.from("bot_sale_states").upsert({
+        workspace_id:convo.workspace_id,conversation_id:convo.id,state:step.state,updated_at:new Date().toISOString()
+      },{onConflict:"workspace_id,conversation_id"});
+      if(saveError)throw saveError;
+    }else if(isGpsMessage){
+      const {error:saveError}=await supabase.from("bot_sale_states").upsert({
+        workspace_id:convo.workspace_id,conversation_id:convo.id,state:previous,updated_at:new Date().toISOString()
+      },{onConflict:"workspace_id,conversation_id"});
+      if(saveError)throw saveError;
+    }
+    // Verificar nuevamente después del cálculo: si otra respuesta salió, no duplicar.
+    const {data:latest,error:latestError}=await supabase.from("messages").select("id,direction")
+      .eq("workspace_id",convo.workspace_id).eq("conversation_id",convo.id)
+      .order("created_at",{ascending:false}).limit(1).maybeSingle();
+    if(latestError)throw latestError;
+    if(latest?.id!==newest.id||latest.direction!=="inbound")return {skipped:true,reason:"Otro proceso ya respondió"};
+    let createdOrder: {id:string;order_number:string}|null=null;
+    if(step?.complete && !isGpsMessage){
+      const st=step.state;
+      const order={customer_name:st.customerName!,city:st.city!,departamento:st.department!,street:st.street??undefined,
+        quantity:st.quantity!,product_price_id:st.optionId??undefined,payment_method:st.paymentMethod!,phone:convo.contacts.phone};
+      const productId=step.productId??st.productId??convo.product_id;
+      const verified=verifiedCoverage(String(order.city),String(order.departamento),parseCoverage(ctx.training));
+      const canCreate=Boolean(verified.active && productId && isOrderReady(order,productId) &&
+        (Boolean(st.cartLines?.length)||isUnambiguousPriceSelection(order,productId,ctx.products,chatHistory)));
+      if(!canCreate)return {skipped:true,reason:"Pedido requiere revisión de cobertura o variante"};
+      createdOrder=await createOrderFromAi({workspaceId:convo.workspace_id,ownerId:convo.user_id,conversationId:convo.id,
+        contactId:convo.contact_id,phone:convo.contacts.phone,adId:convo.ad_id??null,productId:productId!,
+        sourceMessageId:newest.wamid||newest.id,order,products:ctx.products,cartLines:st.cartLines});
+      await recoverRecentPaymentReceiptForOrder({workspaceId:convo.workspace_id,ownerId:convo.user_id,
+        conversationId:convo.id,orderId:createdOrder.id});
+      reply=`✅ PEDIDO REGISTRADO\n📦 N.º ${createdOrder.order_number}\n¡Gracias por tu compra!`;
+    }
+    const {data:conn}=await supabase.from("whatsapp_connections").select("phone_number_id,access_token")
+      .eq("workspace_id",convo.workspace_id).maybeSingle();
+    if(!conn?.phone_number_id||!conn.access_token)throw new Error("WhatsApp no conectado");
+    const wamid=await sendWhatsAppText(conn,convo.contacts.phone,reply);
+    const {error:insertError}=await supabase.from("messages").insert({workspace_id:convo.workspace_id,
+      user_id:convo.user_id,conversation_id:convo.id,direction:"outbound",sender:"ai",response_origin:"code",
+      body:reply,wamid,status:"sent"} as any);
+    if(insertError)throw insertError;
+    await supabase.from("conversations").update({last_message:reply,last_message_at:new Date().toISOString(),
+      unread_count:0,product_id:step?.productId??decision?.productId??convo.product_id,
+      ...(createdOrder?{sale_closed:true}:{})}).eq("id",convo.id).eq("workspace_id",convo.workspace_id);
+    if(createdOrder)await supabase.from("bot_sale_states").delete().eq("workspace_id",convo.workspace_id).eq("conversation_id",convo.id);
+    return {skipped:false,reply,orderId:createdOrder?.id??null};
+  });
+
 const DeleteInput = z.object({ ids: z.array(z.string().uuid()).min(1).max(200) });
 
 export const deleteMessages = createServerFn({ method: "POST" })
