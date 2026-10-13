@@ -353,7 +353,10 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       ? `✅ PEDIDO REGISTRADO\n📦 N.º ${createdOrder.order_number}\n${(result.order?.payment_method ?? "").toLowerCase().includes("anticip") ? "💳 Comprobante sujeto a verificación por el vendedor." : "¡Gracias por tu compra!"}`
       : needsVariant
         ? `¿Cuál variante preferís?\n${options.map(o => `• ${o.label}: Gs. ${o.price.toLocaleString("es-PY")}`).join("\n")}`
-        : result.reply.replace(/(?:✅\s*)?PEDIDO CONFIRMADO/gi, "Estamos verificando los datos del pedido");
+        : result.reply
+          .replace(/(?:✅\s*)?PEDIDO\s+(?:CONFIRMADO|REGISTRADO)/gi, "Estamos verificando los datos del pedido")
+          .replace(/\b(?:ya\s+)?(?:registre|registramos|tome|tomamos|agende|agendamos)\s+(?:tu|su|el)\s+pedido\b/gi,
+            "Estoy verificando los datos de tu pedido");
     const wamid = await sendWhatsAppText(conn, phone, reply);
     const { error: insertError } = await supabase.from("messages").insert({
       workspace_id: conversation.workspace_id, user_id: conversation.user_id,
