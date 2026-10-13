@@ -200,10 +200,11 @@ function priceFor(p:Product,option:Option|null,quantity:number):number|null {
 }
 export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={}, mediaPath?:string|null, sharedLocationUrl?:string|null):SaleStep|null {
   const n=norm(text);
-  if(!n || /^\[?(?:audio|video|sticker)/.test(n))return null;
+  const isNudge = /^[\s¿?!.¡]+$/.test(text) || /^(?:me responden|me respondes|siguen ahi|seguimos|y entonces)$/i.test(n);
+  if ((!n && !isNudge) || /^\[?(?:audio|video|sticker)/.test(n))return null;
   // Barrera adicional: una pregunta nunca se almacena como nombre o dirección,
   // incluso si está pendiente un dato personal. El enrutador híbrido la atenderá.
-  if ((/[¿?]/.test(text) && !/https?:\/\//i.test(text)) || /\b(?:cuando me llega|cuando me llegaria|cuando llegaria|cuando entregan|cuando me entregan|cuanto tarda|cuanto demora|te estoy preguntando|dime el precio|decime el precio|y el precio|que garantia|tiene garantia)\b/.test(n)) return null;
+  if ((!isNudge && /[¿?]/.test(text) && !/https?:\/\//i.test(text)) || /\b(?:cuando me llega|cuando me llegaria|cuando llegaria|cuando entregan|cuando me entregan|cuanto tarda|cuanto demora|te estoy preguntando|dime el precio|decime el precio|y el precio|que garantia|tiene garantia)\b/.test(n)) return null;
   // Consultas de delivery no deben disparar la selección de variantes.
   if (/\b(?:delivery|delibery|delibari|envio|entrega|flete)\b/.test(n) &&
       /\b(?:cuando|cuanto|cuantos|cuanta|sale|seria|costo|precio|tarda|demora|llega|llegaria)\b/.test(n)) return null;
@@ -219,6 +220,13 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   if(!p)return null;
   s.productId=p.id;
   const variants=opts(p);
+  // «?» después de una selección no es una pregunta técnica: continuar la
+  // compra pendiente sin borrar producto, variante, cantidad, ciudad o GPS.
+  // No registrar pedidos ni elegir una variante por inferencia.
+  if (isNudge && !s.quantity && !s.optionId && !s.cartLines?.length && variants.length > 1) {
+    s.awaiting="variant";
+    return {reply:`😊 ¡Estoy acá! Para *${p.name}* tenemos:\n${variants.map(v=>`• ${v.label} — ${money(v.price)}`).join("\n")}\n\n¿Cuál preferís?`,state:s,productId:p.id,complete:false,needsAi:false};
+  }
   // Cuando se esperaba una variante y el cliente escribió un precio inexistente,
   // aclarar la diferencia sin volver a enviar el mismo listado completo.
   // Solo tratar como precio cifras de al menos 4 dígitos (nunca "quiero 1").
@@ -308,7 +316,7 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   if(variants.length>1&&!selected&&!s.cartLines?.length)return answer(`📦✨ *${p.name}*\n\n${variants.map(o=>`• *${o.label}* — ${money(o.price)} 💰`).join("\n")}\n\n😍 ¡Elegí la opción que más te guste! ¿Cuál preferís?`,"variant");
   if(variants.length===1)s.optionId=variants[0].id;
   if(!s.city || !s.cityVerified || !s.department){
-    if(s.awaiting==="city" && !gpsUrl && !/^\s*📍/.test(text)) {
+    if(s.awaiting==="city" && !isNudge && !gpsUrl && !/^\s*📍/.test(text)) {
       return answer("📍 Todavía no pude confirmar tu ciudad con nuestra lista de cobertura. 😊 Un asesor puede verificarla; no te pediré pago anticipado sin confirmación.",null,false,true);
     }
     return answer(s.locationUrl ? "📍 ¡Ya tengo tu ubicación guardada! 😊 ¿En qué *ciudad* estás para confirmar la cobertura? 🚚" : "🚚 ¡Genial! 😊 ¿En qué ciudad estás para verificar la entrega?","city");
