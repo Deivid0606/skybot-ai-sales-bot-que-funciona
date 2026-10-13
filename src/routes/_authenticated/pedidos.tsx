@@ -172,6 +172,10 @@ function OrdersPage() {
       if (msg.type !== "READY" && msg.batchId !== active.batchId) return;
       if (msg.type === "READY") {
         const selected = (orders ?? []).filter(o => active.ids.includes(o.id));
+        if(selected.some(o=>String(o.observations??"").includes("MULTIVARIANTE (MISMO PRODUCTO)"))){
+          setImportReport("El lote contiene un pedido con varias presentaciones. Cargalo manualmente como artículos separados en E-commerce para evitar un SKU incorrecto.");
+          setImporting(false);importRef.current=null;return;
+        }
         if (selected.length !== active.ids.length) {
           setImportReport("La lista cambió. Actualizá y volvé a seleccionar los pedidos.");
           setImporting(false); importRef.current = null; return;
@@ -210,6 +214,9 @@ function OrdersPage() {
   function startBulkImport() {
     if (importing || !selectedIds.length) return;
     const ids = selectedIds.filter(id => (orders ?? []).some(o => o.id === id && ["nuevo", "confirmado"].includes(o.status)));
+    if((orders??[]).some(o=>ids.includes(o.id)&&String(o.observations??"").includes("MULTIVARIANTE (MISMO PRODUCTO)"))){
+      window.alert("Pedido con varias presentaciones: cargalo manualmente como artículos separados en E-commerce.");return;
+    }
     if (!ids.length) { window.alert("Seleccioná pedidos nuevos o confirmados."); return; }
     if (ids.length > 100) { window.alert("Podés cargar hasta 100 pedidos por lote."); return; }
     const popup = window.open(`${ecommerceOrigin}/?view=import-botsky`, "_blank");
@@ -537,6 +544,7 @@ function OrdersPage() {
         "Estado pago",
         "Estado pedido",
         "Comprobante",
+        "Observaciones",
       ],
 
       ...filtered.map((order) => [
@@ -553,6 +561,7 @@ function OrdersPage() {
         order.payment_status ?? "",
         orderStateLabel(order.status),
         order.receipt_url ? "Sí" : "No",
+        order.observations ?? "",
       ]),
     ];
 
