@@ -1399,8 +1399,12 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     const intent = isGpsMessage ? "checkout" : classifyCustomerIntent(body);
     // No permitir que texto libre en el nombre/dirección de la ubicación se
     // confunda con ciudades o información del checkout.
-    const saleInput = isGpsMessage ? `📍 Ubicación compartida${gpsUrl?`\n${gpsUrl}`:""}` : body;
-    const bypassSale = intent !== "checkout";
+    const saleInput = isGpsMessage ? `📍 Ubicación compartida${gpsUrl?`\n${gpsUrl}`:""}` : savedSaleReadyForFinalization ? "Confirmo mis datos para registrar el pedido" : body;
+    const locationReminder = !isGpsMessage && /\b(?:ya (?:te|le|les) (?:pase|envie|mande)|ya (?:comparti|envie)|ahi ya (?:te|le) pase)\b/i.test(body.normalize("NFD").replace(/[\u0300-\u036f]/g,"")) && /\b(?:ubicacion|gps|maps|localizacion)\b/i.test(body.normalize("NFD").replace(/[\u0300-\u036f]/g,""));
+    // Si el GPS está guardado, reconocer el dato real en vez de pedirlo otra vez.
+    // El resto de mensajes complejos sigue yendo a la IA.
+    const savedSaleReadyForFinalization = Boolean(locationReminder && previousSale.locationUrl && previousSale.cityVerified && previousSale.customerName && previousSale.productId && previousSale.quantity);
+    const bypassSale = intent !== "checkout" && !savedSaleReadyForFinalization;
     const answerContextBase = intent === "order_status" && hybridMode !== "rules_only"
       ? await addVerifiedOrderContext(supabaseAdmin, ctx, workspaceId, phone)
       : ctx;
@@ -1427,6 +1431,10 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     // La respuesta determinista queda como respaldo y nunca se autoriza un pedido por este evento.
     if (isGpsMessage && hybridMode !== "rules_only" && ruleStep && !ruleStep.needsAi) {
       safeDecision = null;
+    }
+    if (locationReminder && bypassSale && previousSale.locationUrl && hybridMode !== "ai_first") {
+      const missing = !previousSale.cityVerified ? "Solo falta confirmar tu ciudad para verificar la cobertura." : !previousSale.customerName ? "Solo me falta tu nombre y apellido para completar el pedido." : "Ya tengo la ubicación guardada para tu compra. Voy a revisar que el pedido tenga todos sus datos.";
+      safeDecision = {reply:`Tenés razón, disculpame. 🙏📍 *Tu ubicación ya está guardada*, no hace falta que la vuelvas a enviar. ${missing}`,productId:previousSale.productId??conversation.product_id,reason:"gps_ya_guardado"};
     }
     if (isGpsMessage) {
       const msg = previousSale.cityVerified && previousSale.city
