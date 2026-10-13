@@ -92,6 +92,24 @@ function selectProduct(ctx:AiContext,text:string):Product|null {
 function selectOption(text:string, options:Option[], awaiting=false):Option|null {
   if (options.length===1) return options[0];
   const n=norm(text);
+  // Las cajas son presentaciones comerciales (no contar los soportes internos).
+  // «Quiero 1», «Una caja» y «1 caja» indican el mismo paquete si existe
+  // UNA única presentación de una caja.
+  const boxes = options.every(o => /\b(?:caja(?:s)?|pack(?:s)?|combo(?:s)?)\b/.test(norm(o.label)));
+  if (boxes) {
+    const boxWords: Record<string,number> = {un:1,uno:1,una:1,dos:2,tres:3,cuatro:4};
+    const boxMatch = n.match(/^(?:(?:quiero|dame|llevo|mandame|necesito|pido|me llevo)\s+)?(\d{1,2}|un|uno|una|dos|tres|cuatro)(?:\s+(?:caja(?:s)?|pack(?:s)?|combo(?:s)?|quiero|nomas|por favor))?$/)
+      ?? n.match(/^(?:el|la)\s+de\s+(\d{1,2})\s+caja(?:s)?$/);
+    if (boxMatch) {
+      const count=boxWords[boxMatch[1]]??Number(boxMatch[1]);
+      const selectedBoxes=options.filter(o=>{
+        const label=norm(o.label);
+        const number=label.match(/\b(\d{1,2}|un|una|uno|dos|tres|cuatro)\s+caja(?:s)?\b/);
+        return number && (boxWords[number[1]]??Number(number[1]))===count;
+      });
+      if(selectedBoxes.length===1)return selectedBoxes[0];
+    }
+  }
   // Un pedido de 1 o 2 unidades es selección del paquete comercial,
   // incluso cuando el estado "awaiting=variant" aún no se persistió.
   // No hacer esto para etiquetas de capacidad como "2 litros".
@@ -271,7 +289,7 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   if(chosen) {
     s.optionId=chosen.id;
     // Una opción etiquetada «N unidades» es un paquete, distinto de «N litros».
-    if (/\b(?:unidad(?:es)?|piezas?)\b/.test(norm(chosen.label))) s.quantity=chosen.quantity;
+    if (/\b(?:unidad(?:es)?|piezas?|caja(?:s)?|pack(?:s)?)\b/.test(norm(chosen.label))) s.quantity=chosen.quantity;
   }
   // NO interpretar "5 litros" como cantidad cinco.
   const expectingQuantity=s.awaiting==="quantity";
