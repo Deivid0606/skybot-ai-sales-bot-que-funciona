@@ -8,6 +8,7 @@ type Option = Product["product_prices"][number];
 export type SaleState = {
   productId?: string | null;
   optionId?: string | null;
+  cartLines?: Array<{ optionId: string; quantity: number }>;
   quantity?: number | null;
   city?: string | null;
   department?: string | null;
@@ -206,6 +207,8 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   // Consultas de delivery no deben disparar la selección de variantes.
   if (/\b(?:delivery|delibery|delibari|envio|entrega|flete)\b/.test(n) &&
       /\b(?:cuando|cuanto|cuantos|cuanta|sale|seria|costo|precio|tarda|demora|llega|llegaria)\b/.test(n)) return null;
+  // No transformar consultas o solicitudes de un humano en datos de compra.
+  if (/\b(?:supervisor|asesor|persona real|atencion humana|reclamo|no me da confianza|ya te dije|no quiero repetir)\b/.test(n)) return null;
   let s:SaleState={...existing};
   // Una ubicación GPS válida pertenece a esta conversación; no es un nombre ni una ciudad.
   const gpsUrl = sharedLocationUrl || (text.match(/https?:\/\/www\.google\.com\/maps\/search\/\?api=1&query=-?\d+(?:\.\d+)?,-?\d+(?:\.\d+)?/i)?.[0] ?? null);
@@ -231,7 +234,32 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
       }
     }
   }
-  const chosen=selectOption(text,variants,s.awaiting==="variant");
+  // Variantes de UN MISMO producto: carrito en estado persistido, sin IA.
+  // «ambos» acepta todas las presentaciones únicamente cuando hay exactamente dos.
+  if (variants.length > 1 && variants.every(v => Boolean(units(norm(v.label))))) {
+    const mentioned = variants.filter(v => {
+      const cap=units(norm(v.label));return Boolean(cap && n.includes(cap[0]));
+    });
+    const both = /\b(?:ambos|ambas|los dos|las dos|uno de cada|una de cada)\b/.test(n);
+    if (mentioned.length > 1 || (both && variants.length === 2)) {
+      const targets = mentioned.length > 1 ? mentioned : variants;
+      const words:Record<string,number>={un:1,uno:1,una:1,dos:2,tres:3,cuatro:4,cinco:5};
+      const cart = targets.map(v => {
+        const capacity=units(norm(v.label))![0];
+        const m=n.match(new RegExp(`\\b(\\d{1,2}|un|uno|una|dos|tres|cuatro|cinco)\\s+(?:de\\s+)?${capacity.replace(/\s+/g,'\\s*')}\\b`));
+        const q=m ? (words[m[1]]??Number(m[1])) : 1;
+        return {optionId:v.id,quantity:q};
+      });
+      if(cart.some(c=>!Number.isSafeInteger(c.quantity)||c.quantity<1||c.quantity>25))return {
+        reply:'📦 Confirmame la cantidad de cada presentación para preparar tu pedido.',
+        state:s,productId:p.id,complete:false,needsAi:false
+      };
+      s.cartLines=cart;s.optionId=cart[0].optionId;
+      s.quantity=cart.reduce((sum,c)=>sum+c.quantity,0);
+    }
+    // Nunca cambiar el carrito por una respuesta suelta «Ok» o por repetir «ambos».
+  }
+  const chosen=s.cartLines?.length ? null : selectOption(text,variants,s.awaiting==="variant");
   if(chosen) {
     s.optionId=chosen.id;
     // Una opción etiquetada «N unidades» es un paquete, distinto de «N litros».
@@ -241,11 +269,11 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   const expectingQuantity=s.awaiting==="quantity";
   if(!units(n)) {
     const q=countOf(text,expectingQuantity);
-    if(q)s.quantity=q;
+    if(q && !s.cartLines?.length)s.quantity=q;
   } else {
     // "uno de 5 litros" sí comunica cantidad 1 explícita.
     const match=n.match(/\b(un|uno|una|dos|tres|\d+)\s+de\s+\d+\s*(?:litros?|l|lts?)\b/);
-    if(match)s.quantity=({un:1,uno:1,una:1,dos:2,tres:3}[match[1]]??Number(match[1]));
+    if(match&&!s.cartLines?.length)s.quantity=({un:1,uno:1,una:1,dos:2,tres:3}[match[1]]??Number(match[1]));
   }
   const coverage=parseCoverage(ctx.training);
   const match=cityIn(text,coverage);
@@ -277,7 +305,7 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
       && !/\b(?:quiero|llevo|compro|pedir)\s+(?:\d+|un|una|dos|tres)\b/.test(n)) {
     return answer("¡Claro! 😊 Tomate tu tiempo. Ya guardé los datos que me pasaste; cuando decidas, me escribís y continuamos. 💚", "variant");
   }
-  if(variants.length>1&&!selected)return answer(`📦✨ *${p.name}*\n\n${variants.map(o=>`• *${o.label}* — ${money(o.price)} 💰`).join("\n")}\n\n😍 ¡Elegí la opción que más te guste! ¿Cuál preferís?`,"variant");
+  if(variants.length>1&&!selected&&!s.cartLines?.length)return answer(`📦✨ *${p.name}*\n\n${variants.map(o=>`• *${o.label}* — ${money(o.price)} 💰`).join("\n")}\n\n😍 ¡Elegí la opción que más te guste! ¿Cuál preferís?`,"variant");
   if(variants.length===1)s.optionId=variants[0].id;
   if(!s.city || !s.cityVerified || !s.department){
     if(s.awaiting==="city" && !gpsUrl && !/^\s*📍/.test(text)) {
@@ -287,7 +315,7 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   }
   const location=coverage.find(c=>norm(c.city)===norm(s.city)&&norm(c.department)===norm(s.department));
   if(!location) return answer("📍 Necesito verificar tu ciudad y departamento antes de informar cobertura o formas de pago. ¿Podés confirmar tu ciudad? 😊", "city");
-  if(!location.active) return answer("📍 Tu ciudad está identificada, pero actualmente no figura en las zonas de contraentrega. Un asesor puede revisar opciones disponibles; no voy a pedirte pago anticipado sin tu elección. 😊",null,false,true);
+  if(!location.active && !/ANTICIPADO|TRANSFERENCIA/i.test(location.method)) return answer("📍 Tu ciudad está identificada, pero actualmente no figura en las zonas de contraentrega. Un asesor puede revisar opciones disponibles; no voy a pedirte pago anticipado sin tu elección. 😊",null,false,true);
   if(!location && !s.city)return answer("📍 ¿Me confirmás tu ciudad para verificar si llegamos hasta vos? 😊","city");
   const bank=ctx.training.find(t=>norm(t.title)==="datos bancarios")?.content?.trim()??"";
   if(!s.paymentMethod){
@@ -298,13 +326,14 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   }
   if(s.paymentMethod==="contraentrega" && (!location || !location.active))return answer("🚚 Por ahora, esa ciudad no figura en nuestras zonas habilitadas para pagar al recibir. 😊 ¿Querés que consultemos si hay otra forma de envío?",null,false,true);
   if(!s.quantity)return answer(`📦 ¡Buenísimo! 😍 ¿Cuántas unidades querés llevar${selected?` de *${selected.label}*`:""}?`,"quantity");
-  const total=priceFor(p,selected,s.quantity);
+  const total=s.cartLines?.length ? s.cartLines.reduce((sum,line)=>{const v=variants.find(o=>o.id===line.optionId);return sum+(v?Number(v.price)*line.quantity:NaN);},0) : priceFor(p,selected,s.quantity);
   if(!total)return answer("💰 Para esa cantidad todavía no tengo un precio confirmado. 😊 Un asesor puede revisarlo para evitar cobrarte de más.",null,false,true);
+  const summaryLabel=s.cartLines?.length ? s.cartLines.map(line=>{const v=variants.find(o=>o.id===line.optionId);return `${line.quantity} x ${v?.label??"variante"}`;}).join(" + ") : selected?.label??"presentación estándar";
   if(s.paymentMethod==="anticipado"){
     if(!bank)return answer("💳 Todavía no tengo los datos bancarios confirmados. 😊 Un asesor te ayudará a continuar de forma segura.",null,false,true);
-    if(!s.receiptPath)return answer(`💳✨ *¡Ya casi está tu pedido!*\n\n📦 *Producto:* ${p.name}${selected?` (${selected.label})`:""}\n🔢 *Cantidad:* ${s.quantity}\n💰 *Total:* ${money(total)}\n\n🏦 *Datos para el pago:*\n${bank.slice(0,1600)}\n\n📸 Cuando hagas la transferencia, enviame el comprobante para adjuntarlo. 😊 El vendedor revisará la acreditación antes de confirmarla.`,"receipt");
+    if(!s.receiptPath)return answer(`💳✨ *¡Ya casi está tu pedido!*\n\n📦 *Producto:* ${p.name}${s.cartLines?.length?` (${summaryLabel})`:selected?` (${selected.label})`:""}\n🔢 *Cantidad:* ${s.quantity}\n💰 *Total:* ${money(total)}\n\n🏦 *Datos para el pago:*\n${bank.slice(0,1600)}\n\n📸 Cuando hagas la transferencia, enviame el comprobante para adjuntarlo. 😊 El vendedor revisará la acreditación antes de confirmarla.`,"receipt");
     if(!s.customerName)return answer("📸 ¡Recibí tu comprobante! 😊 Quedará pendiente de verificación. ¿Me indicás tu nombre y apellido para completar el pedido?","name");
-    return answer(`✅📸 ¡Gracias! Tu comprobante quedó adjunto para revisión. 📦 *${p.name}* (${selected?.label??"presentación estándar"}), total *${money(total)}*. El vendedor verificará el pago. 😊`,null,true);
+    return answer(`✅📸 ¡Gracias! Tu comprobante quedó adjunto para revisión. 📦 *${p.name}* (${summaryLabel}), total *${money(total)}*. El vendedor verificará el pago. 😊`,null,true);
   }
   // Un solo mensaje de requisitos una vez elegidos producto, precio, cantidad y ciudad.
   // El contacto alternativo NO bloquea el cierre. La ciudad ya debe haberse verificado.
@@ -319,5 +348,5 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     }
     return answer(`¡Oikoite! 😍🚚 Tenemos cobertura en *${s.city}*.\n\n📦 *¡Ya estamos a un paso de preparar tu pedido!*\n\nPara procesarlo, pasame estos datos *juntos*, por favor:\n\n👤 *Nombre y apellido*\n🏠 *Dirección de entrega y número de casa* (si tiene)\n📍 *Referencia cercana o ubicación de Google Maps*\n📱 *Otro número de contacto (opcional)*, solo si tenés.\n\n✅ Una vez que me pases los datos necesarios, tu pedido será registrado para su procesamiento. ¡Pagás al recibir! 💚`,"details");
   }
-  return answer(`📦✨ *¡Ya tengo los datos de tu pedido!*\n🛍️ ${p.name}${selected?` (${selected.label})`:""}\n🔢 Cantidad: ${s.quantity}\n💰 Total: *${money(total)}*\n✅ Voy a registrarlo ahora. 😊`,null,true);
+  return answer(`📦✨ *¡Ya tengo los datos de tu pedido!*\n🛍️ ${p.name}${s.cartLines?.length?` (${summaryLabel})`:selected?` (${selected.label})`:""}\n🔢 Cantidad: ${s.quantity}\n💰 Total: *${money(total)}*\n✅ Voy a registrarlo ahora. 😊`,null,true);
 }
