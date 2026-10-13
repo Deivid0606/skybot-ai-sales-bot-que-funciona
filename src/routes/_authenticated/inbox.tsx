@@ -106,6 +106,26 @@ function getGoogleMapsUrl(
   return `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
 }
 
+function getResponseOrigin(message: any): "code" | "ai" | "human" | "unknown" | "incoming" {
+  if (message.direction === "inbound") return "incoming";
+  if (message.sender === "agent") return "human";
+  if (message.response_origin === "code") return "code";
+  if (message.response_origin === "ai") return "ai";
+  return "unknown";
+}
+
+function OriginBadge({ origin }: { origin: ReturnType<typeof getResponseOrigin> }) {
+  if (origin === "incoming") return null;
+  const styles = {
+    code: "border-lime-400 bg-lime-500/25 text-lime-200",
+    ai: "border-sky-400 bg-sky-500/25 text-sky-200",
+    human: "border-orange-400 bg-orange-500/25 text-orange-200",
+    unknown: "border-slate-400 bg-slate-500/20 text-slate-200",
+  };
+  const names = {code:"⚡ RESPONDIDO POR CÓDIGO",ai:"✦ RESPONDIDO POR IA",human:"👤 RESPONDIDO POR HUMANO",unknown:"AUTOMÁTICO · ORIGEN SIN IDENTIFICAR"};
+  return <span className={`inline-flex max-w-full items-center rounded-md border px-2 py-0.5 text-[10px] font-bold ${styles[origin]}`}>{names[origin]}</span>;
+}
+
 function InboxPage() {
   const { c: initialConversationId } = Route.useSearch();
   const { profile } = useAuth();
@@ -279,6 +299,33 @@ function InboxPage() {
     },
   });
 
+  const { data: lastReplyOrigins } = useQuery({
+    queryKey: ["inbox-reply-origins", workspaceId, dateConversationIds],
+    enabled: Boolean(workspaceId && dateConversationIds?.length),
+    queryFn: async () => {
+      const result: Record<string, string> = {};
+      const ids = dateConversationIds ?? [];
+      // Sólo se leen los mensajes más recientes por lotes. Para evitar consultas
+      // costosas en chats largos, cada chat se consulta una vez.
+      for (let i = 0; i < ids.length; i += 20) {
+        const chunk = ids.slice(i, i + 20);
+        const rows = await Promise.all(chunk.map(async (id) => {
+          const { data, error } = await supabase.from("messages")
+            .select("sender,direction,response_origin")
+            .eq("conversation_id", id)
+            .order("created_at", { ascending: false })
+            .limit(1).maybeSingle();
+          if (error) throw error;
+          return {id, data};
+        }));
+        for (const row of rows) if (row.data) {
+          result[row.id] = getResponseOrigin(row.data);
+        }
+      }
+      return result;
+    },
+  });
+
   const { data: messages } = useQuery({
     queryKey: ["messages", activeId],
     enabled: Boolean(activeId),
@@ -323,6 +370,7 @@ function InboxPage() {
       .on("postgres_changes", { event: "*", schema: "public", table: "messages" }, () => {
         queryClient.invalidateQueries({ queryKey: ["messages"] });
         queryClient.invalidateQueries({ queryKey: ["conversations"] });
+        queryClient.invalidateQueries({ queryKey: ["inbox-reply-origins"] });
         queryClient.invalidateQueries({
           queryKey: ["inbox-conversation-ids-by-message-date"],
         });
@@ -521,7 +569,7 @@ function InboxPage() {
       await aiReplyNow({ data: { conversationId: activeId } });
     },
     onSuccess: () => {
-      toast.success("Respuesta de IA enviada");
+      toast.success("Respuesta enviada");
       queryClient.invalidateQueries({ queryKey: ["messages"] });
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
     },
@@ -712,7 +760,7 @@ function InboxPage() {
         toast.info("No se encontraron chats cuyo último mensaje sea del cliente");
       } else {
         toast.success(
-          `IA reanudada en ${result.responded} conversación${result.responded === 1 ? "" : "es"}`,
+          `Respuestas enviadas en ${result.responded} conversación${result.responded === 1 ? "" : "es"}`,
         );
       }
 
@@ -963,7 +1011,7 @@ function InboxPage() {
               const confirmed = window.confirm(
                 `Se comprobarán ${pendingCandidates.length} conversación${
                   pendingCandidates.length === 1 ? "" : "es"
-                }. La IA solo responderá cuando el último mensaje sea del cliente. ¿Continuar?`,
+                }. Se intentará responder mediante código y, si hace falta, mediante IA. Solo se procesarán chats cuyo último mensaje sea del cliente. ¿Continuar?`,
               );
 
               if (confirmed) {
@@ -984,7 +1032,7 @@ function InboxPage() {
             ) : (
               <>
                 <Sparkles className="mr-2 h-4 w-4" />
-                Responder pendientes ({pendingCandidates.length})
+                Recuperar pendientes ({pendingCandidates.length})
               </>
             )}
           </Button>
@@ -1114,7 +1162,12 @@ function InboxPage() {
                 {c.last_message || "Sin mensajes"}
               </span>
               <div className="flex flex-wrap items-center gap-1">
-                {c.sale_closed && (
+                 {lastReplyOrigins?.[c.id] === "code" && <span className="rounded-md border border-lime-400 bg-lime-500/25 px-2 py-0.5 text-[10px] font-bold text-lime-200">⚡ RESPONDIDO POR CÓDIGO</span>}
+                 {lastReplyOrigins?.[c.id] === "ai" && <span className="rounded-md border border-sky-400 bg-sky-500/25 px-2 py-0.5 text-[10px] font-bold text-sky-200">✦ RESPONDIDO POR IA</span>}
+                 {lastReplyOrigins?.[c.id] === "human" && <span className="rounded-md border border-orange-400 bg-orange-500/25 px-2 py-0.5 text-[10px] font-bold text-orange-200">👤 HUMANO</span>}
+                 {lastReplyOrigins?.[c.id] === "incoming" && <span className="rounded-md border border-red-400 bg-red-500/20 px-2 py-0.5 text-[10px] font-bold text-red-200">● CLIENTE ESPERANDO</span>}
+                 {lastReplyOrigins?.[c.id] === "unknown" && <span className="rounded-md border border-slate-400 bg-slate-500/20 px-2 py-0.5 text-[10px] text-slate-200">AUTOMÁTICO · SIN ORIGEN</span>}
+                 {c.sale_closed && (
                   <Badge variant="default" className="text-[10px]">
                     venta
                   </Badge>
@@ -1499,8 +1552,9 @@ function InboxPage() {
                                 : "Interpretar con IA"}
                             </button>
                           )}
+                        <div className="mt-2"><OriginBadge origin={getResponseOrigin(m)} /></div>
                         <p className="mt-1 text-[10px] opacity-70">
-                          {m.sender === "ai" ? "IA · " : m.sender === "agent" ? "Tú · " : ""}
+                          {getResponseOrigin(m) === "human" ? "Tú · " : ""}
                           {formatTime(m.created_at)}
                         </p>
                       </div>
