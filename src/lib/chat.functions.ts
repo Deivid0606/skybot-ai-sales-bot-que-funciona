@@ -252,13 +252,11 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       ? addPendingSaleContext(orderContext, previous) : orderContext;
     const saleText=isGpsMessage ? `📍 Ubicación compartida${previous.locationUrl?`\n${previous.locationUrl}`:""}` : savedSaleReadyForFinalization ? "Confirmo mis datos para registrar el pedido" : text;
     let step=mode!=="ai_first"&&!bypassSale?advanceRuleSale(ctx,saleText,previous, (newest.media_type === "image" || newest.media_type === "document") ? newest.media_url : null,previous.locationUrl):null;
-    const ruleMustAnswer=mode!=="hybrid"||!previous.cityVerified||!step?.state.cityVerified||
-      Boolean(step?.complete)||step?.state.awaiting==="variant"||step?.state.awaiting==="quantity"||
-      step?.state.awaiting==="receipt"||(previous.awaiting==="city"&&Boolean(step?.state.cityVerified));
+    const ruleMustAnswer=mode!=="hybrid"||Boolean(step?.complete);
     const decision=(!isGpsMessage||mode==="rules_only")&&step&&!step.needsAi&&ruleMustAnswer
       ?{reply:step.reply,productId:step.productId}
-      :((intent==="complex"||intent==="order_status"||intent==="price")&&mode!=="rules_only"
-        ?null:decideHybridReply({ctx,text,mode}));
+      :(mode==="hybrid"?null:((intent==="complex"||intent==="order_status"||intent==="price")&&mode!=="rules_only"
+        ?null:decideHybridReply({ctx,text,mode})));
     let result: Awaited<ReturnType<typeof generateAiReply>>;
     let fromRules=Boolean(step&&!step.needsAi&&decision);
     const gpsReply = previous.cityVerified && previous.city
@@ -274,7 +272,10 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       const back=decideHybridReply({ctx,text,mode,fallback:true});
       result={reply:back?.reply??"Un asesor debe revisar tu consulta.",product_id:back?.productId??conversation.product_id,sale_closed:false,order:null};
     } else {
-      try {result=await generateAiReply(answerContext);}
+      const verifiedSale=step?.state??previous;
+      const aiContext=mode==="hybrid"?{...answerContext,systemInstruction:answerContext.systemInstruction+
+        `\nHÍBRIDO: El código ya presentó catálogo/precios. Desde la siguiente respuesta vendé con IA, sin repetir lista de precios ni preguntas ya contestadas. Datos de la venta actual verificados por código: ${JSON.stringify({productId:verifiedSale.productId,optionId:verifiedSale.optionId,quantity:verifiedSale.quantity,city:verifiedSale.city,department:verifiedSale.department,cityVerified:verifiedSale.cityVerified===true,coverageStatus:verifiedSale.coverageStatus,customerName:verifiedSale.customerName,gpsReceived:Boolean(verifiedSale.locationUrl),addressReceived:Boolean(verifiedSale.street)})}. No inventes cobertura, datos ni pedido registrado. El código validará y guardará pedidos. Preguntá solo lo pendiente.`}:answerContext;
+      try {result=await generateAiReply(aiContext);}
       catch (err) {
         // Fall back on quota/rate-limit errors even when optional general fallback is off.
         if(aiSettings?.hybrid_fallback_enabled===false && !isAiQuotaFailure(err))throw err;
