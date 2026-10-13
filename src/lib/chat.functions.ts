@@ -291,7 +291,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       String(result.order.city??""),String(result.order.departamento??""),parseCoverage(ctx.training)) : null;
     const valid = !conversation.sale_closed && !isGpsMessage && Boolean(orderCoverage?.active) && (!previous.city || (previous.cityVerified && previous.coverageStatus === "covered")) && Boolean(result.order) &&
       isOrderReady(result.order, detectedProduct) &&
-      isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory);
+      (Boolean(step?.state.cartLines?.length) || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory));
     if (valid && result.order && detectedProduct) {
       createdOrder = await createOrderFromAi({
         workspaceId: conversation.workspace_id,
@@ -304,6 +304,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
         sourceMessageId: newest.wamid || newest.id,
         order: { ...result.order, phone },
         products: ctx.products,
+        cartLines: step?.state.cartLines,
       });
       await recoverRecentPaymentReceiptForOrder({
         workspaceId: conversation.workspace_id,
