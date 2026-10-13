@@ -272,6 +272,11 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   const answer=(reply:string,awaitKey:string|null,complete=false,needsAi=false):SaleStep=>{
     s.awaiting=awaitKey;return {reply,state:s,productId:p.id,complete,needsAi};
   };
+  // El cliente pide tiempo para decidir: conservar la ciudad sin insistir con ofertas.
+  if (/\b(?:lo hablo|voy a hablar|consulto y te confirmo|te confirmo despues|te aviso|voy a consultar|lo consulto|lo pienso)\b/.test(n)
+      && !/\b(?:quiero|llevo|compro|pedir)\s+(?:\d+|un|una|dos|tres)\b/.test(n)) {
+    return answer("¡Claro! 😊 Tomate tu tiempo. Ya guardé los datos que me pasaste; cuando decidas, me escribís y continuamos. 💚", "variant");
+  }
   if(variants.length>1&&!selected)return answer(`📦✨ *${p.name}*\n\n${variants.map(o=>`• *${o.label}* — ${money(o.price)} 💰`).join("\n")}\n\n😍 ¡Elegí la opción que más te guste! ¿Cuál preferís?`,"variant");
   if(variants.length===1)s.optionId=variants[0].id;
   if(!s.city || !s.cityVerified || !s.department){
