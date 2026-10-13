@@ -155,6 +155,36 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     if (!newest || newest.direction !== "inbound" || newest.sender !== "customer") {
       return { skipped: true, reply: "" };
     }
+    if (conversation.sale_closed) {
+      const { isNewPurchaseIntent, isNewPriceInquiry, matchNewCatalogProduct } =
+        await import("@/lib/whatsapp-webhook.server");
+      const freshText = String(newest.body ?? "");
+      const explicit = isNewPurchaseIntent(freshText, false);
+      let nextProductId: string | null = null;
+      if (isNewPriceInquiry(freshText)) {
+        const { data: catalog, error: catalogError } = await supabase.from("products")
+          .select("id,name").eq("workspace_id", conversation.workspace_id)
+          .eq("is_active", true).limit(500);
+        if (catalogError) throw catalogError;
+        nextProductId = matchNewCatalogProduct(freshText, catalog ?? []);
+      }
+      if (explicit || nextProductId) {
+        const { data: reopened, error: reopenError } = await supabase.from("conversations")
+          .update({sale_closed:false,is_closed:false,status:"abierta",
+            product_id:nextProductId ?? conversation.product_id})
+          .eq("workspace_id",conversation.workspace_id).eq("id",conversation.id)
+          .eq("sale_closed",true).select("id,product_id").maybeSingle();
+        if (reopenError) throw reopenError;
+        if (reopened) {
+          const {error:clearError}=await supabase.from("bot_sale_states")
+            .delete().eq("workspace_id",conversation.workspace_id)
+            .eq("conversation_id",conversation.id);
+          if (clearError) throw clearError;
+        }
+        conversation.sale_closed=false;
+        conversation.product_id=nextProductId ?? conversation.product_id;
+      }
+    }
     // No responder de nuevo si otro trabajador ya respondió a este inbound.
     const chatHistory = [...(history ?? [])].reverse().filter(m => Boolean(m.body)).map(m => ({
       role: m.sender === "customer" ? ("user" as const) : ("assistant" as const),
@@ -408,8 +438,37 @@ export const recoverPendingWithRules = createServerFn({ method: "POST" })
       ? `https://www.google.com/maps/search/?api=1&query=${coords.latitude},${coords.longitude}`
       : text.match(/https?:\/\/(?:maps\.app\.goo\.gl|goo\.gl\/maps|(?:www\.)?google\.[^\s/]+\/maps)\S*/i)?.[0]??null;
     const isGpsMessage=Boolean(gpsUrl);
-    // No reabrir pedidos cerrados por un recuperador comercial.
-    if(convo.sale_closed)return {skipped:true,reason:"Postventa: requiere verificación"};
+    // Una compra nueva verificable puede ser recuperada por código.
+    // Consulta logística o reclamo siguen siendo postventa.
+    if (convo.sale_closed) {
+      const { isNewPurchaseIntent, isNewPriceInquiry, matchNewCatalogProduct } =
+        await import("@/lib/whatsapp-webhook.server");
+      const phrase=String(newest.body??"");
+      const explicit=isNewPurchaseIntent(phrase,false);
+      let newProductId:string|null=null;
+      if(isNewPriceInquiry(phrase)) {
+        const {data:catalog,error:catalogError}=await supabase.from("products")
+          .select("id,name").eq("workspace_id",convo.workspace_id)
+          .eq("is_active",true).limit(500);
+        if(catalogError)throw catalogError;
+        newProductId=matchNewCatalogProduct(phrase,catalog??[]);
+      }
+      if(!explicit&&!newProductId)return {skipped:true,reason:"Postventa: requiere verificación"};
+      const {data:reopened,error:reopenError}=await supabase.from("conversations")
+        .update({sale_closed:false,is_closed:false,status:"abierta",
+          product_id:newProductId??convo.product_id})
+        .eq("workspace_id",convo.workspace_id).eq("id",convo.id)
+        .eq("sale_closed",true).select("id").maybeSingle();
+      if(reopenError)throw reopenError;
+      if(reopened){
+        const {error:clearError}=await supabase.from("bot_sale_states")
+          .delete().eq("workspace_id",convo.workspace_id)
+          .eq("conversation_id",convo.id);
+        if(clearError)throw clearError;
+      }
+      convo.sale_closed=false;
+      convo.product_id=newProductId??convo.product_id;
+    }
     const normalized=text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
     const reminder=/\b(?:ya (?:te|le|les) (?:pase|envie|mande)|ahi ya (?:te|le) pase)\b/.test(normalized)&&/\b(?:ubicacion|gps|maps)\b/.test(normalized);
     if(gpsUrl)previous.locationUrl=gpsUrl;
