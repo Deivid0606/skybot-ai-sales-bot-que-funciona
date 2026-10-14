@@ -262,7 +262,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     const gpsReply = previous.cityVerified && previous.city
       ? `📍 ¡Recibí y guardé tu ubicación! 😊 Ciudad confirmada: *${previous.city}*. Seguimos con tu pedido. 💚`
       : "📍 ¡Recibí y guardé tu ubicación! 😊🚚 Para confirmar nuestra cobertura, ¿me indicás *en qué ciudad* estás?";
-    if (isGpsMessage) result={reply:gpsReply,product_id:previous.productId??conversation.product_id,sale_closed:false,order:null};
+    if (isGpsMessage && mode === "rules_only") result={reply:gpsReply,product_id:previous.productId??conversation.product_id,sale_closed:false,order:null};
     else if (locationReminder && bypassSale && previous.locationUrl && mode !== "ai_first") {
       const missing=!previous.cityVerified?"Solo falta confirmar tu ciudad para verificar la cobertura.":!previous.customerName?"Solo me falta tu nombre y apellido para completar el pedido.":"Ya tengo la ubicación guardada para tu compra; voy a revisar los demás datos.";
       result={reply:`Tenés razón, disculpame. 🙏📍 *Tu ubicación ya está guardada*, no hace falta reenviarla. ${missing}`,product_id:previous.productId??conversation.product_id,sale_closed:false,order:null};
@@ -274,7 +274,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     } else {
       const verifiedSale=step?.state??previous;
       const aiContext=mode==="hybrid"?{...answerContext,systemInstruction:answerContext.systemInstruction+
-        `\nHÍBRIDO: El código ya presentó catálogo/precios. Desde la siguiente respuesta vendé con IA, sin repetir lista de precios ni preguntas ya contestadas. Datos de la venta actual verificados por código: ${JSON.stringify({productId:verifiedSale.productId,optionId:verifiedSale.optionId,quantity:verifiedSale.quantity,city:verifiedSale.city,department:verifiedSale.department,cityVerified:verifiedSale.cityVerified===true,coverageStatus:verifiedSale.coverageStatus,customerName:verifiedSale.customerName,gpsReceived:Boolean(verifiedSale.locationUrl),addressReceived:Boolean(verifiedSale.street)})}. No inventes cobertura, datos ni pedido registrado. El código validará y guardará pedidos. Preguntá solo lo pendiente.`}:answerContext;
+        `\nHÍBRIDO: El código ya presentó catálogo/precios. Desde la siguiente respuesta vendé con IA, sin repetir lista de precios ni preguntas ya contestadas. Datos de la venta actual verificados por código: ${JSON.stringify({productId:verifiedSale.productId,optionId:verifiedSale.optionId,quantity:verifiedSale.quantity,city:verifiedSale.city,department:verifiedSale.department,cityVerified:verifiedSale.cityVerified===true,coverageStatus:verifiedSale.coverageStatus,customerName:verifiedSale.customerName,gpsReceived:Boolean(verifiedSale.locationUrl),addressReceived:Boolean(verifiedSale.street)})}. No inventes cobertura, datos ni pedido registrado. El código validará y guardará pedidos. Si el GPS está recibido y falta el nombre, preguntá SOLO nombre y apellido. No exijas dirección escrita cuando ya hay GPS válido. Preguntá solo lo pendiente.`}:answerContext;
       try {result=await generateAiReply(aiContext);}
       catch (err) {
         // Fall back on quota/rate-limit errors even when optional general fallback is off.
@@ -286,10 +286,11 @@ export const aiReplyNow = createServerFn({ method: "POST" })
         fromRules=Boolean(step&&!step.needsAi);
       }
     }
-    if(isGpsMessage) result={reply:gpsReply,product_id:previous.productId??conversation.product_id,sale_closed:false,order:null};
+    // En híbrido, no sobrescribir la respuesta de la IA con el mensaje genérico de GPS.
+    // Si el código completó el pedido, el INSERT decidirá la confirmación.
     if(bypassSale)result={...result,sale_closed:false,order:null};
     // Persistir los datos capturados por reglas incluso si la IA redacta la respuesta.
-    if(step&&!step.needsAi){
+    if(step){
       const {error: stateSaveError}=await supabase.from("bot_sale_states").upsert({
         workspace_id:conversation.workspace_id,conversation_id:conversation.id,
         state:step.state,updated_at:new Date().toISOString()
@@ -434,7 +435,7 @@ export const recoverPendingWithRules = createServerFn({ method: "POST" })
     }
     // Si exige razonamiento no inventar: permanecer pendiente para agente humano.
     if(!reply)return {skipped:true,reason:"Requiere atención humana o IA"};
-    if(step && !step.needsAi && !isGpsMessage){
+    if(step && !isGpsMessage){
       const {error:saveError}=await supabase.from("bot_sale_states").upsert({
         workspace_id:convo.workspace_id,conversation_id:convo.id,state:step.state,updated_at:new Date().toISOString()
       },{onConflict:"workspace_id,conversation_id"});
