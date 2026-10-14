@@ -287,7 +287,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       }
     }
     if(isGpsMessage) result={reply:gpsReply,product_id:previous.productId??conversation.product_id,sale_closed:false,order:null};
-    if(bypassSale || isGpsMessage)result={...result,sale_closed:false,order:null};
+    if(bypassSale)result={...result,sale_closed:false,order:null};
     // Persistir los datos capturados por reglas incluso si la IA redacta la respuesta.
     if(step&&!step.needsAi){
       const {error: stateSaveError}=await supabase.from("bot_sale_states").upsert({
@@ -295,7 +295,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
         state:step.state,updated_at:new Date().toISOString()
       },{onConflict:"workspace_id,conversation_id"});
       if(stateSaveError)throw stateSaveError;
-      if(step.complete && !isGpsMessage){const st=step.state;
+      if(step.complete){const st=step.state;
         fromRules=true;
         result={reply:step.reply,product_id:step.productId,sale_closed:true,
           order:{customer_name:st.customerName!,city:st.city!,departamento:st.department!,
@@ -313,7 +313,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     let createdOrder: { id: string; order_number: string } | null = null;
     const orderCoverage=result.order ? verifiedCoverage(
       String(result.order.city??""),String(result.order.departamento??""),parseCoverage(ctx.training)) : null;
-    const valid = !conversation.sale_closed && !isGpsMessage && Boolean(orderCoverage?.active || (/anticip|transfer|deposit|giro/i.test(result.order?.payment_method ?? "") && /ANTICIPADO|TRANSFERENCIA/i.test(orderCoverage?.method ?? ""))) && (!previous.city || (previous.cityVerified && previous.coverageStatus === "covered")) && Boolean(result.order) &&
+    const valid = !conversation.sale_closed && Boolean(orderCoverage?.active || (/anticip|transfer|deposit|giro/i.test(result.order?.payment_method ?? "") && /ANTICIPADO|TRANSFERENCIA/i.test(orderCoverage?.method ?? ""))) && (!previous.city || (previous.cityVerified && previous.coverageStatus === "covered")) && Boolean(result.order) &&
       isOrderReady(result.order, detectedProduct) &&
       (Boolean(step?.state.cartLines?.length) || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory));
     if (valid && result.order && detectedProduct) {
@@ -452,7 +452,7 @@ export const recoverPendingWithRules = createServerFn({ method: "POST" })
     if(latestError)throw latestError;
     if(latest?.id!==newest.id||latest.direction!=="inbound")return {skipped:true,reason:"Otro proceso ya respondió"};
     let createdOrder: {id:string;order_number:string}|null=null;
-    if(step?.complete && !isGpsMessage){
+    if(step?.complete){
       const st=step.state;
       const order={customer_name:st.customerName!,city:st.city!,departamento:st.department!,street:st.street??undefined,
         quantity:st.quantity!,product_price_id:st.optionId??undefined,payment_method:st.paymentMethod!,phone:convo.contacts.phone};
