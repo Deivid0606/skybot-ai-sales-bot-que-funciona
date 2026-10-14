@@ -1497,7 +1497,8 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         ? `📍 ¡Recibí y guardé tu ubicación! 😊 Ya tengo tu ciudad confirmada: *${previousSale.city}*. Seguimos con tu pedido. 💚`
         : "📍 ¡Recibí y guardé tu ubicación! 😊🚚 Para confirmar nuestra cobertura, ¿me indicás *en qué ciudad* estás?";
       safeDecision = {reply:msg,productId:previousSale.productId??conversation.product_id,reason:"ubicacion_ciudad_confirmacion"};
-      saveStep = null;
+      // Conservar el paso calculado: si el GPS completa la venta, registrar ahora.
+      saveStep = ruleStep;
     }
     if (safeDecision) {
       result = {reply: safeDecision.reply, product_id: safeDecision.productId, sale_closed: false, order: null};
@@ -1528,14 +1529,14 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     if (isGpsMessage && ruleStep && !ruleStep.needsAi && /(?:sin cobertura|no tenemos cobertura|pago anticipado|datos bancarios)/i.test(result.reply) && previousSale.coverageStatus !== "uncovered") {
       result = {...result,reply:ruleStep.reply};
     }
-    if (bypassSale || isGpsMessage) result = {...result, sale_closed:false, order:null};
+    if (bypassSale) result = {...result, sale_closed:false, order:null};
     if (saveStep && !saveStep.needsAi) {
       const {error: saveStateError} = await supabaseAdmin.from("bot_sale_states")
         .upsert({workspace_id:workspaceId,conversation_id:conversation.id,
           state:saveStep.state,updated_at:new Date().toISOString()},
           {onConflict:"workspace_id,conversation_id"});
       if(saveStateError) throw saveStateError;
-      if(saveStep.complete && !isGpsMessage && !conversation.sale_closed) {
+      if(saveStep.complete && !conversation.sale_closed) {
         const st=saveStep.state;
         result = {reply:saveStep.reply,product_id:saveStep.productId,sale_closed:true,
           order:{customer_name:st.customerName!,city:st.city!,departamento:st.department!,
@@ -1578,6 +1579,8 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         "Estoy verificando los datos de tu pedido")
       .replace(/\b(?:tu|su)\s+pedido\s+(?:ya\s+)?(?:quedo|esta)\s+(?:confirmado|registrado|agendado)\b/gi,
         "Tu pedido está pendiente de verificación");
+    const deferGpsReply = Boolean(isGpsMessage && saveStep?.complete && result.order && !conversation.sale_closed);
+    if (!deferGpsReply) {
     const wamid = await sendWhatsAppText(conn, phone, safeBeforeInsert);
 
     await supabaseAdmin.from("messages").insert({
@@ -1603,6 +1606,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       })
       .eq("id", conversation.id);
 
+    }
     // Pago anticipado: no registrar si todavía no hay archivo de comprobante.
     // La recepción del archivo NO equivale a dinero acreditado.
     const isAdvance = /anticip|transfer|deposit|giro/i.test(result.order?.payment_method ?? "");
@@ -1633,7 +1637,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
      */
     const verifiedOrderCoverage = result.order ? verifiedCoverage(
       String(result.order.city??""),String(result.order.departamento??""),parseCoverage(ctx.training)) : null;
-    if (!conversation.sale_closed && result.order && orderReady && !isGpsMessage && (verifiedOrderCoverage?.active || (isAdvance && /ANTICIPADO|TRANSFERENCIA/i.test(verifiedOrderCoverage?.method ?? ""))) && (!previousSale.city || (previousSale.cityVerified && previousSale.coverageStatus === "covered"))) {
+    if (!conversation.sale_closed && result.order && orderReady && (verifiedOrderCoverage?.active || (isAdvance && /ANTICIPADO|TRANSFERENCIA/i.test(verifiedOrderCoverage?.method ?? ""))) && (!previousSale.city || (previousSale.cityVerified && previousSale.coverageStatus === "covered"))) {
       const completedOrder = {
         ...result.order,
         phone,
@@ -1708,6 +1712,15 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
           error: confirmationError instanceof Error ? confirmationError.message : String(confirmationError),
         });
       }
+    } else if (deferGpsReply) {
+      // Si la validación final impidió guardar, no dejar el GPS sin respuesta.
+      const pendingText = "📍 Recibí y guardé tu ubicación. Un asesor verificará los datos pendientes del pedido; todavía no está registrado.";
+      const pendingWamid = await sendWhatsAppText(conn, phone, pendingText);
+      await supabaseAdmin.from("messages").insert({workspace_id:workspaceId,user_id:ownerId,
+        conversation_id:conversation.id,ad_id:attributedAdId,direction:"outbound",sender:"ai",
+        response_origin:"code",body:pendingText,wamid:pendingWamid,status:"sent"} as any);
+      await supabaseAdmin.from("conversations").update({last_message:pendingText,
+        last_message_at:new Date().toISOString(),unread_count:0}).eq("workspace_id",workspaceId).eq("id",conversation.id);
     } else if (result.sale_closed && !result.order) {
       await logOrderIssue({
         workspaceId,
