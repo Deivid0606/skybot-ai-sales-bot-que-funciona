@@ -1465,7 +1465,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     const verifiedSaleState = ruleStep?.state ?? previousSale;
     const aiAnswerContext = hybridMode === "hybrid" ? {
       ...answerContext,
-      systemInstruction: answerContext.systemInstruction + `\nMODO HÍBRIDO BOT SKY, PRIORIDAD ALTA: Ya fue enviado por CÓDIGO el copy, la imagen y los precios del catálogo. DESDE AHORA CONVERSÁ VOS con el comprador de forma natural: resolvé una sola pregunta por vez y no repitas catálogo/precios completos ni datos ya recibidos. Cantidad y variante se capturan mediante código y deben respetarse. No confirmes pedidos sin número real generado por Supabase. El cliente puede comprar varias veces. DATOS VERIFICADOS DEL CICLO ACTUAL (no mezclar con pedidos previos): ${JSON.stringify({productId:verifiedSaleState.productId,optionId:verifiedSaleState.optionId,quantity:verifiedSaleState.quantity,city:verifiedSaleState.city,department:verifiedSaleState.department,cityVerified:verifiedSaleState.cityVerified===true,coverageStatus:verifiedSaleState.coverageStatus,customerName:verifiedSaleState.customerName,hasAddress:Boolean(verifiedSaleState.street),gpsReceived:Boolean(verifiedSaleState.locationUrl),paymentMethod:verifiedSaleState.paymentMethod,awaiting:verifiedSaleState.awaiting})}. COBERTURA: si cityVerified no es true, NUNCA digas que tenemos cobertura; consultá la ciudad si falta. GPS no prueba por sí mismo ninguna ciudad. Si recibiste GPS no vuelvas a solicitarlo; si la ciudad es verificada y falta solo referencia, pedí referencia. Si no tenés precio/variante sin ambigüedad pedí aclaración. Si está completo, el código registrará el pedido; no inventes un número de orden ni digas que está confirmado.`
+      systemInstruction: answerContext.systemInstruction + `\nMODO HÍBRIDO BOT SKY, PRIORIDAD ALTA: Ya fue enviado por CÓDIGO el copy, la imagen y los precios del catálogo. DESDE AHORA CONVERSÁ VOS con el comprador de forma natural: resolvé una sola pregunta por vez y no repitas catálogo/precios completos ni datos ya recibidos. Cantidad y variante se capturan mediante código y deben respetarse. No confirmes pedidos sin número real generado por Supabase. El cliente puede comprar varias veces. DATOS VERIFICADOS DEL CICLO ACTUAL (no mezclar con pedidos previos): ${JSON.stringify({productId:verifiedSaleState.productId,optionId:verifiedSaleState.optionId,quantity:verifiedSaleState.quantity,city:verifiedSaleState.city,department:verifiedSaleState.department,cityVerified:verifiedSaleState.cityVerified===true,coverageStatus:verifiedSaleState.coverageStatus,customerName:verifiedSaleState.customerName,hasAddress:Boolean(verifiedSaleState.street),gpsReceived:Boolean(verifiedSaleState.locationUrl),paymentMethod:verifiedSaleState.paymentMethod,awaiting:verifiedSaleState.awaiting})}. COBERTURA: si cityVerified no es true, NUNCA digas que tenemos cobertura; consultá la ciudad si falta. GPS no prueba por sí mismo ninguna ciudad. Si recibiste GPS no vuelvas a solicitarlo. El GPS es dirección suficiente si la configuración de la ciudad admite dirección por ubicación. Si el nombre falta, preguntá SOLO nombre y apellido, NO domicilio ni referencia adicionales. Si no tenés precio/variante sin ambigüedad pedí aclaración. Si está completo, el código registrará el pedido; no inventes un número de orden ni digas que está confirmado.`
     } : answerContext;
     let saveStep = ruleStep;
     // En híbrido: reglas administran producto/ciudad/importe y siempre registran el
@@ -1493,11 +1493,20 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       safeDecision = {reply:`Tenés razón, disculpame. 🙏📍 *Tu ubicación ya está guardada*, no hace falta que la vuelvas a enviar. ${missing}`,productId:previousSale.productId??conversation.product_id,reason:"gps_ya_guardado"};
     }
     if (isGpsMessage) {
-      const msg = previousSale.cityVerified && previousSale.city
-        ? `📍 ¡Recibí y guardé tu ubicación! 😊 Ya tengo tu ciudad confirmada: *${previousSale.city}*. Seguimos con tu pedido. 💚`
-        : "📍 ¡Recibí y guardé tu ubicación! 😊🚚 Para confirmar nuestra cobertura, ¿me indicás *en qué ciudad* estás?";
-      safeDecision = {reply:msg,productId:previousSale.productId??conversation.product_id,reason:"ubicacion_ciudad_confirmacion"};
-      // Conservar el paso calculado: si el GPS completa la venta, registrar ahora.
+      // GPS no debe forzar una respuesta de código en modo híbrido:
+      // la IA solicita el ÚNICO dato pendiente, o el código confirma tras el INSERT.
+      // La ciudad nunca se infiere de las coordenadas.
+      if (hybridMode === "rules_only") {
+        const missingName = Boolean(previousSale.cityVerified && !ruleStep?.state.customerName);
+        const msg = !previousSale.cityVerified
+          ? "📍 ¡Recibí tu ubicación! ¿En qué ciudad estás para verificar la cobertura?"
+          : missingName
+            ? "📍 ¡Recibí tu ubicación! 😊 Solo me falta tu nombre y apellido para registrar el pedido."
+            : "📍 ¡Recibí y guardé tu ubicación! Seguimos con tu pedido.";
+        safeDecision = {reply:msg,productId:previousSale.productId??conversation.product_id,reason:"ubicacion_reglas"};
+      } else {
+        safeDecision = null;
+      }
       saveStep = ruleStep;
     }
     if (safeDecision) {
@@ -1530,7 +1539,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       result = {...result,reply:ruleStep.reply};
     }
     if (bypassSale) result = {...result, sale_closed:false, order:null};
-    if (saveStep && !saveStep.needsAi) {
+    if (saveStep) {
       const {error: saveStateError} = await supabaseAdmin.from("bot_sale_states")
         .upsert({workspace_id:workspaceId,conversation_id:conversation.id,
           state:saveStep.state,updated_at:new Date().toISOString()},
@@ -1579,7 +1588,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         "Estoy verificando los datos de tu pedido")
       .replace(/\b(?:tu|su)\s+pedido\s+(?:ya\s+)?(?:quedo|esta)\s+(?:confirmado|registrado|agendado)\b/gi,
         "Tu pedido está pendiente de verificación");
-    const deferGpsReply = Boolean(isGpsMessage && saveStep?.complete && result.order && !conversation.sale_closed);
+    const deferGpsReply = Boolean(saveStep?.complete && result.order && !conversation.sale_closed);
     if (!deferGpsReply) {
     const wamid = await sendWhatsAppText(conn, phone, safeBeforeInsert);
 
@@ -1714,7 +1723,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       }
     } else if (deferGpsReply) {
       // Si la validación final impidió guardar, no dejar el GPS sin respuesta.
-      const pendingText = "📍 Recibí y guardé tu ubicación. Un asesor verificará los datos pendientes del pedido; todavía no está registrado.";
+      const pendingText = "📍 Recibí tus datos. Todavía no pude registrar el pedido; un asesor debe verificar la información pendiente.";
       const pendingWamid = await sendWhatsAppText(conn, phone, pendingText);
       await supabaseAdmin.from("messages").insert({workspace_id:workspaceId,user_id:ownerId,
         conversation_id:conversation.id,ad_id:attributedAdId,direction:"outbound",sender:"ai",
