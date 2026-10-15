@@ -1,5 +1,20 @@
 const GATEWAY = "https://ai.gateway.lovable.dev/v1/chat/completions";
 
+// Limites defensivos por mensaje, configurables en Vercel.
+const MAX_HISTORY_MESSAGES = 10;
+const MAX_HISTORY_CHARS = 950;
+const MAX_OUTPUT_TOKENS = 768; // JSON de pedido y respuesta; probar antes de bajar a 512.
+const MAX_PROVIDER_ATTEMPTS = 2;
+const MAX_PROMPT_CHARS = 30000;
+function limitedHistory(ctx: AiContext) {
+  return ctx.history.slice(-MAX_HISTORY_MESSAGES).map(message => ({
+    role: message.role,
+    content: message.content.slice(-MAX_HISTORY_CHARS),
+  }));
+}
+function lastCustomerText(ctx: AiContext) {
+  return ctx.history.filter(h => h.role === "user").slice(-2).map(h => h.content).join(" ").toLowerCase();
+}
 const DEFAULT_GATEWAY_MODEL =
   process.env.LOVABLE_CHAT_MODEL?.trim() || "google/gemini-3-flash";
 
@@ -84,7 +99,15 @@ function cleanString(value: unknown): string {
 function buildSystemPrompt(ctx: AiContext): string {
   const detectedCustomerPhone = cleanString(ctx.customerPhone);
 
-  const catalog = ctx.products
+  const query = lastCustomerText(ctx).normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  const fullProducts = ctx.products.filter(product => {
+    const words = [product.name, ...(product.keywords ?? [])].map(s => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
+    return product.id === ctx.activeProductId || words.some(s => s.length >= 4 && query.includes(s));
+  });
+  // Indice compacto de otros productos: la IA identifica el nuevo producto sin reenviar todos los copys.
+  const compactIndex = ctx.products.filter(p => !fullProducts.some(f => f.id === p.id))
+    .map(p => `${p.id}:${p.name}`).join(" | ").slice(0, 5000);
+  const catalog = fullProducts
     .map((product) => {
       const variants = [...(product.product_prices ?? [])]
         .sort((a, b) => a.sort_order - b.sort_order)
@@ -115,13 +138,20 @@ ${variants || `    - precio_unitario_heredado:${product.promo_price ?? product.p
 
   const knowledge = sortedTraining
     .filter((entry) => !isRule(entry.category))
+    .filter((entry) => {
+      // Cobertura, entregas, pagos y otras normas deben estar siempre accesibles.
+      const heading = (entry.title + " " + entry.category).toLowerCase();
+      if (/cobertura|ciudad|entrega|envio|pago|banco|factur|horario|garantia|politica/.test(heading)) return true;
+      const keywords = entry.title.toLowerCase().split(/[^a-záéíóúñ0-9]+/).filter(w => w.length > 4);
+      return keywords.some(w => query.includes(w)) || entry.priority >= 90;
+    })
     .map(
       (entry) =>
         `- [${entry.category}] ${entry.title}: ${entry.content}`,
     )
     .join("\n");
 
-  return `Eres un vendedor humano y cercano de ${
+  const prompt = `Eres un vendedor humano y cercano de ${
     ctx.businessName || "la tienda"
   }. Vendes por WhatsApp en español latino.
 
@@ -180,7 +210,8 @@ PERSONALIDAD Y POLÍTICAS DEL NEGOCIO:
 ${ctx.systemInstruction || "Amable, directo y confiable."}
 
 CATÁLOGO:
-${catalog || "Sin productos cargados."}
+${catalog || "Sin producto activo. Si hay ambigüedad, pregunta cuál producto busca."}
+ÍNDICE DE PRODUCTOS: ${compactIndex || "-"}
 
 CONOCIMIENTO ENTRENADO:
 ${knowledge || "Sin entrenamiento adicional."}
@@ -197,6 +228,12 @@ Forma exacta:
 Cuando detectes un producto, product_id debe contener su id real del catálogo.
 Cuando cierres la venta, order debe tener esta forma:
 {"customer_name":"","phone":"","city":"","departamento":"","district":"","street":"","quantity":1,"product_price_id":"id-real-de-product_prices","price_option_label":"nombre exacto","payment_method":"","observations":""}.`;
+  // Protección ante entrenamientos anormalmente extensos.
+  if (prompt.length <= MAX_PROMPT_CHARS) return prompt;
+  // Conservamos SIEMPRE el formato JSON final, esencial para registrar pedidos.
+  const tail = prompt.slice(-3200);
+  return prompt.slice(0, MAX_PROMPT_CHARS - tail.length - 90) +
+    "\n[CONTEXTO EXTENSO OMITIDO POR LÍMITE DE COSTO]\n" + tail;
 }
 
 function stripMarkdownCodeFence(raw: string): string {
@@ -463,11 +500,7 @@ function ensureValidResult(result: AiResult): AiResult {
   };
 }
 
-const GEMINI_FALLBACK_MODELS = [
-  "gemini-3.6-flash",
-  "gemini-3.5-flash",
-  "gemini-3.1-flash-lite",
-] as const;
+const GEMINI_FALLBACK_MODELS = ["gemini-2.5-flash-lite"] as const;
 
 const RETRYABLE_GEMINI_STATUSES = new Set([
   408,
@@ -478,8 +511,8 @@ const RETRYABLE_GEMINI_STATUSES = new Set([
   504,
 ]);
 
-const GEMINI_MAX_ATTEMPTS_PER_MODEL = 3;
-const GEMINI_REQUEST_TIMEOUT_MS = 45_000;
+const GEMINI_MAX_ATTEMPTS_PER_MODEL = 2;
+const GEMINI_REQUEST_TIMEOUT_MS = 20_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -499,7 +532,8 @@ function uniqueNonEmptyStrings(values: Array<string | null | undefined>): string
 
 function getGeminiCandidates(preferredModel?: string | null): string[] {
   return uniqueNonEmptyStrings([
-    preferredModel,
+    // Evita accidentalmente modelos Pro de alto costo.
+    preferredModel && /flash/i.test(preferredModel) ? preferredModel : null,
     ...GEMINI_FALLBACK_MODELS,
   ]);
 }
@@ -561,12 +595,12 @@ async function generateWithGemini(
               systemInstruction: {
                 parts: [{ text: buildSystemPrompt(ctx) }],
               },
-              contents: ctx.history.slice(-24).map((message) => ({
+              contents: limitedHistory(ctx).map((message) => ({
                 role: message.role === "assistant" ? "model" : "user",
                 parts: [{ text: message.content }],
               })),
               generationConfig: {
-                maxOutputTokens: 2048,
+                maxOutputTokens: MAX_OUTPUT_TOKENS,
                 responseMimeType: "application/json",
               },
             }),
@@ -586,8 +620,21 @@ async function generateWithGemini(
             promptFeedback?: {
               blockReason?: string;
             };
+            usageMetadata?: {
+              promptTokenCount?: number;
+              candidatesTokenCount?: number;
+              totalTokenCount?: number;
+            };
           };
 
+          if (json.usageMetadata) {
+            console.info("[BOT_SKY_AI_USAGE]", JSON.stringify({
+              provider: "gemini", model,
+              input_tokens: json.usageMetadata.promptTokenCount ?? 0,
+              output_tokens: json.usageMetadata.candidatesTokenCount ?? 0,
+              total_tokens: json.usageMetadata.totalTokenCount ?? 0,
+            }));
+          }
           const raw =
             json.candidates?.[0]?.content?.parts
               ?.map((part) => part.text ?? "")
@@ -706,7 +753,7 @@ async function generateWithGateway(ctx: AiContext): Promise<AiResult> {
           role: "system",
           content: buildSystemPrompt(ctx),
         },
-        ...ctx.history.slice(-24),
+        ...limitedHistory(ctx),
       ],
       temperature: 0.35,
       response_format: {
@@ -761,7 +808,7 @@ async function generateWithExternalProvider(ctx: AiContext, provider: string, ke
   };
   const model = ctx.providerModels?.[provider]?.trim() || defaults[provider];
   if (!model) throw new Error(`Proveedor desconocido: ${provider}`);
-  const messages = [{ role: "system", content: buildSystemPrompt(ctx) }, ...ctx.history.slice(-24)];
+  const messages = [{ role: "system", content: buildSystemPrompt(ctx) }, ...limitedHistory(ctx)];
   let url: string;
   let body: Record<string, unknown>;
   let headers: Record<string, string> = {"Content-Type": "application/json", Authorization: `Bearer ${key}`};
@@ -770,7 +817,7 @@ async function generateWithExternalProvider(ctx: AiContext, provider: string, ke
     if (!account || !/^[a-zA-Z0-9_-]+$/.test(account)) throw new Error("Cloudflare requiere Account ID válido");
     if (!/^@cf\/[a-zA-Z0-9._/-]+$/.test(model)) throw new Error("Modelo Cloudflare inválido");
     url = `https://api.cloudflare.com/client/v4/accounts/${account}/ai/run/${model}`;
-    body = {messages, max_tokens: 2048};
+    body = {messages, max_tokens: MAX_OUTPUT_TOKENS};
   } else {
     const endpoints: Record<string, string> = {
       groq: "https://api.groq.com/openai/v1/chat/completions",
@@ -779,7 +826,7 @@ async function generateWithExternalProvider(ctx: AiContext, provider: string, ke
     };
     url = endpoints[provider];
     if (!url) throw new Error("Proveedor no compatible");
-    body = {model, messages, temperature: 0.25, max_tokens: 2048};
+    body = {model, messages, temperature: 0.25, max_tokens: MAX_OUTPUT_TOKENS};
   }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 25000);
@@ -811,11 +858,14 @@ export async function generateAiReply(ctx: AiContext): Promise<AiResult> {
   const configured = Array.isArray(ctx.providerOrder) && ctx.providerOrder.length ? ctx.providerOrder : defaults;
   const order = [...new Set([...configured, ...defaults])].filter(p => p in keys);
   const triedKeys = new Set<string>();
+  let remoteCalls = 0;
   const failures: string[] = [];
   for (const provider of order) {
+    if (remoteCalls >= MAX_PROVIDER_ATTEMPTS) break;
     const key = keys[provider]?.trim();
     if (!key || triedKeys.has(`${provider.startsWith("gemini") ? "gemini" : provider}:${key}`)) continue;
     triedKeys.add(`${provider.startsWith("gemini") ? "gemini" : provider}:${key}`);
+    remoteCalls += 1;
     try {
       return provider.startsWith("gemini") ? await generateWithGemini(ctx, key) : await generateWithExternalProvider(ctx, provider, key);
     } catch (error) {
@@ -824,7 +874,7 @@ export async function generateAiReply(ctx: AiContext): Promise<AiResult> {
       failures.push(`${provider}: ${reason.slice(0, 200)}`);
     }
   }
-  if (process.env.LOVABLE_API_KEY?.trim()) {
+  if (remoteCalls < MAX_PROVIDER_ATTEMPTS && process.env.LOVABLE_API_KEY?.trim()) {
     try {return await generateWithGateway(ctx);} catch (error) {
       failures.push(`lovable: ${error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200)}`);
     }
