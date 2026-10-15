@@ -166,8 +166,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     if (!aiSettings?.ai_enabled) return { skipped: true, reply: "" };
     const ctx = await buildWorkspaceAiContext(supabase, conversation.workspace_id,
       chatHistory, conversation.product_id, conversation.contacts?.phone ?? null);
-    const mode = aiSettings?.hybrid_mode === "ai_first" || aiSettings?.hybrid_mode === "rules_only"
-      ? aiSettings.hybrid_mode : "hybrid";
+    const mode: "hybrid" = "hybrid"; // El botón azul responde exclusivamente mediante IA.
     const text = String(newest.body ?? "");
     const {coordinatesFromText}=await import("@/lib/hybrid-intent.server");
     const {parseCoverage,verifiedCoverage}=await import("@/lib/rule-sales.server");
@@ -184,9 +183,11 @@ export const aiReplyNow = createServerFn({ method: "POST" })
           workspaceId:conversation.workspace_id,conversationId:conversation.id,gpsUrl:postSaleUrl,
         }); } catch(error){ console.error("[Inbox postventa] GPS no asociado",error); }
       }
-      const reply = attached
-        ? "📍 ¡Perfecto! 😊 Guardé tu ubicación en tu pedido ya registrado. No necesitás volver a confirmar la ciudad. ¡Gracias! 🚚💚"
-        : "📍 Recibí tu ubicación. Tu pedido ya está registrado; un asesor verificará que quede asociada a la entrega. 💚";
+      const gpsCtx=await addVerifiedOrderContext(supabase,ctx,conversation.workspace_id,conversation.contacts?.phone);
+      let reply:string;
+      try {reply=(await generateAiReply({...gpsCtx,systemInstruction:gpsCtx.systemInstruction+
+        `\nRESULTADO REAL DE GPS: ${attached?"ubicación guardada en orders":"no fue posible guardar la ubicación"}. Contestá el último mensaje sin inventar acciones.`})).reply;}
+      catch(error){console.error("[Inbox GPS IA] Sin respuesta",error);return {skipped:true,reason:"IA no disponible"};}
       const {data:conn} = await supabase.from("whatsapp_connections")
         .select("phone_number_id,access_token")
         .eq("workspace_id",conversation.workspace_id).maybeSingle();
@@ -195,7 +196,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       const wamid=await sendWhatsAppText(conn,phone,reply);
       const {error:insertError}=await supabase.from("messages").insert({
         workspace_id:conversation.workspace_id,user_id:conversation.user_id,
-        conversation_id:conversation.id,direction:"outbound",sender:"ai",response_origin:"code",body:reply,
+        conversation_id:conversation.id,direction:"outbound",sender:"ai",response_origin:"ai",body:reply,
         wamid,status:"sent",
       });
       if(insertError)throw insertError;
@@ -209,7 +210,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       const safeCtx={...verified,systemInstruction:verified.systemInstruction+"\nPOSTVENTA PRIORITARIA: YA hay pedido registrado. Respondé sobre ese pedido sin promociones, sin nuevas ventas ni pedir datos otra vez. No prometas entregas ni acciones logísticas sin verificación. Si es saludo, respondé breve."};
       let reply:string;
       try {reply=(await generateAiReply(safeCtx)).reply?.trim() || "";}
-      catch(error){console.error("[Inbox postventa] IA no disponible",error);reply="Entiendo tu consulta. 🙏 Un asesor debe revisar el estado real del pedido para confirmar la entrega.";}
+      catch(error){console.error("[Inbox postventa] IA no disponible",error);return {skipped:true,reason:"IA no disponible"};}
       if(!reply)reply="Un asesor debe verificar el estado actual de tu pedido. Gracias por tu paciencia. 🙏";
       const {data:conn}=await supabase.from("whatsapp_connections").select("phone_number_id,access_token").eq("workspace_id",conversation.workspace_id).maybeSingle();
       if(!conn?.phone_number_id||!conn.access_token||!conversation.contacts?.phone)throw new Error("WhatsApp no conectado");
@@ -252,7 +253,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       ? addPendingSaleContext(orderContext, previous) : orderContext;
     const saleText=isGpsMessage ? `📍 Ubicación compartida${previous.locationUrl?`\n${previous.locationUrl}`:""}` : savedSaleReadyForFinalization ? "Confirmo mis datos para registrar el pedido" : text;
     let step=mode!=="ai_first"&&!bypassSale?advanceRuleSale(ctx,saleText,previous, (newest.media_type === "image" || newest.media_type === "document") ? newest.media_url : null,previous.locationUrl):null;
-    const ruleMustAnswer=mode!=="hybrid"||Boolean(step?.complete);
+    const ruleMustAnswer=mode==="rules_only";
     const decision=(!isGpsMessage||mode==="rules_only")&&step&&!step.needsAi&&ruleMustAnswer
       ?{reply:step.reply,productId:step.productId}
       :(mode==="hybrid"?null:((intent==="complex"||intent==="order_status"||intent==="price")&&mode!=="rules_only"
@@ -263,7 +264,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       ? `📍 ¡Recibí y guardé tu ubicación! 😊 Ciudad confirmada: *${previous.city}*. Seguimos con tu pedido. 💚`
       : "📍 ¡Recibí y guardé tu ubicación! 😊🚚 Para confirmar nuestra cobertura, ¿me indicás *en qué ciudad* estás?";
     if (isGpsMessage && mode === "rules_only") result={reply:gpsReply,product_id:previous.productId??conversation.product_id,sale_closed:false,order:null};
-    else if (locationReminder && bypassSale && previous.locationUrl && mode !== "ai_first") {
+    else if (locationReminder && bypassSale && previous.locationUrl && mode === "rules_only") {
       const missing=!previous.cityVerified?"Solo falta confirmar tu ciudad para verificar la cobertura.":!previous.customerName?"Solo me falta tu nombre y apellido para completar el pedido.":"Ya tengo la ubicación guardada para tu compra; voy a revisar los demás datos.";
       result={reply:`Tenés razón, disculpame. 🙏📍 *Tu ubicación ya está guardada*, no hace falta reenviarla. ${missing}`,product_id:previous.productId??conversation.product_id,sale_closed:false,order:null};
     }
@@ -277,13 +278,8 @@ export const aiReplyNow = createServerFn({ method: "POST" })
         `\nHÍBRIDO: El código ya presentó catálogo/precios. Desde la siguiente respuesta vendé con IA, sin repetir lista de precios ni preguntas ya contestadas. Datos de la venta actual verificados por código: ${JSON.stringify({productId:verifiedSale.productId,optionId:verifiedSale.optionId,quantity:verifiedSale.quantity,city:verifiedSale.city,department:verifiedSale.department,cityVerified:verifiedSale.cityVerified===true,coverageStatus:verifiedSale.coverageStatus,customerName:verifiedSale.customerName,gpsReceived:Boolean(verifiedSale.locationUrl),addressReceived:Boolean(verifiedSale.street)})}. No inventes cobertura, datos ni pedido registrado. El código validará y guardará pedidos. Si el GPS está recibido y falta el nombre, preguntá SOLO nombre y apellido. No exijas dirección escrita cuando ya hay GPS válido. Preguntá solo lo pendiente.`}:answerContext;
       try {result=await generateAiReply(aiContext);}
       catch (err) {
-        // Fall back on quota/rate-limit errors even when optional general fallback is off.
-        if(aiSettings?.hybrid_fallback_enabled===false && !isAiQuotaFailure(err))throw err;
-        step=bypassSale?null:advanceRuleSale(ctx,saleText,previous, (newest.media_type === "image" || newest.media_type === "document") ? newest.media_url : null,previous.locationUrl);
-        const back=step&&!step.needsAi?{reply:step.reply,productId:step.productId}:decideHybridReply({ctx,text,mode,fallback:true});
-        if(!back)throw err;
-        result={reply:back.reply,product_id:back.productId,sale_closed:false,order:null};
-        fromRules=Boolean(step&&!step.needsAi);
+        console.error("[BOT SKY Inbox IA] Proveedor no disponible; mensaje sigue pendiente",err);
+        return {skipped:true,reason:"IA no disponible; no se envió respuesta automática de código"};
       }
     }
     // En híbrido, no sobrescribir la respuesta de la IA con el mensaje genérico de GPS.
@@ -297,8 +293,8 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       },{onConflict:"workspace_id,conversation_id"});
       if(stateSaveError)throw stateSaveError;
       if(step.complete){const st=step.state;
-        fromRules=true;
-        result={reply:step.reply,product_id:step.productId,sale_closed:true,
+        fromRules=mode === "rules_only";
+        result={reply:mode === "rules_only" ? step.reply : result.reply,product_id:step.productId,sale_closed:true,
           order:{customer_name:st.customerName!,city:st.city!,departamento:st.department!,
             street:st.street??undefined,quantity:st.quantity!,product_price_id:st.optionId??undefined,
             payment_method:st.paymentMethod!,phone:conversation.contacts?.phone??""}};
@@ -353,9 +349,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     const options = ctx.products.find(p => p.id === detectedProduct)?.product_prices ?? [];
     const reply = createdOrder
       ? `✅ PEDIDO REGISTRADO\n📦 N.º ${createdOrder.order_number}\n${(result.order?.payment_method ?? "").toLowerCase().includes("anticip") ? "💳 Comprobante sujeto a verificación por el vendedor." : "¡Gracias por tu compra!"}`
-      : needsVariant
-        ? `¿Cuál variante preferís?\n${options.map(o => `• ${o.label}: Gs. ${o.price.toLocaleString("es-PY")}`).join("\n")}`
-        : result.reply
+      : result.reply
           .replace(/(?:✅\s*)?PEDIDO\s+(?:CONFIRMADO|REGISTRADO)/gi, "Estamos verificando los datos del pedido")
           .replace(/\b(?:ya\s+)?(?:registre|registramos|tome|tomamos|agende|agendamos)\s+(?:tu|su|el)\s+pedido\b/gi,
             "Estoy verificando los datos de tu pedido");
@@ -363,7 +357,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     const { error: insertError } = await supabase.from("messages").insert({
       workspace_id: conversation.workspace_id, user_id: conversation.user_id,
       conversation_id: conversation.id, direction: "outbound", sender: "ai",
-      response_origin: (isGpsMessage || Boolean(createdOrder && fromRules) || Boolean(decision) || mode === "rules_only" || (fromRules && step && !step.needsAi)) ? "code" : "ai",
+      response_origin: mode === "rules_only" ? "code" : "ai",
       body: reply, wamid, status: "sent",
     } as any);
     if (insertError) throw insertError;
