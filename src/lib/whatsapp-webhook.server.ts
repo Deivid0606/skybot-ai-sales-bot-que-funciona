@@ -1302,18 +1302,26 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       } catch(error) {
         console.error("[BOT SKY postventa] No se pudo asociar el GPS al pedido",error);
       }
-      const reply = attached
-        ? "📍 ¡Perfecto! 😊 Guardé tu ubicación en tu pedido ya registrado. No necesitás volver a confirmar la ciudad. ¡Gracias! 🚚💚"
-        : "📍 ¡Recibí tu ubicación! 😊 Tu pedido ya está registrado, pero no pude asociar el GPS al pedido. Un asesor puede verificarlo. 💚";
-      const wamid=await sendWhatsAppText(conn,phone,reply);
-      await supabaseAdmin.from("messages").insert({
-        workspace_id:workspaceId,user_id:ownerId,conversation_id:conversation.id,
-        ad_id:attributedAdId,direction:"outbound",sender:"ai",body:reply,
-        wamid,status:"sent"
-      });
-      await supabaseAdmin.from("conversations").update({
-        last_message:reply,last_message_at:new Date().toISOString(),unread_count:0,
-      }).eq("workspace_id",workspaceId).eq("id",conversation.id);
+      // GPS guardado: la IA contesta usando el resultado real, sin respuesta fija por código.
+      const {data:gpsHistory}=await supabaseAdmin.from("messages")
+        .select("sender,body").eq("workspace_id",workspaceId)
+        .eq("conversation_id",conversation.id)
+        .order("created_at",{ascending:false}).limit(24);
+      const gpsChatHistory=(gpsHistory??[]).reverse().filter(m=>Boolean(m.body))
+        .map(m=>({role:m.sender==="customer"?("user" as const):("assistant" as const),content:String(m.body)}));
+      const gpsCtx=await buildWorkspaceAiContext(supabaseAdmin,workspaceId,gpsChatHistory,conversation.product_id,phone);
+      const gpsVerified=await addVerifiedOrderContext(supabaseAdmin,gpsCtx,workspaceId,phone);
+      try {
+        const gpsReply=(await generateAiReply({...gpsVerified,systemInstruction:gpsVerified.systemInstruction+
+          `\nHECHO VERIFICADO DEL ÚLTIMO MENSAJE: ubicación GPS ${attached?"ASOCIADA AL PEDIDO EN SUPABASE":"RECIBIDA, PERO NO SE PUDO ASOCIAR AL PEDIDO"}. Respondé natural y brevemente; no afirmes haber guardado la ubicación si no se pudo.`})).reply;
+        const gpsWamid=await sendWhatsAppText(conn,phone,gpsReply);
+        await supabaseAdmin.from("messages").insert({workspace_id:workspaceId,user_id:ownerId,
+          conversation_id:conversation.id,ad_id:attributedAdId,direction:"outbound",sender:"ai",
+          response_origin:"ai",body:gpsReply,wamid:gpsWamid,status:"sent"} as any);
+        await supabaseAdmin.from("conversations").update({last_message:gpsReply,
+          last_message_at:new Date().toISOString(),unread_count:0})
+          .eq("workspace_id",workspaceId).eq("id",conversation.id);
+      } catch(error){console.error("[BOT SKY postventa] Respuesta IA pendiente",error);}
       return;
     }
   }
@@ -1334,7 +1342,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     const safeCtx={...verified,systemInstruction:verified.systemInstruction+`\nPRIORIDAD ABSOLUTA: El cliente YA COMPRÓ (sale_closed=true). Esto es POSTVENTA. Contestá su último mensaje y su reclamo primero. PROHIBIDO reiniciar venta, ofrecer promociones, solicitar cantidad, ciudad, GPS, nombre o domicilio que ya proporcionó, o generar otro pedido. Si pide entrega hoy, solo confirmala si hay fecha exacta en datos verificados. Nunca afirmes haber avisado a logística, priorizado, coordinado o registrado cambios sin una herramienta que lo haga. Si envía un saludo o agradecimiento, responde muy brevemente. Evitá repeticiones.`};
     let reply:string;
     try { reply=(await generateAiReply(safeCtx)).reply?.trim() || ""; }
-    catch (error) { console.error("[BOT SKY postventa] IA no disponible",error); reply="Entiendo tu consulta sobre tu pedido. 🙏 Un asesor debe verificar con logística el estado real de entrega. No quiero prometerte una fecha sin confirmarla."; }
+    catch (error) { console.error("[BOT SKY postventa] IA no disponible; pendiente",error); return; }
     if(!reply) reply="Gracias por escribirnos. 😊 Para darte información correcta sobre tu pedido, un asesor debe verificar el estado actual.";
     const wamid=await sendWhatsAppText(conn,phone,reply);
     await supabaseAdmin.from("messages").insert({workspace_id:workspaceId,user_id:ownerId,conversation_id:conversation.id,ad_id:attributedAdId,direction:"outbound",sender:"ai",body:reply,wamid,status:"sent"});
@@ -1406,8 +1414,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       conversation.product_id,
       phone,
     );
-    const hybridMode = (aiSettings?.hybrid_mode === "rules_only" || aiSettings?.hybrid_mode === "ai_first")
-      ? aiSettings.hybrid_mode : "hybrid";
+    const hybridMode: "hybrid" = "hybrid"; // La respuesta conversacional siempre corresponde a IA.
     // Persistencia por conversación. El estado no depende de la memoria de Vercel.
     const { data: saleRow, error: saleReadError } = await supabaseAdmin
       .from("bot_sale_states").select("state")
@@ -1463,7 +1470,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       : null;
     // Inyectar a la IA solo datos de venta efectivamente reconocidos por código.
     const verifiedSaleState = ruleStep?.state ?? previousSale;
-    const aiAnswerContext = hybridMode === "hybrid" ? {
+    const aiAnswerContext = hybridMode !== "rules_only" ? {
       ...answerContext,
       systemInstruction: answerContext.systemInstruction + `\nMODO HÍBRIDO BOT SKY, PRIORIDAD ALTA: Ya fue enviado por CÓDIGO el copy, la imagen y los precios del catálogo. DESDE AHORA CONVERSÁ VOS con el comprador de forma natural: resolvé una sola pregunta por vez y no repitas catálogo/precios completos ni datos ya recibidos. Cantidad y variante se capturan mediante código y deben respetarse. No confirmes pedidos sin número real generado por Supabase. El cliente puede comprar varias veces. DATOS VERIFICADOS DEL CICLO ACTUAL (no mezclar con pedidos previos): ${JSON.stringify({productId:verifiedSaleState.productId,optionId:verifiedSaleState.optionId,quantity:verifiedSaleState.quantity,city:verifiedSaleState.city,department:verifiedSaleState.department,cityVerified:verifiedSaleState.cityVerified===true,coverageStatus:verifiedSaleState.coverageStatus,customerName:verifiedSaleState.customerName,hasAddress:Boolean(verifiedSaleState.street),gpsReceived:Boolean(verifiedSaleState.locationUrl),paymentMethod:verifiedSaleState.paymentMethod,awaiting:verifiedSaleState.awaiting})}. COBERTURA: si cityVerified no es true, NUNCA digas que tenemos cobertura; consultá la ciudad si falta. GPS no prueba por sí mismo ninguna ciudad. Si recibiste GPS no vuelvas a solicitarlo. El GPS es dirección suficiente si la configuración de la ciudad admite dirección por ubicación. Si el nombre falta, preguntá SOLO nombre y apellido, NO domicilio ni referencia adicionales. Si no tenés precio/variante sin ambigüedad pedí aclaración. Si está completo, el código registrará el pedido; no inventes un número de orden ni digas que está confirmado.`
     } : answerContext;
@@ -1474,7 +1481,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     // Con híbrido, la IA responde desde la primera interacción tras el catálogo.
     // Las reglas siguen interpretando, verificando y guardando los datos en paralelo;
     // solo toman el mensaje de cierre si la compra está completa.
-    const ruleMustAnswer = hybridMode !== "hybrid" || Boolean(ruleStep?.complete);
+    const ruleMustAnswer = hybridMode === "rules_only";
     let safeDecision = ruleStep && !ruleStep.needsAi && ruleMustAnswer
       ? {reply:ruleStep.reply, productId:ruleStep.productId, reason:"venta_reglas"}
       : hybridMode === "hybrid" ? null
@@ -1488,7 +1495,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     if (isGpsMessage && hybridMode !== "rules_only" && ruleStep && !ruleStep.needsAi) {
       safeDecision = null;
     }
-    if (locationReminder && bypassSale && previousSale.locationUrl && hybridMode !== "ai_first") {
+    if (locationReminder && bypassSale && previousSale.locationUrl && hybridMode === "rules_only") {
       const missing = !previousSale.cityVerified ? "Solo falta confirmar tu ciudad para verificar la cobertura." : !previousSale.customerName ? "Solo me falta tu nombre y apellido para completar el pedido." : "Ya tengo la ubicación guardada para tu compra. Voy a revisar que el pedido tenga todos sus datos.";
       safeDecision = {reply:`Tenés razón, disculpame. 🙏📍 *Tu ubicación ya está guardada*, no hace falta que la vuelvas a enviar. ${missing}`,productId:previousSale.productId??conversation.product_id,reason:"gps_ya_guardado"};
     }
@@ -1520,22 +1527,20 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       try {
         result = await generateAiReply(aiAnswerContext);
       } catch (aiError) {
-        if (aiSettings?.hybrid_fallback_enabled === false && !isAiQuotaFailure(aiError)) throw aiError;
-        saveStep = bypassSale ? null : advanceRuleSale(ctx, saleInput, previousSale, media && (media.type === "image" || media.type === "document") ? mediaPath : null, gpsUrl);
-        const fallback = saveStep && !saveStep.needsAi
-          ? {reply:saveStep.reply, productId:saveStep.productId, reason:"venta_reglas_respaldo"}
-          : decideHybridReply({ctx, text:body, mode:hybridMode, fallback:true});
-        if (!fallback) throw aiError;
-        result = {reply:fallback.reply, product_id:fallback.productId, sale_closed:false, order:null};
-        responseOrigin = `code:${fallback.reason}`;
-        console.warn("[BOT SKY híbrido] APIs agotadas; respondió el respaldo determinista", {
+        // Mensaje entrante ya almacenado; dejar pendiente antes que inventar una respuesta de código.
+        console.error("[BOT SKY IA] Sin respuesta del proveedor; mensaje pendiente", {
           workspaceId, conversationId:conversation.id,
-          reason:aiError instanceof Error ? aiError.message.slice(0, 160) : "error"
+          error: aiError instanceof Error ? aiError.message : String(aiError),
         });
+        await supabaseAdmin.from("integration_logs").insert({
+          workspace_id:workspaceId,user_id:ownerId,integration:"ai",level:"error",
+          message:`IA sin respuesta; conversación ${conversation.id}; mensaje ${message.id}`,
+        });
+        return;
       }
     }
     // Consultar precio/garantía/seguimiento no debe completar ni crear pedidos.
-    if (isGpsMessage && ruleStep && !ruleStep.needsAi && /(?:sin cobertura|no tenemos cobertura|pago anticipado|datos bancarios)/i.test(result.reply) && previousSale.coverageStatus !== "uncovered") {
+    if (hybridMode === "rules_only" && isGpsMessage && ruleStep && !ruleStep.needsAi && /(?:sin cobertura|no tenemos cobertura|pago anticipado|datos bancarios)/i.test(result.reply) && previousSale.coverageStatus !== "uncovered") {
       result = {...result,reply:ruleStep.reply};
     }
     if (bypassSale) result = {...result, sale_closed:false, order:null};
@@ -1545,13 +1550,13 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
           state:saveStep.state,updated_at:new Date().toISOString()},
           {onConflict:"workspace_id,conversation_id"});
       if(saveStateError) throw saveStateError;
-      if(saveStep.complete && !conversation.sale_closed) {
+      if(saveStep.complete && !conversation.sale_closed && !bypassSale) {
         const st=saveStep.state;
-        result = {reply:saveStep.reply,product_id:saveStep.productId,sale_closed:true,
+        result = {reply:hybridMode === "rules_only" ? saveStep.reply : result.reply,product_id:saveStep.productId,sale_closed:true,
           order:{customer_name:st.customerName!,city:st.city!,departamento:st.department!,
             street:st.street??undefined,quantity:st.quantity!,
             product_price_id:st.optionId??undefined,payment_method:st.paymentMethod!,phone}};
-        responseOrigin="code:venta_completa";
+        responseOrigin=hybridMode === "rules_only" ? "code:venta_completa" : "ai";
       }
     }
     console.info("[BOT SKY híbrido] respuesta", {workspaceId, conversationId:conversation.id, origin:responseOrigin});
