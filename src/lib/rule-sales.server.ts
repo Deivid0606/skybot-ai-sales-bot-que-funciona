@@ -216,6 +216,11 @@ function priceFor(p:Product,option:Option|null,quantity:number):number|null {
   }
   const n=Number(p.promo_price??p.price);return n>0?n*quantity:null;
 }
+/** Política configurable por workspace: nunca aplica globalmente a otras tiendas. */
+export function sellerUsesFirstOffer(ctx: Pick<AiContext, "training">): boolean {
+  return ctx.training.some(entry => /(?:usar|utilizar|aplicar|seleccionar|tomar|asumir)\s+(?:autom[aá]ticamente\s+)?(?:la\s+)?primera\s+(?:promoci[oó]n|opci[oó]n|oferta)/i.test(entry.content));
+}
+
 export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={}, mediaPath?:string|null, sharedLocationUrl?:string|null):SaleStep|null {
   const n=norm(text);
   const isNudge = /^[\s¿?!.¡]+$/.test(text) || /^(?:me responden|me respondes|siguen ahi|seguimos|y entonces)$/i.test(n);
@@ -322,6 +327,14 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   if(s.awaiting==="address" && !match && !gpsUrl && n.length>=6 && !/^(?:si|no|hola|gracias|si por favor|dale|ok)$/.test(n) && !/\b(?:ubicacion|maps|pedido|precio|llega|ya te|ya le|pase|comparti|envie|mand[eé])\b/.test(n))s.street=text.trim();
   if(/\b(?:transferencia|transferir|anticipado|deposito|giro)\b/.test(n))s.paymentMethod="anticipado";
   if(mediaPath && (s.awaiting==="receipt" || /comprobante|transferi|pague/.test(n)))s.receiptPath=mediaPath;
+  // Usar la primera promoción solo si ESTA tienda lo instruyó, sin pisar una
+  // elección explícita, capacidad/modelo ni una cantidad previa.
+  if (sellerUsesFirstOffer(ctx) && !s.optionId && !s.cartLines?.length && !s.quantity && variants.length > 0 &&
+      !variants.some(v => Boolean(units(norm(v.label))))) {
+    const first=variants[0];
+    s.optionId=first.id;
+    s.quantity=first.quantity;
+  }
   const selected=variants.find(o=>o.id===s.optionId)??null;
   const answer=(reply:string,awaitKey:string|null,complete=false,needsAi=false):SaleStep=>{
     s.awaiting=awaitKey;return {reply,state:s,productId:p.id,complete,needsAi};
@@ -382,6 +395,7 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
       if(!s.customerName && s.street)return answer("¡Recibí tu dirección! 🏠💚 Solo me falta tu *nombre y apellido* para registrar el pedido. 😊","details");
       if(s.customerName && needsAddress && !s.street)return answer(`¡Gracias, ${s.customerName}! 😍 Solo me falta tu *dirección completa* o ubicación de Google Maps. 📍 Si tenés, agregá una referencia cercana.`,"details");
     }
+    if (!needsAddress) return answer("😊 ¿Me compartís tu nombre y apellido para registrar el pedido?", "name");
     return answer(`¡Oikoite! 😍🚚 Tenemos cobertura en *${s.city}*.\n\n📦 *¡Ya estamos a un paso de preparar tu pedido!*\n\nPara procesarlo, pasame estos datos *juntos*, por favor:\n\n👤 *Nombre y apellido*\n🏠 *Dirección de entrega y número de casa* (si tiene)\n📍 *Referencia cercana o ubicación de Google Maps*\n📱 *Otro número de contacto (opcional)*, solo si tenés.\n\n✅ Una vez que me pases los datos necesarios, tu pedido será registrado para su procesamiento. ¡Pagás al recibir! 💚`,"details");
   }
   return answer(`📦✨ *¡Ya tengo los datos de tu pedido!*\n🛍️ ${p.name}${s.cartLines?.length?` (${summaryLabel})`:selected?` (${selected.label})`:""}\n🔢 Cantidad: ${s.quantity}\n💰 Total: *${money(total)}*\n✅ Voy a registrarlo ahora. 😊`,null,true);
