@@ -296,7 +296,8 @@ export const aiReplyNow = createServerFn({ method: "POST" })
         fromRules=mode === "rules_only";
         result={reply:mode === "rules_only" ? step.reply : result.reply,product_id:step.productId,sale_closed:true,
           order:{customer_name:st.customerName!,city:st.city!,departamento:st.department!,
-            street:st.street??undefined,quantity:st.quantity!,product_price_id:st.optionId??undefined,
+            street:st.street??result.order?.street??undefined,quantity:(result.order?.promo_quantity ?? 1) > 1 ? result.order?.quantity : st.quantity!,
+             promo_quantity:result.order?.promo_quantity,product_price_id:(result.order?.promo_quantity ?? 1) > 1 ? result.order?.product_price_id : st.optionId??undefined,
             payment_method:st.paymentMethod!,phone:conversation.contacts?.phone??""}};
       }
     }
@@ -308,9 +309,13 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     // Los pedidos desde Inbox deben guardar primero, confirmar después.
     // NUNCA reutilizar la compra de una conversación ya cerrada.
     let createdOrder: { id: string; order_number: string } | null = null;
+    if (result.order && !result.order.street?.trim() && (step?.state.locationUrl || previous.locationUrl)) {
+      result.order.street = step?.state.locationUrl || previous.locationUrl || undefined;
+    }
     const orderCoverage=result.order ? verifiedCoverage(
       String(result.order.city??""),String(result.order.departamento??""),parseCoverage(ctx.training)) : null;
-    const valid = !conversation.sale_closed && Boolean(orderCoverage?.active || (/anticip|transfer|deposit|giro/i.test(result.order?.payment_method ?? "") && /ANTICIPADO|TRANSFERENCIA/i.test(orderCoverage?.method ?? ""))) && (!previous.city || (previous.cityVerified && previous.coverageStatus === "covered")) && Boolean(result.order) &&
+    const valid = !conversation.sale_closed && Boolean(orderCoverage?.active || (/anticip|transfer|deposit|giro/i.test(result.order?.payment_method ?? "") && /ANTICIPADO|TRANSFERENCIA/i.test(orderCoverage?.method ?? ""))) && (!previous.city || (previous.cityVerified && previous.coverageStatus === "covered")) &&
+      (!orderCoverage?.addressRequired || Boolean(result.order?.street?.trim() || step?.state.locationUrl || previous.locationUrl)) && Boolean(result.order) &&
       isOrderReady(result.order, detectedProduct) &&
       (Boolean(step?.state.cartLines?.length) || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory));
     if (valid && result.order && detectedProduct) {
@@ -350,6 +355,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     const reply = createdOrder
       ? `✅ PEDIDO REGISTRADO\n📦 N.º ${createdOrder.order_number}\n${(result.order?.payment_method ?? "").toLowerCase().includes("anticip") ? "💳 Comprobante sujeto a verificación por el vendedor." : "¡Gracias por tu compra!"}`
       : result.reply
+          .replace(/\bya\s+(?:tenemos|tengo)\s+tu\s+pedido\b/gi,"Estamos preparando los datos de tu pedido")
           .replace(/(?:✅\s*)?PEDIDO\s+(?:CONFIRMADO|REGISTRADO)/gi, "Estamos verificando los datos del pedido")
           .replace(/\b(?:ya\s+)?(?:registre|registramos|tome|tomamos|agende|agendamos)\s+(?:tu|su|el)\s+pedido\b/gi,
             "Estoy verificando los datos de tu pedido");
