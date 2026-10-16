@@ -500,7 +500,12 @@ function ensureValidResult(result: AiResult): AiResult {
   };
 }
 
-const GEMINI_FALLBACK_MODELS = ["gemini-2.5-flash-lite"] as const;
+// Modelos Flash-Lite estables anunciados por Google para la API Gemini.
+// El 404 de gemini-2.5-flash-lite no debe volver a repetirse.
+const GEMINI_FALLBACK_MODELS = [
+  "gemini-3.5-flash-lite",
+  "gemini-3.1-flash-lite",
+] as const;
 
 const RETRYABLE_GEMINI_STATUSES = new Set([
   408,
@@ -531,9 +536,14 @@ function uniqueNonEmptyStrings(values: Array<string | null | undefined>): string
 }
 
 function getGeminiCandidates(preferredModel?: string | null): string[] {
+  const normalized = cleanString(preferredModel).replace(/^models\//i, "");
+  // No confiar en modelos obsoletos guardados en ai_settings.model.
+  // Tampoco activar un modelo Pro por accidente ni repetir solicitudes 404.
+  const validPreferred = /^gemini-3\.(?:1-flash-lite|5-flash-lite|6-flash|8-flash)$/i.test(normalized)
+    ? normalized
+    : null;
   return uniqueNonEmptyStrings([
-    // Evita accidentalmente modelos Pro de alto costo.
-    preferredModel && /flash/i.test(preferredModel) ? preferredModel : null,
+    validPreferred,
     ...GEMINI_FALLBACK_MODELS,
   ]);
 }
