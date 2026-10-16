@@ -75,6 +75,8 @@ export type AiOrder = {
   district?: string;
   street?: string;
   quantity?: number;
+  /** Cuántas promociones/paquetes de product_prices compra el cliente. */
+  promo_quantity?: number;
   /** Identificador exacto de product_prices, no la cantidad. */
   product_price_id?: string;
   /** Nombre de presentación, para compatibilidad con modelos que devuelven texto. */
@@ -186,6 +188,7 @@ REGLAS:
 - Si el cliente dice "deja nomás, no quiero", acepta el desistimiento con respeto, sin preguntar nombre, sin insistir ni prometer cancelación en la base de datos.
 - Después de una venta, contesta preguntas de entrega, factura y cambios desde el entrenamiento y los pedidos verificados; nunca inventes acciones ni plazos.
 - Una consulta nueva por otro producto después de una venta inicia otra oportunidad; no reutilices los datos del pedido anterior para confirmar sin autorización expresa.
+- Para una promo de 2 unidades comprada 3 veces, devuelve quantity:6, promo_quantity:3 y product_price_id de esa promo. El precio es 3 veces el precio total de la promo. No confirmar sin dirección o GPS válido si la ciudad requiere dirección.
 - Cuando tengas TODOS los datos, marca sale_closed=true y completa el objeto order.
 ${
   ctx.activeProductId
@@ -227,7 +230,7 @@ Forma exacta:
 
 Cuando detectes un producto, product_id debe contener su id real del catálogo.
 Cuando cierres la venta, order debe tener esta forma:
-{"customer_name":"","phone":"","city":"","departamento":"","district":"","street":"","quantity":1,"product_price_id":"id-real-de-product_prices","price_option_label":"nombre exacto","payment_method":"","observations":""}.`;
+{"customer_name":"","phone":"","city":"","departamento":"","district":"","street":"","quantity":1,"promo_quantity":1,"product_price_id":"id-real-de-product_prices","price_option_label":"nombre exacto","payment_method":"","observations":""}.`;
   // Protección ante entrenamientos anormalmente extensos.
   if (prompt.length <= MAX_PROMPT_CHARS) return prompt;
   // Conservamos SIEMPRE el formato JSON final, esencial para registrar pedidos.
@@ -409,6 +412,11 @@ function normalizeOrder(value: unknown): AiOrder | null {
     if (fieldValue) {
       order[field] = fieldValue as never;
     }
+  }
+
+  const promoQuantity = Number(raw.promo_quantity);
+  if (Number.isSafeInteger(promoQuantity) && promoQuantity >= 1 && promoQuantity <= 25) {
+    order.promo_quantity = promoQuantity;
   }
 
   const quantity = Number(raw.quantity);
