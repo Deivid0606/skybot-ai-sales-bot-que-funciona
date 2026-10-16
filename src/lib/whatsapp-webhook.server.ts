@@ -9,7 +9,7 @@ import { formatGs } from "@/lib/format";
 import { buildWorkspaceAiContext } from "@/lib/ai-context.server";
 import { generateAiReply } from "@/lib/ai.server";
 import { decideHybridReply } from "@/lib/hybrid-rules.server";
-import { advanceRuleSale, type SaleState } from "@/lib/rule-sales.server";
+import { advanceRuleSale, sellerUsesFirstOffer, type SaleState } from "@/lib/rule-sales.server";
 import { classifyCustomerIntent, addVerifiedOrderContext, addPendingSaleContext } from "@/lib/hybrid-intent.server";
 import { coordinatesFromText, validCoords } from "@/lib/hybrid-intent.server";
 import { parseCoverage, verifiedCoverage } from "@/lib/rule-sales.server";
@@ -1453,7 +1453,10 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     // El resto de mensajes complejos sigue yendo a la IA.
     const savedSaleReadyForFinalization = Boolean(locationReminder && previousSale.locationUrl && previousSale.cityVerified && previousSale.customerName && previousSale.productId && previousSale.quantity);
     const saleInput = isGpsMessage ? `📍 Ubicación compartida${gpsUrl?`\n${gpsUrl}`:""}` : savedSaleReadyForFinalization ? "Confirmo mis datos para registrar el pedido" : body;
-    const bypassSale = intent !== "checkout" && !savedSaleReadyForFinalization;
+    const awaitingCheckoutDetail = Boolean(previousSale.productId &&
+      ["name", "details", "address", "quantity", "variant", "city"].includes(String(previousSale.awaiting ?? "")) &&
+      !/\b(?:gracias|chau|adios|no quiero|cancelar|reclamo|mi pedido|donde esta)\b/i.test(normalizeIntentText(body)));
+    const bypassSale = intent !== "checkout" && !savedSaleReadyForFinalization && !awaitingCheckoutDetail;
     const answerContextBase = intent === "order_status" && hybridMode !== "rules_only"
       ? await addVerifiedOrderContext(supabaseAdmin, ctx, workspaceId, phone)
       : ctx;
@@ -1578,6 +1581,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       lastCustomerMessage: body,
     });
 
+    result.order=applySellerFirstOffer(result.order,detectedProduct,ctx.products,ctx.training,chatHistory);
     const optionConfirmed = Boolean(saveStep?.state.cartLines?.length) || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory);
     const productForReply = ctx.products.find((p) => p.id === detectedProduct);
     const mustClarify = Boolean(result.order && !optionConfirmed && (productForReply?.product_prices?.length ?? 0) > 1);
@@ -1794,6 +1798,29 @@ function cleanOrderText(value: unknown): string {
 }
 
 type PriceOption = { id: string; label: string; quantity: number; price: number; sort_order: number };
+
+/** Respeta la política del vendedor sin inventar promociones ni pisar selecciones. */
+export function applySellerFirstOffer(
+  order: Awaited<ReturnType<typeof generateAiReply>>["order"],
+  productId: string | null,
+  products: AiContextProducts,
+  training: import("@/lib/ai.server").AiContext["training"],
+  history: {role:"user"|"assistant";content:string}[] = [],
+) {
+  if (!order || !productId || !sellerUsesFirstOffer({training})) return order;
+  const product=products.find(p=>p.id===productId);
+  const options=[...(product?.product_prices??[])].filter(o=>o.price>0).sort((a,b)=>a.sort_order-b.sort_order);
+  if (!options.length || order.product_price_id || order.price_option_label || order.quantity || order.promo_quantity) return order;
+  // Una capacidad/modelo indicado por el comprador no se sustituye silenciosamente.
+  const words=history.filter(h=>h.role==="user").slice(-12).map(h=>normalizeIntentText(h.content)).join(" ");
+  const hasDistinctModel=options.some(o=>/\b\d+(?:[.,]\d+)?\s*(?:litros?|lts?|ml|kg|cm|mm)\b/.test(normalizeIntentText(o.label)));
+  if(hasDistinctModel) return order;
+  if(options.some(o=>normalizeIntentText(o.label).split(" ").some(token=>token.length>3&&words.includes(token)&&/\d/.test(token))))return order;
+  const first=options[0];
+  return {...order,product_price_id:first.id,price_option_label:first.label,quantity:first.quantity,promo_quantity:1};
+}
+
+
 
 function matchSelectedOption(
   order: Awaited<ReturnType<typeof generateAiReply>>["order"],
