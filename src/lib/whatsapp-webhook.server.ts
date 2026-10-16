@@ -1554,8 +1554,9 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         const st=saveStep.state;
         result = {reply:hybridMode === "rules_only" ? saveStep.reply : result.reply,product_id:saveStep.productId,sale_closed:true,
           order:{customer_name:st.customerName!,city:st.city!,departamento:st.department!,
-            street:st.street??undefined,quantity:st.quantity!,
-            product_price_id:st.optionId??undefined,payment_method:st.paymentMethod!,phone}};
+            street:st.street??result.order?.street??undefined,quantity:(result.order?.promo_quantity ?? 1) > 1 ? result.order?.quantity : st.quantity!,
+            promo_quantity:result.order?.promo_quantity,
+            product_price_id:(result.order?.promo_quantity ?? 1) > 1 ? result.order?.product_price_id : st.optionId??undefined,payment_method:st.paymentMethod!,phone}};
         responseOrigin=hybridMode === "rules_only" ? "code:venta_completa" : "ai";
       }
     }
@@ -1588,6 +1589,8 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     // result.order o sale_closed. Sólo el bloque posterior al INSERT confirmado
     // puede anunciar "PEDIDO REGISTRADO" con número real.
     const safeBeforeInsert = finalReply
+      .replace(/\bya\s+(?:tenemos|tengo)\s+tu\s+pedido\b/gi, "Estamos preparando los datos de tu pedido")
+      .replace(/\b(?:pedido|compra)\s+(?:qued[oó]|est[aá])\s+(?:listo|confirmado|registrado)\b/gi, "pedido pendiente de registro")
       .replace(/(?:✅\s*)?PEDIDO\s+(?:CONFIRMADO|REGISTRADO)/gi, "Pedido pendiente de verificación")
       .replace(/\b(?:ya\s+)?(?:registre|registramos|tome|tomamos|agende|agendamos)\s+(?:tu|su|el)\s+pedido\b/gi,
         "Estoy verificando los datos de tu pedido")
@@ -1634,6 +1637,9 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         .limit(1);
       hasReceiptForOrder=Boolean(recentProofs?.length);
     }
+    if (result.order && !result.order.street?.trim() && (saveStep?.state.locationUrl || previousSale.locationUrl)) {
+      result.order.street = saveStep?.state.locationUrl || previousSale.locationUrl || undefined;
+    }
     const orderReady = isOrderReady(result.order, detectedProduct) &&
       (Boolean(saveStep?.state.cartLines?.length) || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory)) &&
       (!isAdvance || hasReceiptForOrder);
@@ -1651,7 +1657,8 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
      */
     const verifiedOrderCoverage = result.order ? verifiedCoverage(
       String(result.order.city??""),String(result.order.departamento??""),parseCoverage(ctx.training)) : null;
-    if (!conversation.sale_closed && result.order && orderReady && (verifiedOrderCoverage?.active || (isAdvance && /ANTICIPADO|TRANSFERENCIA/i.test(verifiedOrderCoverage?.method ?? ""))) && (!previousSale.city || (previousSale.cityVerified && previousSale.coverageStatus === "covered"))) {
+    if (!conversation.sale_closed && result.order && orderReady && (verifiedOrderCoverage?.active || (isAdvance && /ANTICIPADO|TRANSFERENCIA/i.test(verifiedOrderCoverage?.method ?? ""))) && (!previousSale.city || (previousSale.cityVerified && previousSale.coverageStatus === "covered")) &&
+      (!verifiedOrderCoverage?.addressRequired || Boolean(result.order.street?.trim() || saveStep?.state.locationUrl || previousSale.locationUrl))) {
       const completedOrder = {
         ...result.order,
         phone,
@@ -1795,6 +1802,10 @@ function matchSelectedOption(
 ): PriceOption | null {
   if (!order || options.length === 0) return null;
   if (options.length === 1) return options[0];
+  // Si Gemini señaló una opción exacta del catálogo, usarla antes que
+  // inferencias desde mensajes viejos de esta conversación.
+  const exactId = cleanOrderText(order.product_price_id);
+  if (exactId) return options.find((o) => o.id === exactId) ?? null;
   // Si el cliente dijo explícitamente una presentación, esa elección manda.
   // No interpretar un número sin unidad ("5") como cinco litros.
   const customerTurns = history.filter((h) => h.role === "user").slice(-12).reverse();
@@ -2033,6 +2044,11 @@ export async function createOrderFromAi(args: {
    * - price = 125000 (precio unitario calculado)
    * - total = 250000
    */
+  const parsedPromoCount = Number(args.order.promo_quantity ?? 1);
+  if (!Number.isSafeInteger(parsedPromoCount) || parsedPromoCount < 1 || parsedPromoCount > 25) {
+    throw new Error("Cantidad de promociones inválida");
+  }
+  const promoCount = parsedPromoCount;
   const parsedRequestedQuantity = Number(args.order.quantity);
   const requestedQuantity =
     Number.isFinite(parsedRequestedQuantity) &&
@@ -2116,22 +2132,30 @@ export async function createOrderFromAi(args: {
     unitPrice=total/quantity;
     selectedPriceLabel='Múltiples presentaciones';
   } else if (selectedPrice) {
-    // Una opción de 1 unidad (p. ej. 5 litros) se multiplica por la
-    // cantidad explícitamente solicitada. Una promoción de paquete se
-    // mantiene con su cantidad/precio propios; nunca inventar prorrateos.
-    if (selectedPrice.quantity === 1) {
-      quantity = requestedQuantity;
-      unitPrice = selectedPrice.price;
-      total = selectedPrice.price * requestedQuantity;
-    } else {
-      if (requestedQuantity !== selectedPrice.quantity) {
-        throw new Error(`Cantidad ${requestedQuantity} incompatible con la promoción ${selectedPrice.label} (${selectedPrice.quantity} unidades)`);
+    // Una presentación es un paquete comercial. Puede adquirirse varias veces.
+    // El total SIEMPRE sale del precio verificado en product_prices.
+    const unitsPerPack = selectedPrice.quantity;
+    if (promoCount > 1) {
+      const expectedUnits = unitsPerPack * promoCount;
+      if (requestedQuantity !== expectedUnits) {
+        throw new Error(`Promociones incompatibles: ${promoCount} x ${unitsPerPack} exige ${expectedUnits} unidades, recibidas ${requestedQuantity}`);
       }
-      quantity = selectedPrice.quantity;
+      quantity = expectedUnits;
+      total = selectedPrice.price * promoCount;
+      unitPrice = total / quantity;
+    } else if (unitsPerPack === 1) {
+      quantity = requestedQuantity;
+      total = selectedPrice.price * requestedQuantity;
+      unitPrice = selectedPrice.price;
+    } else {
+      if (requestedQuantity !== unitsPerPack) {
+        throw new Error(`Cantidad ${requestedQuantity} incompatible con la promoción ${selectedPrice.label} (${unitsPerPack} unidades)`);
+      }
+      quantity = unitsPerPack;
       total = selectedPrice.price;
       unitPrice = total / quantity;
     }
-    selectedPriceLabel = selectedPrice.label;
+    selectedPriceLabel = promoCount > 1 ? `${promoCount} x ${selectedPrice.label}` : selectedPrice.label;
   } else if (
     Number.isFinite(legacyUnitPrice) &&
     legacyUnitPrice > 0
