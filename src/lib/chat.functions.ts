@@ -135,7 +135,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     const { decideHybridReply } = await import("@/lib/hybrid-rules.server");
     const { advanceRuleSale } = await import("@/lib/rule-sales.server");
     const { classifyCustomerIntent, addVerifiedOrderContext, addPendingSaleContext } = await import("@/lib/hybrid-intent.server");
-    const { createOrderFromAi, isOrderReady, isUnambiguousPriceSelection,
+    const { createOrderFromAi, isOrderReady, isUnambiguousPriceSelection, applySellerFirstOffer,
       recoverRecentPaymentReceiptForOrder } = await import("@/lib/whatsapp-webhook.server");
     const { supabase } = context;
     const { data: conversation, error } = await supabase
@@ -166,7 +166,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     if (!aiSettings?.ai_enabled) return { skipped: true, reply: "" };
     const ctx = await buildWorkspaceAiContext(supabase, conversation.workspace_id,
       chatHistory, conversation.product_id, conversation.contacts?.phone ?? null);
-    const mode: "hybrid" = "hybrid"; // El botón azul responde exclusivamente mediante IA.
+    const mode: "hybrid" = "hybrid"; // Este botón utiliza IA; respeta el entrenamiento del workspace.
     const text = String(newest.body ?? "");
     const {coordinatesFromText}=await import("@/lib/hybrid-intent.server");
     const {parseCoverage,verifiedCoverage}=await import("@/lib/rule-sales.server");
@@ -232,6 +232,10 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       .eq("conversation_id",conversation.id).maybeSingle();
     if(stateError)throw stateError;
     const previous=(saved?.state??{}) as import("@/lib/rule-sales.server").SaleState;
+    if (previous.productId && ["name", "details", "address", "quantity", "variant", "city"].includes(String(previous.awaiting ?? "")) &&
+      !/\b(?:gracias|chau|adios|no quiero|cancelar|reclamo|mi pedido|donde esta)\b/i.test(text.toLowerCase())) {
+      bypassSale=false;
+    }
     const savedSaleReadyForFinalization=Boolean(locationReminder && previous.locationUrl && previous.cityVerified && previous.customerName && previous.productId && previous.quantity);
     if(savedSaleReadyForFinalization)bypassSale=false;
     if(isGpsMessage){
@@ -303,6 +307,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     }
     const detectedProduct = result.product_id && ctx.products.some(p => p.id === result.product_id)
       ? result.product_id : conversation.product_id;
+    result.order=applySellerFirstOffer(result.order,detectedProduct,ctx.products,ctx.training,chatHistory);
     const phone = conversation.contacts?.phone;
     if (!phone) throw new Error("El contacto no tiene teléfono");
 
@@ -370,6 +375,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     await supabase.from("conversations").update({
       last_message: reply, last_message_at: new Date().toISOString(),
       unread_count: 0, product_id: detectedProduct,
+      ...(createdOrder ? {sale_closed:true,status:"vendida"} : {}),
     }).eq("id", conversation.id).eq("workspace_id", conversation.workspace_id);
     return { reply, orderId: createdOrder?.id ?? null };
   });
@@ -384,7 +390,7 @@ export const recoverPendingWithRules = createServerFn({ method: "POST" })
     const { decideHybridReply } = await import("@/lib/hybrid-rules.server");
     const { advanceRuleSale, parseCoverage, verifiedCoverage } = await import("@/lib/rule-sales.server");
     const { classifyCustomerIntent, coordinatesFromText } = await import("@/lib/hybrid-intent.server");
-    const { createOrderFromAi, isOrderReady, isUnambiguousPriceSelection, recoverRecentPaymentReceiptForOrder } = await import("@/lib/whatsapp-webhook.server");
+    const { createOrderFromAi, isOrderReady, isUnambiguousPriceSelection, applySellerFirstOffer, recoverRecentPaymentReceiptForOrder } = await import("@/lib/whatsapp-webhook.server");
     const { data: convo, error: conversationError } = await supabase.from("conversations")
       .select("id,workspace_id,user_id,contact_id,product_id,ad_id,ai_paused,is_closed,sale_closed,contacts(phone)")
       .eq("id", data.conversationId).single();
