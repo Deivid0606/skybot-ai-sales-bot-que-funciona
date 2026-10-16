@@ -5,7 +5,7 @@ const MAX_HISTORY_MESSAGES = 10;
 const MAX_HISTORY_CHARS = 950;
 const MAX_OUTPUT_TOKENS = 768; // JSON de pedido y respuesta; probar antes de bajar a 512.
 const MAX_PROVIDER_ATTEMPTS = 2;
-const MAX_PROMPT_CHARS = 30000;
+const MAX_PROMPT_CHARS = 48000;
 function limitedHistory(ctx: AiContext) {
   return ctx.history.slice(-MAX_HISTORY_MESSAGES).map(message => ({
     role: message.role,
@@ -153,6 +153,11 @@ ${variants || `    - precio_unitario_heredado:${product.promo_price ?? product.p
     )
     .join("\n");
 
+  const sellerPolicy = ctx.training.map(t => `${t.title}\n${t.content}`).join("\n");
+  const firstOfferAllowed = /(?:usar|utilizar|aplicar|seleccionar|tomar|asumir)\s+(?:autom[aá]ticamente\s+)?(?:la\s+)?primera\s+(?:promoci[oó]n|opci[oó]n|oferta)/i.test(sellerPolicy);
+  const firstOfferRule = firstOfferAllowed
+    ? "- Cuando el cliente muestre intención clara de compra sin indicar cantidad, seleccioná la primera opción de precio del catálogo de este vendedor por sort_order, usando su id, cantidad y precio verdaderos. Si ya eligió una opción o cantidad, respetala. No usar esta regla para adivinar otra capacidad/modelo especificada por el cliente."
+    : "- Si el cliente no indicó cantidad ni presentación, preguntá la opción necesaria según las reglas de este vendedor; nunca inventes una promoción.";
   const prompt = `Eres un vendedor humano y cercano de ${
     ctx.businessName || "la tienda"
   }. Vendes por WhatsApp en español latino.
@@ -163,7 +168,8 @@ REGLAS:
 - Usa SOLO la información del catálogo y del conocimiento. Si no sabes algo, dilo con naturalidad y ofrece ayuda.
 - El cliente puede mandar audios e imágenes: recibirás su transcripción o una descripción que empieza con [imagen]. Si es un comprobante de pago, agradece y confirma los datos; si es un producto, identifícalo en el catálogo.
 - Tu meta es cerrar la venta: resuelve dudas, maneja objeciones y pide los datos de envío.
-- Para cerrar necesitas: nombre completo, ciudad, dirección, cantidad y método de pago.
+- Para cerrar necesitás producto, nombre completo, ciudad verificada, cantidad/promoción y método de pago. Dirección solo cuando la política específica de esa ciudad la exija. El teléfono llega de WhatsApp. Respetá las reglas comerciales del vendedor.
+${firstOfferRule}
 - El teléfono se obtiene automáticamente del número de WhatsApp cuando está disponible.
 - Si hay un número detectado automáticamente, NO vuelvas a pedir el teléfono.
 - Usa exactamente el número detectado en order.phone.
@@ -173,8 +179,8 @@ REGLAS:
 - Si el cliente repite la misma cantidad, no la sumes: sigue siendo la misma.
 - VARIANTES: muestra SIEMPRE el nombre y precio exacto de cada opción de product_prices al presentar un producto con varias opciones, sin reemplazar nombres por "1 unidad".
 - VARIANTES: tamaño/capacidad/color/modelo NO son cantidad; "5 litros" es nombre de variante y NO significa 5 unidades.
-- VARIANTES: antes de cerrar una venta con varias opciones, el cliente debe elegir una opción inequívoca. Devuelve su variante_id exacto en order.product_price_id y su nombre en order.price_option_label.
-- Si todavía no eligió entre opciones distintas, pregunta cuál quiere y devuelve order:null y sale_closed:false, aunque ya tengas otros datos.
+- VARIANTES: antes de cerrar una venta con varias opciones, debe existir una opción inequívoca elegida por el cliente O asignada por la regla del vendedor sobre primera promoción. Devuelve su variante_id exacto en order.product_price_id y su nombre en order.price_option_label.
+- Si todavía no hay opción identificada y el entrenamiento de este vendedor NO autoriza la primera promoción, preguntá cuál quiere y devolvé order:null y sale_closed:false. Si la autoriza, seleccioná la primera opción válida del catálogo sin inventar un ID.
 - No inventes IDs, precios ni variantes. No cambies una variante elegida por otra cuando el cliente dé su dirección u otros datos.
 - Para presentaciones/promos por cantidad, product_prices.quantity es el número de unidades INCLUIDAS en esa opción, y product_prices.price su precio TOTAL. No multipliques otra vez ese precio por la cantidad incluida.
 - Para pedidos con una opción del catálogo, la cantidad y el total deben corresponder exactamente a la opción seleccionada; el backend verificará los importes.
@@ -188,7 +194,7 @@ REGLAS:
 - Si el cliente dice "deja nomás, no quiero", acepta el desistimiento con respeto, sin preguntar nombre, sin insistir ni prometer cancelación en la base de datos.
 - Después de una venta, contesta preguntas de entrega, factura y cambios desde el entrenamiento y los pedidos verificados; nunca inventes acciones ni plazos.
 - Una consulta nueva por otro producto después de una venta inicia otra oportunidad; no reutilices los datos del pedido anterior para confirmar sin autorización expresa.
-- Para una promo de 2 unidades comprada 3 veces, devuelve quantity:6, promo_quantity:3 y product_price_id de esa promo. El precio es 3 veces el precio total de la promo. No confirmar sin dirección o GPS válido si la ciudad requiere dirección.
+- Para una promo de 2 unidades comprada 3 veces, devolvé quantity:6, promo_quantity:3 y product_price_id de esa promo. El precio es 3 veces el precio total de la promo. Dirección/GPS solo si es obligatorio para esa ciudad.
 - Cuando tengas TODOS los datos, marca sale_closed=true y completa el objeto order.
 ${
   ctx.activeProductId
