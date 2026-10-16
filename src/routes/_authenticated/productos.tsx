@@ -72,6 +72,8 @@ type ProductForm = {
   delivery_info: string;
   ai_instructions: string;
   followup_message: string;
+  followup_second_message: string;
+  followup_second_minutes: string;
   followup_minutes: string;
   followup_enabled: boolean;
   no_repeat_template: boolean;
@@ -89,8 +91,10 @@ function createEmptyForm(): ProductForm {
     is_active: true,
     delivery_info: "",
     ai_instructions: "",
-    followup_message: "",
-    followup_minutes: "60",
+    followup_message: "¡Hola! 😊 ¿Te gustaría continuar con tu pedido? Estoy para ayudarte.",
+    followup_second_message: "¡Hola de nuevo! 😊 ¿Todavía te interesa el producto que consultaste? Podemos ayudarte a finalizar el pedido.",
+    followup_second_minutes: "1380",
+    followup_minutes: "120",
     followup_enabled: false,
     no_repeat_template: true,
     keywords: "",
@@ -186,7 +190,9 @@ function ProductsPage() {
         delivery_info: values.delivery_info.trim() || null,
         ai_instructions: values.ai_instructions.trim() || null,
         followup_message: values.followup_message.trim() || null,
-        followup_minutes: Number(values.followup_minutes) || 60,
+        followup_second_message: values.followup_second_message.trim() || null,
+        followup_second_minutes: Math.min(1400, Math.max(1, Number(values.followup_second_minutes) || 1380)),
+        followup_minutes: Math.min(1360, Math.max(1, Number(values.followup_minutes) || 120)),
         followup_enabled: values.followup_enabled,
         no_repeat_template: values.no_repeat_template,
       };
@@ -340,6 +346,8 @@ function ProductsPage() {
     delivery_info: string | null;
     ai_instructions: string | null;
     followup_message: string | null;
+    followup_second_message: string | null;
+    followup_second_minutes: number | null;
     followup_minutes: number;
     followup_enabled: boolean;
     no_repeat_template: boolean;
@@ -366,7 +374,9 @@ function ProductsPage() {
       delivery_info: p.delivery_info ?? "",
       ai_instructions: p.ai_instructions ?? "",
       followup_message: p.followup_message ?? "",
-      followup_minutes: String(p.followup_minutes ?? 60),
+      followup_second_message: p.followup_second_message ?? "",
+      followup_second_minutes: String(p.followup_second_minutes ?? 1380),
+      followup_minutes: String(p.followup_minutes ?? 120),
       followup_enabled: p.followup_enabled,
       no_repeat_template: p.no_repeat_template,
       keywords: p.product_keywords.map((k) => k.keyword).join(", "),
@@ -736,20 +746,26 @@ function ProductsPage() {
               />
             </div>
             <div className="space-y-1.5 sm:col-span-2">
-              <Label>Mensaje de seguimiento</Label>
-              <Textarea
-                rows={2}
-                value={form.followup_message}
-                onChange={(e) => setForm({ ...form, followup_message: e.target.value })}
-              />
+              <Label>1.º seguimiento — mensaje (por defecto: 2 horas)</Label>
+              <Textarea rows={2} value={form.followup_message}
+                onChange={(e) => setForm({ ...form, followup_message: e.target.value })} />
+              <p className="text-xs text-muted-foreground">El enlace del catálogo se agregará automáticamente al final del mensaje.</p>
             </div>
             <div className="space-y-1.5">
-              <Label>Minutos para el seguimiento</Label>
-              <Input
-                type="number"
-                value={form.followup_minutes}
-                onChange={(e) => setForm({ ...form, followup_minutes: e.target.value })}
-              />
+              <Label>Primer seguimiento (minutos)</Label>
+              <Input type="number" min={1} max={1360} value={form.followup_minutes}
+                onChange={(e) => setForm({ ...form, followup_minutes: e.target.value })} />
+            </div>
+            <div className="space-y-1.5 sm:col-span-2">
+              <Label>2.º seguimiento — último mensaje (por defecto: 23 horas)</Label>
+              <Textarea rows={2} value={form.followup_second_message}
+                onChange={(e) => setForm({ ...form, followup_second_message: e.target.value })} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Segundo seguimiento (minutos, máximo 1400)</Label>
+              <Input type="number" min={1} max={1400} value={form.followup_second_minutes}
+                onChange={(e) => setForm({ ...form, followup_second_minutes: e.target.value })} />
+              <p className="text-xs text-muted-foreground">El envío se cancela si faltan menos de 20 minutos para que cierre la ventana de 24 horas.</p>
             </div>
             <div className="space-y-3 pt-6">
               <div className="flex items-center gap-2">
