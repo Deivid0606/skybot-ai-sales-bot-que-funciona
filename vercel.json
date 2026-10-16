@@ -1,9 +1,2 @@
 
-{
-  "crons": [
-    {
-      "path": "/api/internal/followups",
-      "schedule": "*/5 * * * *"
-    }
-  ]
-}
+{}
