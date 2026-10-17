@@ -40,6 +40,7 @@ import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
 import {
   aiReplyNow,
+  registerPendingSale,
   recoverPendingWithRules,
   deleteMessages,
   sendManualMessage,
@@ -170,6 +171,10 @@ function InboxPage() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [infoOpen, setInfoOpen] = useState(false);
+  const [recoverOpen, setRecoverOpen] = useState(false);
+  const [recovery, setRecovery] = useState({
+    productId:"",optionId:"",promoCount:1,customerName:"",city:"",department:"",street:"",paymentMethod:"contraentrega" as "contraentrega"|"anticipado",sourceMessageId:"",
+  });
   const fileRef = useRef<HTMLInputElement>(null);
   const [adName, setAdName] = useState("");
   const [adProductId, setAdProductId] = useState("");
@@ -320,7 +325,7 @@ function InboxPage() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("products")
-        .select("id, name, price, promo_price")
+        .select("id, name, price, promo_price, product_prices(id,label,quantity,price,sort_order)")
         .eq("workspace_id", workspaceId!)
         .eq("is_active", true)
         .order("name");
@@ -658,6 +663,27 @@ function InboxPage() {
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["conversations"] }),
     onError: (e: Error) => toast.error(e.message),
+  });
+
+  const registerRecovery = useMutation({
+    mutationFn: async () => {
+      if(!activeId)throw new Error("Seleccioná una conversación");
+      const result=await registerPendingSale({data:{
+        conversationId:activeId,productId:recovery.productId,
+        optionId:recovery.optionId||null,promoCount:Number(recovery.promoCount),
+        customerName:recovery.customerName,city:recovery.city,department:recovery.department,
+        street:recovery.street,paymentMethod:recovery.paymentMethod,
+        sourceMessageId:recovery.sourceMessageId,
+      }});
+      return result;
+    },
+    onSuccess: (result) => {
+      toast.success(`Venta registrada: ${result.orderNumber}`);
+      setRecoverOpen(false);
+      for(const key of ["conversations","inbox-smart-orders","inbox-smart-closing-origin","messages"])
+        queryClient.invalidateQueries({queryKey:[key]});
+    },
+    onError:(e:Error)=>toast.error(e.message),
   });
 
   const aiNow = useMutation({
@@ -1160,64 +1186,7 @@ function InboxPage() {
   };
 
   return (
-    <div className="flex h-[calc(100vh-3.5rem)] min-w-0 w-full flex-col overflow-hidden bg-background">
-      {/* Navegación superior: se mantiene visible y utiliza el ancho del Inbox. */}
-      <header className="z-10 shrink-0 border-b border-border bg-card/95 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/85">
-        <div className="flex flex-wrap items-center justify-between gap-2 px-3 pb-2 pt-3 sm:px-5">
-          <div className="flex min-w-0 items-center gap-2.5">
-            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/10 text-primary">
-              <MessageSquare className="h-5 w-5" />
-            </span>
-            <div className="min-w-0">
-              <h1 className="truncate text-base font-bold tracking-tight sm:text-lg">Inbox inteligente</h1>
-              <p className="text-[11px] text-muted-foreground">Centro de ventas y atención · BOT SKY</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2 text-xs">
-            <span className="rounded-full border border-border bg-background px-2.5 py-1 font-medium text-muted-foreground">
-              {isLoadingDateFilter ? "Actualizando…" : `${(dateConversations ?? []).length} chats`}
-            </span>
-            <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 font-semibold text-amber-700 dark:text-amber-300">
-              {isCheckingPending ? "…" : pendingCandidates.length} pendientes
-            </span>
-          </div>
-        </div>
-        <nav aria-label="Categorías del Inbox" className="px-3 pb-3 sm:px-5">
-          <div className="flex w-full min-w-0 gap-2 overflow-x-auto pb-1 [scrollbar-width:thin]">
-            {SMART_TABS.map(tab => (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => setSmartTab(tab.id)}
-                aria-pressed={smartTab === tab.id}
-                title={`Filtrar: ${tab.label}`}
-                className={cn(
-                  "inline-flex min-h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-xl border px-3 py-2 text-xs font-semibold transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-                  smartTab === tab.id
-                    ? "border-primary bg-primary text-primary-foreground shadow-sm"
-                    : "border-border bg-background text-foreground hover:border-primary/40 hover:bg-accent",
-                )}
-              >
-                <span aria-hidden="true">{tab.icon}</span>
-                <span>{tab.label}</span>
-                <span className={cn(
-                  "rounded-md px-1.5 py-0.5 text-[10px] tabular-nums",
-                  smartTab === tab.id ? "bg-primary-foreground/20 text-primary-foreground" : "bg-muted text-muted-foreground",
-                )}>
-                  {loadingInboxOrders || loadingSmartMessages || loadingClosingOrigins ? "…" : (smartCounts[tab.id] ?? 0)}
-                </span>
-              </button>
-            ))}
-          </div>
-          {(loadingInboxOrders || loadingSmartMessages || loadingClosingOrigins) && (
-            <p className="mt-1 text-[11px] text-muted-foreground">Verificando pedidos y clasificando conversaciones…</p>
-          )}
-          {(inboxOrdersError || smartMessagesError || closingOriginsError) && (
-            <p role="alert" className="mt-1 text-[11px] text-destructive">No se pudo completar la clasificación. Revisá los permisos de pedidos y mensajes.</p>
-          )}
-        </nav>
-      </header>
-      <div className="flex min-h-0 min-w-0 flex-1">
+    <div className="flex h-[calc(100vh-3.5rem)] w-full">
       <aside
         className={cn(
           "flex w-full flex-col border-r border-border sm:w-80",
@@ -1310,6 +1279,25 @@ function InboxPage() {
             {isCheckingPending || codeReplyAll.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Zap className="mr-2 h-4 w-4" />}
             {codeReplyAll.isPending ? "Recuperando por código..." : `⚡ RECUPERAR VENTAS Y CHATS POR CÓDIGO (${pendingCandidates.length})`}
           </Button>
+
+          {/* Pestañas de atención: no modifican ni mueven mensajes en la base. */}
+          <div className="space-y-2">
+            <p className="text-xs font-semibold">Organizar conversaciones</p>
+            <div className="flex max-h-40 flex-wrap gap-1.5 overflow-y-auto">
+              {SMART_TABS.map(tab=>(
+                <button key={tab.id} type="button" onClick={()=>setSmartTab(tab.id)}
+                  aria-pressed={smartTab===tab.id}
+                  className={cn("rounded-lg border px-2 py-1.5 text-[11px] font-semibold transition-colors",
+                    smartTab===tab.id?"border-primary bg-primary text-primary-foreground":"border-border bg-background hover:bg-accent")}
+                >{tab.icon} {tab.label} ({smartCounts[tab.id]??0})</button>
+              ))}
+            </div>
+            {(loadingInboxOrders || loadingSmartMessages || loadingClosingOrigins) &&
+              <p className="text-[11px] text-muted-foreground">Clasificando mensajes y verificando pedidos…</p>}
+            {(inboxOrdersError || smartMessagesError || closingOriginsError) &&
+              <p className="text-[11px] text-destructive">No se pudo completar la clasificación. Revisá permisos de pedidos y mensajes.</p>}
+            <p className="text-[10px] text-muted-foreground">Las categorías pueden superponerse. El origen del cierre se muestra solo cuando se puede verificar.</p>
+          </div>
 
           <div className="relative">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -1599,6 +1587,17 @@ function InboxPage() {
                   )}
                   Responder IA
                 </Button>
+                <Button size="sm" variant="outline" onClick={() => {
+                  const customerMessages=(messages??[]).filter(m=>m.direction==="inbound");
+                  const latestCustomer=customerMessages.at(-1);
+                  setRecovery({productId:active.product_id??"",optionId:"",promoCount:1,
+                    customerName:active.contacts?.name??"",city:active.contacts?.city??"",
+                    department:"",street:"",paymentMethod:"contraentrega",
+                    sourceMessageId:latestCustomer?.id??""});
+                  setRecoverOpen(true);
+                }}>
+                  <CheckCircle2 className="mr-1 h-4 w-4" /> Registrar venta pendiente
+                </Button>
                 <Button
                   variant={active.ai_paused ? "default" : "outline"}
                   size="sm"
@@ -1621,6 +1620,51 @@ function InboxPage() {
                 )}
               </div>
             </header>
+
+            {recoverOpen && (
+              <div className="border-b border-border bg-card p-4 space-y-3">
+                <div className="flex justify-between items-center">
+                  <strong>Recuperar venta — revisá los datos antes de guardar</strong>
+                  <Button size="sm" variant="ghost" onClick={()=>setRecoverOpen(false)}><X className="h-4 w-4" /></Button>
+                </div>
+                <p className="text-xs text-muted-foreground">No envía un WhatsApp automáticamente. Registra un pedido real y comprueba duplicados, ciudad, modalidad y precio. Si la dirección es obligatoria, debe completarse.</p>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                  <label className="text-xs">Nombre completo<Input value={recovery.customerName} onChange={e=>setRecovery(r=>({...r,customerName:e.target.value}))}/></label>
+                  <label className="text-xs">Producto
+                    <select className="h-10 w-full rounded-md border bg-background px-2" value={recovery.productId} onChange={e=>setRecovery(r=>({...r,productId:e.target.value,optionId:""}))}>
+                      <option value="">Seleccionar producto</option>
+                      {(products??[]).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+                    </select>
+                  </label>
+                  <label className="text-xs">Presentación
+                    <select className="h-10 w-full rounded-md border bg-background px-2" value={recovery.optionId} onChange={e=>setRecovery(r=>({...r,optionId:e.target.value}))}>
+                      <option value="">{(products??[]).find(p=>p.id===recovery.productId)?.product_prices?.length ? "Seleccionar presentación" : "Sin promociones"}</option>
+                      {[...((products??[]).find(p=>p.id===recovery.productId)?.product_prices??[])].sort((a,b)=>a.sort_order-b.sort_order).map(o=><option key={o.id} value={o.id}>{o.label} — Gs. {o.price.toLocaleString("es-PY")}</option>)}
+                    </select>
+                  </label>
+                  <label className="text-xs">Cantidad de paquetes/promociones<Input type="number" min={1} max={25} value={recovery.promoCount} onChange={e=>setRecovery(r=>({...r,promoCount:Number(e.target.value)}))}/></label>
+                  <label className="text-xs">Ciudad<Input value={recovery.city} onChange={e=>setRecovery(r=>({...r,city:e.target.value}))}/></label>
+                  <label className="text-xs">Departamento<Input value={recovery.department} onChange={e=>setRecovery(r=>({...r,department:e.target.value}))}/></label>
+                  <label className="text-xs sm:col-span-2">Dirección o GPS (según modalidad)<Input value={recovery.street} onChange={e=>setRecovery(r=>({...r,street:e.target.value}))}/></label>
+                  <label className="text-xs">Forma de pago
+                    <select className="h-10 w-full rounded-md border bg-background px-2" value={recovery.paymentMethod} onChange={e=>setRecovery(r=>({...r,paymentMethod:e.target.value as typeof r.paymentMethod}))}>
+                      <option value="contraentrega">Pago al recibir</option><option value="anticipado">Pago anticipado</option>
+                    </select>
+                  </label>
+                  <label className="text-xs sm:col-span-2 lg:col-span-3">Mensaje del cliente asociado a esta venta
+                    <select className="h-10 w-full rounded-md border bg-background px-2" value={recovery.sourceMessageId} onChange={e=>setRecovery(r=>({...r,sourceMessageId:e.target.value}))}>
+                      <option value="">Seleccionar mensaje</option>
+                      {(messages??[]).filter(m=>m.direction==="inbound").slice(-50).reverse().map(m=><option key={m.id} value={m.id}>{new Date(m.created_at).toLocaleString("es-PY")} — {String(m.body??"").slice(0,90)}</option>)}
+                    </select>
+                  </label>
+                </div>
+                <Button disabled={registerRecovery.isPending || !recovery.productId || !recovery.sourceMessageId || !recovery.customerName.trim() || !recovery.city.trim() || !recovery.department.trim() || !(products??[]).find(p=>p.id===recovery.productId) || Boolean((products??[]).find(p=>p.id===recovery.productId)?.product_prices?.length && !recovery.optionId)} onClick={()=>{
+                  if(window.confirm("¿Confirmás que verificaste la conversación y que esta compra NO está ya registrada? Se creará el pedido en Supabase."))registerRecovery.mutate();
+                }}>
+                  {registerRecovery.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/>:<CheckCircle2 className="mr-2 h-4 w-4"/>} Guardar pedido real
+                </Button>
+              </div>
+            )}
 
             {selected.length > 0 && (
               <div className="flex items-center gap-2 border-b border-border bg-accent/50 px-4 py-2">
@@ -1918,7 +1962,6 @@ function InboxPage() {
 
         )}
       </section>
-      </div>
     </div>
   );
 }
