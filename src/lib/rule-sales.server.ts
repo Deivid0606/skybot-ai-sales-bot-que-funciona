@@ -73,7 +73,10 @@ function cityIn(text:string, coverage:Coverage[]): Coverage | null {
     const n=norm(alias);
     return n.length>=3 && (` ${normalized} `.includes(` ${n} `));
   }));
-  return hits.length===1?hits[0]:null;
+  // Una ciudad registrada varias veces (por ejemplo, alias y sección) es una
+  // coincidencia única SOLO cuando el departamento también coincide.
+  const unique = hits.filter((c, i) => hits.findIndex(x=>norm(x.city)===norm(c.city) && norm(x.department)===norm(c.department))===i);
+  return unique.length===1?unique[0]:null;
 }
 /** Solo usar para ciudad/departamento devueltos por geocodificación confiable. */
 export function verifiedCoverage(city:string, department:string, coverage:Coverage[]):Coverage|null {
