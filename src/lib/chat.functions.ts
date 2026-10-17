@@ -8,7 +8,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { sendWhatsAppText } from "@/lib/whatsapp.server";
-import { reconcileOrderWithSaleState } from "@/lib/sale-reconciliation.server";
+import { reconcileOrderWithSaleState, recoverSaleStateFromHistory } from "@/lib/sale-reconciliation.server";
 import { buildRegisteredOrderConfirmation } from "@/lib/order-confirmation.server";
 
 const SendInput = z.object({
@@ -309,8 +309,8 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       .select("state").eq("workspace_id",conversation.workspace_id)
       .eq("conversation_id",conversation.id).maybeSingle();
     if(stateError)throw stateError;
-    const previous=(saved?.state??{}) as import("@/lib/rule-sales.server").SaleState;
-    if (previous.productId && ["name", "details", "address", "quantity", "variant", "city"].includes(String(previous.awaiting ?? "")) &&
+    const previous=recoverSaleStateFromHistory(ctx,(saved?.state??{}) as import("@/lib/rule-sales.server").SaleState,chatHistory);
+    if (previous.productId && (["name", "details", "address", "quantity", "variant", "city"].includes(String(previous.awaiting ?? "")) || /(?:calle|barrio|casi|esquina|avenida|ruta|direccion|ubicacion)/i.test(text)) &&
       !/\b(?:gracias|chau|adios|no quiero|cancelar|reclamo|mi pedido|donde esta)\b/i.test(text.toLowerCase())) {
       bypassSale=false;
     }
