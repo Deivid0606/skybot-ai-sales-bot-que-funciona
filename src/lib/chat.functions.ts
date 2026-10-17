@@ -310,12 +310,29 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       .eq("conversation_id",conversation.id).maybeSingle();
     if(stateError)throw stateError;
     const previous=recoverSaleStateFromHistory(ctx,(saved?.state??{}) as import("@/lib/rule-sales.server").SaleState,chatHistory);
+    if (!conversation.sale_closed) {
+      const { error: recoveredStateError } = await supabase.from("bot_sale_states").upsert({
+        workspace_id: conversation.workspace_id, conversation_id: conversation.id,
+        state: previous, updated_at: new Date().toISOString(),
+      }, { onConflict: "workspace_id,conversation_id" });
+      if (recoveredStateError) throw recoveredStateError;
+    }
     if (previous.productId && (["name", "details", "address", "quantity", "variant", "city"].includes(String(previous.awaiting ?? "")) || /(?:calle|barrio|casi|esquina|avenida|ruta|direccion|ubicacion)/i.test(text)) &&
       !/\b(?:gracias|chau|adios|no quiero|cancelar|reclamo|mi pedido|donde esta)\b/i.test(text.toLowerCase())) {
       bypassSale=false;
     }
     const savedSaleReadyForFinalization=Boolean(locationReminder && previous.locationUrl && previous.cityVerified && previous.customerName && previous.productId && previous.quantity);
     if(savedSaleReadyForFinalization)bypassSale=false;
+    // Respuestas cortas de ciudad/nombre son datos de checkout aunque el clasificador
+    // de intención no las catalogue como "checkout".
+    if (!conversation.sale_closed && previous.productId &&
+        (previous.cityVerified || previous.customerName) &&
+        !/\b(?:gracias|chau|adios|no quiero|cancelar|reclamo|mi pedido|donde esta)\b/i.test(text)) {
+      const normalized = text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+      if (/^(?:de |para |soy de |ciudad )?[\p{L} ]{3,55}$/u.test(normalized) &&
+          normalized.split(/\s+/).length <= 5) bypassSale = false;
+    }
+
     if(isGpsMessage){
       if(!previous.cityVerified){previous.city=null;previous.department=null;previous.coverageStatus="unknown";previous.awaiting="city";}
       if(coordinates){
@@ -398,7 +415,9 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     }
     const orderCoverage=result.order ? verifiedCoverage(
       String(result.order.city??""),String(result.order.departamento??""),parseCoverage(ctx.training)) : null;
-    const valid = !conversation.sale_closed && Boolean(orderCoverage?.active || (/anticip|transfer|deposit|giro/i.test(result.order?.payment_method ?? "") && /ANTICIPADO|TRANSFERENCIA/i.test(orderCoverage?.method ?? ""))) &&
+    const isAdvanceInbox = /anticip|transfer|deposit|giro/i.test(result.order?.payment_method ?? "");
+    const receiptVerifiedAsFile = Boolean(step?.state.receiptPath || previous.receiptPath);
+    const valid = (!isAdvanceInbox || receiptVerifiedAsFile) && !conversation.sale_closed && Boolean(orderCoverage?.active || (/anticip|transfer|deposit|giro/i.test(result.order?.payment_method ?? "") && /ANTICIPADO|TRANSFERENCIA/i.test(orderCoverage?.method ?? ""))) &&
       (!orderCoverage?.addressRequired || Boolean(result.order?.street?.trim() || step?.state.locationUrl || previous.locationUrl)) && Boolean(result.order) &&
       isOrderReady(result.order, detectedProduct) &&
       (Boolean(step?.state.cartLines?.length) || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory));
