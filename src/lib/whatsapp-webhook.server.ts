@@ -6,7 +6,7 @@ function isAiQuotaFailure(error: unknown): boolean {
 }
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { formatGs } from "@/lib/format";
-import { reconcileOrderWithSaleState } from "@/lib/sale-reconciliation.server";
+import { reconcileOrderWithSaleState, recoverSaleStateFromHistory } from "@/lib/sale-reconciliation.server";
 import { buildRegisteredOrderConfirmation } from "@/lib/order-confirmation.server";
 import { buildWorkspaceAiContext } from "@/lib/ai-context.server";
 import { generateAiReply, type AiContext } from "@/lib/ai.server";
@@ -1422,7 +1422,15 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       .from("bot_sale_states").select("state")
       .eq("workspace_id", workspaceId).eq("conversation_id", conversation.id).maybeSingle();
     if (saleReadError) throw saleReadError;
-    const previousSale = (saleRow?.state ?? {}) as SaleState;
+    const previousSale = recoverSaleStateFromHistory(ctx, (saleRow?.state ?? {}) as SaleState, chatHistory);
+    // Persistir recuperación antes de que la IA vuelva a intervenir.
+    if (!conversation.sale_closed) {
+      const { error: recoveryError } = await supabaseAdmin.from("bot_sale_states").upsert({
+        workspace_id: workspaceId, conversation_id: conversation.id,
+        state: previousSale, updated_at: new Date().toISOString(),
+      }, { onConflict: "workspace_id,conversation_id" });
+      if (recoveryError) throw recoveryError;
+    }
     // GPS se conserva incluso si la IA responde a continuación. Datos geográficos
     // del mensaje NO son una ciudad confirmada hasta verificar la geocodificación.
     const explicitCoordinates = isLocation && latitude !== null && longitude !== null
@@ -1458,7 +1466,8 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     const awaitingCheckoutDetail = Boolean(previousSale.productId &&
       ["name", "details", "address", "quantity", "variant", "city"].includes(String(previousSale.awaiting ?? "")) &&
       !/\b(?:gracias|chau|adios|no quiero|cancelar|reclamo|mi pedido|donde esta)\b/i.test(normalizeIntentText(body)));
-    const bypassSale = intent !== "checkout" && !savedSaleReadyForFinalization && !awaitingCheckoutDetail;
+    const bypassSale = intent !== "checkout" && !savedSaleReadyForFinalization && !awaitingCheckoutDetail &&
+      !(previousSale.productId && !conversation.sale_closed && /(?:calle|barrio|casi|esquina|avenida|ruta|direccion|ubicacion|^[\p{L}]+(?:\s+[\p{L}]+){1,3}$)/iu.test(body));
     const answerContextBase = intent === "order_status" && hybridMode !== "rules_only"
       ? await addVerifiedOrderContext(supabaseAdmin, ctx, workspaceId, phone)
       : ctx;
@@ -1585,6 +1594,8 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
 
     result.order=applySellerFirstOffer(result.order,detectedProduct,ctx.products,ctx.training,chatHistory);
     result.order = reconcileOrderWithSaleState(result.order, saveStep?.state ?? previousSale, ctx.training);
+    // Con estado reconocido, nunca depender de un JSON completo de Gemini.
+    // El backend continuará validando variante, dirección y pago antes del INSERT.
     const optionConfirmed = Boolean(saveStep?.state.cartLines?.length) || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory);
     const productForReply = ctx.products.find((p) => p.id === detectedProduct);
     const mustClarify = Boolean(result.order && !optionConfirmed && (productForReply?.product_prices?.length ?? 0) > 1);
