@@ -308,7 +308,7 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   }
   const coverage=parseCoverage(ctx.training);
   const match=cityIn(text,coverage);
-  if(match && (!gpsUrl || !s.cityVerified)){s.city=match.city;s.department=match.department;s.cityVerified=true;s.coverageStatus=match.active?"covered":"uncovered";}
+  if(match && !gpsUrl && !/\b(?:calle|esquina|casi|barrio|referencia)\b/.test(n)){s.city=match.city;s.department=match.department;s.cityVerified=true;s.coverageStatus=match.active?"covered":"uncovered";}
   else if(s.awaiting==="city" && !gpsUrl && !s.cityVerified && n.length>=3 && n.length<=55 && /^[a-z ]+$/.test(n)) {
     // Puede ser una ciudad no registrada o una frase ambigua. No inventar cobertura.
     // No conservar como ciudad verificada ni convertirla en pago anticipado.
