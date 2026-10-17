@@ -33,9 +33,8 @@ export const Route = createFileRoute("/_authenticated/configuraciones")({
 });
 
 const VALID_GEMINI_MODELS = [
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-lite",
-  "gemini-2.5-pro",
+  "gemini-3.5-flash-lite",
+  "gemini-3.1-flash-lite",
 ] as const;
 
 type GeminiModel = (typeof VALID_GEMINI_MODELS)[number];
@@ -48,7 +47,7 @@ function normalizeGeminiModel(value: unknown): GeminiModel {
 
   return VALID_GEMINI_MODELS.includes(normalized as GeminiModel)
     ? (normalized as GeminiModel)
-    : "gemini-2.5-flash";
+    : "gemini-3.5-flash-lite";
 }
 
 function SettingsPage() {
@@ -70,17 +69,15 @@ function SettingsPage() {
     ai_enabled: true,
     hybrid_mode: "hybrid" as "hybrid" | "ai_first" | "rules_only",
     hybrid_fallback_enabled: true,
-    model: "gemini-2.5-flash",
+    model: "gemini-3.5-flash-lite",
     system_instruction: "",
     reply_delay_seconds: 3,
     autodetect_model: true,
     gemini_api_key: "",
     gemini_api_key_2: "",
     gemini_api_key_3: "",
-    groq_api_key: "", xai_api_key: "", openrouter_api_key: "", cloudflare_api_key: "",
-    cloudflare_account_id: "",
-    provider_order: "gemini1,gemini2,gemini3,groq,xai,openrouter,cloudflare",
-    provider_models: { groq: "llama-3.3-70b-versatile", xai: "grok-4-fast-reasoning", openrouter: "openai/gpt-4o-mini", cloudflare: "@cf/meta/llama-3.1-8b-instruct" },
+    openai_api_key: "",
+    provider_models: { openai: "gpt-4o-mini" },
   });
   const [biz, setBiz] = useState({
     business_name: "",
@@ -130,11 +127,8 @@ function SettingsPage() {
         gemini_api_key: data.ai.gemini_api_key ?? "",
         gemini_api_key_2: data.ai.gemini_api_key_2 ?? "",
         gemini_api_key_3: data.ai.gemini_api_key_3 ?? "",
-        groq_api_key: data.ai.groq_api_key ?? "", xai_api_key: data.ai.xai_api_key ?? "",
-        openrouter_api_key: data.ai.openrouter_api_key ?? "", cloudflare_api_key: data.ai.cloudflare_api_key ?? "",
-        cloudflare_account_id: data.ai.cloudflare_account_id ?? "",
-        provider_order: (data.ai.provider_order ?? ["gemini1","gemini2","gemini3","groq","xai","openrouter","cloudflare"]).join(","),
-        provider_models: {groq: data.ai.provider_models?.groq ?? "llama-3.3-70b-versatile", xai: data.ai.provider_models?.xai ?? "grok-4-fast-reasoning", openrouter: data.ai.provider_models?.openrouter ?? "openai/gpt-4o-mini", cloudflare: data.ai.provider_models?.cloudflare ?? "@cf/meta/llama-3.1-8b-instruct"},
+        openai_api_key: data.ai.openai_api_key ?? "",
+        provider_models: { openai: data.ai.provider_models?.openai ?? "gpt-4o-mini" },
       });
     }
     if (data.settings) {
@@ -248,7 +242,7 @@ function SettingsPage() {
           hybrid_mode: ai.hybrid_mode,
           hybrid_fallback_enabled: ai.hybrid_fallback_enabled,
           model: ai.autodetect_model
-            ? "gemini-2.5-flash"
+            ? "gemini-3.5-flash-lite"
             : normalizeGeminiModel(ai.model),
           system_instruction: ai.system_instruction,
           reply_delay_seconds: Number(ai.reply_delay_seconds) || 0,
@@ -256,13 +250,9 @@ function SettingsPage() {
           gemini_api_key: ai.gemini_api_key.trim() || null,
           gemini_api_key_2: ai.gemini_api_key_2.trim() || null,
           gemini_api_key_3: ai.gemini_api_key_3.trim() || null,
-          groq_api_key: ai.groq_api_key.trim() || null,
-          xai_api_key: ai.xai_api_key.trim() || null,
-          openrouter_api_key: ai.openrouter_api_key.trim() || null,
-          cloudflare_api_key: ai.cloudflare_api_key.trim() || null,
-          cloudflare_account_id: ai.cloudflare_account_id.trim() || null,
-          provider_order: ai.provider_order.split(",").map(v=>v.trim()).filter(Boolean),
-          provider_models: ai.provider_models,
+          openai_api_key: ai.openai_api_key.trim() || null,
+          provider_order: ["gemini1", "gemini2", "gemini3", "openai"],
+          provider_models: { openai: ai.provider_models.openai.trim() || "gpt-4o-mini" },
         });
       } else {
         await upsert("user_settings", {
@@ -549,26 +539,23 @@ function SettingsPage() {
                 })}
 
                 <div className="space-y-3 rounded-lg border p-3">
-                  <p className="font-semibold text-sm">Otros proveedores de IA — respaldo automático</p>
-                  <p className="text-xs text-muted-foreground">Cada API tiene su clave y modelo. Al fallar un proveedor se intenta el siguiente sin enviar respuestas duplicadas. No compartas las claves por chat.</p>
-                  {([
-                    {id:"groq", field:"groq_api_key", title:"GroqCloud", url:"https://console.groq.com/keys"},
-                    {id:"xai", field:"xai_api_key", title:"Grok (xAI)", url:"https://console.x.ai/"},
-                    {id:"openrouter", field:"openrouter_api_key", title:"OpenRouter", url:"https://openrouter.ai/settings/keys"},
-                    {id:"cloudflare", field:"cloudflare_api_key", title:"Cloudflare Workers AI", url:"https://dash.cloudflare.com/"},
-                  ] as const).map(p => (
-                    <div className="rounded-md border p-3 space-y-2" key={p.id}>
-                      <Label>{p.title} — API Key</Label>
-                      <Input type="password" autoComplete="off" placeholder="Pegá aquí tu API Key" value={ai[p.field]} onChange={e=>setAi(prev=>({...prev,[p.field]:e.target.value}))}/>
-                      <Label>Modelo de {p.title}</Label>
-                      <Input value={ai.provider_models[p.id]} onChange={e=>setAi(prev=>({...prev,provider_models:{...prev.provider_models,[p.id]:e.target.value}}))}/>
-                      {p.id === "cloudflare" && <><Label>Cloudflare Account ID</Label><Input value={ai.cloudflare_account_id} onChange={e=>setAi(prev=>({...prev,cloudflare_account_id:e.target.value}))} /></>}
-                      <a href={p.url} target="_blank" rel="noreferrer" className="text-xs underline text-primary">Crear API Key de {p.title} ↗</a>
-                    </div>
-                  ))}
-                  <Label>Orden de respaldo (separado por comas)</Label>
-                  <Input value={ai.provider_order} onChange={e=>setAi(prev=>({...prev,provider_order:e.target.value}))}/>
-                  <p className="text-xs text-muted-foreground">Identificadores: gemini1, gemini2, gemini3, groq, xai, openrouter, cloudflare. Las claves no configuradas se omiten.</p>
+                  <p className="font-semibold text-sm">API 4 — OpenAI (respaldo final)</p>
+                  <p className="text-xs text-muted-foreground">Se utiliza solamente si las tres API de Gemini no responden. OpenAI requiere créditos de API independientes de ChatGPT Plus.</p>
+                  <div className="space-y-1.5">
+                    <Label>OpenAI API Key</Label>
+                    <Input type="password" autoComplete="off" placeholder="sk-..."
+                      value={ai.openai_api_key}
+                      onChange={e => setAi(prev => ({ ...prev, openai_api_key: e.target.value }))} />
+                    <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer"
+                      className="text-xs underline text-primary">Crear API Key de OpenAI ↗</a>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Modelo OpenAI</Label>
+                    <Input value={ai.provider_models.openai}
+                      onChange={e => setAi(prev => ({ ...prev, provider_models: { ...prev.provider_models, openai: e.target.value } }))}
+                      placeholder="gpt-4o-mini" />
+                  </div>
+                  <p className="text-xs text-muted-foreground">Orden fijo: Gemini 1 → Gemini 2 → Gemini 3 → OpenAI. Las claves vacías se omiten.</p>
                 </div>
 
                 <div className="space-y-1.5">
@@ -581,7 +568,7 @@ function SettingsPage() {
                         setAi({
                           ...ai,
                           autodetect_model: true,
-                          model: "gemini-2.5-flash",
+                          model: "gemini-3.5-flash-lite",
                         });
                         return;
                       }
@@ -594,11 +581,8 @@ function SettingsPage() {
                     }}
                   >
                     <option value="auto">Auto-detectar (recomendado)</option>
-                    <option value="gemini-2.5-flash">gemini-2.5-flash</option>
-                    <option value="gemini-2.5-flash-lite">
-                      gemini-2.5-flash-lite
-                    </option>
-                    <option value="gemini-2.5-pro">gemini-2.5-pro</option>
+                    <option value="gemini-3.5-flash-lite">gemini-3.5-flash-lite</option>
+                    <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite</option>
                   </select>
                   <p className="text-xs text-muted-foreground">
                     Seleccioná "Auto-detectar" para que el servidor consulte los modelos
@@ -630,9 +614,9 @@ function SettingsPage() {
                 </div>
               </div>
 
-              {ai.ai_enabled && ai.gemini_api_key.trim() && (
+              {ai.ai_enabled && (ai.gemini_api_key.trim() || ai.gemini_api_key_2.trim() || ai.gemini_api_key_3.trim() || ai.openai_api_key.trim()) && (
                 <p className="flex items-center gap-1 text-sm text-primary">
-                  <CheckCircle2 className="h-4 w-4" /> IA activa con API Key guardada
+                  <CheckCircle2 className="h-4 w-4" /> IA configurada con una o más API Keys (la disponibilidad se verifica al responder)
                 </p>
               )}
 
