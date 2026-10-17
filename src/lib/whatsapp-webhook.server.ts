@@ -6,7 +6,7 @@ function isAiQuotaFailure(error: unknown): boolean {
 }
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { formatGs } from "@/lib/format";
-import { reconcileOrderWithSaleState, recoverSaleStateFromHistory } from "@/lib/sale-reconciliation.server";
+import { reconcileOrderWithSaleState, recoverSaleStateFromHistory, fixRepeatedCheckoutQuestion, nextVerifiedSaleQuestion } from "@/lib/sale-reconciliation.server";
 import { buildRegisteredOrderConfirmation } from "@/lib/order-confirmation.server";
 import { buildWorkspaceAiContext } from "@/lib/ai-context.server";
 import { generateAiReply, type AiContext } from "@/lib/ai.server";
@@ -1743,8 +1743,8 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       }
     } else if (deferGpsReply) {
       // Si la validación final impidió guardar, no dejar el GPS sin respuesta.
-      const pendingText = missingOrderQuestion({order:result.order, productId:detectedProduct, training:ctx.training,
-        optionConfirmed, hasReceipt:hasReceiptForOrder}) ?? "📍 Recibí tu ubicación. Estamos verificando los datos para registrar el pedido.";
+      const pendingText = fixRepeatedCheckoutQuestion(missingOrderQuestion({order:result.order, productId:detectedProduct, training:ctx.training,
+        optionConfirmed, hasReceipt:hasReceiptForOrder}) ?? "📍 Recibí tu ubicación. Estamos verificando los datos para registrar el pedido.", ctx, saveStep?.state ?? previousSale);
       const pendingWamid = await sendWhatsAppText(conn, phone, pendingText);
       await supabaseAdmin.from("messages").insert({workspace_id:workspaceId,user_id:ownerId,
         conversation_id:conversation.id,ad_id:attributedAdId,direction:"outbound",sender:"ai",
@@ -1780,8 +1780,13 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       });
       // Si la IA no produjo una orden, pero prometió cerrar, no podemos inferir una venta.
       const fallback = "📋 Todavía no pude registrar tu pedido. Estamos revisando la información; no está confirmado.";
-      const outgoingText = missing || (claimsClosed || result.sale_closed || (result.order && !orderReady)
+      const verifiedNext = nextVerifiedSaleQuestion(ctx, saveStep?.state ?? previousSale);
+      const suggested = missing || (claimsClosed || result.sale_closed || (result.order && !orderReady)
         ? fallback : safeBeforeInsert);
+      const outgoingText = !bypassSale && verifiedNext &&
+        (/(?:ciudad|departamento|nombre|apellido|direcci[oó]n|ubicaci[oó]n|litros|presentaci[oó]n)/i.test(suggested) || result.sale_closed)
+          ? fixRepeatedCheckoutQuestion(suggested, ctx, saveStep?.state ?? previousSale)
+          : suggested;
       const outgoingWamid = await sendWhatsAppText(conn, phone, outgoingText);
       await supabaseAdmin.from("messages").insert({
         workspace_id: workspaceId, user_id: ownerId, conversation_id: conversation.id,
