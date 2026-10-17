@@ -1781,8 +1781,12 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       // Si la IA no produjo una orden, pero prometió cerrar, no podemos inferir una venta.
       const fallback = "📋 Todavía no pude registrar tu pedido. Estamos revisando la información; no está confirmado.";
       const verifiedNext = nextVerifiedSaleQuestion(ctx, saveStep?.state ?? previousSale);
-      const suggested = missing || (claimsClosed || result.sale_closed || (result.order && !orderReady)
-        ? fallback : safeBeforeInsert);
+      // Evitar que un JSON parcial de la IA convierta cada respuesta en la pregunta
+      // "¿De qué ciudad sos?". Solo recurrir al validador obligatorio cuando
+      // el modelo intentó CERRAR sin completar/guardar el pedido.
+      const suggested = (claimsClosed || result.sale_closed)
+        ? (nextVerifiedSaleQuestion(ctx, saveStep?.state ?? previousSale) ?? missing ?? fallback)
+        : safeBeforeInsert;
       const outgoingText = !bypassSale && verifiedNext &&
         (/(?:ciudad|departamento|nombre|apellido|direcci[oó]n|ubicaci[oó]n|litros|presentaci[oó]n)/i.test(suggested) || result.sale_closed)
           ? fixRepeatedCheckoutQuestion(suggested, ctx, saveStep?.state ?? previousSale)
