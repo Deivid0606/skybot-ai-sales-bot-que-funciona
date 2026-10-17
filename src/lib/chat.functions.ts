@@ -124,6 +124,82 @@ export const testAiReply = createServerFn({ method: "POST" })
 
 
 
+/** Recuperación MANUAL: el agente revisa todos los campos antes del INSERT.
+ * Nunca se confía en cantidades/precios del navegador: se consultan del catálogo.
+ * El mensaje de WhatsApp no se envía automáticamente desde este botón.
+ */
+const RecoveryInput = z.object({
+  conversationId: z.string().uuid(),
+  productId: z.string().uuid(),
+  optionId: z.string().uuid().nullable(),
+  promoCount: z.number().int().min(1).max(25),
+  customerName: z.string().trim().min(3).max(160),
+  city: z.string().trim().min(2).max(120),
+  department: z.string().trim().min(2).max(120),
+  street: z.string().trim().max(600),
+  paymentMethod: z.enum(["contraentrega", "anticipado"]),
+  sourceMessageId: z.string().uuid(),
+});
+
+export const registerPendingSale = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input: unknown) => RecoveryInput.parse(input))
+  .handler(async ({ data, context }) => {
+    const { supabase, userId } = context;
+    const { buildWorkspaceAiContext } = await import("@/lib/ai-context.server");
+    const { verifiedCoverage, parseCoverage } = await import("@/lib/rule-sales.server");
+    const { createOrderFromAi } = await import("@/lib/whatsapp-webhook.server");
+    const { data: convo, error: convoError } = await supabase.from("conversations")
+      .select("id,workspace_id,user_id,contact_id,ad_id,contacts(phone)")
+      .eq("id",data.conversationId).single();
+    if(convoError || !convo)throw new Error("Conversación no encontrada");
+    // Verificar acceso al workspace con la sesión autenticada.
+    const { data: profile, error: profileError }=await supabase.from("profiles")
+      .select("workspace_id").eq("id",userId).single();
+    if(profileError || profile?.workspace_id !== convo.workspace_id)throw new Error("Acceso no autorizado al vendedor");
+    if(!convo.contacts?.phone)throw new Error("Falta teléfono del cliente");
+    const {data: source,error: sourceError}=await supabase.from("messages")
+      .select("id,direction,created_at").eq("id",data.sourceMessageId)
+      .eq("workspace_id",convo.workspace_id).eq("conversation_id",convo.id).single();
+    if(sourceError || !source || source.direction!=="inbound")throw new Error("Elegí un mensaje real del cliente para la recuperación");
+    const {data: existing,error: existingError}=await supabase.from("orders")
+      .select("id,order_number,status,created_at").eq("workspace_id",convo.workspace_id)
+      .eq("conversation_id",convo.id).order("created_at",{ascending:false}).limit(20);
+    if(existingError)throw existingError;
+    // Si existen pedidos, no adivinar si esta venta ya se registró.
+    // En casos de compras múltiples requieren revisión humana de los pedidos.
+    if((existing??[]).some(o=>o.status!=="cancelado"))
+      throw new Error("Este chat ya tiene pedidos registrados. Revisá PEDIDOS para evitar duplicados antes de recuperar otra venta.");
+    const ctx=await buildWorkspaceAiContext(supabase,convo.workspace_id,[],data.productId,convo.contacts.phone);
+    const product=ctx.products.find(p=>p.id===data.productId);
+    if(!product)throw new Error("Producto no activo en este vendedor");
+    const match=verifiedCoverage(data.city,data.department,parseCoverage(ctx.training));
+    if(!match)throw new Error("La ciudad y el departamento no coinciden con la lista del vendedor");
+    if(!match.active && !(data.paymentMethod==="anticipado" && /ANTICIPADO|TRANSFERENCIA/i.test(match.method)))
+      throw new Error("No hay modalidad habilitada para esta ciudad. Configurá la encomienda en cobertura antes de registrar.");
+    if(data.paymentMethod==="contraentrega" && !match.active)
+      throw new Error("No hay contraentrega para esta ciudad");
+    if(match.addressRequired && !data.street.trim())throw new Error("La dirección es obligatoria para esta ciudad según tu entrenamiento");
+    const options=[...(product.product_prices??[])].sort((a,b)=>a.sort_order-b.sort_order);
+    const option=options.find(o=>o.id===data.optionId)??null;
+    if(options.length && !option)throw new Error("Seleccioná una presentación válida del catálogo");
+    if(!options.length && data.optionId)throw new Error("Este producto no tiene esa promoción");
+    const units=(option?.quantity??1)*data.promoCount;
+    const order={customer_name:data.customerName,phone:convo.contacts.phone,
+      city:match.city,departamento:match.department,street:data.street||undefined,
+      quantity:units,promo_quantity:data.promoCount,product_price_id:option?.id,
+      price_option_label:option?.label,payment_method:data.paymentMethod,
+      observations:"Pedido recuperado manualmente desde Inbox; revisar conversación original"};
+    const created=await createOrderFromAi({workspaceId:convo.workspace_id,ownerId:convo.user_id,
+      conversationId:convo.id,contactId:convo.contact_id,phone:convo.contacts.phone,
+      adId:convo.ad_id??null,productId:data.productId,
+      sourceMessageId:`manual-recovery:${data.sourceMessageId}`,order,products:ctx.products});
+    const {error: stateError}=await supabase.from("bot_sale_states").delete()
+      .eq("workspace_id",convo.workspace_id).eq("conversation_id",convo.id);
+    if(stateError)console.error("Se registró el pedido, pero no se pudo limpiar el estado",stateError);
+    return {ok:true,orderId:created.id,orderNumber:created.order_number};
+  });
+
 const AiNowInput = z.object({ conversationId: z.string().uuid() });
 
 export const aiReplyNow = createServerFn({ method: "POST" })
@@ -288,7 +364,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     }
     // En híbrido, no sobrescribir la respuesta de la IA con el mensaje genérico de GPS.
     // Si el código completó el pedido, el INSERT decidirá la confirmación.
-    if(bypassSale)result={...result,sale_closed:false,order:null};
+    if(bypassSale && !result.order)result={...result,sale_closed:false,order:null};
     // Persistir los datos capturados por reglas incluso si la IA redacta la respuesta.
     if(step){
       const {error: stateSaveError}=await supabase.from("bot_sale_states").upsert({
@@ -296,7 +372,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
         state:step.state,updated_at:new Date().toISOString()
       },{onConflict:"workspace_id,conversation_id"});
       if(stateSaveError)throw stateSaveError;
-      if(step.complete){const st=step.state;
+      if(step.complete && (mode === "rules_only" || !result.order)){const st=step.state;
         fromRules=mode === "rules_only";
         result={reply:mode === "rules_only" ? step.reply : result.reply,product_id:step.productId,sale_closed:true,
           order:{customer_name:st.customerName!,city:st.city!,departamento:st.department!,
@@ -319,7 +395,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     }
     const orderCoverage=result.order ? verifiedCoverage(
       String(result.order.city??""),String(result.order.departamento??""),parseCoverage(ctx.training)) : null;
-    const valid = !conversation.sale_closed && Boolean(orderCoverage?.active || (/anticip|transfer|deposit|giro/i.test(result.order?.payment_method ?? "") && /ANTICIPADO|TRANSFERENCIA/i.test(orderCoverage?.method ?? ""))) && (!previous.city || (previous.cityVerified && previous.coverageStatus === "covered")) &&
+    const valid = !conversation.sale_closed && Boolean(orderCoverage?.active || (/anticip|transfer|deposit|giro/i.test(result.order?.payment_method ?? "") && /ANTICIPADO|TRANSFERENCIA/i.test(orderCoverage?.method ?? ""))) &&
       (!orderCoverage?.addressRequired || Boolean(result.order?.street?.trim() || step?.state.locationUrl || previous.locationUrl)) && Boolean(result.order) &&
       isOrderReady(result.order, detectedProduct) &&
       (Boolean(step?.state.cartLines?.length) || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory));
