@@ -6,7 +6,7 @@ function isAiQuotaFailure(error: unknown): boolean {
 }
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { formatGs } from "@/lib/format";
-import { reconcileOrderWithSaleState, recoverSaleStateFromHistory, fixRepeatedCheckoutQuestion, nextVerifiedSaleQuestion } from "@/lib/sale-reconciliation.server";
+import { reconcileOrderWithSaleState, recoverSaleStateFromHistory } from "@/lib/sale-reconciliation.server";
 import { buildRegisteredOrderConfirmation } from "@/lib/order-confirmation.server";
 import { buildWorkspaceAiContext } from "@/lib/ai-context.server";
 import { generateAiReply, type AiContext } from "@/lib/ai.server";
@@ -1417,7 +1417,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       phone,
       conversation.id,
     );
-    const hybridMode: "hybrid" | "rules_only" | "ai_first" = String(aiSettings.hybrid_mode) === "rules_only" ? "rules_only" : "hybrid"; // Modo híbrido por defecto; permitir reglas explícitas.
+    const hybridMode: "hybrid" | "rules_only" | "ai_first" = "hybrid"; // Siempre responde la IA; reglas solo extraen/verifican/registran.
     // Persistencia por conversación. El estado no depende de la memoria de Vercel.
     const { data: saleRow, error: saleReadError } = await supabaseAdmin
       .from("bot_sale_states").select("state")
@@ -1494,7 +1494,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       optionId:verifiedSaleState.optionId,awaiting:verifiedSaleState.awaiting}));
     const aiAnswerContext = hybridMode !== "rules_only" ? {
       ...answerContext,
-      systemInstruction: answerContext.systemInstruction + `\nMODO HÍBRIDO BOT SKY, PRIORIDAD ALTA: Ya fue enviado por CÓDIGO el copy, la imagen y los precios del catálogo. DESDE AHORA CONVERSÁ VOS con el comprador de forma natural: resolvé una sola pregunta por vez y no repitas catálogo/precios completos ni datos ya recibidos. Cantidad y variante se capturan mediante código y deben respetarse. No confirmes pedidos sin número real generado por Supabase. El cliente puede comprar varias veces. DATOS VERIFICADOS DEL CICLO ACTUAL (no mezclar con pedidos previos): ${JSON.stringify({productId:verifiedSaleState.productId,optionId:verifiedSaleState.optionId,quantity:verifiedSaleState.quantity,city:verifiedSaleState.city,department:verifiedSaleState.department,cityVerified:verifiedSaleState.cityVerified===true,coverageStatus:verifiedSaleState.coverageStatus,customerName:verifiedSaleState.customerName,hasAddress:Boolean(verifiedSaleState.street),gpsReceived:Boolean(verifiedSaleState.locationUrl),paymentMethod:verifiedSaleState.paymentMethod,awaiting:verifiedSaleState.awaiting})}. COBERTURA: si cityVerified no es true, NUNCA digas que tenemos cobertura; consultá la ciudad si falta. GPS no prueba por sí mismo ninguna ciudad. Si recibiste GPS no vuelvas a solicitarlo. El GPS es dirección suficiente si la configuración de la ciudad admite dirección por ubicación. Si el nombre falta, preguntá SOLO nombre y apellido, NO domicilio ni referencia adicionales. Si no tenés precio/variante sin ambigüedad pedí aclaración. Si está completo, el código registrará el pedido; no inventes un número de orden ni digas que está confirmado.`
+      systemInstruction: answerContext.systemInstruction + `\nMODO HÍBRIDO BOT SKY, PRIORIDAD ALTA: Ya fue enviado por CÓDIGO el copy, la imagen y los precios del catálogo. DESDE AHORA CONVERSÁ VOS con el comprador de forma natural: resolvé una sola pregunta por vez y no repitas catálogo/precios completos ni datos ya recibidos. Cantidad y variante se capturan mediante código y deben respetarse. No confirmes pedidos sin número real generado por Supabase. El cliente puede comprar varias veces. DATOS VERIFICADOS DEL CICLO ACTUAL (no mezclar con pedidos previos): ${JSON.stringify({productId:verifiedSaleState.productId,optionId:verifiedSaleState.optionId,quantity:verifiedSaleState.quantity,city:verifiedSaleState.city,department:verifiedSaleState.department,cityVerified:verifiedSaleState.cityVerified===true,coverageStatus:verifiedSaleState.coverageStatus,customerName:verifiedSaleState.customerName,hasAddress:Boolean(verifiedSaleState.street),gpsReceived:Boolean(verifiedSaleState.locationUrl),paymentMethod:verifiedSaleState.paymentMethod,awaiting:verifiedSaleState.awaiting})}. COBERTURA: si cityVerified no es true, NUNCA digas que tenemos cobertura; consultá la ciudad si falta. GPS no prueba por sí mismo ninguna ciudad. Si recibiste GPS no vuelvas a solicitarlo. El GPS es dirección suficiente si la configuración de la ciudad admite dirección por ubicación. Respetá el orden de preguntas definido en el entrenamiento del vendedor; nunca repitas hechos conocidos. Si no tenés precio/variante sin ambigüedad pedí aclaración. Si está completo, el código registrará el pedido; no inventes un número de orden ni digas que está confirmado.`
     } : answerContext;
     // El motor nunca puede borrar hechos ya verificados al procesar una dirección.
     if (ruleStep && previousSale.cityVerified && previousSale.city && previousSale.department &&
@@ -1613,11 +1613,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     // Con estado reconocido, nunca depender de un JSON completo de Gemini.
     // El backend continuará validando variante, dirección y pago antes del INSERT.
     const optionConfirmed = Boolean(saveStep?.state.cartLines?.length) || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory);
-    const productForReply = ctx.products.find((p) => p.id === detectedProduct);
-    const mustClarify = Boolean(result.order && !optionConfirmed && (productForReply?.product_prices?.length ?? 0) > 1);
-    const finalReply = mustClarify
-      ? buildVariantSelectionQuestion(productForReply!)
-      : safeReply;
+    const finalReply = safeReply; // La IA pregunta según el entrenamiento; el backend impide registrar variantes ambiguas.
     // No prometer que el pedido quedó registrado ANTES del INSERT.
     // No permitir confirmaciones comerciales falsas, incluso si la IA no entrega
     // result.order o sale_closed. Sólo el bloque posterior al INSERT confirmado
@@ -1757,8 +1753,8 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       }
     } else if (deferGpsReply) {
       // Si la validación final impidió guardar, no dejar el GPS sin respuesta.
-      const pendingText = fixRepeatedCheckoutQuestion(missingOrderQuestion({order:result.order, productId:detectedProduct, training:ctx.training,
-        optionConfirmed, hasReceipt:hasReceiptForOrder}) ?? "📍 Recibí tu ubicación. Estamos verificando los datos para registrar el pedido.", ctx, saveStep?.state ?? previousSale);
+      // No formular preguntas fijas cuando el INSERT no procedió. La IA es la autora de la conversación.
+      const pendingText = safeBeforeInsert || "Recibí tus datos. Tu pedido sigue pendiente de verificación.";
       const pendingWamid = await sendWhatsAppText(conn, phone, pendingText);
       await supabaseAdmin.from("messages").insert({workspace_id:workspaceId,user_id:ownerId,
         conversation_id:conversation.id,ad_id:attributedAdId,direction:"outbound",sender:"ai",
@@ -1787,24 +1783,10 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     // Respuesta normal SOLO si no se registró pedido. Nunca anunciar un cierre ficticio.
     if (!orderWasCreated && !deferGpsReply) {
       const claimsClosed = /(?:ya\s+(?:qued[oó]|est[aá])\s+(?:registrad[oa]|confirmad[oa])|(?:pedido|compra)\s+(?:ya\s+)?(?:qued[oó]|est[aá])\s+(?:registrad[oa]|confirmad[oa])|gracias\s+por\s+tu\s+compra|(?:tu|su)\s+pedido[\s\S]{0,35}(?:registrad[oa]|confirmad[oa])|te\s+llegar[aá]\s+en\s+breve)/i.test(safeBeforeInsert);
-      const missing = missingOrderQuestion({
-        order: result.order, productId: detectedProduct, training: ctx.training,
-        optionConfirmed: Boolean(saveStep?.state.cartLines?.length) || optionConfirmed,
-        hasReceipt: hasReceiptForOrder,
-      });
-      // Si la IA no produjo una orden, pero prometió cerrar, no podemos inferir una venta.
-      const fallback = "📋 Todavía no pude registrar tu pedido. Estamos revisando la información; no está confirmado.";
-      const verifiedNext = nextVerifiedSaleQuestion(ctx, saveStep?.state ?? previousSale);
-      // Evitar que un JSON parcial de la IA convierta cada respuesta en la pregunta
-      // "¿De qué ciudad sos?". Solo recurrir al validador obligatorio cuando
-      // el modelo intentó CERRAR sin completar/guardar el pedido.
-      const suggested = (claimsClosed || result.sale_closed)
-        ? (nextVerifiedSaleQuestion(ctx, saveStep?.state ?? previousSale) ?? missing ?? fallback)
+      // La IA controla TODAS las preguntas; el servidor solo bloquea confirmaciones falsas.
+      const outgoingText = (claimsClosed || result.sale_closed)
+        ? "Recibí tus datos, pero tu pedido todavía no está registrado. Estoy verificando la información."
         : safeBeforeInsert;
-      const outgoingText = !bypassSale && verifiedNext &&
-        (/(?:ciudad|departamento|nombre|apellido|direcci[oó]n|ubicaci[oó]n|litros|presentaci[oó]n)/i.test(suggested) || result.sale_closed)
-          ? fixRepeatedCheckoutQuestion(suggested, ctx, saveStep?.state ?? previousSale)
-          : suggested;
       const outgoingWamid = await sendWhatsAppText(conn, phone, outgoingText);
       await supabaseAdmin.from("messages").insert({
         workspace_id: workspaceId, user_id: ownerId, conversation_id: conversation.id,
