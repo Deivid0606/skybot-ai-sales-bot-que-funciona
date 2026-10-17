@@ -159,7 +159,9 @@ REGLAS:
 - Usa SOLO la información del catálogo y del conocimiento. Si no sabes algo, dilo con naturalidad y ofrece ayuda.
 - El cliente puede mandar audios e imágenes: recibirás su transcripción o una descripción que empieza con [imagen]. Si es un comprobante de pago, agradece y confirma los datos; si es un producto, identifícalo en el catálogo.
 - Tu meta es cerrar la venta: resuelve dudas, maneja objeciones y pide los datos de envío.
-- Para cerrar necesitás producto, nombre completo, ciudad verificada, cantidad/promoción y método de pago. Dirección solo cuando la política específica de esa ciudad la exija. El teléfono llega de WhatsApp. Respetá las reglas comerciales del vendedor.
+- Las instrucciones ACTIVAS del vendedor para este workspace determinan el orden de preguntas, la modalidad y cuáles datos son exigibles; no añadas requisitos comerciales globales que contradigan esas instrucciones. El backend verifica precios, ciudades y escritura en la base de datos.
+- Para cerrar necesitás producto real, nombre completo, ciudad y departamento comprobables, cantidad/promoción real y método de pago compatible con la modalidad. Dirección solo cuando la política específica de esa ciudad la exija. El teléfono llega de WhatsApp. Respetá las reglas comerciales del vendedor.
+- Nunca muestres datos internos JSON en reply. Devuelve el objeto completo con reply, product_id, sale_closed y order; la confirmación definitiva de registro es responsabilidad exclusiva del backend.
 ${firstOfferRule}
 - El teléfono se obtiene automáticamente del número de WhatsApp cuando está disponible.
 - Si hay un número detectado automáticamente, NO vuelvas a pedir el teléfono.
@@ -168,7 +170,7 @@ ${firstOfferRule}
 - CANTIDADES: si el cliente escribe un número suelto, por ejemplo "2", o escribe "2 unidades", la cantidad es EXACTAMENTE ese número.
 - Nunca dupliques, concatenes ni repitas dígitos.
 - Si el cliente repite la misma cantidad, no la sumes: sigue siendo la misma.
-- VARIANTES: muestra SIEMPRE el nombre y precio exacto de cada opción de product_prices al presentar un producto con varias opciones, sin reemplazar nombres por "1 unidad".
+- VARIANTES: al ofrecer opciones, respetá las instrucciones de presentación del vendedor. Si necesitás enumerarlas, usá nombres y precios exactos de product_prices sin inventar variantes.
 - VARIANTES: tamaño/capacidad/color/modelo NO son cantidad; "5 litros" es nombre de variante y NO significa 5 unidades.
 - VARIANTES: antes de cerrar una venta con varias opciones, debe existir una opción inequívoca elegida por el cliente O asignada por la regla del vendedor sobre primera promoción. Devuelve su variante_id exacto en order.product_price_id y su nombre en order.price_option_label.
 - Si todavía no hay opción identificada y el entrenamiento de este vendedor NO autoriza la primera promoción, preguntá cuál quiere y devolvé order:null y sale_closed:false. Si la autoriza, seleccioná la primera opción válida del catálogo sin inventar un ID.
@@ -480,13 +482,20 @@ function parseResult(raw: string): AiResult {
   }
 
   const parsed = unwrapped as UnknownRecord;
+  // Algunos modelos devuelven directamente {customer_name, city, ...}.
+  // Jamás publicar ese objeto como mensaje visible. El backend validará la venta.
+  const directOrder = typeof parsed.customer_name === "string" &&
+    typeof parsed.city === "string" && (parsed.quantity !== undefined || parsed.product_price_id !== undefined);
+  const order = normalizeOrder(directOrder ? parsed : parsed.order);
   const reply = sanitizeVisibleReply(parsed.reply);
 
   return {
-    reply: reply || sanitizeVisibleReply(cleaned),
+    reply: reply || (directOrder
+      ? "Gracias, ya recibí los datos. Estoy verificando tu pedido. 😊"
+      : "Gracias por escribirnos. Estoy revisando tu consulta. 😊"),
     product_id: normalizeProductId(parsed.product_id),
-    sale_closed: parsed.sale_closed === true,
-    order: normalizeOrder(parsed.order),
+    sale_closed: directOrder ? Boolean(order) : parsed.sale_closed === true,
+    order,
   };
 }
 
