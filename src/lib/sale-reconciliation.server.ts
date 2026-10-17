@@ -28,6 +28,7 @@ const isCityReply = (value: string, lastQuestion: string) => {
 export function recoverSaleStateFromHistory(ctx: AiContext, previous: SaleState, history: ChatLine[]): SaleState {
   const state: SaleState = { ...previous };
   const coverage = parseCoverage(ctx.training);
+  if (!coverage.length) console.warn("[BOT_SKY_COVERAGE] No hay ciudades parseables en el entrenamiento activo del workspace");
   const product = ctx.products.find(p => p.id === state.productId || p.id === ctx.activeProductId);
   if (product) state.productId = product.id;
   // No salir si aún falta productId: el cliente puede haber indicado ciudad y nombre.
@@ -38,9 +39,10 @@ export function recoverSaleStateFromHistory(ctx: AiContext, previous: SaleState,
     const n = normal(raw);
     if (!n || /^\[(?:image|audio|document|video)/i.test(raw)) continue;
     const hits = coverage.filter(c => [c.city, ...c.aliases].some(alias => exactToken(raw, alias)));
+    const uniqueHits = hits.filter((c,i)=>hits.findIndex(x=>normal(x.city)===normal(c.city) && normal(x.department)===normal(c.department))===i);
     // La última ciudad explícita del cliente gana; no confundir referencias de dirección.
-    if (hits.length === 1 && isCityReply(raw, lastQuestion) && !/(?:calle|esquina|casi|referencia|barrio)/.test(n)) {
-      const found = hits[0];
+    if (uniqueHits.length === 1 && isCityReply(raw, lastQuestion) && !/(?:calle|esquina|casi|referencia|barrio)/.test(n)) {
+      const found = uniqueHits[0];
       const previousLocation = state.city && state.department
         ? verifiedCoverage(state.city, state.department, coverage) : null;
       const explicitlyUpdated = !previousLocation || normal(previousLocation.city) !== normal(found.city);
@@ -60,12 +62,12 @@ export function recoverSaleStateFromHistory(ctx: AiContext, previous: SaleState,
       });
       if (matches.length === 1) state.optionId = matches[0].id;
     }
-    if (!state.customerName && /(?:nombre|apellido|como te llamas|como te llamas)/.test(lastQuestion)) {
+    if (!state.customerName && (/(?:nombre|apellido|como te llamas)/.test(lastQuestion) || /^(?:me llamo|mi nombre es)\s+/i.test(raw))) {
       const candidate = validName(raw);
       if (candidate) state.customerName = candidate;
     }
     if (!state.street && /(?:direccion|ubicacion|domicilio|referencia|numero de casa)/.test(lastQuestion)
-      && !/^(?:si|no|ok|dale)$/.test(n) && raw.length >= 6 && hits.length === 0) state.street = raw;
+      && !/^(?:si|no|ok|dale)$/.test(n) && raw.length >= 6 && uniqueHits.length === 0) state.street = raw;
     if (/\b(?:pago al recibir|contra entrega|contraentrega|pagare al recibir)\b/.test(n)) state.paymentMethod = "contraentrega";
     else if (/\b(?:pago anticipado|voy a transferir|pago por transferencia)\b/.test(n)) state.paymentMethod = "anticipado";
   }
