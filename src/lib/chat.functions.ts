@@ -433,13 +433,15 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       (ctx.products.find(p => p.id === detectedProduct)?.product_prices?.length ?? 0) > 1 &&
       !isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory));
     const options = ctx.products.find(p => p.id === detectedProduct)?.product_prices ?? [];
+    const candidateReply = result.reply
+      .replace(/\bya\s+(?:tenemos|tengo)\s+tu\s+pedido\b/gi, "Estamos preparando los datos de tu pedido")
+      .replace(/(?:✅\s*)?PEDIDO\s+(?:CONFIRMADO|REGISTRADO)/gi, "Pedido pendiente de revisión");
+    const falselyConfirmed = /(?:pedido|compra)\s+(?:ya\s+)?(?:qued[oó]|est[aá])\s+(?:registrad[oa]|confirmad[oa])|gracias\s+por\s+tu\s+compra|(?:tu|su)\s+pedido[\s\S]{0,35}(?:registrad[oa]|confirmad[oa])|te\s+llegar[aá]\s+en\s+breve/i.test(candidateReply);
     const reply = createdOrder
       ? `✅ PEDIDO REGISTRADO\n📦 N.º ${createdOrder.order_number}\n${(result.order?.payment_method ?? "").toLowerCase().includes("anticip") ? "💳 Comprobante sujeto a verificación por el vendedor." : "¡Gracias por tu compra!"}`
-      : result.reply
-          .replace(/\bya\s+(?:tenemos|tengo)\s+tu\s+pedido\b/gi,"Estamos preparando los datos de tu pedido")
-          .replace(/(?:✅\s*)?PEDIDO\s+(?:CONFIRMADO|REGISTRADO)/gi, "Estamos verificando los datos del pedido")
-          .replace(/\b(?:ya\s+)?(?:registre|registramos|tome|tomamos|agende|agendamos)\s+(?:tu|su|el)\s+pedido\b/gi,
-            "Estoy verificando los datos de tu pedido");
+      : falselyConfirmed || result.sale_closed
+        ? "📋 Recibí tus datos, pero el pedido todavía no está registrado. Un asesor debe revisar la información pendiente."
+        : candidateReply;
     const wamid = await sendWhatsAppText(conn, phone, reply);
     const { error: insertError } = await supabase.from("messages").insert({
       workspace_id: conversation.workspace_id, user_id: conversation.user_id,
