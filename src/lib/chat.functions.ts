@@ -8,6 +8,8 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { sendWhatsAppText } from "@/lib/whatsapp.server";
+import { reconcileOrderWithSaleState } from "@/lib/sale-reconciliation.server";
+import { buildRegisteredOrderConfirmation } from "@/lib/order-confirmation.server";
 
 const SendInput = z.object({
   conversationId: z.string().uuid(),
@@ -384,6 +386,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     const detectedProduct = result.product_id && ctx.products.some(p => p.id === result.product_id)
       ? result.product_id : conversation.product_id;
     result.order=applySellerFirstOffer(result.order,detectedProduct,ctx.products,ctx.training,chatHistory);
+    result.order=reconcileOrderWithSaleState(result.order,step?.state??previous,ctx.training);
     const phone = conversation.contacts?.phone;
     if (!phone) throw new Error("El contacto no tiene teléfono");
 
@@ -437,8 +440,27 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       .replace(/\bya\s+(?:tenemos|tengo)\s+tu\s+pedido\b/gi, "Estamos preparando los datos de tu pedido")
       .replace(/(?:✅\s*)?PEDIDO\s+(?:CONFIRMADO|REGISTRADO)/gi, "Pedido pendiente de revisión");
     const falselyConfirmed = /(?:pedido|compra)\s+(?:ya\s+)?(?:qued[oó]|est[aá])\s+(?:registrad[oa]|confirmad[oa])|gracias\s+por\s+tu\s+compra|(?:tu|su)\s+pedido[\s\S]{0,35}(?:registrad[oa]|confirmad[oa])|te\s+llegar[aá]\s+en\s+breve/i.test(candidateReply);
+    let confirmedInboxMessage: string | null = null;
+    if (createdOrder && result.order) {
+      const { data: savedOrder, error: readError } = await supabase.from("orders")
+        .select("id,order_number,customer_name,phone,total,quantity,street,payment_method,payment_status")
+        .eq("workspace_id",conversation.workspace_id).eq("id",createdOrder.id).single();
+      if (readError || !savedOrder) throw readError || new Error("El pedido no aparece en Supabase");
+      const selected = ctx.products.find(p=>p.id===detectedProduct);
+      const option = selected?.product_prices?.find(o=>o.id===result.order?.product_price_id);
+      confirmedInboxMessage = buildRegisteredOrderConfirmation({
+        created:savedOrder,
+        order:{...result.order,payment_method:savedOrder.payment_method},
+        productName:selected?.name??"Producto del pedido",
+        productOption:option?.label??result.order.price_option_label,
+        savedQuantity:Number(savedOrder.quantity),
+        address:savedOrder.street,
+        paymentStatus:savedOrder.payment_status,
+        deliveryMethod:orderCoverage?.method,
+      });
+    }
     const reply = createdOrder
-      ? `✅ PEDIDO REGISTRADO\n📦 N.º ${createdOrder.order_number}\n${(result.order?.payment_method ?? "").toLowerCase().includes("anticip") ? "💳 Comprobante sujeto a verificación por el vendedor." : "¡Gracias por tu compra!"}`
+      ? confirmedInboxMessage!
       : falselyConfirmed || result.sale_closed
         ? (missingOrderQuestion({order:result.order,productId:detectedProduct,training:ctx.training,
             optionConfirmed:Boolean(step?.state.cartLines?.length) || isUnambiguousPriceSelection(result.order,detectedProduct,ctx.products,chatHistory)})
@@ -553,7 +575,16 @@ export const recoverPendingWithRules = createServerFn({ method: "POST" })
         sourceMessageId:newest.wamid||newest.id,order,products:ctx.products,cartLines:st.cartLines});
       await recoverRecentPaymentReceiptForOrder({workspaceId:convo.workspace_id,ownerId:convo.user_id,
         conversationId:convo.id,orderId:createdOrder.id});
-      reply=`✅ PEDIDO REGISTRADO\n📦 N.º ${createdOrder.order_number}\n¡Gracias por tu compra!`;
+      const {data:savedOrder,error:readError}=await supabase.from("orders")
+        .select("id,order_number,customer_name,phone,total,quantity,street,payment_method,payment_status")
+        .eq("workspace_id",convo.workspace_id).eq("id",createdOrder.id).single();
+      if(readError||!savedOrder)throw readError||new Error("No se encontró el pedido creado");
+      const selectedProduct=ctx.products.find(p=>p.id===productId);
+      const selectedOption=selectedProduct?.product_prices?.find(o=>o.id===order.product_price_id);
+      reply=buildRegisteredOrderConfirmation({created:savedOrder,order:{...order,payment_method:savedOrder.payment_method},
+        productName:selectedProduct?.name??"Producto del pedido",productOption:selectedOption?.label,
+        savedQuantity:Number(savedOrder.quantity),address:savedOrder.street,paymentStatus:savedOrder.payment_status,
+        deliveryMethod:verified.method});
     }
     const {data:conn}=await supabase.from("whatsapp_connections").select("phone_number_id,access_token")
       .eq("workspace_id",convo.workspace_id).maybeSingle();
