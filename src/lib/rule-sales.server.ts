@@ -396,7 +396,8 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
       if(s.customerName && needsAddress && !s.street)return answer(`¡Gracias, ${s.customerName}! 😍 Solo me falta tu *dirección completa* o ubicación de Google Maps. 📍 Si tenés, agregá una referencia cercana.`,"details");
     }
     if (!needsAddress) return answer("😊 ¿Me compartís tu nombre y apellido para registrar el pedido?", "name");
-    return answer(`¡Oikoite! 😍🚚 Tenemos cobertura en *${s.city}*.\n\n📦 *¡Ya estamos a un paso de preparar tu pedido!*\n\nPara procesarlo, pasame estos datos *juntos*, por favor:\n\n👤 *Nombre y apellido*\n🏠 *Dirección de entrega y número de casa* (si tiene)\n📍 *Referencia cercana o ubicación de Google Maps*\n📱 *Otro número de contacto (opcional)*, solo si tenés.\n\n✅ Una vez que me pases los datos necesarios, tu pedido será registrado para su procesamiento. ¡Pagás al recibir! 💚`,"details");
+    if (!s.customerName) return answer(`¡Oikoite! 😍🚚 Tenemos cobertura en *${s.city}*. ¿Me pasás tu nombre y apellido?`, "name");
+    return answer("🏠 ¿Me pasás tu dirección o ubicación para completar el pedido?", "address");
   }
   return answer(`📦✨ *¡Ya tengo los datos de tu pedido!*\n🛍️ ${p.name}${s.cartLines?.length?` (${summaryLabel})`:selected?` (${selected.label})`:""}\n🔢 Cantidad: ${s.quantity}\n💰 Total: *${money(total)}*\n✅ Voy a registrarlo ahora. 😊`,null,true);
 }
