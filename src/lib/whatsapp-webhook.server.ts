@@ -7,7 +7,7 @@ function isAiQuotaFailure(error: unknown): boolean {
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { formatGs } from "@/lib/format";
 import { buildWorkspaceAiContext } from "@/lib/ai-context.server";
-import { generateAiReply } from "@/lib/ai.server";
+import { generateAiReply, type AiContext } from "@/lib/ai.server";
 import { decideHybridReply } from "@/lib/hybrid-rules.server";
 import { advanceRuleSale, sellerUsesFirstOffer, type SaleState } from "@/lib/rule-sales.server";
 import { classifyCustomerIntent, addVerifiedOrderContext, addPendingSaleContext } from "@/lib/hybrid-intent.server";
@@ -1715,7 +1715,8 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       }
     } else if (deferGpsReply) {
       // Si la validación final impidió guardar, no dejar el GPS sin respuesta.
-      const pendingText = "📍 Recibí tus datos. Todavía no pude registrar el pedido; un asesor debe verificar la información pendiente.";
+      const pendingText = missingOrderQuestion({order:result.order, productId:detectedProduct, training:ctx.training,
+        optionConfirmed, hasReceipt:hasReceiptForOrder}) ?? "📍 Recibí tu ubicación. Estamos verificando los datos para registrar el pedido.";
       const pendingWamid = await sendWhatsAppText(conn, phone, pendingText);
       await supabaseAdmin.from("messages").insert({workspace_id:workspaceId,user_id:ownerId,
         conversation_id:conversation.id,ad_id:attributedAdId,direction:"outbound",sender:"ai",
@@ -1744,9 +1745,15 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     // Respuesta normal SOLO si no se registró pedido. Nunca anunciar un cierre ficticio.
     if (!orderWasCreated && !deferGpsReply) {
       const claimsClosed = /(?:ya\s+(?:qued[oó]|est[aá])\s+(?:registrad[oa]|confirmad[oa])|(?:pedido|compra)\s+(?:ya\s+)?(?:qued[oó]|est[aá])\s+(?:registrad[oa]|confirmad[oa])|gracias\s+por\s+tu\s+compra|(?:tu|su)\s+pedido[\s\S]{0,35}(?:registrad[oa]|confirmad[oa])|te\s+llegar[aá]\s+en\s+breve)/i.test(safeBeforeInsert);
-      const fallback = "📋 Recibí tus datos, pero el pedido todavía no está registrado. Un asesor debe revisar los datos pendientes antes de confirmarlo.";
-      const outgoingText = claimsClosed || result.sale_closed || (result.order && !orderReady)
-        ? fallback : safeBeforeInsert;
+      const missing = missingOrderQuestion({
+        order: result.order, productId: detectedProduct, training: ctx.training,
+        optionConfirmed: Boolean(saveStep?.state.cartLines?.length) || optionConfirmed,
+        hasReceipt: hasReceiptForOrder,
+      });
+      // Si la IA no produjo una orden, pero prometió cerrar, no podemos inferir una venta.
+      const fallback = "📋 Todavía no pude registrar tu pedido. Estamos revisando la información; no está confirmado.";
+      const outgoingText = missing || (claimsClosed || result.sale_closed || (result.order && !orderReady)
+        ? fallback : safeBeforeInsert);
       const outgoingWamid = await sendWhatsAppText(conn, phone, outgoingText);
       await supabaseAdmin.from("messages").insert({
         workspace_id: workspaceId, user_id: ownerId, conversation_id: conversation.id,
@@ -1868,6 +1875,35 @@ export function isUnambiguousPriceSelection(
 function buildVariantSelectionQuestion(product: AiContextProducts[number]): string {
   const options = [...(product.product_prices ?? [])].sort((a, b) => a.sort_order - b.sort_order);
   return `😊 Tenemos estas opciones de *${product.name}*:\n\n${options.map((o) => `• *${o.label}* — ${formatGs(o.price)}`).join("\n")}\n\n¿Cuál preferís?`;
+}
+
+/** Solicita un dato concreto según la configuración de ESTE workspace; nunca confirma sin INSERT. */
+export function missingOrderQuestion(args: {
+  order: Awaited<ReturnType<typeof generateAiReply>>["order"];
+  productId: string | null;
+  training: AiContext["training"];
+  optionConfirmed: boolean;
+  hasReceipt?: boolean;
+}): string | null {
+  const { order, productId, optionConfirmed } = args;
+  if (!productId) return "🛒 ¿Qué producto te gustaría pedir?";
+  if (!order) return null; // Sin datos estructurados no inventar un cierre.
+  if (!String(order.customer_name ?? "").trim()) return "😊 ¿Me indicás tu nombre y apellido para el pedido?";
+  if (!String(order.city ?? "").trim()) return "📍 ¿De qué ciudad sos para verificar la entrega?";
+  const coverage = parseCoverage(args.training);
+  const place = verifiedCoverage(String(order.city), String(order.departamento ?? ""), coverage);
+  if (!place) {
+    const cityMatches = coverage.filter(p => [p.city, ...p.aliases].some(n => n.toLocaleLowerCase() === String(order.city).toLocaleLowerCase()));
+    if (cityMatches.length === 1) return `📍 ¿Me confirmás que tu ciudad es ${cityMatches[0].city}, departamento de ${cityMatches[0].department}?`;
+    return "📍 ¿Me confirmás tu ciudad y departamento para verificar la modalidad de envío?";
+  }
+  if (!place.active && !/ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(place.method)) return "📦 No tenemos entrega habilitada para esa ciudad. ¿Querés consultar otra localidad?";
+  if (!Number.isFinite(Number(order.quantity)) || Number(order.quantity) < 1) return "📦 ¿Cuántas unidades querés llevar?";
+  if (!optionConfirmed) return "📦 ¿Qué tamaño o promoción elegís del producto?";
+  if (place.addressRequired && !String(order.street ?? "").trim()) return "🏠 ¿Me pasás tu dirección o ubicación para completar el pedido?";
+  if (!String(order.payment_method ?? "").trim()) return "💳 ¿Preferís pagar al recibir o mediante transferencia?";
+  if (/anticip|transfer|deposit|giro/i.test(String(order.payment_method ?? "")) && !args.hasReceipt) return "💳 Para seguir con el pago anticipado, enviame el comprobante de transferencia, por favor.";
+  return null;
 }
 
 export function isOrderReady(
