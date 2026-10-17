@@ -1579,7 +1579,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     const detectedProduct =
       result.product_id && ctx.products.some((p) => p.id === result.product_id)
         ? result.product_id
-        : conversation.product_id;
+        : (saveStep?.state.productId ?? previousSale.productId ?? conversation.product_id);
 
     // Segunda barrera anti-repetición:
     // si la IA intenta volver a mandar prácticamente el mismo copy largo del
@@ -1619,16 +1619,9 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     // Pago anticipado: no registrar si todavía no hay archivo de comprobante.
     // La recepción del archivo NO equivale a dinero acreditado.
     const isAdvance = /anticip|transfer|deposit|giro/i.test(result.order?.payment_method ?? "");
-    let hasReceiptForOrder = Boolean(mediaPath && media && (media.type === "image" || media.type === "document"));
-    if (isAdvance && !hasReceiptForOrder) {
-      const {data: recentProofs} = await supabaseAdmin.from("messages")
-        .select("id").eq("workspace_id",workspaceId).eq("conversation_id",conversation.id)
-        .eq("direction","inbound").in("media_type",["image","document"])
-        .not("media_url","is",null)
-        .gte("created_at",new Date(Date.now()-3*60*60*1000).toISOString())
-        .limit(1);
-      hasReceiptForOrder=Boolean(recentProofs?.length);
-    }
+    // El archivo debe pertenecer al pago pendiente del ciclo actual.
+    // Nunca tomar una imagen antigua de producto como comprobante.
+    const hasReceiptForOrder = Boolean(saveStep?.state.receiptPath || previousSale.receiptPath);
     if (result.order && !result.order.street?.trim() && (saveStep?.state.locationUrl || previousSale.locationUrl)) {
       result.order.street = saveStep?.state.locationUrl || previousSale.locationUrl || undefined;
     }
