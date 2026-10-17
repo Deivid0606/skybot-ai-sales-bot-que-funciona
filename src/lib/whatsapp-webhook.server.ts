@@ -1601,33 +1601,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       .replace(/\b(?:tu|su)\s+pedido\s+(?:ya\s+)?(?:quedo|esta)\s+(?:confirmado|registrado|agendado)\b/gi,
         "Tu pedido está pendiente de verificación");
     const deferGpsReply = Boolean(saveStep?.complete && result.order && !conversation.sale_closed);
-    if (!deferGpsReply) {
-    const wamid = await sendWhatsAppText(conn, phone, safeBeforeInsert);
-
-    await supabaseAdmin.from("messages").insert({
-      workspace_id: workspaceId,
-      user_id: ownerId,
-      conversation_id: conversation.id,
-      ad_id: attributedAdId,
-      direction: "outbound",
-      sender: "ai",
-      response_origin: responseOrigin.startsWith("code:") ? "code" : "ai",
-      body: safeBeforeInsert,
-      wamid,
-      status: "sent",
-    } as any);
-
-    await supabaseAdmin
-      .from("conversations")
-      .update({
-        last_message: safeBeforeInsert,
-        last_message_at: new Date().toISOString(),
-        product_id: detectedProduct,
-        unread_count: 0,
-      })
-      .eq("id", conversation.id);
-
-    }
+    // Primero validar e insertar. Nunca enviar la respuesta libre del modelo antes del INSERT.
     // Pago anticipado: no registrar si todavía no hay archivo de comprobante.
     // La recepción del archivo NO equivale a dinero acreditado.
     const isAdvance = /anticip|transfer|deposit|giro/i.test(result.order?.payment_method ?? "");
@@ -1661,6 +1635,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
      */
     const verifiedOrderCoverage = result.order ? verifiedCoverage(
       String(result.order.city??""),String(result.order.departamento??""),parseCoverage(ctx.training)) : null;
+    let orderWasCreated = false;
     if (!conversation.sale_closed && result.order && orderReady && (verifiedOrderCoverage?.active || (isAdvance && /ANTICIPADO|TRANSFERENCIA/i.test(verifiedOrderCoverage?.method ?? ""))) &&
       (!verifiedOrderCoverage?.addressRequired || Boolean(result.order.street?.trim() || saveStep?.state.locationUrl || previousSale.locationUrl))) {
       const completedOrder = {
@@ -1681,6 +1656,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         products: ctx.products,
         cartLines: saveStep?.state.cartLines,
       });
+      orderWasCreated = true;
 
       /*
        * CASO 1:
@@ -1764,6 +1740,24 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
           `Producto: ${detectedProduct ?? "sin producto"}. ` +
           `Pedido recibido: ${JSON.stringify(result.order)}`,
       });
+    }
+    // Respuesta normal SOLO si no se registró pedido. Nunca anunciar un cierre ficticio.
+    if (!orderWasCreated && !deferGpsReply) {
+      const claimsClosed = /(?:ya\s+(?:qued[oó]|est[aá])\s+(?:registrad[oa]|confirmad[oa])|(?:pedido|compra)\s+(?:ya\s+)?(?:qued[oó]|est[aá])\s+(?:registrad[oa]|confirmad[oa])|gracias\s+por\s+tu\s+compra|(?:tu|su)\s+pedido[\s\S]{0,35}(?:registrad[oa]|confirmad[oa])|te\s+llegar[aá]\s+en\s+breve)/i.test(safeBeforeInsert);
+      const fallback = "📋 Recibí tus datos, pero el pedido todavía no está registrado. Un asesor debe revisar los datos pendientes antes de confirmarlo.";
+      const outgoingText = claimsClosed || result.sale_closed || (result.order && !orderReady)
+        ? fallback : safeBeforeInsert;
+      const outgoingWamid = await sendWhatsAppText(conn, phone, outgoingText);
+      await supabaseAdmin.from("messages").insert({
+        workspace_id: workspaceId, user_id: ownerId, conversation_id: conversation.id,
+        ad_id: attributedAdId, direction: "outbound", sender: "ai",
+        response_origin: responseOrigin.startsWith("code:") ? "code" : "ai",
+        body: outgoingText, wamid: outgoingWamid, status: "sent",
+      } as any);
+      await supabaseAdmin.from("conversations").update({
+        last_message: outgoingText, last_message_at: new Date().toISOString(),
+        product_id: detectedProduct, unread_count: 0,
+      }).eq("workspace_id", workspaceId).eq("id", conversation.id);
     }
   } catch (e) {
     const messageText = e instanceof Error ? e.message : "error";
