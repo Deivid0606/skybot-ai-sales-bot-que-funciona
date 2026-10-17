@@ -42,7 +42,7 @@ export async function buildWorkspaceAiContext(
   customerPhone: string | null = null,
 ): Promise<AiContext> {
   const [aiSettingsResult, settingsResult, productsResult, trainingResult] = await Promise.all([
-    supabase.from("ai_settings").select("system_instruction, gemini_api_key, gemini_api_key_2, gemini_api_key_3, groq_api_key, xai_api_key, openrouter_api_key, cloudflare_api_key, cloudflare_account_id, provider_order, provider_models, model, autodetect_model").eq("workspace_id", workspaceId).maybeSingle(),
+    supabase.from("ai_settings").select("system_instruction, gemini_api_key, gemini_api_key_2, gemini_api_key_3, openai_api_key, provider_order, provider_models, model, autodetect_model").eq("workspace_id", workspaceId).maybeSingle(),
     supabase.from("user_settings").select("business_name, currency").eq("workspace_id", workspaceId).maybeSingle(),
     supabase.from("products").select(`
       id, name, sku, price, promo_price, stock, sales_copy, description, delivery_info, ai_instructions,
@@ -80,11 +80,8 @@ export async function buildWorkspaceAiContext(
     geminiApiKey: aiSettingsResult.data?.gemini_api_key ?? null,
     geminiApiKey2: aiSettingsResult.data?.gemini_api_key_2 ?? null,
     geminiApiKey3: aiSettingsResult.data?.gemini_api_key_3 ?? null,
-    groqApiKey: aiSettingsResult.data?.groq_api_key ?? null,
-    xaiApiKey: aiSettingsResult.data?.xai_api_key ?? null,
-    openrouterApiKey: aiSettingsResult.data?.openrouter_api_key ?? null,
-    cloudflareApiKey: aiSettingsResult.data?.cloudflare_api_key ?? null,
-    cloudflareAccountId: aiSettingsResult.data?.cloudflare_account_id ?? null,
+    openaiApiKey: aiSettingsResult.data?.openai_api_key ?? null,
+
     providerOrder: aiSettingsResult.data?.provider_order ?? null,
     providerModels: aiSettingsResult.data?.provider_models ?? null,
     model: aiSettingsResult.data?.autodetect_model ? null : aiSettingsResult.data?.model ?? null,
