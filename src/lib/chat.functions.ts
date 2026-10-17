@@ -8,7 +8,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { sendWhatsAppText } from "@/lib/whatsapp.server";
-import { reconcileOrderWithSaleState, recoverSaleStateFromHistory, fixRepeatedCheckoutQuestion } from "@/lib/sale-reconciliation.server";
+import { reconcileOrderWithSaleState, recoverSaleStateFromHistory, fixRepeatedCheckoutQuestion, nextVerifiedSaleQuestion } from "@/lib/sale-reconciliation.server";
 import { buildRegisteredOrderConfirmation } from "@/lib/order-confirmation.server";
 
 const SendInput = z.object({
@@ -483,11 +483,17 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     const rawReply = createdOrder
       ? confirmedInboxMessage!
       : falselyConfirmed || result.sale_closed
-        ? (missingOrderQuestion({order:result.order,productId:detectedProduct,training:ctx.training,
+        ? (nextVerifiedSaleQuestion(ctx, step?.state ?? previous) ?? missingOrderQuestion({order:result.order,productId:detectedProduct,training:ctx.training,
             optionConfirmed:Boolean(step?.state.cartLines?.length) || isUnambiguousPriceSelection(result.order,detectedProduct,ctx.products,chatHistory)})
             ?? "📋 Tu pedido todavía no fue registrado. Necesitamos verificar los datos antes de confirmarlo.")
         : candidateReply;
-    const reply = createdOrder ? rawReply : fixRepeatedCheckoutQuestion(rawReply, ctx, step?.state ?? previous);
+    const priceOptions = ctx.products.find(p=>p.id===detectedProduct)?.product_prices ?? [];
+    const catalogSafe = rawReply.replace(/(?:Gs\.?\s*|₲\s*)(\d[\d.,]{3,})/gi,(full,digits:string)=>{
+      const amount=Number(digits.replace(/[^0-9]/g,""));
+      const prices=priceOptions.map(o=>Math.round(Number(o.price))).filter(n=>Math.abs(n-amount)===1);
+      return prices.length===1 ? full.replace(digits,prices[0].toLocaleString("es-PY")) : full;
+    });
+    const reply = createdOrder ? rawReply : fixRepeatedCheckoutQuestion(catalogSafe, ctx, step?.state ?? previous);
     const wamid = await sendWhatsAppText(conn, phone, reply);
     const { error: insertError } = await supabase.from("messages").insert({
       workspace_id: conversation.workspace_id, user_id: conversation.user_id,
