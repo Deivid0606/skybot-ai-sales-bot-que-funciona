@@ -1417,7 +1417,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       phone,
       conversation.id,
     );
-    const hybridMode: "hybrid" = "hybrid"; // La respuesta conversacional siempre corresponde a IA.
+    const hybridMode: "hybrid" | "rules_only" | "ai_first" = String(aiSettings.hybrid_mode) === "rules_only" ? "rules_only" : "hybrid"; // Modo híbrido por defecto; permitir reglas explícitas.
     // Persistencia por conversación. El estado no depende de la memoria de Vercel.
     const { data: saleRow, error: saleReadError } = await supabaseAdmin
       .from("bot_sale_states").select("state")
@@ -1486,10 +1486,24 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     // Inyectar a la IA solo datos de venta efectivamente reconocidos por código.
     const verifiedSaleState = ruleStep?.state ?? previousSale;
     answerContext.saleState = verifiedSaleState;
+    console.info("[BOT_SKY_CHECKOUT_STATE]", JSON.stringify({conversationId:conversation.id,
+      coverageRows:parseCoverage(ctx.training).length,productId:verifiedSaleState.productId,
+      city:verifiedSaleState.city,department:verifiedSaleState.department,
+      cityVerified:verifiedSaleState.cityVerified,hasName:Boolean(verifiedSaleState.customerName),
+      hasAddress:Boolean(verifiedSaleState.street||verifiedSaleState.locationUrl),
+      optionId:verifiedSaleState.optionId,awaiting:verifiedSaleState.awaiting}));
     const aiAnswerContext = hybridMode !== "rules_only" ? {
       ...answerContext,
       systemInstruction: answerContext.systemInstruction + `\nMODO HÍBRIDO BOT SKY, PRIORIDAD ALTA: Ya fue enviado por CÓDIGO el copy, la imagen y los precios del catálogo. DESDE AHORA CONVERSÁ VOS con el comprador de forma natural: resolvé una sola pregunta por vez y no repitas catálogo/precios completos ni datos ya recibidos. Cantidad y variante se capturan mediante código y deben respetarse. No confirmes pedidos sin número real generado por Supabase. El cliente puede comprar varias veces. DATOS VERIFICADOS DEL CICLO ACTUAL (no mezclar con pedidos previos): ${JSON.stringify({productId:verifiedSaleState.productId,optionId:verifiedSaleState.optionId,quantity:verifiedSaleState.quantity,city:verifiedSaleState.city,department:verifiedSaleState.department,cityVerified:verifiedSaleState.cityVerified===true,coverageStatus:verifiedSaleState.coverageStatus,customerName:verifiedSaleState.customerName,hasAddress:Boolean(verifiedSaleState.street),gpsReceived:Boolean(verifiedSaleState.locationUrl),paymentMethod:verifiedSaleState.paymentMethod,awaiting:verifiedSaleState.awaiting})}. COBERTURA: si cityVerified no es true, NUNCA digas que tenemos cobertura; consultá la ciudad si falta. GPS no prueba por sí mismo ninguna ciudad. Si recibiste GPS no vuelvas a solicitarlo. El GPS es dirección suficiente si la configuración de la ciudad admite dirección por ubicación. Si el nombre falta, preguntá SOLO nombre y apellido, NO domicilio ni referencia adicionales. Si no tenés precio/variante sin ambigüedad pedí aclaración. Si está completo, el código registrará el pedido; no inventes un número de orden ni digas que está confirmado.`
     } : answerContext;
+    // El motor nunca puede borrar hechos ya verificados al procesar una dirección.
+    if (ruleStep && previousSale.cityVerified && previousSale.city && previousSale.department &&
+        !ruleStep.state.cityVerified && !/\b(?:soy de|vivo en|para)\b/i.test(body)) {
+      ruleStep.state.city = previousSale.city;
+      ruleStep.state.department = previousSale.department;
+      ruleStep.state.cityVerified = true;
+      ruleStep.state.coverageStatus = previousSale.coverageStatus;
+    }
     let saveStep = ruleStep;
     // En híbrido: reglas administran producto/ciudad/importe y siempre registran el
     // pedido si está completo. Tras la ciudad, la IA puede continuar la charla;
@@ -2691,8 +2705,18 @@ function buildSafeAiReply(args: {
     });
   }
 
-  if (!looksLikeRepeatedCatalogCopy(cleanReply, args.history)) {
-    return cleanReply;
+  // Los importes de opciones se toman del catálogo, jamás de redondeos de la IA.
+  const product = args.products.find(p => p.id === args.productId);
+  const catalogPrices = (product?.product_prices ?? []).map(o=>Math.round(Number(o.price)))
+    .filter(n=>Number.isSafeInteger(n) && n>0);
+  const correctedReply = cleanReply.replace(/(?:Gs\.?\s*|₲\s*)(\d[\d.,]{3,})/gi,(full,digits:string)=>{
+    const parsed=Number(digits.replace(/[^0-9]/g,""));
+    const near=catalogPrices.filter(p=>Math.abs(p-parsed)===1);
+    if(near.length!==1) return full;
+    return full.replace(digits,near[0].toLocaleString("es-PY"));
+  });
+  if (!looksLikeRepeatedCatalogCopy(correctedReply, args.history)) {
+    return correctedReply;
   }
 
   console.info("[IA] Copy repetido bloqueado; se envía respuesta comercial breve", {
