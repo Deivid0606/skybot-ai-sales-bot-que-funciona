@@ -8,7 +8,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { sendWhatsAppText } from "@/lib/whatsapp.server";
-import { reconcileOrderWithSaleState, recoverSaleStateFromHistory, fixRepeatedCheckoutQuestion, nextVerifiedSaleQuestion } from "@/lib/sale-reconciliation.server";
+import { reconcileOrderWithSaleState, recoverSaleStateFromHistory } from "@/lib/sale-reconciliation.server";
 import { buildRegisteredOrderConfirmation } from "@/lib/order-confirmation.server";
 
 const SendInput = z.object({
@@ -213,7 +213,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     const { decideHybridReply } = await import("@/lib/hybrid-rules.server");
     const { advanceRuleSale } = await import("@/lib/rule-sales.server");
     const { classifyCustomerIntent, addVerifiedOrderContext, addPendingSaleContext } = await import("@/lib/hybrid-intent.server");
-    const { createOrderFromAi, isOrderReady, isUnambiguousPriceSelection, missingOrderQuestion, applySellerFirstOffer,
+    const { createOrderFromAi, isOrderReady, isUnambiguousPriceSelection, applySellerFirstOffer,
       recoverRecentPaymentReceiptForOrder } = await import("@/lib/whatsapp-webhook.server");
     const { supabase } = context;
     const { data: conversation, error } = await supabase
@@ -375,7 +375,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     } else {
       const verifiedSale=step?.state??previous;
       const aiContext=mode==="hybrid"?{...answerContext,systemInstruction:answerContext.systemInstruction+
-        `\nHÍBRIDO: El código ya presentó catálogo/precios. Desde la siguiente respuesta vendé con IA, sin repetir lista de precios ni preguntas ya contestadas. Datos de la venta actual verificados por código: ${JSON.stringify({productId:verifiedSale.productId,optionId:verifiedSale.optionId,quantity:verifiedSale.quantity,city:verifiedSale.city,department:verifiedSale.department,cityVerified:verifiedSale.cityVerified===true,coverageStatus:verifiedSale.coverageStatus,customerName:verifiedSale.customerName,gpsReceived:Boolean(verifiedSale.locationUrl),addressReceived:Boolean(verifiedSale.street)})}. No inventes cobertura, datos ni pedido registrado. El código validará y guardará pedidos. Si el GPS está recibido y falta el nombre, preguntá SOLO nombre y apellido. No exijas dirección escrita cuando ya hay GPS válido. Preguntá solo lo pendiente.`}:answerContext;
+        `\nHÍBRIDO: El código ya presentó catálogo/precios. Desde la siguiente respuesta vendé con IA, sin repetir lista de precios ni preguntas ya contestadas. Datos de la venta actual verificados por código: ${JSON.stringify({productId:verifiedSale.productId,optionId:verifiedSale.optionId,quantity:verifiedSale.quantity,city:verifiedSale.city,department:verifiedSale.department,cityVerified:verifiedSale.cityVerified===true,coverageStatus:verifiedSale.coverageStatus,customerName:verifiedSale.customerName,gpsReceived:Boolean(verifiedSale.locationUrl),addressReceived:Boolean(verifiedSale.street)})}. No inventes cobertura, datos ni pedido registrado. El código validará y guardará pedidos. Respetá el orden de preguntas del entrenamiento del vendedor y no repitas datos ya conocidos. No exijas dirección escrita cuando ya hay GPS válido. Preguntá solo lo pendiente.`}:answerContext;
       aiContext.saleState = verifiedSale;
       try {result=await generateAiReply(aiContext);}
       catch (err) {
@@ -483,9 +483,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     const rawReply = createdOrder
       ? confirmedInboxMessage!
       : falselyConfirmed || result.sale_closed
-        ? (nextVerifiedSaleQuestion(ctx, step?.state ?? previous) ?? missingOrderQuestion({order:result.order,productId:detectedProduct,training:ctx.training,
-            optionConfirmed:Boolean(step?.state.cartLines?.length) || isUnambiguousPriceSelection(result.order,detectedProduct,ctx.products,chatHistory)})
-            ?? "📋 Tu pedido todavía no fue registrado. Necesitamos verificar los datos antes de confirmarlo.")
+        ? "Recibí tus datos, pero tu pedido todavía no está registrado. Estoy verificando la información."
         : candidateReply;
     const priceOptions = ctx.products.find(p=>p.id===detectedProduct)?.product_prices ?? [];
     const catalogSafe = rawReply.replace(/(?:Gs\.?\s*|₲\s*)(\d[\d.,]{3,})/gi,(full,digits:string)=>{
@@ -493,7 +491,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       const prices=priceOptions.map(o=>Math.round(Number(o.price))).filter(n=>Math.abs(n-amount)===1);
       return prices.length===1 ? full.replace(digits,prices[0].toLocaleString("es-PY")) : full;
     });
-    const reply = createdOrder ? rawReply : fixRepeatedCheckoutQuestion(catalogSafe, ctx, step?.state ?? previous);
+    const reply = createdOrder ? rawReply : catalogSafe; // No reemplazar preguntas formuladas por IA.
     const wamid = await sendWhatsAppText(conn, phone, reply);
     const { error: insertError } = await supabase.from("messages").insert({
       workspace_id: conversation.workspace_id, user_id: conversation.user_id,
