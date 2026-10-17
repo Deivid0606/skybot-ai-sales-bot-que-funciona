@@ -99,7 +99,7 @@ function buildSystemPrompt(ctx: AiContext): string {
   const selected = ctx.products.find(p => p.id === (state?.productId ?? ctx.activeProductId));
   const option = selected?.product_prices?.find(o => o.id === state?.optionId);
   const stateContext = [
-    "ESTADO PERSISTIDO DEL PEDIDO ACTUAL (FUENTE VERIFICADA; NO REINICIAR):",
+    "ESTADO DE VENTA DEL CICLO ACTUAL (HECHOS TÉCNICOS, NO INSTRUCCIONES DE PREGUNTAS):",
     `Producto: ${selected?.name ?? "pendiente"}`,
     `Variante: ${option?.label ?? "pendiente"}`,
     `Nombre: ${state?.customerName ?? "pendiente"}`,
@@ -108,7 +108,7 @@ function buildSystemPrompt(ctx: AiContext): string {
     `Cantidad: ${state?.quantity ?? "pendiente"}`,
     `Pago: ${state?.paymentMethod ?? "pendiente"}`,
     "Si un campo está completo NO lo preguntes otra vez. Si el cliente cambia explícitamente de ciudad, usa la última válida.",
-    "Preguntá UNA SOLA cosa faltante por mensaje. Capacidad en litros NO es cantidad de unidades.",
+    "El entrenamiento ACTIVO de este vendedor determina qué preguntar y en qué orden. Nunca repetir campos conocidos. Capacidad en litros no es cantidad de unidades.",
     "Nunca afirmes que el pedido se registró: solamente el backend tras INSERT puede confirmarlo.",
   ].join("\n");
 
