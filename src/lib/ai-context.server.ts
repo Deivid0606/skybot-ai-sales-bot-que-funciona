@@ -81,7 +81,6 @@ export async function buildWorkspaceAiContext(
     geminiApiKey2: aiSettingsResult.data?.gemini_api_key_2 ?? null,
     geminiApiKey3: aiSettingsResult.data?.gemini_api_key_3 ?? null,
     openaiApiKey: aiSettingsResult.data?.openai_api_key ?? null,
-
     providerOrder: aiSettingsResult.data?.provider_order ?? null,
     providerModels: aiSettingsResult.data?.provider_models ?? null,
     model: aiSettingsResult.data?.autodetect_model ? null : aiSettingsResult.data?.model ?? null,
