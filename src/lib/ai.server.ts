@@ -115,7 +115,7 @@ function buildSystemPrompt(ctx: AiContext): string {
   const query = lastCustomerText(ctx).normalize("NFD").replace(/[\u0300-\u036f]/g, "");
   const fullProducts = ctx.products.filter(product => {
     const words = [product.name, ...(product.keywords ?? [])].map(s => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
-    return product.id === ctx.activeProductId || words.some(s => s.length >= 4 && query.includes(s));
+    return product.id === (ctx.saleState?.productId ?? ctx.activeProductId) || words.some(s => s.length >= 4 && query.includes(s));
   });
   // Indice compacto de otros productos: la IA identifica el nuevo producto sin reenviar todos los copys.
   const compactIndex = ctx.products.filter(p => !fullProducts.some(f => f.id === p.id))
