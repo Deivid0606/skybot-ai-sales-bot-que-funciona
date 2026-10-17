@@ -8,7 +8,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { sendWhatsAppText } from "@/lib/whatsapp.server";
-import { reconcileOrderWithSaleState, recoverSaleStateFromHistory } from "@/lib/sale-reconciliation.server";
+import { reconcileOrderWithSaleState, recoverSaleStateFromHistory, fixRepeatedCheckoutQuestion } from "@/lib/sale-reconciliation.server";
 import { buildRegisteredOrderConfirmation } from "@/lib/order-confirmation.server";
 
 const SendInput = z.object({
@@ -480,13 +480,14 @@ export const aiReplyNow = createServerFn({ method: "POST" })
         deliveryMethod:orderCoverage?.method,
       });
     }
-    const reply = createdOrder
+    const rawReply = createdOrder
       ? confirmedInboxMessage!
       : falselyConfirmed || result.sale_closed
         ? (missingOrderQuestion({order:result.order,productId:detectedProduct,training:ctx.training,
             optionConfirmed:Boolean(step?.state.cartLines?.length) || isUnambiguousPriceSelection(result.order,detectedProduct,ctx.products,chatHistory)})
             ?? "📋 Tu pedido todavía no fue registrado. Necesitamos verificar los datos antes de confirmarlo.")
         : candidateReply;
+    const reply = createdOrder ? rawReply : fixRepeatedCheckoutQuestion(rawReply, ctx, step?.state ?? previous);
     const wamid = await sendWhatsAppText(conn, phone, reply);
     const { error: insertError } = await supabase.from("messages").insert({
       workspace_id: conversation.workspace_id, user_id: conversation.user_id,
