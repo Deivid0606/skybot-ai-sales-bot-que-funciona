@@ -6,6 +6,8 @@ function isAiQuotaFailure(error: unknown): boolean {
 }
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { formatGs } from "@/lib/format";
+import { reconcileOrderWithSaleState } from "@/lib/sale-reconciliation.server";
+import { buildRegisteredOrderConfirmation } from "@/lib/order-confirmation.server";
 import { buildWorkspaceAiContext } from "@/lib/ai-context.server";
 import { generateAiReply, type AiContext } from "@/lib/ai.server";
 import { decideHybridReply } from "@/lib/hybrid-rules.server";
@@ -1582,6 +1584,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     });
 
     result.order=applySellerFirstOffer(result.order,detectedProduct,ctx.products,ctx.training,chatHistory);
+    result.order = reconcileOrderWithSaleState(result.order, saveStep?.state ?? previousSale, ctx.training);
     const optionConfirmed = Boolean(saveStep?.state.cartLines?.length) || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory);
     const productForReply = ctx.products.find((p) => p.id === detectedProduct);
     const mustClarify = Boolean(result.order && !optionConfirmed && (productForReply?.product_prices?.length ?? 0) > 1);
@@ -1694,7 +1697,26 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         .eq("workspace_id", workspaceId).eq("conversation_id", conversation.id);
       // Confirmar SOLO después de que Supabase haya insertado el pedido.
       // No afirmar que una transferencia quedó acreditada sin validarla.
-      const confirmedMessage = `✅ PEDIDO REGISTRADO\n📦 N.º ${createdOrder.order_number}\n💰 Total: ${formatGs(createdOrder.total)}\n¡Gracias por tu compra!`;
+      const createdProduct = ctx.products.find(p => p.id === detectedProduct);
+      const confirmedOption = createdProduct?.product_prices?.find(
+        opt => opt.id === completedOrder.product_price_id,
+      );
+      // Leer el registro guardado: quantity/street/método no se infieren de la IA.
+      const { data: savedConfirmationOrder, error: confirmationReadError } = await supabaseAdmin
+        .from("orders")
+        .select("id,order_number,customer_name,phone,total,quantity,street,payment_method,payment_status")
+        .eq("workspace_id", workspaceId).eq("id", createdOrder.id).single();
+      if (confirmationReadError || !savedConfirmationOrder) throw confirmationReadError || new Error("Pedido no encontrado tras el INSERT");
+      const confirmedMessage = buildRegisteredOrderConfirmation({
+        created: savedConfirmationOrder,
+        order: { ...completedOrder, payment_method: savedConfirmationOrder.payment_method },
+        productName: createdProduct?.name ?? "Producto del pedido",
+        productOption: confirmedOption?.label ?? completedOrder.price_option_label,
+        savedQuantity: Number(savedConfirmationOrder.quantity),
+        address: savedConfirmationOrder.street,
+        paymentStatus: savedConfirmationOrder.payment_status,
+        deliveryMethod: verifiedOrderCoverage?.method,
+      });
       try {
         const confirmationWamid = await sendWhatsAppText(conn, phone, confirmedMessage);
         await supabaseAdmin.from("messages").insert({
