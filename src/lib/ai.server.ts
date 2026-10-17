@@ -1,5 +1,5 @@
 // Limites defensivos por mensaje, configurables en Vercel.
-const MAX_HISTORY_MESSAGES = 10;
+const MAX_HISTORY_MESSAGES = 20;
 const MAX_HISTORY_CHARS = 950;
 const MAX_OUTPUT_TOKENS = 768; // JSON de pedido y respuesta; probar antes de bajar a 512.
 const MAX_PROVIDER_ATTEMPTS = 4;
@@ -56,6 +56,8 @@ export type AiContext = {
     content: string;
   }[];
   activeProductId: string | null;
+  /** Estado persistido de la compra ACTUAL, no del pedido anterior. */
+  saleState?: import("@/lib/rule-sales.server").SaleState | null;
 };
 
 export type AiOrder = {
@@ -91,6 +93,24 @@ function cleanString(value: unknown): string {
 
 function buildSystemPrompt(ctx: AiContext): string {
   const detectedCustomerPhone = cleanString(ctx.customerPhone);
+  const state = ctx.saleState;
+  const coverage = state?.cityVerified && state.city && state.department
+    ? `${state.city} — ${state.department}` : "pendiente de verificar";
+  const selected = ctx.products.find(p => p.id === (state?.productId ?? ctx.activeProductId));
+  const option = selected?.product_prices?.find(o => o.id === state?.optionId);
+  const stateContext = [
+    "ESTADO PERSISTIDO DEL PEDIDO ACTUAL (FUENTE VERIFICADA; NO REINICIAR):",
+    `Producto: ${selected?.name ?? "pendiente"}`,
+    `Variante: ${option?.label ?? "pendiente"}`,
+    `Nombre: ${state?.customerName ?? "pendiente"}`,
+    `Ciudad/departamento: ${coverage}`,
+    `Dirección: ${state?.street ?? state?.locationUrl ?? "pendiente"}`,
+    `Cantidad: ${state?.quantity ?? "pendiente"}`,
+    `Pago: ${state?.paymentMethod ?? "pendiente"}`,
+    "Si un campo está completo NO lo preguntes otra vez. Si el cliente cambia explícitamente de ciudad, usa la última válida.",
+    "Preguntá UNA SOLA cosa faltante por mensaje. Capacidad en litros NO es cantidad de unidades.",
+    "Nunca afirmes que el pedido se registró: solamente el backend tras INSERT puede confirmarlo.",
+  ].join("\n");
 
   const query = lastCustomerText(ctx).normalize("NFD").replace(/[\u0300-\u036f]/g, "");
   const fullProducts = ctx.products.filter(product => {
@@ -149,7 +169,7 @@ ${variants || `    - precio_unitario_heredado:${product.promo_price ?? product.p
   const firstOfferRule = firstOfferAllowed
     ? "- Cuando el cliente muestre intención clara de compra sin indicar cantidad, seleccioná la primera opción de precio del catálogo de este vendedor por sort_order, usando su id, cantidad y precio verdaderos. Si ya eligió una opción o cantidad, respetala. No usar esta regla para adivinar otra capacidad/modelo especificada por el cliente."
     : "- Si el cliente no indicó cantidad ni presentación, preguntá la opción necesaria según las reglas de este vendedor; nunca inventes una promoción.";
-  const prompt = `Eres un vendedor humano y cercano de ${
+  const prompt = `${stateContext}\n\nEres un vendedor humano y cercano de ${
     ctx.businessName || "la tienda"
   }. Vendes por WhatsApp en español latino.
 
