@@ -102,3 +102,63 @@ export function reconcileOrderWithSaleState(order: AiOrder | null, state: SaleSt
   if (state.optionId && next.quantity === 1 && (!next.promo_quantity || next.promo_quantity < 1)) next.promo_quantity = 1;
   return next;
 }
+
+
+/** Próximo dato faltante, usando el estado VERIFICADO del pedido y el catálogo real.
+ * No confirma ventas ni infiere cobertura; solo se utiliza durante checkout activo.
+ */
+export function nextVerifiedSaleQuestion(ctx: AiContext, state: SaleState): string | null {
+  const product = ctx.products.find(p => p.id === state.productId || p.id === ctx.activeProductId);
+  if (!product) return null;
+  const coverage = parseCoverage(ctx.training);
+  const place = state.city && state.department
+    ? verifiedCoverage(state.city, state.department, coverage) : null;
+  const options = [...(product.product_prices ?? [])].filter(o => o.price > 0)
+    .sort((a,b) => a.sort_order - b.sort_order);
+  // Una variante de capacidad es una elección obligatoria. No escoger por defecto.
+  const selected = options.find(o => o.id === state.optionId);
+  if (options.length > 1 && !selected && !state.cartLines?.length) {
+    return `😊 ¿Cuál tamaño de *${product.name}* preferís? ${options.map(o => `${o.label} (${Math.round(o.price).toLocaleString("es-PY")} Gs.)`).join(" · ")}`;
+  }
+  if (!state.customerName?.trim()) return "😊 ¿Me indicás tu nombre y apellido para el pedido?";
+  if (!place || !state.cityVerified) return "📍 ¿De qué ciudad sos para verificar la entrega?";
+  if (!place.active && !/ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(place.method)) {
+    return "📦 No tenemos entrega habilitada para esa ciudad. ¿Querés consultar otra localidad?";
+  }
+  if (!state.quantity || state.quantity < 1) {
+    if (selected && /\b\d+\s*(?:litros?|l|lts?)\b/i.test(selected.label)) {
+      return "📦 ¿Cuántas unidades de esa presentación querés llevar?";
+    }
+    return "📦 ¿Cuántas unidades querés llevar?";
+  }
+  if (place.addressRequired && !state.street?.trim() && !state.locationUrl?.trim())
+    return "🏠 ¿Me pasás tu dirección o ubicación para la entrega?";
+  if (!state.paymentMethod?.trim()) {
+    if (place.active && /CONTRA ENTREGA/i.test(place.method))
+      return "💵 ¿Confirmás que vas a pagar al recibir?";
+    return "💳 ¿Qué modalidad de pago habilitada preferís?";
+  }
+  if (/anticip|transfer|deposit|giro/i.test(state.paymentMethod) && !state.receiptPath)
+    return "📎 ¿Me enviás el comprobante de la transferencia, por favor?";
+  return null;
+}
+
+/** Solo corregir preguntas repetidas del modelo; no interrumpir consultas libres. */
+export function fixRepeatedCheckoutQuestion(reply: string, ctx: AiContext, state: SaleState): string {
+  const n = normal(reply);
+  const asksCity = /(?:ciudad|departamento|de donde sos|donde vivis|de que zona)/.test(n);
+  const asksName = /(?:nombre y apellido|nombre completo|como te llamas)/.test(n);
+  const asksAddress = /(?:direccion|domicilio|ubicacion|referencia)/.test(n);
+  const asksVariant = /(?:cual (?:tamano|tamaño|capacidad)|(?:2|3|5) litros|presentacion)/.test(n);
+  const knownCity = state.cityVerified && Boolean(state.city && state.department &&
+    verifiedCoverage(state.city!,state.department!,parseCoverage(ctx.training)));
+  const knownAddress = Boolean(state.street || state.locationUrl);
+  const knownVariant = Boolean(state.optionId || state.cartLines?.length);
+  const product = ctx.products.find(p => p.id === state.productId || p.id === ctx.activeProductId);
+  const needsVariant = Boolean(product && (product.product_prices?.length ?? 0) > 1 && !knownVariant);
+  if ((asksCity && knownCity) || (asksName && (state.customerName || needsVariant)) ||
+      (asksAddress && knownAddress) || (asksVariant && knownVariant)) {
+    return nextVerifiedSaleQuestion(ctx,state) ?? "¡Gracias! 😊 Ya tengo esos datos. Estoy verificando tu pedido.";
+  }
+  return reply;
+}
