@@ -211,7 +211,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     const { decideHybridReply } = await import("@/lib/hybrid-rules.server");
     const { advanceRuleSale } = await import("@/lib/rule-sales.server");
     const { classifyCustomerIntent, addVerifiedOrderContext, addPendingSaleContext } = await import("@/lib/hybrid-intent.server");
-    const { createOrderFromAi, isOrderReady, isUnambiguousPriceSelection, applySellerFirstOffer,
+    const { createOrderFromAi, isOrderReady, isUnambiguousPriceSelection, missingOrderQuestion, applySellerFirstOffer,
       recoverRecentPaymentReceiptForOrder } = await import("@/lib/whatsapp-webhook.server");
     const { supabase } = context;
     const { data: conversation, error } = await supabase
@@ -440,7 +440,9 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     const reply = createdOrder
       ? `✅ PEDIDO REGISTRADO\n📦 N.º ${createdOrder.order_number}\n${(result.order?.payment_method ?? "").toLowerCase().includes("anticip") ? "💳 Comprobante sujeto a verificación por el vendedor." : "¡Gracias por tu compra!"}`
       : falselyConfirmed || result.sale_closed
-        ? "📋 Recibí tus datos, pero el pedido todavía no está registrado. Un asesor debe revisar la información pendiente."
+        ? (missingOrderQuestion({order:result.order,productId:detectedProduct,training:ctx.training,
+            optionConfirmed:Boolean(step?.state.cartLines?.length) || isUnambiguousPriceSelection(result.order,detectedProduct,ctx.products,chatHistory)})
+            ?? "📋 Tu pedido todavía no fue registrado. Necesitamos verificar los datos antes de confirmarlo.")
         : candidateReply;
     const wamid = await sendWhatsAppText(conn, phone, reply);
     const { error: insertError } = await supabase.from("messages").insert({
