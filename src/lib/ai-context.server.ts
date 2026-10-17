@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { AiContext } from "@/lib/ai.server";
+import type { SaleState } from "@/lib/rule-sales.server";
 
 type Client = SupabaseClient;
 const DEFAULT_TIME_ZONE = "America/Asuncion";
@@ -40,8 +41,9 @@ export async function buildWorkspaceAiContext(
   history: { role: "user" | "assistant"; content: string }[],
   activeProductId: string | null = null,
   customerPhone: string | null = null,
+  conversationId: string | null = null,
 ): Promise<AiContext> {
-  const [aiSettingsResult, settingsResult, productsResult, trainingResult] = await Promise.all([
+  const [aiSettingsResult, settingsResult, productsResult, trainingResult, saleResult] = await Promise.all([
     supabase.from("ai_settings").select("system_instruction, gemini_api_key, gemini_api_key_2, gemini_api_key_3, openai_api_key, provider_order, provider_models, model, autodetect_model").eq("workspace_id", workspaceId).maybeSingle(),
     supabase.from("user_settings").select("business_name, currency").eq("workspace_id", workspaceId).maybeSingle(),
     supabase.from("products").select(`
@@ -49,8 +51,9 @@ export async function buildWorkspaceAiContext(
       product_keywords(keyword), product_prices(id, label, quantity, price, sort_order)
     `).eq("workspace_id", workspaceId).eq("is_active", true),
     supabase.from("training_entries").select("title, content, category, priority").eq("workspace_id", workspaceId).eq("is_active", true),
+    conversationId ? supabase.from("bot_sale_states").select("state").eq("workspace_id", workspaceId).eq("conversation_id", conversationId).maybeSingle() : Promise.resolve({ data: null, error: null }),
   ]);
-  for (const result of [aiSettingsResult, settingsResult, productsResult, trainingResult]) {
+  for (const result of [aiSettingsResult, settingsResult, productsResult, trainingResult, saleResult]) {
     if (result.error) throw result.error;
   }
   const products = (productsResult.data ?? []).map(product => {
@@ -87,6 +90,8 @@ export async function buildWorkspaceAiContext(
     customerPhone,
     businessName: settingsResult.data?.business_name ?? "",
     currency: settingsResult.data?.currency ?? "PYG",
-    products, training: trainingResult.data ?? [], history, activeProductId,
+    products, training: trainingResult.data ?? [], history,
+    activeProductId: activeProductId ?? (saleResult.data?.state as SaleState | null)?.productId ?? null,
+    saleState: (saleResult.data?.state ?? null) as SaleState | null,
   };
 }
