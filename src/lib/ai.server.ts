@@ -1,10 +1,8 @@
-const GATEWAY = "https://ai.gateway.lovable.dev/v1/chat/completions";
-
 // Limites defensivos por mensaje, configurables en Vercel.
 const MAX_HISTORY_MESSAGES = 10;
 const MAX_HISTORY_CHARS = 950;
 const MAX_OUTPUT_TOKENS = 768; // JSON de pedido y respuesta; probar antes de bajar a 512.
-const MAX_PROVIDER_ATTEMPTS = 2;
+const MAX_PROVIDER_ATTEMPTS = 4;
 const MAX_PROMPT_CHARS = 48000;
 function limitedHistory(ctx: AiContext) {
   return ctx.history.slice(-MAX_HISTORY_MESSAGES).map(message => ({
@@ -15,19 +13,12 @@ function limitedHistory(ctx: AiContext) {
 function lastCustomerText(ctx: AiContext) {
   return ctx.history.filter(h => h.role === "user").slice(-2).map(h => h.content).join(" ").toLowerCase();
 }
-const DEFAULT_GATEWAY_MODEL =
-  process.env.LOVABLE_CHAT_MODEL?.trim() || "google/gemini-3-flash";
-
 export type AiContext = {
   systemInstruction: string;
   geminiApiKey?: string | null;
   geminiApiKey2?: string | null;
   geminiApiKey3?: string | null;
-  groqApiKey?: string | null;
-  xaiApiKey?: string | null;
-  openrouterApiKey?: string | null;
-  cloudflareApiKey?: string | null;
-  cloudflareAccountId?: string | null;
+  openaiApiKey?: string | null;
   providerOrder?: string[] | null;
   providerModels?: Record<string, string> | null;
   model?: string | null;
@@ -757,150 +748,76 @@ async function generateWithGemini(
   );
 }
 
-async function generateWithGateway(ctx: AiContext): Promise<AiResult> {
-  const apiKey = process.env.LOVABLE_API_KEY?.trim();
-
-  if (!apiKey) {
-    throw new Error("Falta LOVABLE_API_KEY");
-  }
-
-  const response = await fetch(GATEWAY, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Lovable-API-Key": apiKey,
-    },
-    body: JSON.stringify({
-      model: DEFAULT_GATEWAY_MODEL,
-      messages: [
-        {
-          role: "system",
-          content: buildSystemPrompt(ctx),
-        },
-        ...limitedHistory(ctx),
-      ],
-      temperature: 0.35,
-      response_format: {
-        type: "json_object",
-      },
-    }),
-  });
-
-  if (response.status === 429) {
-    throw new Error("rate_limited");
-  }
-
-  if (response.status === 402) {
-    throw new Error("credits_exhausted");
-  }
-
-  if (!response.ok) {
-    const responseText = await readResponseText(response);
-
-    throw new Error(
-      `ai_error: ${
-        responseText ||
-        `HTTP ${response.status} ${response.statusText}`
-      }`,
-    );
-  }
-
-  const json = (await response.json()) as {
-    choices?: Array<{
-      message?: {
-        content?: string;
-      };
-    }>;
-  };
-
-  const content =
-    json.choices?.[0]?.message?.content ?? "";
-
-  return applyDetectedPhone(
-    ensureValidResult(parseResult(content)),
-    ctx.customerPhone,
-  );
-}
-
-/** Proveedores externos: se solicita una única respuesta JSON compatible con AiResult. */
-async function generateWithExternalProvider(ctx: AiContext, provider: string, key: string): Promise<AiResult> {
-  const defaults: Record<string, string> = {
-    groq: "llama-3.3-70b-versatile",
-    xai: "grok-4-fast-reasoning",
-    openrouter: "openai/gpt-4o-mini",
-    cloudflare: "@cf/meta/llama-3.1-8b-instruct",
-  };
-  const model = ctx.providerModels?.[provider]?.trim() || defaults[provider];
-  if (!model) throw new Error(`Proveedor desconocido: ${provider}`);
-  const messages = [{ role: "system", content: buildSystemPrompt(ctx) }, ...limitedHistory(ctx)];
-  let url: string;
-  let body: Record<string, unknown>;
-  let headers: Record<string, string> = {"Content-Type": "application/json", Authorization: `Bearer ${key}`};
-  if (provider === "cloudflare") {
-    const account = ctx.cloudflareAccountId?.trim();
-    if (!account || !/^[a-zA-Z0-9_-]+$/.test(account)) throw new Error("Cloudflare requiere Account ID válido");
-    if (!/^@cf\/[a-zA-Z0-9._/-]+$/.test(model)) throw new Error("Modelo Cloudflare inválido");
-    url = `https://api.cloudflare.com/client/v4/accounts/${account}/ai/run/${model}`;
-    body = {messages, max_tokens: MAX_OUTPUT_TOKENS};
-  } else {
-    const endpoints: Record<string, string> = {
-      groq: "https://api.groq.com/openai/v1/chat/completions",
-      xai: "https://api.x.ai/v1/chat/completions",
-      openrouter: "https://openrouter.ai/api/v1/chat/completions",
-    };
-    url = endpoints[provider];
-    if (!url) throw new Error("Proveedor no compatible");
-    body = {model, messages, temperature: 0.25, max_tokens: MAX_OUTPUT_TOKENS};
+/** OpenAI: última opción de respaldo. Clave privada del workspace, nunca del navegador. */
+async function generateWithOpenAI(ctx: AiContext, key: string): Promise<AiResult> {
+  const model = ctx.providerModels?.openai?.trim() || "gpt-4o-mini";
+  // Lista deliberadamente limitada a modelos compatibles con JSON mode.
+  if (!/^(?:gpt-4o-mini|gpt-4o|gpt-4\.1-mini|gpt-4\.1-nano|gpt-4\.1)$/.test(model)) {
+    throw new Error("Modelo OpenAI no permitido para este flujo JSON");
   }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 25000);
   try {
-    const response = await fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: controller.signal });
-    if (!response.ok) throw new Error(`${provider} HTTP ${response.status}: ${(await readResponseText(response)).slice(0, 250)}`);
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model,
+        messages: [{ role: "system", content: buildSystemPrompt(ctx) }, ...limitedHistory(ctx)],
+        temperature: 0.25,
+        max_completion_tokens: MAX_OUTPUT_TOKENS,
+        response_format: { type: "json_object" },
+      }),
+    });
+    if (!response.ok) {
+      const detail = (await readResponseText(response)).slice(0, 250);
+      throw new Error(`openai HTTP ${response.status}: ${detail}`);
+    }
     const data = await response.json() as {
-      choices?: {message?: {content?: string | Array<{text?: string}>}}[];
-      result?: {response?: string | {response?: string}};
-      success?: boolean;
+      choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
+      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
     };
-    if (provider === "cloudflare" && data.success === false) throw new Error("Cloudflare devolvió success=false");
-    const content = data.choices?.[0]?.message?.content;
-    const raw = typeof content === "string" ? content : Array.isArray(content) ? content.map(v => v.text ?? "").join("") :
-      typeof data.result?.response === "string" ? data.result.response :
-      data.result?.response?.response ?? "";
+    if (data.usage) console.info("[BOT_SKY_AI_USAGE]", JSON.stringify({
+      provider: "openai", model,
+      input_tokens: data.usage.prompt_tokens ?? 0,
+      output_tokens: data.usage.completion_tokens ?? 0,
+      total_tokens: data.usage.total_tokens ?? 0,
+    }));
+    const raw = data.choices?.[0]?.message?.content ?? "";
+    if (!raw.trim() || data.choices?.[0]?.finish_reason === "length") {
+      throw new Error("OpenAI devolvió JSON vacío o incompleto");
+    }
     return applyDetectedPhone(ensureValidResult(parseResult(raw)), ctx.customerPhone);
-  } finally {clearTimeout(timeout);}
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
-/** Intenta proveedores en el orden seleccionado, y finalmente Lovable si existe. */
+/** Orden fijo de respaldo por workspace: Gemini 1, 2, 3, OpenAI. */
 export async function generateAiReply(ctx: AiContext): Promise<AiResult> {
   const keys: Record<string, string | null | undefined> = {
-    gemini1: ctx.geminiApiKey, gemini2: ctx.geminiApiKey2, gemini3: ctx.geminiApiKey3,
-    groq: ctx.groqApiKey, xai: ctx.xaiApiKey, openrouter: ctx.openrouterApiKey,
-    cloudflare: ctx.cloudflareApiKey,
+    gemini1: ctx.geminiApiKey,
+    gemini2: ctx.geminiApiKey2,
+    gemini3: ctx.geminiApiKey3,
+    openai: ctx.openaiApiKey,
   };
-  const defaults = ["gemini1", "gemini2", "gemini3", "groq", "xai", "openrouter", "cloudflare"];
-  const configured = Array.isArray(ctx.providerOrder) && ctx.providerOrder.length ? ctx.providerOrder : defaults;
-  const order = [...new Set([...configured, ...defaults])].filter(p => p in keys);
+  const order = ["gemini1", "gemini2", "gemini3", "openai"] as const;
   const triedKeys = new Set<string>();
-  let remoteCalls = 0;
   const failures: string[] = [];
+  let attempts = 0;
   for (const provider of order) {
-    if (remoteCalls >= MAX_PROVIDER_ATTEMPTS) break;
+    if (attempts >= MAX_PROVIDER_ATTEMPTS) break;
     const key = keys[provider]?.trim();
     if (!key || triedKeys.has(`${provider.startsWith("gemini") ? "gemini" : provider}:${key}`)) continue;
     triedKeys.add(`${provider.startsWith("gemini") ? "gemini" : provider}:${key}`);
-    remoteCalls += 1;
+    attempts++;
     try {
-      return provider.startsWith("gemini") ? await generateWithGemini(ctx, key) : await generateWithExternalProvider(ctx, provider, key);
+      return provider === "openai" ? await generateWithOpenAI(ctx, key) : await generateWithGemini(ctx, key);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       console.warn(`[AI] Falló ${provider}: ${reason.slice(0, 200)}`);
       failures.push(`${provider}: ${reason.slice(0, 200)}`);
-    }
-  }
-  if (remoteCalls < MAX_PROVIDER_ATTEMPTS && process.env.LOVABLE_API_KEY?.trim()) {
-    try {return await generateWithGateway(ctx);} catch (error) {
-      failures.push(`lovable: ${error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200)}`);
     }
   }
   throw new Error(`Todos los proveedores fallaron: ${failures.join(" | ") || "Sin claves configuradas"}`);
