@@ -39,34 +39,49 @@ const units = (s: string) => s.match(/\b\d+(?:[.,]\d+)?\s*(?:litros?|lts?|l|ml|k
 export type Coverage = { city:string; department:string; aliases:string[]; active:boolean; method:string; addressRequired:boolean };
 /** Extrae SOLAMENTE bloques explícitos de la sección de cobertura activa del workspace. */
 export function parseCoverage(training: AiContext["training"]): Coverage[] {
-  const entry = training.find(t => norm(t.title) === "ciudades y cobertura");
-  if (!entry) return [];
-  const lines = entry.content.split(/\r?\n/);
+  // Leer solamente el entrenamiento ACTIVO del workspace; no inventar ciudades.
+  // Algunos exportadores agregan números/emojis al título o separadores a los encabezados.
+  const entries = training.filter(t => {
+    const title = norm(t.title);
+    const body = String(t.content ?? "");
+    return (/ciudades? y cobertura|cobertura de ciudades|zonas? de cobertura/.test(title) ||
+      (/zonas con cobertura/i.test(body) && /DEPARTAMENTO\s*:/i.test(body)));
+  });
   const out: Coverage[] = [];
-  let section = "";
-  let cur: Partial<Coverage> | null = null;
-  const push = () => { if (cur?.city && cur.department && typeof cur.active === "boolean") out.push({
-    city:cur.city, department:cur.department, aliases:cur.aliases ?? [], active:cur.active,
-    method:cur.method ?? "", addressRequired:cur.addressRequired ?? true,
-  }); };
-  for (const raw of lines) {
-    const line = raw.trim();
-    if (/^ZONAS CON COBERTURA$/i.test(line)) { push(); cur=null; section="yes"; continue; }
-    if (/^ZONAS SIN COBERTURA$/i.test(line)) { push(); cur=null; section="no"; continue; }
-    if (/^FIN DEL ENTRENAMIENTO/i.test(line)) { push(); cur=null; break; }
-    if (!section) continue;
-    if (line.startsWith("📍")) { push(); cur={ city:line.slice(2).trim(), aliases:[], active:section==="yes" }; continue; }
-    if (!cur) continue;
-    if (line.startsWith("✅")) cur.aliases=line.slice(1).split(",").map(s=>s.trim()).filter(Boolean);
-    else if (/^DEPARTAMENTO\s*:/i.test(line)) cur.department=line.split(":").slice(1).join(":").trim();
-    else if (/^COBERTURA\s*:/i.test(line)) cur.active=/^\s*(?:SI|SÍ)\s*$/i.test(line.split(":").slice(1).join(":").trim());
-    else if (/^MODALIDAD\s*:/i.test(line)) cur.method=line.split(":").slice(1).join(":").trim();
-    else if (/^DIRECCI[OÓ]N_REQUERIDA\s*:/i.test(line)) cur.addressRequired=/^\s*s[ií]\s*$/i.test(line.split(":").slice(1).join(":"));
+  for (const entry of entries) {
+    let section: "yes" | "no" | "" = "";
+    let current: Partial<Coverage> | null = null;
+    const flush = () => {
+      if (current?.city && current.department && typeof current.active === "boolean") {
+        out.push({city:current.city,department:current.department,
+          aliases:current.aliases ?? [],active:current.active,
+          method:current.method ?? "",addressRequired:current.addressRequired ?? true});
+      }
+      current = null;
+    };
+    for (const raw of String(entry.content ?? "").split(/\r?\n/)) {
+      const line = raw.trim().replace(/^[#*\-\s]+/, "").replace(/[\s*_]+$/, "").trim();
+      if (/^ZONAS CON COBERTURA\s*:?$/i.test(line)) {flush();section="yes";continue;}
+      if (/^ZONAS SIN COBERTURA\s*:?$/i.test(line)) {flush();section="no";continue;}
+      if (/^FIN DEL ENTRENAMIENTO/i.test(line)) {flush();break;}
+      if (!section) continue;
+      const city = line.match(/^📍\s*(.+)$/u);
+      if (city) {flush();current={city:city[1].trim(),aliases:[],active:section==="yes"};continue;}
+      if (!current) continue;
+      if (/^✅/u.test(line)) current.aliases=line.replace(/^✅\s*/u,"").split(",").map(x=>x.trim()).filter(Boolean);
+      else if (/^DEPARTAMENTO\s*:/i.test(line)) current.department=line.split(":").slice(1).join(":").trim();
+      else if (/^COBERTURA\s*:/i.test(line)) current.active=/^s[ií]$/i.test(line.split(":").slice(1).join(":").trim());
+      else if (/^MODALIDAD\s*:/i.test(line)) current.method=line.split(":").slice(1).join(":").trim();
+      else if (/^DIRECCI[OÓ]N_REQUERIDA\s*:/i.test(line)) current.addressRequired=/^s[ií]$/i.test(line.split(":").slice(1).join(":").trim());
+    }
+    flush();
   }
-  // Si no hay marcador final, conservar el último bloque.
-  if (cur?.city) push();
-  return out;
+  // Una misma ciudad/departamento repetida con políticas contradictorias no es verificable.
+  const unique = out.filter((c,i)=>out.findIndex(x=>norm(x.city)===norm(c.city) && norm(x.department)===norm(c.department))===i);
+  return unique.filter(c=>!out.some(x=>norm(x.city)===norm(c.city) && norm(x.department)===norm(c.department) &&
+    (x.active!==c.active || norm(x.method)!==norm(c.method) || x.addressRequired!==c.addressRequired)));
 }
+
 function cityIn(text:string, coverage:Coverage[]): Coverage | null {
   const normalized=norm(text);
   const hits=coverage.filter(c=>[c.city,...c.aliases].some(alias=>{
