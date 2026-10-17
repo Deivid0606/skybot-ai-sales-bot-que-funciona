@@ -1546,14 +1546,14 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     if (hybridMode === "rules_only" && isGpsMessage && ruleStep && !ruleStep.needsAi && /(?:sin cobertura|no tenemos cobertura|pago anticipado|datos bancarios)/i.test(result.reply) && previousSale.coverageStatus !== "uncovered") {
       result = {...result,reply:ruleStep.reply};
     }
-    if (bypassSale) result = {...result, sale_closed:false, order:null};
+    if (bypassSale && !result.order) result = {...result, sale_closed:false, order:null};
     if (saveStep) {
       const {error: saveStateError} = await supabaseAdmin.from("bot_sale_states")
         .upsert({workspace_id:workspaceId,conversation_id:conversation.id,
           state:saveStep.state,updated_at:new Date().toISOString()},
           {onConflict:"workspace_id,conversation_id"});
       if(saveStateError) throw saveStateError;
-      if(saveStep.complete && !conversation.sale_closed && !bypassSale) {
+      if(saveStep.complete && !conversation.sale_closed && !bypassSale && (hybridMode === "rules_only" || !result.order)) {
         const st=saveStep.state;
         result = {reply:hybridMode === "rules_only" ? saveStep.reply : result.reply,product_id:saveStep.productId,sale_closed:true,
           order:{customer_name:st.customerName!,city:st.city!,departamento:st.department!,
@@ -1661,7 +1661,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
      */
     const verifiedOrderCoverage = result.order ? verifiedCoverage(
       String(result.order.city??""),String(result.order.departamento??""),parseCoverage(ctx.training)) : null;
-    if (!conversation.sale_closed && result.order && orderReady && (verifiedOrderCoverage?.active || (isAdvance && /ANTICIPADO|TRANSFERENCIA/i.test(verifiedOrderCoverage?.method ?? ""))) && (!previousSale.city || (previousSale.cityVerified && previousSale.coverageStatus === "covered")) &&
+    if (!conversation.sale_closed && result.order && orderReady && (verifiedOrderCoverage?.active || (isAdvance && /ANTICIPADO|TRANSFERENCIA/i.test(verifiedOrderCoverage?.method ?? ""))) &&
       (!verifiedOrderCoverage?.addressRequired || Boolean(result.order.street?.trim() || saveStep?.state.locationUrl || previousSale.locationUrl))) {
       const completedOrder = {
         ...result.order,
