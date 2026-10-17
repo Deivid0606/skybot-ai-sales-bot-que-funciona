@@ -243,7 +243,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       .eq("workspace_id", conversation.workspace_id).maybeSingle();
     if (!aiSettings?.ai_enabled) return { skipped: true, reply: "" };
     const ctx = await buildWorkspaceAiContext(supabase, conversation.workspace_id,
-      chatHistory, conversation.product_id, conversation.contacts?.phone ?? null);
+      chatHistory, conversation.product_id, conversation.contacts?.phone ?? null, conversation.id);
     const mode: "hybrid" = "hybrid"; // Este botón utiliza IA; respeta el entrenamiento del workspace.
     const text = String(newest.body ?? "");
     const {coordinatesFromText}=await import("@/lib/hybrid-intent.server");
@@ -346,6 +346,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       },{onConflict:"workspace_id,conversation_id"});
       if(gpserror)throw gpserror;
     }
+    orderContext.saleState = previous;
     const answerContext = isGpsMessage ? {...orderContext,systemInstruction:orderContext.systemInstruction+
       `\nUBICACIÓN RECIBIDA. GPS guardado: ${Boolean(previous.locationUrl)}. Ciudad verificada: ${previous.cityVerified?previous.city:"NO VERIFICADA"}. Cobertura: ${previous.coverageStatus??"unknown"}. No inventes ciudad ni cobertura. Sin verificación pedí ciudad, sin ofrecer pago anticipado. No crees pedidos por una ubicación.`}
       : bypassSale && mode !== "rules_only"
@@ -375,6 +376,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       const verifiedSale=step?.state??previous;
       const aiContext=mode==="hybrid"?{...answerContext,systemInstruction:answerContext.systemInstruction+
         `\nHÍBRIDO: El código ya presentó catálogo/precios. Desde la siguiente respuesta vendé con IA, sin repetir lista de precios ni preguntas ya contestadas. Datos de la venta actual verificados por código: ${JSON.stringify({productId:verifiedSale.productId,optionId:verifiedSale.optionId,quantity:verifiedSale.quantity,city:verifiedSale.city,department:verifiedSale.department,cityVerified:verifiedSale.cityVerified===true,coverageStatus:verifiedSale.coverageStatus,customerName:verifiedSale.customerName,gpsReceived:Boolean(verifiedSale.locationUrl),addressReceived:Boolean(verifiedSale.street)})}. No inventes cobertura, datos ni pedido registrado. El código validará y guardará pedidos. Si el GPS está recibido y falta el nombre, preguntá SOLO nombre y apellido. No exijas dirección escrita cuando ya hay GPS válido. Preguntá solo lo pendiente.`}:answerContext;
+      aiContext.saleState = verifiedSale;
       try {result=await generateAiReply(aiContext);}
       catch (err) {
         console.error("[BOT SKY Inbox IA] Proveedor no disponible; mensaje sigue pendiente",err);
@@ -528,7 +530,7 @@ export const recoverPendingWithRules = createServerFn({ method: "POST" })
     const chatHistory=[...(history??[])].reverse().filter(m=>Boolean(m.body)).map(m=>({
       role:m.sender==="customer"?("user" as const):("assistant" as const), content:String(m.body)
     }));
-    const ctx=await buildWorkspaceAiContext(supabase,convo.workspace_id,chatHistory,convo.product_id,convo.contacts.phone);
+    const ctx=await buildWorkspaceAiContext(supabase,convo.workspace_id,chatHistory,convo.product_id,convo.contacts.phone,convo.id);
     const {data:saved,error:stateError}=await supabase.from("bot_sale_states")
       .select("state").eq("workspace_id",convo.workspace_id).eq("conversation_id",convo.id).maybeSingle();
     if(stateError)throw stateError;
