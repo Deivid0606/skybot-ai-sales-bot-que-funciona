@@ -1434,9 +1434,9 @@ function InboxPage() {
                  {getSmartCategories(c).advance && <span className="rounded border border-violet-500/40 bg-violet-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-violet-600">💳 Anticipado</span>}
                  {getSmartCategories(c).closed && <span className="rounded border border-emerald-500/40 bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-600">✅ Venta registrada</span>}
                  {getSmartCategories(c).potential && <span className="rounded border border-amber-500/40 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600">🛒 Potencial</span>}
-                 {c.sale_closed && (
+                 {Boolean(ordersByConversation.get(c.id)?.length) && (
                   <Badge variant="default" className="text-[10px]">
-                    venta
+                    ✅ VENTA
                   </Badge>
                 )}
                 {c.ad_id && (
@@ -1613,9 +1613,9 @@ function InboxPage() {
                     </>
                   )}
                 </Button>
-                {active.sale_closed && (
+                {Boolean(ordersByConversation.get(active.id)?.length) && (
                   <Badge>
-                    <CheckCircle2 className="mr-1 h-3 w-3" /> Venta
+                    <CheckCircle2 className="mr-1 h-3 w-3" /> ✅ VENTA
                   </Badge>
                 )}
               </div>
