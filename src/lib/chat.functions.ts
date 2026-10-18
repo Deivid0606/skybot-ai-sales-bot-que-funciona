@@ -246,7 +246,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     if (!aiSettings?.ai_enabled) return { skipped: true, reply: "" };
     const ctx = await buildWorkspaceAiContext(supabase, conversation.workspace_id,
       chatHistory, conversation.product_id, conversation.contacts?.phone ?? null, conversation.id);
-    const mode: "hybrid" = "hybrid"; // Este botón utiliza IA; respeta el entrenamiento del workspace.
+    const mode: "hybrid" = "hybrid"; // Responde la IA; el entrenamiento activo del workspace define las preguntas.
     const text = String(newest.body ?? "");
     const {coordinatesFromText}=await import("@/lib/hybrid-intent.server");
     const {parseCoverage,verifiedCoverage}=await import("@/lib/rule-sales.server");
@@ -401,7 +401,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
         state:step.state,updated_at:new Date().toISOString()
       },{onConflict:"workspace_id,conversation_id"});
       if(stateSaveError)throw stateSaveError;
-      if(step.complete && (mode === "rules_only" || !result.order)){const st=step.state;
+      if(step.complete && mode === "rules_only"){const st=step.state;
         fromRules=mode === "rules_only";
         result={reply:mode === "rules_only" ? step.reply : result.reply,product_id:step.productId,sale_closed:true,
           order:{customer_name:st.customerName!,city:st.city!,departamento:st.department!,
