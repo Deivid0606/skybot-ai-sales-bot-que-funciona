@@ -10,11 +10,34 @@ const exactToken = (s: string, token: string) => {
   if (a.length < 3) return false;
   return (` ${normal(s).replace(/[^a-z0-9 ]/g, " ")} `).includes(` ${a.replace(/[^a-z0-9 ]/g, " ")} `);
 };
+
+/** Validaciones semánticas compartidas por WhatsApp, Inbox y recuperación manual. */
+export function isValidCustomerName(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const name = value.replace(/^(?:soy|me llamo|mi nombre es|nombre(?: y apellido)?:)\s*/i, "").trim();
+  const n = normal(name);
+  if (name.length < 5 || name.length > 160 || !/^[\p{L}]+(?:[ '\-]+[\p{L}]+){1,5}$/u.test(name)) return false;
+  if (/\b(?:barrio|ciudad|calle|avenida|avda|ruta|esquina|zona|centro|obrero|direccion|ubicacion|departamento|pedido|entrega|lunes|martes|miercoles|jueves|viernes|sabado|domingo|mañana|manana|hoy|precio|quiero|gracias|okey|perfecto|confirmo|asuncion|central|paraguay)\b/.test(n)) return false;
+  return true;
+}
+
+export function isValidDeliveryAddress(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const address = value.trim();
+  const n = normal(address);
+  if (!address || address.length > 600) return false;
+  if (/^https:\/\/(?:www\.)?(?:google\.[^\s/]+\/maps|maps\.app\.goo\.gl\/|goo\.gl\/maps\/)/i.test(address)) return true;
+  if (address.length < 7 || /^(?:ok|okey|dale|si|no|para el |el |este |proximo |mañana|manana|hoy|lunes|martes|miercoles|jueves|viernes|sabado|domingo)/.test(n)) return false;
+  if (/^(?:barrio|zona|ciudad|de )\s+[\p{L} '\-]+$/u.test(n)) return false;
+  // Calle, avenida, número o referencia inequívoca. Un barrio aislado no basta.
+  return /(?:\b(?:calle|avenida|avda|av\.|ruta|numero|nro|casa|manzana|lote|pasaje|esquina|casi|frente|al lado|detras|detrás|entre)\b|\d{1,5}|\b(?:maps|ubicacion exacta)\b)/i.test(n);
+}
+
 const validName = (raw: string): string | null => {
   const name = raw.replace(/^(?:soy|me llamo|mi nombre es|nombre(?: y apellido)?\s*:)\s*/i, "").trim();
   if (!/^[\p{L}]+(?:[ '-]+[\p{L}]+){1,5}$/u.test(name)) return null;
   if (/\b(?:quiero|pedido|ciudad|central|gracias|entrega|litros|ubicacion|precio|hola|de|para|cerca|calle)\b/.test(normal(name))) return null;
-  return name;
+  return isValidCustomerName(name) ? name : null;
 };
 const isCityReply = (value: string, lastQuestion: string) => {
   const n = normal(value);
@@ -27,6 +50,8 @@ const isCityReply = (value: string, lastQuestion: string) => {
  */
 export function recoverSaleStateFromHistory(ctx: AiContext, previous: SaleState, history: ChatLine[]): SaleState {
   const state: SaleState = { ...previous };
+  if (state.customerName && !isValidCustomerName(state.customerName)) state.customerName = undefined;
+  if (state.street && !isValidDeliveryAddress(state.street)) state.street = undefined;
   const coverage = parseCoverage(ctx.training);
   if (!coverage.length) console.warn("[BOT_SKY_COVERAGE] No hay ciudades parseables en el entrenamiento activo del workspace");
   const product = ctx.products.find(p => p.id === state.productId || p.id === ctx.activeProductId);
@@ -67,7 +92,7 @@ export function recoverSaleStateFromHistory(ctx: AiContext, previous: SaleState,
       if (candidate) state.customerName = candidate;
     }
     if (!state.street && /(?:direccion|ubicacion|domicilio|referencia|numero de casa)/.test(lastQuestion)
-      && !/^(?:si|no|ok|dale)$/.test(n) && raw.length >= 6 && uniqueHits.length === 0) state.street = raw;
+      && isValidDeliveryAddress(raw) && uniqueHits.length === 0) state.street = raw;
     if (/\b(?:pago al recibir|contra entrega|contraentrega|pagare al recibir)\b/.test(n)) state.paymentMethod = "contraentrega";
     else if (/\b(?:pago anticipado|voy a transferir|pago por transferencia)\b/.test(n)) state.paymentMethod = "anticipado";
   }
@@ -94,9 +119,12 @@ export function reconcileOrderWithSaleState(order: AiOrder | null, state: SaleSt
   const location = state.cityVerified && state.city && state.department
     ? verifiedCoverage(state.city, state.department, parseCoverage(training)) : null;
   if (location) { next.city = location.city; next.departamento = location.department; }
-  if (state.customerName) next.customer_name = state.customerName;
-  if (state.street?.trim()) next.street = state.street;
-  else if (state.locationUrl && !next.street?.trim()) next.street = state.locationUrl;
+  // Nunca conservar nombres/direcciones inventados o semánticamente inválidos por la IA.
+  if (isValidCustomerName(state.customerName)) next.customer_name = state.customerName;
+  else if (!isValidCustomerName(next.customer_name)) delete next.customer_name;
+  if (isValidDeliveryAddress(state.street)) next.street = state.street;
+  else if (state.locationUrl && isValidDeliveryAddress(state.locationUrl)) next.street = state.locationUrl;
+  else if (!isValidDeliveryAddress(next.street)) delete next.street;
   if (state.paymentMethod) next.payment_method = state.paymentMethod;
   if (state.optionId) next.product_price_id = state.optionId;
   if (state.quantity && state.quantity > 0) next.quantity = state.quantity;
@@ -122,7 +150,7 @@ export function nextVerifiedSaleQuestion(ctx: AiContext, state: SaleState): stri
   if (options.length > 1 && !selected && !state.cartLines?.length) {
     return `😊 ¿Cuál tamaño de *${product.name}* preferís? ${options.map(o => `${o.label} (${Math.round(o.price).toLocaleString("es-PY")} Gs.)`).join(" · ")}`;
   }
-  if (!state.customerName?.trim()) return "😊 ¿Me indicás tu nombre y apellido para el pedido?";
+  if (!isValidCustomerName(state.customerName)) return "😊 ¿Me indicás tu nombre y apellido para el pedido?";
   if (!place || !state.cityVerified) return "📍 ¿De qué ciudad sos para verificar la entrega?";
   if (!place.active && !/ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(place.method)) {
     return "📦 No tenemos entrega habilitada para esa ciudad. ¿Querés consultar otra localidad?";
@@ -133,7 +161,7 @@ export function nextVerifiedSaleQuestion(ctx: AiContext, state: SaleState): stri
     }
     return "📦 ¿Cuántas unidades querés llevar?";
   }
-  if (place.addressRequired && !state.street?.trim() && !state.locationUrl?.trim())
+  if (place.addressRequired && !isValidDeliveryAddress(state.street) && !isValidDeliveryAddress(state.locationUrl))
     return "🏠 ¿Me pasás tu dirección o ubicación para la entrega?";
   if (!state.paymentMethod?.trim()) {
     if (place.active && /CONTRA ENTREGA/i.test(place.method))
@@ -154,11 +182,11 @@ export function fixRepeatedCheckoutQuestion(reply: string, ctx: AiContext, state
   const asksVariant = /(?:cual (?:tamano|tamaño|capacidad)|(?:2|3|5) litros|presentacion)/.test(n);
   const knownCity = state.cityVerified && Boolean(state.city && state.department &&
     verifiedCoverage(state.city!,state.department!,parseCoverage(ctx.training)));
-  const knownAddress = Boolean(state.street || state.locationUrl);
+  const knownAddress = isValidDeliveryAddress(state.street) || isValidDeliveryAddress(state.locationUrl);
   const knownVariant = Boolean(state.optionId || state.cartLines?.length);
   const product = ctx.products.find(p => p.id === state.productId || p.id === ctx.activeProductId);
   const needsVariant = Boolean(product && (product.product_prices?.length ?? 0) > 1 && !knownVariant);
-  if ((asksCity && knownCity) || (asksName && (state.customerName || needsVariant)) ||
+  if ((asksCity && knownCity) || (asksName && (isValidCustomerName(state.customerName) || needsVariant)) ||
       (asksAddress && knownAddress) || (asksVariant && knownVariant)) {
     return nextVerifiedSaleQuestion(ctx,state) ?? "¡Gracias! 😊 Ya tengo esos datos. Estoy verificando tu pedido.";
   }
