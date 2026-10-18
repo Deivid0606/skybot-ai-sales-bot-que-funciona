@@ -1916,8 +1916,11 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         : isAdvance && expectedTotal !== null && receivedTotal > 0 && receivedTotal < expectedTotal
           ? `📎 Recibí tu comprobante por Gs. ${receivedTotal.toLocaleString("es-PY")}. El total de tu pedido es Gs. ${expectedTotal.toLocaleString("es-PY")}; faltan Gs. ${(expectedTotal-receivedTotal).toLocaleString("es-PY")}. ¿Me enviás el comprobante de la diferencia?`
           : null;
-      const outgoingText = receiptPendingReply ?? ((claimsClosed || result.sale_closed)
-        ? (!paymentSaleState.cityVerified ? "📍 ¿Me confirmás la ciudad donde querés recibir tu pedido?" : !isValidCustomerName(paymentSaleState.customerName) ? "😊 ¿Me pasás tu nombre y apellido para completar el pedido?" : isAdvance && !paymentSaleState.receiptDocuments?.length ? "📎 Ya tengo la imagen, pero no pude extraer de forma segura sus datos. ¿Me enviás un comprobante donde se lean monto y cuenta de destino?" : "Recibí tus datos. Aún faltan requisitos verificados para registrar el pedido; un asesor puede revisarlos.")
+      // La IA formula preguntas según el entrenamiento, no este archivo. Las
+      // discrepancias documentales verificadas sí bloquean el registro; no
+      // deben confundirse con un comprobante pagado/acreditado.
+      const outgoingText = receiptPendingReply ?? (claimsClosed || result.sale_closed
+        ? "Recibí tus datos. El pedido aún no fue registrado; un asesor revisará lo pendiente. 🙏"
         : safeBeforeInsert);
       const outgoingWamid = await sendWhatsAppText(conn, phone, outgoingText);
       await supabaseAdmin.from("messages").insert({
