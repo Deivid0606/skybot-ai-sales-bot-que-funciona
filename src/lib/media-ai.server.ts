@@ -396,6 +396,8 @@ export async function describeImage(
               "No inventes datos que no sean visibles.",
               "",
               "Si es un comprobante de pago:",
+              "- diferenciar claramente cuenta de destino de cuenta de origen y beneficiario de remitente",
+              "- no confundir saldo, precio anunciado, comisiones o números de referencia con monto transferido",
               "- La PRIMERA línea debe ser exactamente COMPROBANTE.",
               "- Después respondé SOLO con estas claves, una por línea, sin Markdown:",
               "MONTO_GS: [importe exacto de la transferencia, solo dígitos; o NO_LEGIBLE]",
