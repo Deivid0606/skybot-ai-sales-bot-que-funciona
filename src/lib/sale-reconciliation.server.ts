@@ -50,6 +50,8 @@ const isCityReply = (value: string, lastQuestion: string) => {
  */
 export function recoverSaleStateFromHistory(ctx: AiContext, previous: SaleState, history: ChatLine[]): SaleState {
   const state: SaleState = { ...previous };
+  // Conservar el archivo y las observaciones de pago sin reconstruirlas desde una respuesta de IA.
+  if (previous.receiptDocuments) state.receiptDocuments = [...previous.receiptDocuments];
   if (state.customerName && !isValidCustomerName(state.customerName)) state.customerName = undefined;
   if (state.street && !isValidDeliveryAddress(state.street)) state.street = undefined;
   const coverage = parseCoverage(ctx.training);
