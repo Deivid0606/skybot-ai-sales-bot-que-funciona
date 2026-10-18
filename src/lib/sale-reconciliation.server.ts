@@ -105,6 +105,8 @@ export function recoverSaleStateFromHistory(ctx: AiContext, previous: SaleState,
       state.cityVerified = true; state.coverageStatus = location.active ? "covered" : "uncovered";
       if (!state.paymentMethod && location.active && /CONTRA ENTREGA/i.test(location.method))
         state.paymentMethod = "contraentrega";
+      if (!location.active && /ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(location.method))
+        state.paymentMethod = "anticipado";
     } else { state.cityVerified = false; state.coverageStatus = "unknown"; }
   }
   if (product && state.optionId && !state.quantity) {
