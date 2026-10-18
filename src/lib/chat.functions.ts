@@ -312,6 +312,8 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       .eq("conversation_id",conversation.id).maybeSingle();
     if(stateError)throw stateError;
     const previous=recoverSaleStateFromHistory(ctx,(saved?.state??{}) as import("@/lib/rule-sales.server").SaleState,chatHistory);
+    // Nunca convertir una respuesta de IA sobre un comprobante en acreditación bancaria.
+    // La verificación documental y el bloqueo de creación se realizan en el webhook. 
     // Imagen de pago: continuar el checkout aunque el clasificador la considere
     // consulta general. Se requiere compra anticipada ya iniciada.
     if (previous.productId && /anticip|transfer|deposit|giro/i.test(String(previous.paymentMethod ?? "")) &&
