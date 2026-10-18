@@ -21,6 +21,9 @@ export type SaleState = {
   paymentMethod?: string | null;
   awaiting?: string | null;
   receiptPath?: string | null;
+  /** Documentos recibidos de esta compra. No representan pagos acreditados. */
+  receiptDocuments?: Array<{path:string; amountGs:number; operation:string|null}>;
+  receiptReview?: string | null;
 };
 export type SaleStep = {
   reply: string;
@@ -344,7 +347,8 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   }
   if(s.awaiting==="address" && !match && !gpsUrl && n.length>=6 && !/^(?:si|no|hola|gracias|si por favor|dale|ok)$/.test(n) && !/\b(?:ubicacion|maps|pedido|precio|llega|ya te|ya le|pase|comparti|envie|mand[eé])\b/.test(n))s.street=text.trim();
   if(/\b(?:transferencia|transferir|anticipado|deposito|giro)\b/.test(n))s.paymentMethod="anticipado";
-  if(mediaPath && (s.awaiting==="receipt" || /comprobante|transferi|pague/.test(n)))s.receiptPath=mediaPath;
+  if(mediaPath && /^\s*(?:\[imagen\]\s*)?COMPROBANTE\b/i.test(text) &&
+     (s.awaiting==="receipt" || s.paymentMethod==="anticipado")) s.receiptPath=mediaPath;
   // Usar la primera promoción solo si ESTA tienda lo instruyó, sin pisar una
   // elección explícita, capacidad/modelo ni una cantidad previa.
   if (sellerUsesFirstOffer(ctx) && !s.optionId && !s.cartLines?.length && !s.quantity && variants.length > 0 &&
