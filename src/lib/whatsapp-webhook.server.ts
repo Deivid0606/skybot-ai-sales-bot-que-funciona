@@ -1428,6 +1428,21 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       .eq("workspace_id", workspaceId).eq("conversation_id", conversation.id).maybeSingle();
     if (saleReadError) throw saleReadError;
     const previousSale = recoverSaleStateFromHistory(ctx, (saleRow?.state ?? {}) as SaleState, chatHistory);
+    // La imagen puede estar almacenada sin transcript (Gemini falló). No se transforma
+    // en pago válido por el simple hecho de existir, ni se reutiliza el precio del carrito.
+    if (!previousSale.receiptPath && !previousSale.receiptDocuments?.length) {
+      const {data: recentMedia, error: mediaReadError} = await supabaseAdmin.from("messages")
+        .select("media_url,media_type,transcript,created_at")
+        .eq("workspace_id",workspaceId).eq("conversation_id",conversation.id)
+        .eq("direction","inbound").in("media_type",["image","document"])
+        .order("created_at",{ascending:false}).limit(8);
+      if (mediaReadError) console.warn("[BOT_SKY_RECEIPT_RECOVERY]",mediaReadError.message);
+      // Conservar solamente la referencia si se reconoce un documento, nunca
+      // asignarle monto sin comprobar cuenta/importe en la lectura estructurada.
+      if ((recentMedia??[]).some(row=>Boolean(row.media_url) && parseReceiptFields(row.transcript))) {
+        console.info("[BOT_SKY_RECEIPT_RECOVERY] Comprobante histórico disponible para revisión",conversation.id);
+      }
+    }
     const receiptCandidate = mediaPath && media && (media.type === "image" || media.type === "document")
       ? parseReceiptFields(transcript) : null;
     if (receiptCandidate && mediaPath && previousSale.productId &&
@@ -1649,6 +1664,9 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
 
     result.order=applySellerFirstOffer(result.order,detectedProduct,ctx.products,ctx.training,chatHistory);
     result.order = reconcileOrderWithSaleState(result.order, saveStep?.state ?? previousSale, ctx.training);
+    // No depender del indicador sale_closed del modelo: cuando nombre, ciudad,
+    // producto y cantidad estén completos, usar la información técnica recuperada.
+    if (result.order && previousSale.paymentMethod === "anticipado") result.order.payment_method = "anticipado";
     // Con estado reconocido, nunca depender de un JSON completo de Gemini.
     // El backend continuará validando variante, dirección y pago antes del INSERT.
     const optionConfirmed = Boolean(saveStep?.state.cartLines?.length) || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory);
@@ -1709,7 +1727,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     const verifiedOrderCoverage = result.order ? verifiedCoverage(
       String(result.order.city??""),String(result.order.departamento??""),parseCoverage(ctx.training)) : null;
     let orderWasCreated = false;
-    if (!conversation.sale_closed && result.order && orderReady && (verifiedOrderCoverage?.active || (isAdvance && /ANTICIPADO|TRANSFERENCIA/i.test(verifiedOrderCoverage?.method ?? ""))) &&
+    if (!conversation.sale_closed && result.order && orderReady && (verifiedOrderCoverage?.active || (isAdvance && /ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(verifiedOrderCoverage?.method ?? ""))) &&
       (!verifiedOrderCoverage?.addressRequired || Boolean(isValidDeliveryAddress(result.order.street) || isValidDeliveryAddress(saveStep?.state.locationUrl) || isValidDeliveryAddress(previousSale.locationUrl)))) {
       const completedOrder = {
         ...result.order,
@@ -1846,7 +1864,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
           ? `📎 Recibí tu comprobante por Gs. ${receivedTotal.toLocaleString("es-PY")}. El total de tu pedido es Gs. ${expectedTotal.toLocaleString("es-PY")}; faltan Gs. ${(expectedTotal-receivedTotal).toLocaleString("es-PY")}. ¿Me enviás el comprobante de la diferencia?`
           : null;
       const outgoingText = receiptPendingReply ?? ((claimsClosed || result.sale_closed)
-        ? "Recibí tus datos, pero tu pedido todavía no está registrado. Estoy revisando los requisitos pendientes."
+        ? (!paymentSaleState.cityVerified ? "📍 ¿Me confirmás la ciudad donde querés recibir tu pedido?" : !isValidCustomerName(paymentSaleState.customerName) ? "😊 ¿Me pasás tu nombre y apellido para completar el pedido?" : isAdvance && !paymentSaleState.receiptDocuments?.length ? "📎 Recibí tu imagen, pero aún no puedo verificar sus datos. ¿Me enviás un comprobante claro donde se vean monto y cuenta de destino?" : "Recibí tus datos, pero el pedido aún no se registró. Un asesor debe revisar los datos pendientes.")
         : safeBeforeInsert);
       const outgoingWamid = await sendWhatsAppText(conn, phone, outgoingText);
       await supabaseAdmin.from("messages").insert({
