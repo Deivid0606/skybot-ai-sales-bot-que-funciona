@@ -446,3 +446,22 @@ export async function describeImage(
 
   return cleanDescription;
 }
+/** Lectura documental, nunca acreditación bancaria. Se evita inferir valores ausentes. */
+export type ReceiptFields = {
+  amountGs: number | null; beneficiary: string | null; destinationAccount: string | null;
+  sender: string | null; operation: string | null; bank: string | null; date: string | null;
+};
+export function parseReceiptFields(description: string | null | undefined): ReceiptFields | null {
+  const raw = String(description ?? "").trim();
+  if (!/^(?:\[imagen\]\s*)?COMPROBANTE\b/i.test(raw)) return null;
+  const value = (key: string) => {
+    const match = raw.match(new RegExp(`^${key}\\s*:\\s*(.+)$`, "im"));
+    const v = match?.[1]?.trim() ?? "";
+    return v && !/^(?:NO_LEGIBLE|NO VISIBLE|DESCONOCIDO|N\/?A|null)$/i.test(v) ? v : null;
+  };
+  const amountText = value("MONTO_GS");
+  const digits = amountText?.replace(/[^0-9]/g, "") ?? "";
+  const amountGs = /^\d{1,12}$/.test(digits) && Number(digits) > 0 ? Number(digits) : null;
+  return {amountGs,beneficiary:value("BENEFICIARIO"),destinationAccount:value("CUENTA_DESTINO"),
+    sender:value("EMISOR"),operation:value("OPERACION"),bank:value("BANCO"),date:value("FECHA")};
+}
