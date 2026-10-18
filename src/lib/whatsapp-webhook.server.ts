@@ -6,6 +6,7 @@ function isAiQuotaFailure(error: unknown): boolean {
 }
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { formatGs } from "@/lib/format";
+import { parseReceiptFields } from "@/lib/media-ai.server";
 import { reconcileOrderWithSaleState, recoverSaleStateFromHistory, isValidCustomerName, isValidDeliveryAddress } from "@/lib/sale-reconciliation.server";
 import { buildRegisteredOrderConfirmation } from "@/lib/order-confirmation.server";
 import { buildWorkspaceAiContext } from "@/lib/ai-context.server";
@@ -1427,6 +1428,30 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       .eq("workspace_id", workspaceId).eq("conversation_id", conversation.id).maybeSingle();
     if (saleReadError) throw saleReadError;
     const previousSale = recoverSaleStateFromHistory(ctx, (saleRow?.state ?? {}) as SaleState, chatHistory);
+    const receiptCandidate = mediaPath && media && (media.type === "image" || media.type === "document")
+      ? parseReceiptFields(transcript) : null;
+    if (receiptCandidate && mediaPath && previousSale.productId &&
+        /anticip|transfer|deposit|giro/i.test(String(previousSale.paymentMethod ?? ""))) {
+      const normalizedAccount = (text: string) => text.replace(/\D/g, "").replace(/^0+(?=\d)/, "");
+      const bankText = ctx.training.filter(t => /transferencias|comprobantes|datos bancarios/i.test(t.title)).map(t => String(t.content ?? "")).join("\n");
+      const bankSection = bankText;
+      const configuredAccount = bankSection.match(/(?:número de cuenta|n[úu]mero de cuenta|nº de cuenta|cuenta bancaria)\s*:\s*([0-9\s-]{6,24})/i)?.[1] ?? null;
+      const accountOk = Boolean(configuredAccount && receiptCandidate.destinationAccount &&
+        normalizedAccount(configuredAccount) === normalizedAccount(receiptCandidate.destinationAccount));
+      const visibleAccountWrong = Boolean(configuredAccount && receiptCandidate.destinationAccount && !accountOk);
+      const amountOk = receiptCandidate.amountGs !== null && Number.isSafeInteger(receiptCandidate.amountGs);
+      if (!accountOk || !amountOk) {
+        previousSale.receiptReview = visibleAccountWrong ? "cuenta_destino_distinta" : "datos_no_legibles";
+      } else {
+        previousSale.receiptDocuments = previousSale.receiptDocuments ?? [];
+        const op = receiptCandidate.operation?.trim() ?? null;
+        const duplicate = previousSale.receiptDocuments.some(r => r.path === mediaPath || (op && r.operation === op));
+        if (!duplicate) previousSale.receiptDocuments.push({path:mediaPath,amountGs:receiptCandidate.amountGs!,operation:op});
+        previousSale.receiptPath = previousSale.receiptDocuments[0]?.path ?? mediaPath;
+        previousSale.receiptReview = null;
+      }
+    }
+
     // Persistir recuperación antes de que la IA vuelva a intervenir.
     if (!conversation.sale_closed) {
       const { error: recoveryError } = await supabaseAdmin.from("bot_sale_states").upsert({
@@ -1512,6 +1537,11 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       ruleStep.state.department = previousSale.department;
       ruleStep.state.cityVerified = true;
       ruleStep.state.coverageStatus = previousSale.coverageStatus;
+    }
+    if (ruleStep) {
+      ruleStep.state.receiptDocuments = previousSale.receiptDocuments;
+      ruleStep.state.receiptReview = previousSale.receiptReview;
+      if (previousSale.receiptPath && !ruleStep.state.receiptPath) ruleStep.state.receiptPath = previousSale.receiptPath;
     }
     let saveStep = ruleStep;
     // En híbrido: reglas administran producto/ciudad/importe y siempre registran el
@@ -1642,11 +1672,26 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     const isAdvance = /anticip|transfer|deposit|giro/i.test(result.order?.payment_method ?? "");
     // El archivo debe pertenecer al pago pendiente del ciclo actual.
     // Nunca tomar una imagen antigua de producto como comprobante.
-    const hasReceiptForOrder = Boolean(saveStep?.state.receiptPath || previousSale.receiptPath);
+    const hasReceiptForOrder = Boolean((saveStep?.state.receiptDocuments?.length ?? previousSale.receiptDocuments?.length ?? 0)>0);
     if (result.order && !result.order.street?.trim() && (saveStep?.state.locationUrl || previousSale.locationUrl)) {
       result.order.street = saveStep?.state.locationUrl || previousSale.locationUrl || undefined;
     }
-    const orderReady = isOrderReady(result.order, detectedProduct) &&
+    // Barrera de monto: para anticipado no confirmar por un archivo cualquiera.
+    // Se calcula con product_prices; si no existe selección inequívoca, no se infiere importe.
+    const selectedCatalogProduct = ctx.products.find(p=>p.id===detectedProduct);
+    const paymentSaleState = saveStep?.state ?? previousSale;
+    const selectedCatalogOption = selectedCatalogProduct?.product_prices?.find(o=>o.id===result.order?.product_price_id);
+    const explicitPromos = Number(result.order?.promo_quantity ?? 1);
+    const expectedTotal = selectedCatalogOption && Number.isSafeInteger(explicitPromos) && explicitPromos>0
+      ? Number(selectedCatalogOption.price)*explicitPromos : null;
+    const receivedTotal = (paymentSaleState.receiptDocuments ?? []).reduce((n,r)=>n+r.amountGs,0);
+    const financiallyReady = !isAdvance || Boolean(paymentSaleState.receiptPath &&
+      !paymentSaleState.receiptReview && expectedTotal !== null && Number.isFinite(expectedTotal) &&
+      receivedTotal >= expectedTotal);
+    if (isAdvance && paymentSaleState.receiptDocuments?.length && expectedTotal !== null && receivedTotal < expectedTotal) {
+      console.info("[BOT_SKY_RECEIPT_SHORTFALL]",JSON.stringify({conversationId:conversation.id,expectedTotal,receivedTotal,missing:expectedTotal-receivedTotal}));
+    }
+    const orderReady = financiallyReady && isOrderReady(result.order, detectedProduct) &&
       (Boolean(saveStep?.state.cartLines?.length) || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory)) &&
       (!isAdvance || hasReceiptForOrder);
 
@@ -1793,9 +1838,16 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     if (!orderWasCreated && !deferGpsReply) {
       const claimsClosed = /(?:ya\s+(?:qued[oó]|est[aá])\s+(?:registrad[oa]|confirmad[oa])|(?:pedido|compra)\s+(?:ya\s+)?(?:qued[oó]|est[aá])\s+(?:registrad[oa]|confirmad[oa])|gracias\s+por\s+tu\s+compra|(?:tu|su)\s+pedido[\s\S]{0,35}(?:registrad[oa]|confirmad[oa])|te\s+llegar[aá]\s+en\s+breve)/i.test(safeBeforeInsert);
       // La IA controla TODAS las preguntas; el servidor solo bloquea confirmaciones falsas.
-      const outgoingText = (claimsClosed || result.sale_closed)
-        ? "Recibí tus datos, pero tu pedido todavía no está registrado. Estoy verificando la información."
-        : safeBeforeInsert;
+      const receiptPendingReply = isAdvance && paymentSaleState.receiptReview
+        ? paymentSaleState.receiptReview === "cuenta_destino_distinta"
+          ? "📎 Recibí tu comprobante, pero la cuenta de destino visible no coincide con nuestra cuenta autorizada. No hagas otra transferencia todavía; un asesor debe revisar el caso."
+          : "📎 Recibí el archivo, pero no pude comprobar con claridad la cuenta y el monto. ¿Me enviás un comprobante más legible, por favor?"
+        : isAdvance && expectedTotal !== null && receivedTotal > 0 && receivedTotal < expectedTotal
+          ? `📎 Recibí tu comprobante por Gs. ${receivedTotal.toLocaleString("es-PY")}. El total de tu pedido es Gs. ${expectedTotal.toLocaleString("es-PY")}; faltan Gs. ${(expectedTotal-receivedTotal).toLocaleString("es-PY")}. ¿Me enviás el comprobante de la diferencia?`
+          : null;
+      const outgoingText = receiptPendingReply ?? ((claimsClosed || result.sale_closed)
+        ? "Recibí tus datos, pero tu pedido todavía no está registrado. Estoy revisando los requisitos pendientes."
+        : safeBeforeInsert);
       const outgoingWamid = await sendWhatsAppText(conn, phone, outgoingText);
       await supabaseAdmin.from("messages").insert({
         workspace_id: workspaceId, user_id: ownerId, conversation_id: conversation.id,
