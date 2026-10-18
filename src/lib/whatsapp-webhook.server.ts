@@ -566,8 +566,11 @@ async function attachPaymentReceiptToLatestOrder(args: {
         user_id: args.ownerId,
         order_id: order.id,
         url: args.mediaPath,
-        amount: order.total,
-        note: noteParts.join(" | "),
+        // No escribir order.total como monto transferido: son conceptos distintos.
+        // La lectura del importe exige extracción estructurada y comprobación
+        // documental. Hasta entonces el monto recibido permanece sin verificar.
+        amount: null,
+        note: [...noteParts, "MONTO NO EXTRAÍDO: no confundir total de orden con monto del comprobante"].join(" | "),
       });
 
     if (receiptError) {
@@ -1467,7 +1470,13 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     const awaitingCheckoutDetail = Boolean(previousSale.productId &&
       ["name", "details", "address", "quantity", "variant", "city"].includes(String(previousSale.awaiting ?? "")) &&
       !/\b(?:gracias|chau|adios|no quiero|cancelar|reclamo|mi pedido|donde esta)\b/i.test(normalizeIntentText(body)));
-    const bypassSale = intent !== "checkout" && !savedSaleReadyForFinalization && !awaitingCheckoutDetail &&
+    // Los archivos de pago forman parte del checkout activo aunque el clasificador
+    // de intención no reconozca texto de una imagen. No tratar imágenes aisladas
+    // como comprobantes cuando no hay una compra anticipada en curso.
+    const pendingAdvanceReceipt = Boolean(previousSale.productId &&
+      /anticip|transfer|deposit|giro/i.test(String(previousSale.paymentMethod ?? "")) &&
+      mediaPath && media && (media.type === "image" || media.type === "document"));
+    const bypassSale = !pendingAdvanceReceipt && intent !== "checkout" && !savedSaleReadyForFinalization && !awaitingCheckoutDetail &&
       !(previousSale.productId && !conversation.sale_closed && /(?:calle|barrio|casi|esquina|avenida|ruta|direccion|ubicacion|^[\p{L}]+(?:\s+[\p{L}]+){1,3}$)/iu.test(body));
     const answerContextBase = intent === "order_status" && hybridMode !== "rules_only"
       ? await addVerifiedOrderContext(supabaseAdmin, ctx, workspaceId, phone)
