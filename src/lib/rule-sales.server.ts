@@ -23,6 +23,7 @@ export type SaleState = {
   receiptPath?: string | null;
   /** Documentos recibidos de esta compra. No representan pagos acreditados. */
   receiptDocuments?: Array<{path:string; amountGs:number; operation:string|null}>;
+  receiptAnalysisAttemptedPaths?: string[];
   receiptReview?: string | null;
 };
 export type SaleStep = {
