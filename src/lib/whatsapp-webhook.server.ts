@@ -6,7 +6,7 @@ function isAiQuotaFailure(error: unknown): boolean {
 }
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { formatGs } from "@/lib/format";
-import { reconcileOrderWithSaleState, recoverSaleStateFromHistory } from "@/lib/sale-reconciliation.server";
+import { reconcileOrderWithSaleState, recoverSaleStateFromHistory, isValidCustomerName, isValidDeliveryAddress } from "@/lib/sale-reconciliation.server";
 import { buildRegisteredOrderConfirmation } from "@/lib/order-confirmation.server";
 import { buildWorkspaceAiContext } from "@/lib/ai-context.server";
 import { generateAiReply, type AiContext } from "@/lib/ai.server";
@@ -1584,7 +1584,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         const st=saveStep.state;
         result = {reply:hybridMode === "rules_only" ? saveStep.reply : result.reply,product_id:saveStep.productId,sale_closed:true,
           order:{customer_name:st.customerName!,city:st.city!,departamento:st.department!,
-            street:st.street??result.order?.street??undefined,quantity:(result.order?.promo_quantity ?? 1) > 1 ? result.order?.quantity : st.quantity!,
+            street:isValidDeliveryAddress(st.street) ? st.street : (isValidDeliveryAddress(result.order?.street) ? result.order?.street : undefined),quantity:(result.order?.promo_quantity ?? 1) > 1 ? result.order?.quantity : st.quantity!,
             promo_quantity:result.order?.promo_quantity,
             product_price_id:(result.order?.promo_quantity ?? 1) > 1 ? result.order?.product_price_id : st.optionId??undefined,payment_method:st.paymentMethod!,phone}};
         responseOrigin=hybridMode === "rules_only" ? "code:venta_completa" : "ai";
@@ -1656,7 +1656,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       String(result.order.city??""),String(result.order.departamento??""),parseCoverage(ctx.training)) : null;
     let orderWasCreated = false;
     if (!conversation.sale_closed && result.order && orderReady && (verifiedOrderCoverage?.active || (isAdvance && /ANTICIPADO|TRANSFERENCIA/i.test(verifiedOrderCoverage?.method ?? ""))) &&
-      (!verifiedOrderCoverage?.addressRequired || Boolean(result.order.street?.trim() || saveStep?.state.locationUrl || previousSale.locationUrl))) {
+      (!verifiedOrderCoverage?.addressRequired || Boolean(isValidDeliveryAddress(result.order.street) || isValidDeliveryAddress(saveStep?.state.locationUrl) || isValidDeliveryAddress(previousSale.locationUrl)))) {
       const completedOrder = {
         ...result.order,
         phone,
@@ -1921,7 +1921,7 @@ export function missingOrderQuestion(args: {
   const { order, productId, optionConfirmed } = args;
   if (!productId) return "🛒 ¿Qué producto te gustaría pedir?";
   if (!order) return null; // Sin datos estructurados no inventar un cierre.
-  if (!String(order.customer_name ?? "").trim()) return "😊 ¿Me indicás tu nombre y apellido para el pedido?";
+  if (!isValidCustomerName(order.customer_name)) return "😊 ¿Me indicás tu nombre y apellido para el pedido?";
   if (!String(order.city ?? "").trim()) return "📍 ¿De qué ciudad sos para verificar la entrega?";
   const coverage = parseCoverage(args.training);
   const place = verifiedCoverage(String(order.city), String(order.departamento ?? ""), coverage);
@@ -1933,7 +1933,7 @@ export function missingOrderQuestion(args: {
   if (!place.active && !/ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(place.method)) return "📦 No tenemos entrega habilitada para esa ciudad. ¿Querés consultar otra localidad?";
   if (!Number.isFinite(Number(order.quantity)) || Number(order.quantity) < 1) return "📦 ¿Cuántas unidades querés llevar?";
   if (!optionConfirmed) return "📦 ¿Qué tamaño o promoción elegís del producto?";
-  if (place.addressRequired && !String(order.street ?? "").trim()) return "🏠 ¿Me pasás tu dirección o ubicación para completar el pedido?";
+  if (place.addressRequired && !isValidDeliveryAddress(order.street)) return "🏠 ¿Me pasás tu dirección o ubicación para completar el pedido?";
   if (!String(order.payment_method ?? "").trim()) return "💳 ¿Preferís pagar al recibir o mediante transferencia?";
   if (/anticip|transfer|deposit|giro/i.test(String(order.payment_method ?? "")) && !args.hasReceipt) return "💳 Para seguir con el pago anticipado, enviame el comprobante de transferencia, por favor.";
   return null;
@@ -1956,9 +1956,10 @@ export function isOrderReady(
    * cantidad válidos. Si existe una dirección, igualmente se guarda.
    */
   return Boolean(
-    customerName &&
+    isValidCustomerName(customerName) &&
       city &&
-      paymentMethod &&
+      /^(?:contraentrega|anticipado|transferencia|deposito|depósito|giro)$/i.test(paymentMethod) &&
+      (!order.street || isValidDeliveryAddress(order.street)) &&
       Number.isFinite(quantity) &&
       quantity > 0,
   );
@@ -2019,6 +2020,11 @@ export async function createOrderFromAi(args: {
    * realiza otra compra en otro mensaje, se crea una orden nueva aunque se
    * reutilicen el contacto y la conversación.
    */
+  // Última barrera: ninguna ruta de creación puede saltarse estas verificaciones.
+  if (!isOrderReady(args.order, args.productId) ||
+      (args.order.street && !isValidDeliveryAddress(args.order.street))) {
+    throw new Error("Pedido incompleto: nombre, dirección, cantidad o pago inválidos. No se registró la venta.");
+  }
   const sourceMessageId = cleanOrderText(args.sourceMessageId);
 
   if (!sourceMessageId) {
