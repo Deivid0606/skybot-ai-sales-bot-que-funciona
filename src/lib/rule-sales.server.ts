@@ -81,8 +81,18 @@ export function parseCoverage(training: AiContext["training"]): Coverage[] {
   }
   // Una misma ciudad/departamento repetida con políticas contradictorias no es verificable.
   const unique = out.filter((c,i)=>out.findIndex(x=>norm(x.city)===norm(c.city) && norm(x.department)===norm(c.department))===i);
-  return unique.filter(c=>!out.some(x=>norm(x.city)===norm(c.city) && norm(x.department)===norm(c.department) &&
+  const clean = unique.filter(c=>!out.some(x=>norm(x.city)===norm(c.city) && norm(x.department)===norm(c.department) &&
     (x.active!==c.active || norm(x.method)!==norm(c.method) || x.addressRequired!==c.addressRequired)));
+  // La política nacional NO transforma las ciudades fuera de cobertura en contraentrega.
+  // Solo se incluyen destinos cuya ciudad y departamento conocemos inequívocamente.
+  const policy = training.some(t => /(?:todas las ciudades de paraguay|cualquier ciudad de paraguay|sin contraentrega.{0,100}encomienda|encomienda.{0,100}pago anticipado obligatorio)/is.test(t.content));
+  if (policy) {
+    const destinations = [{city:"Filadelfia",department:"Boquerón"},{city:"Encarnación",department:"Itapúa"}];
+    for (const d of destinations) if (!clean.some(c=>norm(c.city)===norm(d.city))) clean.push({
+      ...d,aliases:[],active:false,method:"ENCOMIENDA PAGO ANTICIPADO",addressRequired:false
+    });
+  }
+  return clean;
 }
 
 function cityIn(text:string, coverage:Coverage[]): Coverage | null {
@@ -371,7 +381,7 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   if (existing.awaiting === "city" && s.cityVerified && s.city &&
       variants.length > 1 && !selected && !s.cartLines?.length) {
     const cityCoverage = verifiedCoverage(s.city, s.department ?? "", coverage);
-    if (!cityCoverage || (!cityCoverage.active && !/ANTICIPADO|TRANSFERENCIA/i.test(cityCoverage.method))) {
+    if (!cityCoverage || (!cityCoverage.active && !/ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(cityCoverage.method))) {
       return answer("📍 Para esa ciudad no tengo una modalidad habilitada de entrega confirmada. Un asesor revisará las opciones.", null, false, true);
     }
     return answer(`📍 ¡Gracias! Ciudad registrada: *${s.city}*. 🚚\n\n📦 Para continuar, elegí la presentación de *${p.name}*:\n${variants.map(v=>`• ${v.label} — ${money(v.price)}`).join("\n")}\n\n¿Cuál preferís?`, "variant");
@@ -386,13 +396,13 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   }
   const location=coverage.find(c=>norm(c.city)===norm(s.city)&&norm(c.department)===norm(s.department));
   if(!location) return answer("📍 Necesito verificar tu ciudad y departamento antes de informar cobertura o formas de pago. ¿Podés confirmar tu ciudad? 😊", "city");
-  if(!location.active && !/ANTICIPADO|TRANSFERENCIA/i.test(location.method)) return answer("📍 Tu ciudad está identificada, pero actualmente no figura en las zonas de contraentrega. Un asesor puede revisar opciones disponibles; no voy a pedirte pago anticipado sin tu elección. 😊",null,false,true);
+  if(!location.active && !/ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(location.method)) return answer("📍 Tu ciudad está identificada, pero actualmente no figura en las zonas de contraentrega. Un asesor puede revisar opciones disponibles; no voy a pedirte pago anticipado sin tu elección. 😊",null,false,true);
   if(!location && !s.city)return answer("📍 ¿Me confirmás tu ciudad para verificar si llegamos hasta vos? 😊","city");
   const bank=ctx.training.find(t=>norm(t.title)==="datos bancarios")?.content?.trim()??"";
   if(!s.paymentMethod){
     if(location?.active && /CONTRA ENTREGA/i.test(location.method))s.paymentMethod="contraentrega";
-    // Nunca activar pago anticipado por falta de coincidencia de cobertura.
-    else if(location && /ANTICIPADO|TRANSFERENCIA/i.test(location.method))s.paymentMethod="anticipado";
+    // Encomienda autorizada por la política nacional para un destino con departamento conocido.
+    else if(location && /ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(location.method))s.paymentMethod="anticipado";
     else return answer("📍 ¡Gracias por pasarme tu ciudad! 😊 Un asesor necesita revisar la modalidad de entrega para darte una información correcta. 🙌",null,false,true);
   }
   if(s.paymentMethod==="contraentrega" && (!location || !location.active))return answer("🚚 Por ahora, esa ciudad no figura en nuestras zonas habilitadas para pagar al recibir. 😊 ¿Querés que consultemos si hay otra forma de envío?",null,false,true);
