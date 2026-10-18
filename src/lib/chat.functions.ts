@@ -8,7 +8,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { sendWhatsAppText } from "@/lib/whatsapp.server";
-import { reconcileOrderWithSaleState, recoverSaleStateFromHistory } from "@/lib/sale-reconciliation.server";
+import { reconcileOrderWithSaleState, recoverSaleStateFromHistory, isValidCustomerName, isValidDeliveryAddress } from "@/lib/sale-reconciliation.server";
 import { buildRegisteredOrderConfirmation } from "@/lib/order-confirmation.server";
 
 const SendInput = z.object({
@@ -181,12 +181,14 @@ export const registerPendingSale = createServerFn({ method: "POST" })
       throw new Error("No hay modalidad habilitada para esta ciudad. Configurá la encomienda en cobertura antes de registrar.");
     if(data.paymentMethod==="contraentrega" && !match.active)
       throw new Error("No hay contraentrega para esta ciudad");
-    if(match.addressRequired && !data.street.trim())throw new Error("La dirección es obligatoria para esta ciudad según tu entrenamiento");
+    if(match.addressRequired && !isValidDeliveryAddress(data.street))throw new Error("La dirección es obligatoria para esta ciudad según tu entrenamiento");
     const options=[...(product.product_prices??[])].sort((a,b)=>a.sort_order-b.sort_order);
     const option=options.find(o=>o.id===data.optionId)??null;
     if(options.length && !option)throw new Error("Seleccioná una presentación válida del catálogo");
     if(!options.length && data.optionId)throw new Error("Este producto no tiene esa promoción");
     const units=(option?.quantity??1)*data.promoCount;
+    if (!isValidCustomerName(data.customerName)) throw new Error("Ingresá nombre y apellido reales del cliente");
+    if (data.street && !isValidDeliveryAddress(data.street)) throw new Error("Dirección inválida: ingresá calle/referencia concreta o ubicación Google Maps");
     const order={customer_name:data.customerName,phone:convo.contacts.phone,
       city:match.city,departamento:match.department,street:data.street||undefined,
       quantity:units,promo_quantity:data.promoCount,product_price_id:option?.id,
@@ -397,7 +399,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
         fromRules=mode === "rules_only";
         result={reply:mode === "rules_only" ? step.reply : result.reply,product_id:step.productId,sale_closed:true,
           order:{customer_name:st.customerName!,city:st.city!,departamento:st.department!,
-            street:st.street??result.order?.street??undefined,quantity:(result.order?.promo_quantity ?? 1) > 1 ? result.order?.quantity : st.quantity!,
+            street:isValidDeliveryAddress(st.street) ? st.street : (isValidDeliveryAddress(result.order?.street) ? result.order?.street : undefined),quantity:(result.order?.promo_quantity ?? 1) > 1 ? result.order?.quantity : st.quantity!,
              promo_quantity:result.order?.promo_quantity,product_price_id:(result.order?.promo_quantity ?? 1) > 1 ? result.order?.product_price_id : st.optionId??undefined,
             payment_method:st.paymentMethod!,phone:conversation.contacts?.phone??""}};
       }
@@ -420,7 +422,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     const isAdvanceInbox = /anticip|transfer|deposit|giro/i.test(result.order?.payment_method ?? "");
     const receiptVerifiedAsFile = Boolean(step?.state.receiptPath || previous.receiptPath);
     const valid = (!isAdvanceInbox || receiptVerifiedAsFile) && !conversation.sale_closed && Boolean(orderCoverage?.active || (/anticip|transfer|deposit|giro/i.test(result.order?.payment_method ?? "") && /ANTICIPADO|TRANSFERENCIA/i.test(orderCoverage?.method ?? ""))) &&
-      (!orderCoverage?.addressRequired || Boolean(result.order?.street?.trim() || step?.state.locationUrl || previous.locationUrl)) && Boolean(result.order) &&
+      (!orderCoverage?.addressRequired || Boolean(isValidDeliveryAddress(result.order?.street) || isValidDeliveryAddress(step?.state.locationUrl) || isValidDeliveryAddress(previous.locationUrl))) && Boolean(result.order) &&
       isOrderReady(result.order, detectedProduct) &&
       (Boolean(step?.state.cartLines?.length) || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory));
     if (valid && result.order && detectedProduct) {
@@ -593,7 +595,7 @@ export const recoverPendingWithRules = createServerFn({ method: "POST" })
         quantity:st.quantity!,product_price_id:st.optionId??undefined,payment_method:st.paymentMethod!,phone:convo.contacts.phone};
       const productId=step.productId??st.productId??convo.product_id;
       const verified=verifiedCoverage(String(order.city),String(order.departamento),parseCoverage(ctx.training));
-      const canCreate=Boolean(verified.active && productId && isOrderReady(order,productId) &&
+      const canCreate=Boolean(verified.active && (!verified.addressRequired || isValidDeliveryAddress(order.street) || isValidDeliveryAddress(st.locationUrl)) && productId && isOrderReady(order,productId) &&
         (Boolean(st.cartLines?.length)||isUnambiguousPriceSelection(order,productId,ctx.products,chatHistory)));
       if(!canCreate)return {skipped:true,reason:"Pedido requiere revisión de cobertura o variante"};
       createdOrder=await createOrderFromAi({workspaceId:convo.workspace_id,ownerId:convo.user_id,conversationId:convo.id,
