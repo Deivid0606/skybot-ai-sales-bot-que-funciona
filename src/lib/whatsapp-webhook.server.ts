@@ -1156,7 +1156,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         accessToken: conn.access_token,
         mediaId: media.part.id!,
         type: media.type,
-        allowAiInterpretation: mediaMode?.hybrid_mode !== "rules_only",
+        allowAiInterpretation: media.type === "image" || media.type === "document" ? true : mediaMode?.hybrid_mode !== "rules_only",
       });
 
       mediaPath = ingested.storagePath;
@@ -1428,6 +1428,42 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       .eq("workspace_id", workspaceId).eq("conversation_id", conversation.id).maybeSingle();
     if (saleReadError) throw saleReadError;
     const previousSale = recoverSaleStateFromHistory(ctx, (saleRow?.state ?? {}) as SaleState, chatHistory);
+    // Si el archivo llegó cuando Gemini falló, recuperar UNA VEZ su lectura al
+    // continuar el checkout. No usar la respuesta del modelo como dato de pago.
+    // Se registra el intento en JSON para no reanalizar en cada mensaje de texto.
+    if (!previousSale.receiptDocuments?.length && !previousSale.receiptPath &&
+        !previousSale.receiptReview && previousSale.productId &&
+        /anticip|transfer|deposit|giro/i.test(String(previousSale.paymentMethod ?? ""))) {
+      const {data: recentUnparsed} = await supabaseAdmin.from("messages")
+        .select("id,media_url,media_type,transcript,created_at")
+        .eq("workspace_id",workspaceId).eq("conversation_id",conversation.id)
+        .eq("direction","inbound").in("media_type",["image"])
+        .order("created_at",{ascending:false}).limit(6);
+      const pending = (recentUnparsed ?? []).find(row => row.media_url &&
+        !row.transcript && !previousSale.receiptAnalysisAttemptedPaths?.includes(row.media_url) &&
+        (Date.now()-new Date(row.created_at).getTime()) < 3*60*60*1000);
+      if (pending?.media_url) {
+        previousSale.receiptAnalysisAttemptedPaths = [
+          ...(previousSale.receiptAnalysisAttemptedPaths ?? []),pending.media_url].slice(-8);
+        try {
+          const {data: blob, error: downloadError} = await supabaseAdmin.storage
+            .from("chat-media").download(pending.media_url);
+          if (downloadError || !blob) throw downloadError ?? new Error("Archivo no accesible");
+          const {describeImage,toBase64} = await import("@/lib/media-ai.server");
+          const bytes = await blob.arrayBuffer();
+          const recoveredDescription = await describeImage(toBase64(bytes),blob.type || "image/jpeg");
+          if (parseReceiptFields(recoveredDescription)) {
+            const {error: transcriptError} = await supabaseAdmin.from("messages")
+              .update({transcript:recoveredDescription}).eq("id",pending.id)
+              .eq("conversation_id",conversation.id).eq("workspace_id",workspaceId);
+            if (transcriptError) throw transcriptError;
+          }
+        } catch (error) {
+          console.warn("[BOT_SKY_RECEIPT_RETRY] Falló lectura del archivo", {
+            conversationId:conversation.id, error:String(error)});
+        }
+      }
+    }
     // La imagen puede estar almacenada sin transcript (Gemini falló). No se transforma
     // en pago válido por el simple hecho de existir, ni se reutiliza el precio del carrito.
     if (!previousSale.receiptPath && !previousSale.receiptDocuments?.length) {
@@ -1443,26 +1479,43 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         console.info("[BOT_SKY_RECEIPT_RECOVERY] Comprobante histórico disponible para revisión",conversation.id);
       }
     }
-    const receiptCandidate = mediaPath && media && (media.type === "image" || media.type === "document")
-      ? parseReceiptFields(transcript) : null;
-    if (receiptCandidate && mediaPath && previousSale.productId &&
-        /anticip|transfer|deposit|giro/i.test(String(previousSale.paymentMethod ?? ""))) {
-      const normalizedAccount = (text: string) => text.replace(/\D/g, "").replace(/^0+(?=\d)/, "");
-      const bankText = ctx.training.filter(t => /transferencias|comprobantes|datos bancarios/i.test(t.title)).map(t => String(t.content ?? "")).join("\n");
-      const bankSection = bankText;
-      const configuredAccount = bankSection.match(/(?:número de cuenta|n[úu]mero de cuenta|nº de cuenta|cuenta bancaria)\s*:\s*([0-9\s-]{6,24})/i)?.[1] ?? null;
-      const accountOk = Boolean(configuredAccount && receiptCandidate.destinationAccount &&
-        normalizedAccount(configuredAccount) === normalizedAccount(receiptCandidate.destinationAccount));
-      const visibleAccountWrong = Boolean(configuredAccount && receiptCandidate.destinationAccount && !accountOk);
-      const amountOk = receiptCandidate.amountGs !== null && Number.isSafeInteger(receiptCandidate.amountGs);
-      if (!accountOk || !amountOk) {
-        previousSale.receiptReview = visibleAccountWrong ? "cuenta_destino_distinta" : "datos_no_legibles";
-      } else {
+    // Evaluar tanto el adjunto del mensaje actual como un comprobante anterior
+    // que quedó en messages mientras el comprador facilitaba otros datos.
+    const {data: receiptHistory} = await supabaseAdmin.from("messages")
+      .select("media_url,transcript,created_at")
+      .eq("workspace_id",workspaceId).eq("conversation_id",conversation.id)
+      .eq("direction","inbound").in("media_type",["image","document"])
+      .order("created_at",{ascending:false}).limit(10);
+    const receiptSources = [
+      ...(mediaPath && media && (media.type === "image" || media.type === "document")
+        ? [{media_url:mediaPath,transcript}] : []),
+      ...(receiptHistory ?? []),
+    ];
+    if (previousSale.productId && /anticip|transfer|deposit|giro/i.test(String(previousSale.paymentMethod ?? ""))) {
+      const digits = (value: string) => value.replace(/\D/g, "").replace(/^0+(?=\d)/, "");
+      const bankText = ctx.training.filter(t => /transferencias|comprobantes|datos bancarios/i.test(t.title))
+        .map(t => String(t.content ?? "")).join("\n");
+      const configuredAccount = bankText.match(/(?:número de cuenta|n[úu]mero de cuenta|nº de cuenta|cuenta bancaria)\s*:\s*([0-9\s-]{6,24})/i)?.[1] ?? null;
+      for (const source of receiptSources) {
+        const candidate = parseReceiptFields(source.transcript);
+        if (!source.media_url || !candidate) continue;
+        if (previousSale.receiptDocuments?.some(r => r.path === source.media_url)) continue;
+        const accountOk = Boolean(configuredAccount && candidate.destinationAccount &&
+          digits(configuredAccount) === digits(candidate.destinationAccount));
+        const wrongAccount = Boolean(configuredAccount && candidate.destinationAccount && !accountOk);
+        const amountOk = candidate.amountGs !== null && Number.isSafeInteger(candidate.amountGs);
+        if (!accountOk || !amountOk) {
+          // El último comprobante incompleto bloquea el registro; jamás se inventa monto.
+          previousSale.receiptReview = wrongAccount ? "cuenta_destino_distinta" : "datos_no_legibles";
+          continue;
+        }
         previousSale.receiptDocuments = previousSale.receiptDocuments ?? [];
-        const op = receiptCandidate.operation?.trim() ?? null;
-        const duplicate = previousSale.receiptDocuments.some(r => r.path === mediaPath || (op && r.operation === op));
-        if (!duplicate) previousSale.receiptDocuments.push({path:mediaPath,amountGs:receiptCandidate.amountGs!,operation:op});
-        previousSale.receiptPath = previousSale.receiptDocuments[0]?.path ?? mediaPath;
+        const op = candidate.operation?.trim() ?? null;
+        const duplicate = previousSale.receiptDocuments.some(r =>
+          r.path === source.media_url || (op && r.operation === op));
+        if (!duplicate) previousSale.receiptDocuments.push({
+          path:source.media_url,amountGs:candidate.amountGs!,operation:op});
+        previousSale.receiptPath = previousSale.receiptDocuments[0]?.path ?? source.media_url;
         previousSale.receiptReview = null;
       }
     }
@@ -1864,7 +1917,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
           ? `📎 Recibí tu comprobante por Gs. ${receivedTotal.toLocaleString("es-PY")}. El total de tu pedido es Gs. ${expectedTotal.toLocaleString("es-PY")}; faltan Gs. ${(expectedTotal-receivedTotal).toLocaleString("es-PY")}. ¿Me enviás el comprobante de la diferencia?`
           : null;
       const outgoingText = receiptPendingReply ?? ((claimsClosed || result.sale_closed)
-        ? (!paymentSaleState.cityVerified ? "📍 ¿Me confirmás la ciudad donde querés recibir tu pedido?" : !isValidCustomerName(paymentSaleState.customerName) ? "😊 ¿Me pasás tu nombre y apellido para completar el pedido?" : isAdvance && !paymentSaleState.receiptDocuments?.length ? "📎 Recibí tu imagen, pero aún no puedo verificar sus datos. ¿Me enviás un comprobante claro donde se vean monto y cuenta de destino?" : "Recibí tus datos, pero el pedido aún no se registró. Un asesor debe revisar los datos pendientes.")
+        ? (!paymentSaleState.cityVerified ? "📍 ¿Me confirmás la ciudad donde querés recibir tu pedido?" : !isValidCustomerName(paymentSaleState.customerName) ? "😊 ¿Me pasás tu nombre y apellido para completar el pedido?" : isAdvance && !paymentSaleState.receiptDocuments?.length ? "📎 Ya tengo la imagen, pero no pude extraer de forma segura sus datos. ¿Me enviás un comprobante donde se lean monto y cuenta de destino?" : "Recibí tus datos. Aún faltan requisitos verificados para registrar el pedido; un asesor puede revisarlos.")
         : safeBeforeInsert);
       const outgoingWamid = await sendWhatsAppText(conn, phone, outgoingText);
       await supabaseAdmin.from("messages").insert({
