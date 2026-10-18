@@ -312,6 +312,10 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       .eq("conversation_id",conversation.id).maybeSingle();
     if(stateError)throw stateError;
     const previous=recoverSaleStateFromHistory(ctx,(saved?.state??{}) as import("@/lib/rule-sales.server").SaleState,chatHistory);
+    // Imagen de pago: continuar el checkout aunque el clasificador la considere
+    // consulta general. Se requiere compra anticipada ya iniciada.
+    if (previous.productId && /anticip|transfer|deposit|giro/i.test(String(previous.paymentMethod ?? "")) &&
+        newest.media_url && (newest.media_type === "image" || newest.media_type === "document")) bypassSale = false;
     if (!conversation.sale_closed) {
       const { error: recoveredStateError } = await supabase.from("bot_sale_states").upsert({
         workspace_id: conversation.workspace_id, conversation_id: conversation.id,
