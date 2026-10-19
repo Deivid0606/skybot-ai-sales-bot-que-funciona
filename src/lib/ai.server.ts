@@ -3,7 +3,7 @@ const MAX_HISTORY_MESSAGES = 20;
 const MAX_HISTORY_CHARS = 950;
 const MAX_OUTPUT_TOKENS = 768; // JSON de pedido y respuesta; probar antes de bajar a 512.
 const MAX_PROVIDER_ATTEMPTS = 4;
-const MAX_PROMPT_CHARS = 48000;
+const MAX_PROMPT_CHARS = 100000;
 function limitedHistory(ctx: AiContext) {
   return ctx.history.slice(-MAX_HISTORY_MESSAGES).map(message => ({
     role: message.role,
