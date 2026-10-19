@@ -15,7 +15,7 @@ import { decideHybridReply } from "@/lib/hybrid-rules.server";
 import { advanceRuleSale, sellerUsesFirstOffer, type SaleState } from "@/lib/rule-sales.server";
 import { classifyCustomerIntent, addVerifiedOrderContext, addPendingSaleContext } from "@/lib/hybrid-intent.server";
 import { coordinatesFromText, validCoords } from "@/lib/hybrid-intent.server";
-import { parseCoverage, verifiedCoverage } from "@/lib/rule-sales.server";
+import { parseCoverage, verifiedCoverage, sellerAllowsNationwideAdvance } from "@/lib/rule-sales.server";
 import { sendWhatsAppText } from "@/lib/whatsapp.server";
 import { detectComplaint, COMPLAINT_REASON_LABELS } from "@/lib/complaints";
 
@@ -1735,13 +1735,34 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
 
     result.order=applySellerFirstOffer(result.order,detectedProduct,ctx.products,ctx.training,chatHistory);
     result.order = reconcileOrderWithSaleState(result.order, saveStep?.state ?? previousSale, ctx.training);
+    // Pago al recibir solo en ciudad explícitamente autorizada por ESTA tienda.
+    // Una localidad ajena a la lista puede ser encomienda únicamente cuando
+    // existe autorización nacional y destino declarado en este ciclo.
+    if (result.order) {
+      const resolved = verifiedCoverage(String(result.order.city??""), String(result.order.departamento??""), parseCoverage(ctx.training));
+      const outside = !resolved?.active;
+      if (outside && sellerAllowsNationwideAdvance(ctx.training) &&
+          previousSale.cityVerified && previousSale.city && previousSale.department &&
+          normalizeIntentText(String(result.order.city??""))===normalizeIntentText(previousSale.city) &&
+          normalizeIntentText(String(result.order.departamento??""))===normalizeIntentText(previousSale.department)) {
+        result.order.payment_method="anticipado";
+      }
+    }
     // No depender del indicador sale_closed del modelo: cuando nombre, ciudad,
     // producto y cantidad estén completos, usar la información técnica recuperada.
     if (result.order && previousSale.paymentMethod === "anticipado") result.order.payment_method = "anticipado";
     // Con estado reconocido, nunca depender de un JSON completo de Gemini.
     // El backend continuará validando variante, dirección y pago antes del INSERT.
     const optionConfirmed = Boolean(saveStep?.state.cartLines?.length) || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory);
-    const finalReply = safeReply; // La IA pregunta según el entrenamiento; el backend impide registrar variantes ambiguas.
+    const deliveryCoverage = verifiedSaleState.city && verifiedSaleState.department
+      ? verifiedCoverage(verifiedSaleState.city,verifiedSaleState.department,parseCoverage(ctx.training)) : null;
+    const needsNationalAdvance = Boolean(verifiedSaleState.cityVerified && verifiedSaleState.city &&
+      verifiedSaleState.department && !deliveryCoverage?.active && sellerAllowsNationwideAdvance(ctx.training));
+    // Barrera de salida: impedir una promesa de contraentrega no autorizada.
+    // No reemplazar todo el mensaje salvo que realmente prometa pago al recibir.
+    const finalReply = needsNationalAdvance && /(?:pago\s+al\s+recibir|pag[aá]s?\s+al\s+recibir|contra\s*entrega|pag[aá]s?\s+cuando\s+recib)/i.test(safeReply)
+      ? `📦 A ${verifiedSaleState.city} trabajamos por encomienda con pago anticipado, sujeto a disponibilidad logística. 😊 ¿Cuál presentación querés llevar?`
+      : safeReply;
     // No prometer que el pedido quedó registrado ANTES del INSERT.
     // No permitir confirmaciones comerciales falsas, incluso si la IA no entrega
     // result.order o sale_closed. Sólo el bloque posterior al INSERT confirmado
@@ -1797,12 +1818,15 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
      */
     const verifiedOrderCoverage = result.order ? verifiedCoverage(
       String(result.order.city??""),String(result.order.departamento??""),parseCoverage(ctx.training)) : null;
-    const workspaceTrainingText = ctx.training.map(t => String(t.content ?? "")).join("\n");
+    // La política nacional se obtiene del entrenamiento activo, NO de ciudades fijas.
+    // Para pedidos fuera de la lista, exigir ciudad/departamento conservados en el
+    // ciclo actual; no aceptar el destino inventado solo en el JSON de Gemini.
     const nationwideAdvanceApproved = isAdvance &&
-      /(?:todo\s+(?:el\s+)?paraguay|(?:cualquier|todas\s+las)\s+ciudad(?:es)?\s+(?:del\s+)?paraguay|env[ií]os?\s+nacionales?)/i.test(workspaceTrainingText) &&
-      /encomienda/i.test(workspaceTrainingText) &&
-      /(?:pago\s+anticipado|transferencia|pagar\s+antes)/i.test(workspaceTrainingText) &&
-      Boolean(previousSale.cityVerified && previousSale.city && previousSale.department);
+      sellerAllowsNationwideAdvance(ctx.training) &&
+      Boolean(previousSale.cityVerified && previousSale.city && previousSale.department &&
+        result.order && normalizeIntentText(String(result.order.city??"")) === normalizeIntentText(previousSale.city) &&
+        normalizeIntentText(String(result.order.departamento??"")) === normalizeIntentText(previousSale.department)) &&
+      !verifiedOrderCoverage?.active;
     let orderWasCreated = false;
     if (!conversation.sale_closed && result.order && orderReady && (verifiedOrderCoverage?.active || (isAdvance && /ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(verifiedOrderCoverage?.method ?? "")) || nationwideAdvanceApproved) &&
       // La dirección de domicilio se exige solo a entregas domiciliarias con esa obligación.
@@ -2098,15 +2122,16 @@ export function missingOrderQuestion(args: {
   if (!String(order.city ?? "").trim()) return "📍 ¿De qué ciudad sos para verificar la entrega?";
   const coverage = parseCoverage(args.training);
   const place = verifiedCoverage(String(order.city), String(order.departamento ?? ""), coverage);
-  if (!place) {
+  const national = sellerAllowsNationwideAdvance(args.training) && /anticip|transfer|deposit|giro/i.test(String(order.payment_method??""));
+  if (!place && !national) {
     const cityMatches = coverage.filter(p => [p.city, ...p.aliases].some(n => n.toLocaleLowerCase() === String(order.city).toLocaleLowerCase()));
     if (cityMatches.length === 1) return `📍 ¿Me confirmás que tu ciudad es ${cityMatches[0].city}, departamento de ${cityMatches[0].department}?`;
     return "📍 ¿Me confirmás tu ciudad y departamento para verificar la modalidad de envío?";
   }
-  if (!place.active && !/ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(place.method)) return "📦 No tenemos entrega habilitada para esa ciudad. ¿Querés consultar otra localidad?";
+  if (place && !place.active && !/ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(place.method) && !national) return "📦 No tenemos entrega habilitada para esa ciudad. ¿Querés consultar otra localidad?";
   if (!Number.isFinite(Number(order.quantity)) || Number(order.quantity) < 1) return "📦 ¿Cuántas unidades querés llevar?";
   if (!optionConfirmed) return "📦 ¿Qué tamaño o promoción elegís del producto?";
-  if (place.addressRequired && !isValidDeliveryAddress(order.street)) return "🏠 ¿Me pasás tu dirección o ubicación para completar el pedido?";
+  if (place?.addressRequired && !national && !isValidDeliveryAddress(order.street)) return "🏠 ¿Me pasás tu dirección o ubicación para completar el pedido?";
   if (!String(order.payment_method ?? "").trim()) return "💳 ¿Preferís pagar al recibir o mediante transferencia?";
   if (/anticip|transfer|deposit|giro/i.test(String(order.payment_method ?? "")) && !args.hasReceipt) return "💳 Para seguir con el pago anticipado, enviame el comprobante de transferencia, por favor.";
   return null;
