@@ -374,9 +374,9 @@ export async function describeImage(
     base64Length: base64.length,
   });
 
-  const response = await callGemini({
+  const requestImage = (model: string) => callGemini({
     apiKey,
-    model: GEMINI_MODEL,
+    model,
     system:
       "Analizá imágenes enviadas por clientes de WhatsApp y devolvé texto claro, útil y breve en español.",
     contents: [
@@ -435,11 +435,21 @@ export async function describeImage(
     temperature: 0.1,
     maxTokens: 1024,
   });
-
-  if (!response || response === "__GEMINI_QUOTA_EXCEEDED__") {
-    throw new Error("No se pudo interpretar la imagen con Gemini");
+  // Modelo alternativo solo si se configura explícitamente en ESTE despliegue.
+  // Se reutilizan exactamente los bytes de la imagen; no se inventan datos.
+  const fallback = process.env.GEMINI_MEDIA_FALLBACK_MODEL?.trim();
+  let response = "";
+  let primaryError: unknown = null;
+  try { response = await requestImage(GEMINI_MODEL); }
+  catch (error) { primaryError = error; console.error("[BOT_SKY_IMAGE_PRIMARY_FAILED]",error); }
+  if ((!response || response === "__GEMINI_QUOTA_EXCEEDED__") && fallback && fallback !== GEMINI_MODEL) {
+    console.warn("[BOT_SKY_IMAGE_FALLBACK]",{from:GEMINI_MODEL,to:fallback});
+    try { response = await requestImage(fallback); }
+    catch (error) { console.error("[BOT_SKY_IMAGE_FALLBACK_FAILED]",error); }
   }
-
+  if (!response || response === "__GEMINI_QUOTA_EXCEEDED__") {
+    throw new Error(`No se pudo interpretar la imagen con Gemini; principal=${GEMINI_MODEL}; alternativo=${fallback || 'no configurado'}; motivo=${String(primaryError ?? 'respuesta vacía o cuota')}`);
+  }
   const cleanDescription = clean(response);
 
   if (!cleanDescription) {
