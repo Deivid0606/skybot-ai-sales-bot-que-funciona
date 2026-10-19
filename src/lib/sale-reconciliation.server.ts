@@ -1,6 +1,6 @@
 import type { AiContext, AiOrder } from "@/lib/ai.server";
 import type { SaleState } from "@/lib/rule-sales.server";
-import { verifiedCoverage, parseCoverage } from "@/lib/rule-sales.server";
+import { verifiedCoverage, parseCoverage, sellerAllowsNationwideAdvance } from "@/lib/rule-sales.server";
 
 type ChatLine = { role: "user" | "assistant"; content: string };
 const normal = (s: string) => String(s ?? "").toLowerCase().normalize("NFD")
@@ -81,6 +81,26 @@ export function recoverSaleStateFromHistory(ctx: AiContext, previous: SaleState,
         state.coverageStatus = found.active ? "covered" : "uncovered";
       }
     }
+    // Encomienda nacional: recuperar ciudad y departamento SOLO de respuestas
+    // explícitas del comprador, sin listas fijas ni convertir texto de la IA en verdad.
+    if (!uniqueHits.length && sellerAllowsNationwideAdvance(ctx.training) &&
+        !/(?:calle|esquina|casi|referencia|barrio|ruta|direcci[oó]n)/i.test(raw)) {
+      const bare = raw.replace(/^(?:soy de|vivo en|para|enviar a|mandar a|a)\s+/i, "").trim();
+      const pair = bare.match(/^([\p{L}][\p{L} .'-]{2,50}?)\s*(?:,|\s+-\s+|\s+(?:del?\s+)?departamento\s+de\s+)\s*([\p{L}][\p{L} .'-]{2,40})$/iu);
+      const asksDepartment = /(?:qu[eé] departamento|de qu[eé] departamento|departamento es|confirm[aá].*departamento)/i.test(lastQuestion);
+      const asksCity = /(?:en qu[eé] ciudad|qu[eé] ciudad|ciudad.*recibir|d[oó]nde.*recibir)/i.test(lastQuestion);
+      if (pair && (asksCity || /^(?:soy de|vivo en|para|enviar a|mandar a)\s+/i.test(raw))) {
+        state.city = pair[1].trim(); state.department = pair[2].trim();
+        state.cityVerified = true; state.coverageStatus = "uncovered";
+      } else if (asksDepartment && state.city && !state.cityVerified &&
+                 /^[\p{L} .'-]{3,40}$/u.test(bare)) {
+        state.department = bare; state.cityVerified = true;
+        state.coverageStatus = "uncovered";
+      } else if (asksCity && !state.cityVerified && /^[\p{L} .'-]{3,55}$/u.test(bare)) {
+        state.city = bare; state.department = null;
+        state.cityVerified = false; state.coverageStatus = "unknown";
+      }
+    }
     if (product && !state.optionId) {
       const matches = (product.product_prices ?? []).filter(o => {
         const label = normal(o.label);
@@ -108,6 +128,9 @@ export function recoverSaleStateFromHistory(ctx: AiContext, previous: SaleState,
         state.paymentMethod = "contraentrega";
       if (!location.active && /ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(location.method))
         state.paymentMethod = "anticipado";
+    } else if (state.cityVerified && sellerAllowsNationwideAdvance(ctx.training)) {
+      state.coverageStatus = "uncovered";
+      state.paymentMethod = "anticipado";
     } else { state.cityVerified = false; state.coverageStatus = "unknown"; }
   }
   if (product && state.optionId && !state.quantity) {
@@ -124,6 +147,11 @@ export function reconcileOrderWithSaleState(order: AiOrder | null, state: SaleSt
   const location = state.cityVerified && state.city && state.department
     ? verifiedCoverage(state.city, state.department, parseCoverage(training)) : null;
   if (location) { next.city = location.city; next.departamento = location.department; }
+  else if (state.cityVerified && state.city && state.department &&
+           sellerAllowsNationwideAdvance(training) && state.coverageStatus === "uncovered") {
+    next.city = state.city; next.departamento = state.department;
+    next.payment_method = "anticipado";
+  }
   // Nunca conservar nombres/direcciones inventados o semánticamente inválidos por la IA.
   if (isValidCustomerName(state.customerName)) next.customer_name = state.customerName;
   else if (!isValidCustomerName(next.customer_name)) delete next.customer_name;
@@ -156,8 +184,12 @@ export function nextVerifiedSaleQuestion(ctx: AiContext, state: SaleState): stri
     return `😊 ¿Cuál tamaño de *${product.name}* preferís? ${options.map(o => `${o.label} (${Math.round(o.price).toLocaleString("es-PY")} Gs.)`).join(" · ")}`;
   }
   if (!isValidCustomerName(state.customerName)) return "😊 ¿Me indicás tu nombre y apellido para el pedido?";
-  if (!place || !state.cityVerified) return "📍 ¿De qué ciudad sos para verificar la entrega?";
-  if (!place.active && !/ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(place.method)) {
+  const national = sellerAllowsNationwideAdvance(ctx.training) && state.cityVerified &&
+    Boolean(state.city && state.department) && state.coverageStatus === "uncovered";
+  if ((!place && !national) || !state.cityVerified) return state.city && !state.department
+    ? `📍 ¿De qué departamento es ${state.city}?`
+    : "📍 ¿En qué ciudad querés recibir tu pedido?";
+  if (place && !place.active && !/ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(place.method) && !national) {
     return "📦 No tenemos entrega habilitada para esa ciudad. ¿Querés consultar otra localidad?";
   }
   if (!state.quantity || state.quantity < 1) {
@@ -166,14 +198,14 @@ export function nextVerifiedSaleQuestion(ctx: AiContext, state: SaleState): stri
     }
     return "📦 ¿Cuántas unidades querés llevar?";
   }
-  if (place.addressRequired && !isValidDeliveryAddress(state.street) && !isValidDeliveryAddress(state.locationUrl))
+  if (place?.addressRequired && !national && !isValidDeliveryAddress(state.street) && !isValidDeliveryAddress(state.locationUrl))
     return "🏠 ¿Me pasás tu dirección o ubicación para la entrega?";
   if (!state.paymentMethod?.trim()) {
-    if (place.active && /CONTRA ENTREGA/i.test(place.method))
+    if (place?.active && /CONTRA ENTREGA/i.test(place.method))
       return "💵 ¿Confirmás que vas a pagar al recibir?";
     return "💳 ¿Qué modalidad de pago habilitada preferís?";
   }
-  if (/anticip|transfer|deposit|giro/i.test(state.paymentMethod) && !state.receiptPath)
+  if (/anticip|transfer|deposit|giro/i.test(state.paymentMethod) && !state.receiptPath && !state.receiptDocuments?.length)
     return "📎 ¿Me enviás el comprobante de la transferencia, por favor?";
   return null;
 }
