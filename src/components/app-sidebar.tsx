@@ -17,6 +17,7 @@ import {
   Users,
   Wallet,
   Receipt,
+  Megaphone,
 } from "lucide-react";
 import {
   Sidebar,
@@ -40,6 +41,7 @@ const sellerItems = [
   { title: "Contactos", url: "/contactos", icon: Contact },
   { title: "Entrenamiento", url: "/entrenamiento", icon: Bot },
   { title: "Notificaciones", url: "/notificaciones", icon: Bell },
+  { title: "Novedades", url: "/novedades", icon: Megaphone },
   { title: "Pedidos", url: "/pedidos", icon: ShoppingCart },
   { title: "Productos", url: "/productos", icon: Package },
   { title: "Etiquetas", url: "/etiquetas", icon: Tags },
