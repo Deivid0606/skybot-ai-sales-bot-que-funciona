@@ -455,10 +455,11 @@ export type ReceiptFields = {
 };
 export function parseReceiptFields(description: string | null | undefined): ReceiptFields | null {
   const raw = String(description ?? "").trim();
-  if (!/^(?:\uFEFF)?\s*(?:\[imagen\]\s*)?COMPROBANTE\b/i.test(raw)) return null;
+  const normalized = raw.replace(/^```(?:text|markdown)?\s*/i, "").replace(/\s*```\s*$/i, "").trim().replace(/^\*\*(COMPROBANTE)\*\*/i, "$1");
+  if (!/^(?:\uFEFF)?\s*(?:\[imagen\]\s*)?COMPROBANTE\b/i.test(normalized)) return null;
   const value = (key: string) => {
-    const match = raw.match(new RegExp(`^${key}\\s*:\\s*(.+)$`, "im"));
-    const v = match?.[1]?.trim() ?? "";
+    const match = normalized.match(new RegExp(`^\\s*(?:[-*]\\s*)?(?:\\*\\*)?${key}(?:\\*\\*)?\\s*:\\s*(.+)$`, "im"));
+    const v = (match?.[1]?.trim() ?? "").replace(/\*\*\s*$/, "").trim();
     return v && !/^(?:NO_LEGIBLE|NO VISIBLE|DESCONOCIDO|N\/?A|null)$/i.test(v) ? v : null;
   };
   const amountText = value("MONTO_GS");
