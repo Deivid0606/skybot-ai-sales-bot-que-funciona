@@ -369,7 +369,7 @@ async function ingestMedia(args: {
           });
         }
       } else if (base64 && args.type === "image") {
-        const result = await describeImage(base64, mime);
+        const result = await describeImage(base64, mime, args.workspaceId);
         transcript = result?.trim() || null;
 
         if (!transcript) {
@@ -1454,7 +1454,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
             .from("chat-media").download(path);
           if (downloadError || !blob) throw downloadError ?? new Error("Archivo no accesible");
           const {describeImage,toBase64} = await import("@/lib/media-ai.server");
-          const description = await describeImage(toBase64(await blob.arrayBuffer()),blob.type || "image/jpeg");
+          const description = await describeImage(toBase64(await blob.arrayBuffer()),blob.type || "image/jpeg",workspaceId);
           const fields = parseReceiptFields(description);
           if (!fields) throw new Error("Gemini respondió, pero no identificó un comprobante estructurado: " + description.slice(0, 180));
           console.info("[BOT_SKY_RECEIPT_PARSED]", JSON.stringify({conversationId:conversation.id,
