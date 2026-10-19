@@ -426,8 +426,20 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     const orderCoverage=result.order ? verifiedCoverage(
       String(result.order.city??""),String(result.order.departamento??""),parseCoverage(ctx.training)) : null;
     const isAdvanceInbox = /anticip|transfer|deposit|giro/i.test(result.order?.payment_method ?? "");
-    const receiptVerifiedAsFile = Boolean(step?.state.receiptPath || previous.receiptPath);
-    const valid = (!isAdvanceInbox || receiptVerifiedAsFile) && !conversation.sale_closed && Boolean(orderCoverage?.active || (/anticip|transfer|deposit|giro/i.test(result.order?.payment_method ?? "") && /ANTICIPADO|TRANSFERENCIA/i.test(orderCoverage?.method ?? ""))) &&
+    const paymentState = step?.state?.receiptDocuments?.length ? step.state : previous;
+    const receiptTotal = (paymentState.receiptDocuments ?? []).reduce((sum,r)=>sum+r.amountGs,0);
+    const productForAmount = ctx.products.find(p=>p.id===detectedProduct);
+    const selectedPrice = productForAmount?.product_prices?.find(p=>p.id===result.order?.product_price_id);
+    const promoCount = Number(result.order?.promo_quantity ?? 1);
+    const expectedAmount = selectedPrice && Number.isSafeInteger(promoCount) && promoCount>0 ? Number(selectedPrice.price)*promoCount : null;
+    const receiptVerifiedAsFile = Boolean(paymentState.receiptPath && !paymentState.receiptReview &&
+      expectedAmount !== null && Number.isFinite(expectedAmount) && receiptTotal >= expectedAmount);
+    const workspaceTrainingText = ctx.training.map(t=>String(t.content??"")).join("\n");
+    const nationwideAdvanceApproved = isAdvanceInbox && Boolean(previous.cityVerified && previous.city && previous.department) &&
+      /(?:todo\s+(?:el\s+)?paraguay|(?:cualquier|todas\s+las)\s+ciudad(?:es)?\s+(?:del\s+)?paraguay|env[ií]os?\s+nacionales?)/i.test(workspaceTrainingText) &&
+      /encomienda/i.test(workspaceTrainingText) &&
+      /(?:pago\s+anticipado|transferencia|pagar\s+antes)/i.test(workspaceTrainingText);
+    const valid = (!isAdvanceInbox || receiptVerifiedAsFile) && !conversation.sale_closed && Boolean(orderCoverage?.active || (isAdvanceInbox && /ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(orderCoverage?.method ?? "")) || nationwideAdvanceApproved) &&
       (!orderCoverage?.addressRequired || Boolean(isValidDeliveryAddress(result.order?.street) || isValidDeliveryAddress(step?.state.locationUrl) || isValidDeliveryAddress(previous.locationUrl))) && Boolean(result.order) &&
       isOrderReady(result.order, detectedProduct) &&
       (Boolean(step?.state.cartLines?.length) || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory));
