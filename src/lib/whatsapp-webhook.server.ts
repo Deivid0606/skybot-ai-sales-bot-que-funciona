@@ -1428,40 +1428,49 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       .eq("workspace_id", workspaceId).eq("conversation_id", conversation.id).maybeSingle();
     if (saleReadError) throw saleReadError;
     const previousSale = recoverSaleStateFromHistory(ctx, (saleRow?.state ?? {}) as SaleState, chatHistory);
-    // Si el archivo llegó cuando Gemini falló, recuperar UNA VEZ su lectura al
-    // continuar el checkout. No usar la respuesta del modelo como dato de pago.
-    // Se registra el intento en JSON para no reanalizar en cada mensaje de texto.
+    // Reintento persistente con límite y espera: un error de Gemini no inutiliza
+    // el archivo permanentemente. Los reintentos pertenecen al workspace/chat.
     if (!previousSale.receiptDocuments?.length && !previousSale.receiptPath &&
-        !previousSale.receiptReview && previousSale.productId &&
-        /anticip|transfer|deposit|giro/i.test(String(previousSale.paymentMethod ?? ""))) {
-      const {data: recentUnparsed} = await supabaseAdmin.from("messages")
+        previousSale.productId && /anticip|transfer|deposit|giro/i.test(String(previousSale.paymentMethod ?? ""))) {
+      const {data: recentUnparsed, error: pendingReadError} = await supabaseAdmin.from("messages")
         .select("id,media_url,media_type,transcript,created_at")
         .eq("workspace_id",workspaceId).eq("conversation_id",conversation.id)
-        .eq("direction","inbound").in("media_type",["image"])
-        .order("created_at",{ascending:false}).limit(6);
-      const pending = (recentUnparsed ?? []).find(row => row.media_url &&
-        !row.transcript && !previousSale.receiptAnalysisAttemptedPaths?.includes(row.media_url) &&
-        (Date.now()-new Date(row.created_at).getTime()) < 3*60*60*1000);
+        .eq("direction","inbound").eq("media_type","image")
+        .order("created_at",{ascending:false}).limit(8);
+      if (pendingReadError) console.warn("[RECEIPT_MEDIA_READ]", pendingReadError.message);
+      const retryState = previousSale as SaleState & {receiptRetry?: Record<string,{count:number;lastAt:number}>};
+      const ledger = retryState.receiptRetry ?? {};
+      const pending = (recentUnparsed ?? []).find(row => {
+        if (!row.media_url || row.transcript) return false;
+        const age = Date.now() - new Date(row.created_at).getTime();
+        const retry = ledger[row.media_url];
+        return age >= 0 && age < 3*60*60*1000 && (!retry ||
+          (retry.count < 3 && Date.now()-retry.lastAt > 60_000));
+      });
       if (pending?.media_url) {
-        previousSale.receiptAnalysisAttemptedPaths = [
-          ...(previousSale.receiptAnalysisAttemptedPaths ?? []),pending.media_url].slice(-8);
+        const path = pending.media_url;
         try {
           const {data: blob, error: downloadError} = await supabaseAdmin.storage
-            .from("chat-media").download(pending.media_url);
+            .from("chat-media").download(path);
           if (downloadError || !blob) throw downloadError ?? new Error("Archivo no accesible");
           const {describeImage,toBase64} = await import("@/lib/media-ai.server");
-          const bytes = await blob.arrayBuffer();
-          const recoveredDescription = await describeImage(toBase64(bytes),blob.type || "image/jpeg");
-          if (parseReceiptFields(recoveredDescription)) {
-            const {error: transcriptError} = await supabaseAdmin.from("messages")
-              .update({transcript:recoveredDescription}).eq("id",pending.id)
-              .eq("conversation_id",conversation.id).eq("workspace_id",workspaceId);
-            if (transcriptError) throw transcriptError;
-          }
+          const description = await describeImage(toBase64(await blob.arrayBuffer()),blob.type || "image/jpeg");
+          const fields = parseReceiptFields(description);
+          if (!fields) throw new Error("La imagen no produjo campos de comprobante");
+          const {error: transcriptError} = await supabaseAdmin.from("messages")
+            .update({transcript:description}).eq("id",pending.id)
+            .eq("conversation_id",conversation.id).eq("workspace_id",workspaceId);
+          if (transcriptError) throw transcriptError;
+          // Se utiliza el transcript persistido en el paso de conciliación siguiente.
+          delete ledger[path];
         } catch (error) {
-          console.warn("[BOT_SKY_RECEIPT_RETRY] Falló lectura del archivo", {
-            conversationId:conversation.id, error:String(error)});
+          const last = ledger[path]?.count ?? 0;
+          ledger[path] = {count:last+1,lastAt:Date.now()};
+          console.warn("[BOT_SKY_RECEIPT_RETRY]",JSON.stringify({
+            workspaceId,conversationId:conversation.id,path,attempts:ledger[path].count,
+            error:error instanceof Error?error.message:String(error)}));
         }
+        retryState.receiptRetry = ledger;
       }
     }
     // La imagen puede estar almacenada sin transcript (Gemini falló). No se transforma
@@ -1506,7 +1515,9 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         const amountOk = candidate.amountGs !== null && Number.isSafeInteger(candidate.amountGs);
         if (!accountOk || !amountOk) {
           // El último comprobante incompleto bloquea el registro; jamás se inventa monto.
-          previousSale.receiptReview = wrongAccount ? "cuenta_destino_distinta" : "datos_no_legibles";
+          // No se debe sobreescribir un comprobante válido anterior con otro ilegible.
+          if (!previousSale.receiptDocuments?.length)
+            previousSale.receiptReview = wrongAccount ? "cuenta_destino_distinta" : "datos_no_legibles";
           continue;
         }
         previousSale.receiptDocuments = previousSale.receiptDocuments ?? [];
@@ -1779,8 +1790,14 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
      */
     const verifiedOrderCoverage = result.order ? verifiedCoverage(
       String(result.order.city??""),String(result.order.departamento??""),parseCoverage(ctx.training)) : null;
+    const workspaceTrainingText = ctx.training.map(t => String(t.content ?? "")).join("\n");
+    const nationwideAdvanceApproved = isAdvance &&
+      /(?:todo\s+(?:el\s+)?paraguay|(?:cualquier|todas\s+las)\s+ciudad(?:es)?\s+(?:del\s+)?paraguay|env[ií]os?\s+nacionales?)/i.test(workspaceTrainingText) &&
+      /encomienda/i.test(workspaceTrainingText) &&
+      /(?:pago\s+anticipado|transferencia|pagar\s+antes)/i.test(workspaceTrainingText) &&
+      Boolean(previousSale.cityVerified && previousSale.city && previousSale.department);
     let orderWasCreated = false;
-    if (!conversation.sale_closed && result.order && orderReady && (verifiedOrderCoverage?.active || (isAdvance && /ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(verifiedOrderCoverage?.method ?? ""))) &&
+    if (!conversation.sale_closed && result.order && orderReady && (verifiedOrderCoverage?.active || (isAdvance && /ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(verifiedOrderCoverage?.method ?? "")) || nationwideAdvanceApproved) &&
       (!verifiedOrderCoverage?.addressRequired || Boolean(isValidDeliveryAddress(result.order.street) || isValidDeliveryAddress(saveStep?.state.locationUrl) || isValidDeliveryAddress(previousSale.locationUrl)))) {
       const completedOrder = {
         ...result.order,
