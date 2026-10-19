@@ -1,10 +1,10 @@
 import { useState, type ChangeEvent, type FormEvent } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ExternalLink, ImagePlus, Megaphone, MessageCircle, Pencil, Plus, Trash2, X } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight, ExternalLink, ImagePlus, Megaphone, MessageCircle, Pencil, Plus, Trash2, X } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/lib/auth";
-import { PageHeader, PageShell, EmptyState } from "@/components/page-shell";
+import { PageShell, EmptyState } from "@/components/page-shell";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -90,6 +90,7 @@ function NovedadesPage() {
   const [uploading, setUploading] = useState(false);
   const [notice, setNotice] = useState("");
   const [errorText, setErrorText] = useState("");
+  const [lightbox, setLightbox] = useState<{ images: string[]; index: number; title: string } | null>(null);
 
   // La consulta se ejecuta DESPUÉS de conocer el rol para evitar exponer borradores.
   const { data: items = [], isPending, error } = useQuery({
@@ -189,10 +190,28 @@ function NovedadesPage() {
 
   return (
     <PageShell>
-      <PageHeader title="Novedades" description="Noticias y avisos oficiales de BOT SKY."
-        actions={isAdmin ? <Button onClick={startCreate}><Plus className="mr-2 h-4 w-4" />Nueva publicación</Button> : undefined} />
-      {notice && <p role="status" className="mb-4 rounded-md bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-300">{notice}</p>}
-      {errorText && <p role="alert" className="mb-4 rounded-md bg-destructive/10 p-3 text-sm text-destructive">{errorText}</p>}
+      <div className="relative -mx-4 overflow-hidden rounded-3xl border border-violet-500/20 bg-gradient-to-br from-slate-950 via-[#171c35] to-[#30204d] px-5 py-8 text-white shadow-2xl sm:mx-0 sm:px-9 sm:py-10">
+        <div className="pointer-events-none absolute -right-12 -top-20 h-72 w-72 rounded-full bg-violet-500/25 blur-3xl" />
+        <div className="pointer-events-none absolute bottom-0 left-1/4 h-36 w-72 rounded-full bg-blue-500/15 blur-3xl" />
+        <div className="relative flex flex-wrap items-center justify-between gap-5">
+          <div className="space-y-3">
+            <div className="inline-flex items-center gap-2 rounded-full border border-violet-300/30 bg-white/10 px-3 py-1 text-xs font-semibold tracking-wider text-violet-200">
+              <Megaphone className="h-3.5 w-3.5" /> COMUNIDAD BOT SKY
+            </div>
+            <h1 className="text-3xl font-extrabold tracking-tight sm:text-4xl">Novedades y noticias</h1>
+            <p className="max-w-xl text-sm leading-relaxed text-slate-300 sm:text-base">
+              Descubrí anuncios, actualizaciones y oportunidades. Todo en un solo lugar.
+            </p>
+          </div>
+          {isAdmin && <Button onClick={startCreate} className="bg-violet-600 text-white shadow-lg shadow-violet-500/25 hover:bg-violet-500">
+            <Plus className="mr-2 h-4 w-4" /> Nueva publicación
+          </Button>}
+        </div>
+      </div>
+
+      <div className="mx-auto mt-7 w-full max-w-5xl space-y-6">
+        {notice && <p role="status" className="rounded-xl bg-emerald-500/10 p-4 text-sm text-emerald-700 dark:text-emerald-300">{notice}</p>}
+        {errorText && <p role="alert" className="rounded-xl bg-destructive/10 p-4 text-sm text-destructive">{errorText}</p>}
 
       {isAdmin && openEditor && (
         <Card className="mb-6"><CardContent className="p-5">
@@ -248,36 +267,89 @@ function NovedadesPage() {
         </CardContent></Card>
       )}
 
-      {isPending || loading ? <p className="text-sm text-muted-foreground">Cargando novedades...</p>
-        : error ? <p role="alert" className="text-sm text-destructive">No se pudieron cargar las novedades: {error instanceof Error ? error.message : "Error desconocido"}</p>
-        : !items.length ? <EmptyState title="Sin novedades" description="Aquí aparecerán las noticias publicadas por el administrador." />
-        : <div className="grid gap-5 lg:grid-cols-2">{items.map(item => <Card key={item.id} className="overflow-hidden">
-          <CardContent className="space-y-4 p-5">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0 space-y-1"><div className="flex flex-wrap items-center gap-2">
-                <Megaphone className="h-4 w-4 text-primary" />
-                {item.is_pinned && <Badge variant="secondary">Destacada</Badge>}
-                {isAdmin && !item.is_published && <Badge variant="outline">Borrador</Badge>}
-              </div><h2 className="text-lg font-semibold break-words">{item.title}</h2>
-                <p className="text-xs text-muted-foreground">{item.created_at ? new Date(item.created_at).toLocaleDateString("es-PY") : ""}</p>
-              </div>
-              {isAdmin && <div className="flex gap-1">
-                <Button size="icon" variant="outline" aria-label="Editar noticia" onClick={() => startEdit(item)}><Pencil className="h-4 w-4" /></Button>
-                <Button size="icon" variant="outline" aria-label="Eliminar noticia" disabled={remove.isPending} onClick={() => { if (window.confirm(`¿Eliminar «${item.title}»?`)) remove.mutate(item.id); }}><Trash2 className="h-4 w-4" /></Button>
-              </div>}
-            </div>
-            <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{item.body}</p>
-            {item.images.length > 0 && <div className="grid grid-cols-2 gap-2">
-              {item.images.map((src, i) => <a key={`${src}-${i}`} href={src} target="_blank" rel="noopener noreferrer" title="Abrir imagen">
-                <img src={src} alt={`${item.title}, imagen ${i + 1}`} loading="lazy" className="h-40 w-full rounded-lg border object-cover transition-opacity hover:opacity-80" />
-              </a>)}
-            </div>}
-            {(item.links.length > 0 || whatsappUrl(item.whatsapp_number, item.whatsapp_message)) && <div className="flex flex-wrap gap-2 border-t pt-3">
-              {whatsappUrl(item.whatsapp_number, item.whatsapp_message) && <a href={whatsappUrl(item.whatsapp_number, item.whatsapp_message)!} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 rounded-md bg-[#25D366] px-4 py-2 text-sm font-semibold text-white hover:opacity-90"><MessageCircle className="h-4 w-4" />WhatsApp</a>}
-              {item.links.map((link, index) => { const url = httpUrl(link.url); return url ? <a key={index} href={url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-accent"><ExternalLink className="h-4 w-4" />{link.label}</a> : null; })}
-            </div>}
-          </CardContent>
-        </Card>)}</div>}
+
+        {isPending || loading ? (
+          <div className="rounded-2xl border bg-card p-10 text-center text-muted-foreground">Cargando novedades...</div>
+        ) : error ? (
+          <div role="alert" className="rounded-2xl border p-5 text-sm text-destructive">No se pudieron cargar las novedades: {error instanceof Error ? error.message : "Error desconocido"}</div>
+        ) : !items.length ? (
+          <EmptyState title="Sin novedades" description="Aquí aparecerán las noticias publicadas por el administrador." />
+        ) : (
+          <div className="space-y-7">
+            {items.map(item => {
+              const wa = whatsappUrl(item.whatsapp_number, item.whatsapp_message);
+              return (
+                <article key={item.id} className="overflow-hidden rounded-3xl border border-border/70 bg-card shadow-lg shadow-black/5 ring-1 ring-black/[0.02] dark:shadow-black/25">
+                  <div className="flex items-start justify-between gap-4 px-5 pb-4 pt-5 sm:px-7 sm:pt-7">
+                    <div className="flex min-w-0 items-start gap-3 sm:gap-4">
+                      <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-violet-600 to-indigo-700 text-white shadow-md shadow-violet-500/25">
+                        <Megaphone className="h-6 w-6" />
+                      </div>
+                      <div className="min-w-0 space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-sm font-bold sm:text-base">BOT SKY · Oficial</span>
+                          {item.is_pinned && <Badge className="bg-violet-600 text-white hover:bg-violet-600">Destacada</Badge>}
+                          {isAdmin && !item.is_published && <Badge variant="outline">Borrador</Badge>}
+                        </div>
+                        <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                          <CalendarDays className="h-3.5 w-3.5" />
+                          {item.created_at ? new Date(item.created_at).toLocaleDateString("es-PY", { day: "2-digit", month: "long", year: "numeric" }) : "Novedad"}
+                        </p>
+                      </div>
+                    </div>
+                    {isAdmin && <div className="flex shrink-0 gap-1.5">
+                      <Button size="icon" variant="outline" aria-label="Editar noticia" onClick={() => startEdit(item)}><Pencil className="h-4 w-4" /></Button>
+                      <Button size="icon" variant="outline" aria-label="Eliminar noticia" disabled={remove.isPending} onClick={() => { if (window.confirm(`¿Eliminar «${item.title}»?`)) remove.mutate(item.id); }}><Trash2 className="h-4 w-4" /></Button>
+                    </div>}
+                  </div>
+
+                  <div className="space-y-3 px-5 pb-5 sm:px-7">
+                    <h2 className="break-words text-xl font-extrabold leading-tight tracking-tight sm:text-2xl">{item.title}</h2>
+                    <p className="whitespace-pre-wrap break-words text-[15px] leading-7 text-foreground/85 sm:text-base">{item.body}</p>
+                  </div>
+
+                  {item.images.length > 0 && (
+                    <div className="space-y-2 bg-slate-950/95 p-2 sm:p-3">
+                      <button type="button" onClick={() => setLightbox({ images: item.images, index: 0, title: item.title })} className="group relative block w-full cursor-zoom-in overflow-hidden rounded-xl bg-[#0c1020] text-left" aria-label={`Ampliar imagen de ${item.title}`}>
+                        <img src={item.images[0]} alt={`${item.title}, imagen principal`} loading="lazy" className="mx-auto max-h-[720px] min-h-[250px] w-full object-contain transition-transform duration-300 group-hover:scale-[1.015] sm:min-h-[380px]" />
+                        <span className="absolute bottom-3 right-3 rounded-full bg-black/65 px-3 py-1.5 text-xs font-medium text-white backdrop-blur-sm">Ver en grande</span>
+                      </button>
+                      {item.images.length > 1 && (
+                        <div className="grid grid-cols-4 gap-2 sm:grid-cols-5">
+                          {item.images.slice(1).map((src, i) => <button type="button" key={`${src}-${i}`} onClick={() => setLightbox({ images: item.images, index: i + 1, title: item.title })} className="group overflow-hidden rounded-lg bg-[#0c1020]" aria-label={`Ampliar imagen ${i + 2}`}>
+                            <img src={src} alt={`${item.title}, imagen ${i + 2}`} loading="lazy" className="h-20 w-full object-cover transition-transform duration-300 group-hover:scale-105 sm:h-28" />
+                          </button>)}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {(wa || item.links.length > 0) && <div className="flex flex-wrap gap-3 px-5 py-5 sm:px-7">
+                    {wa && <a href={wa} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[#19b85a] px-5 py-2.5 text-sm font-bold text-white shadow-sm transition hover:bg-[#139c4a]">
+                      <MessageCircle className="h-5 w-5" /> Consultar por WhatsApp
+                    </a>}
+                    {item.links.map((link, index) => { const url = httpUrl(link.url); return url ? <a key={index} href={url} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-violet-500/30 bg-violet-500/10 px-5 py-2.5 text-sm font-semibold text-violet-700 transition hover:bg-violet-500/20 dark:text-violet-200">
+                      <ExternalLink className="h-4 w-4" /> {link.label}
+                    </a> : null; })}
+                  </div>}
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {lightbox && <div role="dialog" aria-modal="true" aria-label={`Imágenes: ${lightbox.title}`} className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-black/95 p-3 sm:p-8" onClick={() => setLightbox(null)}>
+        <button type="button" onClick={() => setLightbox(null)} className="absolute right-4 top-4 z-10 rounded-full bg-white/15 p-3 text-white hover:bg-white/25" aria-label="Cerrar imagen"><X className="h-6 w-6" /></button>
+        <div className="mb-4 px-12 text-center text-sm font-medium text-white/80">{lightbox.title} · {lightbox.index + 1} de {lightbox.images.length}</div>
+        <div className="relative flex w-full max-w-6xl flex-1 items-center justify-center overflow-hidden" onClick={e => e.stopPropagation()}>
+          <img src={lightbox.images[lightbox.index]} alt={`${lightbox.title}, imagen ampliada ${lightbox.index + 1}`} className="max-h-[82vh] max-w-full object-contain" />
+          {lightbox.images.length > 1 && <>
+            <button type="button" onClick={() => setLightbox(prev => prev && ({ ...prev, index: (prev.index - 1 + prev.images.length) % prev.images.length }))} className="absolute left-1 rounded-full bg-black/60 p-2 text-white hover:bg-black/80 sm:left-4" aria-label="Imagen anterior"><ChevronLeft className="h-7 w-7" /></button>
+            <button type="button" onClick={() => setLightbox(prev => prev && ({ ...prev, index: (prev.index + 1) % prev.images.length }))} className="absolute right-1 rounded-full bg-black/60 p-2 text-white hover:bg-black/80 sm:right-4" aria-label="Imagen siguiente"><ChevronRight className="h-7 w-7" /></button>
+          </>}
+        </div>
+      </div>}
     </PageShell>
   );
 }
