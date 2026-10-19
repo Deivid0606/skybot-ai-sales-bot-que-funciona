@@ -1530,8 +1530,36 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       const digits = (value: string) => value.replace(/\D/g, "").replace(/^0+(?=\d)/, "");
       const bankText = ctx.training.filter(t => /transferencias|comprobantes|datos bancarios/i.test(t.title))
         .map(t => String(t.content ?? "")).join("\n");
-      const configuredAccount = bankText.match(/(?:número de cuenta|n[úu]mero de cuenta|nº de cuenta|cuenta bancaria)\s*:\s*([0-9\s-]{6,24})/i)?.[1] ?? null;
-      if (!configuredAccount) console.warn("[BOT_SKY_RECEIPT_CONFIGURATION] Cuenta autorizada no extraíble del entrenamiento",{workspaceId,conversationId:conversation.id});
+      // Solo datos del vendedor actual: localizar el bloque bancario AUTORIZADO,
+      // nunca el de ejemplos, textos históricos o entidades de otros workspaces.
+      const authorizedBankBlock = bankText.match(/^DATOS BANCARIOS AUTORIZADOS[^\n]*\n([\s\S]*?)(?=\n\s*(?:FORMATO OBLIGATORIO|## CONTROL DE COMPROBANTES|RESPUESTAS MODELO)|(?![\s\S]))/im)?.[1] ?? "";
+      // Acepta: "Número de cuenta:", "N.º de cuenta:",
+      // "N° de cuenta para transferencias desde otros bancos:", etc.
+      // No confundir teléfono, cédula o alias con CUENTA_DESTINO.
+      const bankLines = authorizedBankBlock.split(/\r?\n/);
+      const authorizedAccounts = [...new Set(bankLines.flatMap(line => {
+        const match = line.trim().replace(/^[-*]\s*/, "").match(
+          /^(?:(?:n[úu]mero|n[.º°o\s]*|nro\.?)\s*(?:de\s+)?)?cuenta(?:\s+bancaria|\s+para\s+transferencias?[^:]*)?\s*:\s*([\d\s.-]{6,30})\s*$/i
+        );
+        const account = match?.[1]?.replace(/\D/g, "") ?? "";
+        return account.length >= 6 ? [account] : [];
+      }))];
+      const authorizedHolder = bankLines.map(line =>
+        line.trim().replace(/^[-*]\s*/, "").match(/^Titular\s*:\s*(.+)$/i)?.[1]?.trim() ?? ""
+      ).find(Boolean) ?? null;
+      if (!authorizedAccounts.length) console.warn("[BOT_SKY_RECEIPT_CONFIGURATION] Cuenta autorizada no extraíble del entrenamiento",{workspaceId,conversationId:conversation.id});
+      const normalizeHolder = (value: string) => value.toUpperCase().normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "").replace(/[^A-Z\s]/g, " ").trim().split(/\s+/).filter(Boolean);
+      const compatibleHolder = (received: string | null) => {
+        // La abreviación de un titular (p.ej., nombre + apellido) es habitual
+        // en recibos; si es ambigua debe revisarse, no afirmarse acreditación.
+        if (!authorizedHolder || !received) return true;
+        const expected = normalizeHolder(authorizedHolder);
+        const actual = normalizeHolder(received);
+        if (actual.length < 2) return false;
+        return actual.every(token => expected.includes(token)) &&
+          actual.some(token => token === expected[0]) && actual.some(token => token === expected[expected.length - 1] || token === expected[expected.length - 2]);
+      };
       for (const source of receiptSources) {
         const candidate = parseReceiptFields(source.transcript);
         if (!source.media_url || !candidate) continue;
@@ -1540,18 +1568,20 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         const ageMs = Date.now() - new Date(source.created_at).getTime();
         if (!Number.isFinite(ageMs) || ageMs < -60000 || ageMs > 3*60*60*1000) continue;
         if (previousSale.receiptDocuments?.some(r => r.path === source.media_url)) continue;
-        const accountOk = Boolean(configuredAccount && candidate.destinationAccount &&
-          digits(configuredAccount) === digits(candidate.destinationAccount));
-        const wrongAccount = Boolean(configuredAccount && candidate.destinationAccount && !accountOk);
+        const accountOk = Boolean(candidate.destinationAccount &&
+          authorizedAccounts.includes(digits(candidate.destinationAccount)));
+        const wrongAccount = Boolean(authorizedAccounts.length && candidate.destinationAccount && !accountOk);
+        const holderOk = compatibleHolder(candidate.beneficiary);
+        const wrongHolder = Boolean(authorizedHolder && candidate.beneficiary && !holderOk);
         const amountOk = candidate.amountGs !== null && Number.isSafeInteger(candidate.amountGs);
-        if (!accountOk || !amountOk) {
+        if (!accountOk || !amountOk || wrongHolder) {
           console.warn("[BOT_SKY_RECEIPT_REJECTED]",JSON.stringify({conversationId:conversation.id,
-            path:source.media_url,hasConfiguredAccount:Boolean(configuredAccount),
-            hasDestinationAccount:Boolean(candidate.destinationAccount),amountOk,wrongAccount}));
+            path:source.media_url,hasConfiguredAccount:authorizedAccounts.length > 0,
+            hasDestinationAccount:Boolean(candidate.destinationAccount),amountOk,wrongAccount,wrongHolder}));
           // El último comprobante incompleto bloquea el registro; jamás se inventa monto.
           // No se debe sobreescribir un comprobante válido anterior con otro ilegible.
           if (!previousSale.receiptDocuments?.length)
-            previousSale.receiptReview = wrongAccount ? "cuenta_destino_distinta" : "datos_no_legibles";
+            previousSale.receiptReview = wrongAccount || wrongHolder ? "cuenta_destino_distinta" : "datos_no_legibles";
           continue;
         }
         previousSale.receiptDocuments = previousSale.receiptDocuments ?? [];
