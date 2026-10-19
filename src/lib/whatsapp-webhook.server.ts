@@ -1500,10 +1500,33 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       .order("created_at",{ascending:false}).limit(10);
     const receiptSources = [
       ...(mediaPath && media && (media.type === "image" || media.type === "document")
-        ? [{media_url:mediaPath,transcript}] : []),
+        ? [{media_url:mediaPath,transcript,created_at:new Date().toISOString()}] : []),
       ...(receiptHistory ?? []),
     ];
-    if (previousSale.productId && /anticip|transfer|deposit|giro/i.test(String(previousSale.paymentMethod ?? ""))) {
+    // Un comprobante pertenece a una operación concreta. No reutilizar imágenes
+    // ya asociadas a otra orden, incluso cuando sigan visibles en el historial.
+    const candidatePaths = [...new Set(receiptSources.map(r => r.media_url).filter((x):x is string => Boolean(x)))];
+    const usedReceiptPaths = new Set<string>();
+    if (candidatePaths.length) {
+      const [ordersUsing, receiptsUsing] = await Promise.all([
+        supabaseAdmin.from("orders").select("receipt_url")
+          .eq("workspace_id",workspaceId).in("receipt_url",candidatePaths),
+        supabaseAdmin.from("payment_receipts").select("url")
+          .eq("workspace_id",workspaceId).in("url",candidatePaths),
+      ]);
+      if (ordersUsing.error || receiptsUsing.error) {
+        // Si no podemos verificar reutilización, no sumar el comprobante.
+        console.warn("[BOT_SKY_RECEIPT_REUSE_CHECK] No se pudo consultar duplicados",{
+          workspaceId,conversationId:conversation.id,
+          ordersError:ordersUsing.error?.message,receiptsError:receiptsUsing.error?.message});
+        receiptSources.length = 0;
+        previousSale.receiptReview = "datos_no_legibles";
+      } else {
+        for (const row of ordersUsing.data ?? []) if (row.receipt_url) usedReceiptPaths.add(row.receipt_url);
+        for (const row of receiptsUsing.data ?? []) if (row.url) usedReceiptPaths.add(row.url);
+      }
+    }
+    if (previousSale.productId && !conversation.sale_closed) {
       const digits = (value: string) => value.replace(/\D/g, "").replace(/^0+(?=\d)/, "");
       const bankText = ctx.training.filter(t => /transferencias|comprobantes|datos bancarios/i.test(t.title))
         .map(t => String(t.content ?? "")).join("\n");
@@ -1512,6 +1535,10 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       for (const source of receiptSources) {
         const candidate = parseReceiptFields(source.transcript);
         if (!source.media_url || !candidate) continue;
+        // Nunca usar un recibo ya consumido ni documentos antiguos de otro ciclo.
+        if (usedReceiptPaths.has(source.media_url)) continue;
+        const ageMs = Date.now() - new Date(source.created_at).getTime();
+        if (!Number.isFinite(ageMs) || ageMs < -60000 || ageMs > 3*60*60*1000) continue;
         if (previousSale.receiptDocuments?.some(r => r.path === source.media_url)) continue;
         const accountOk = Boolean(configuredAccount && candidate.destinationAccount &&
           digits(configuredAccount) === digits(candidate.destinationAccount));
@@ -1535,6 +1562,13 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
           path:source.media_url,amountGs:candidate.amountGs!,operation:op});
         previousSale.receiptPath = previousSale.receiptDocuments[0]?.path ?? source.media_url;
         previousSale.receiptReview = null;
+        // El comprobante no acredita dinero. Para un destino fuera de
+        // contraentrega y con política nacional, el método sí es anticipado.
+        if (previousSale.cityVerified && previousSale.city && previousSale.department &&
+            sellerAllowsNationwideAdvance(ctx.training) &&
+            !verifiedCoverage(previousSale.city,previousSale.department,parseCoverage(ctx.training))?.active) {
+          previousSale.paymentMethod = "anticipado";
+        }
       }
     }
 
@@ -1611,7 +1645,9 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       city:verifiedSaleState.city,department:verifiedSaleState.department,
       cityVerified:verifiedSaleState.cityVerified,hasName:Boolean(verifiedSaleState.customerName),
       hasAddress:Boolean(verifiedSaleState.street||verifiedSaleState.locationUrl),
-      optionId:verifiedSaleState.optionId,awaiting:verifiedSaleState.awaiting}));
+      optionId:verifiedSaleState.optionId,awaiting:verifiedSaleState.awaiting,
+      paymentMethod:verifiedSaleState.paymentMethod,receiptCount:verifiedSaleState.receiptDocuments?.length??0,
+      receiptReview:verifiedSaleState.receiptReview??null}));
     const aiAnswerContext = hybridMode !== "rules_only" ? {
       ...answerContext,
       systemInstruction: answerContext.systemInstruction + `\nMODO HÍBRIDO BOT SKY, PRIORIDAD ALTA: Ya fue enviado por CÓDIGO el copy, la imagen y los precios del catálogo. DESDE AHORA CONVERSÁ VOS con el comprador de forma natural: resolvé una sola pregunta por vez y no repitas catálogo/precios completos ni datos ya recibidos. Cantidad y variante se capturan mediante código y deben respetarse. No confirmes pedidos sin número real generado por Supabase. El cliente puede comprar varias veces. DATOS VERIFICADOS DEL CICLO ACTUAL (no mezclar con pedidos previos): ${JSON.stringify({productId:verifiedSaleState.productId,optionId:verifiedSaleState.optionId,quantity:verifiedSaleState.quantity,city:verifiedSaleState.city,department:verifiedSaleState.department,cityVerified:verifiedSaleState.cityVerified===true,coverageStatus:verifiedSaleState.coverageStatus,customerName:verifiedSaleState.customerName,hasAddress:Boolean(verifiedSaleState.street),gpsReceived:Boolean(verifiedSaleState.locationUrl),paymentMethod:verifiedSaleState.paymentMethod,awaiting:verifiedSaleState.awaiting})}. COBERTURA: si cityVerified no es true, NUNCA digas que tenemos cobertura; consultá la ciudad si falta. GPS no prueba por sí mismo ninguna ciudad. Si recibiste GPS no vuelvas a solicitarlo. El GPS es dirección suficiente si la configuración de la ciudad admite dirección por ubicación. Respetá el orden de preguntas definido en el entrenamiento del vendedor; nunca repitas hechos conocidos. Si no tenés precio/variante sin ambigüedad pedí aclaración. Si está completo, el código registrará el pedido; no inventes un número de orden ni digas que está confirmado.`
@@ -1742,9 +1778,9 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       const resolved = verifiedCoverage(String(result.order.city??""), String(result.order.departamento??""), parseCoverage(ctx.training));
       const outside = !resolved?.active;
       if (outside && sellerAllowsNationwideAdvance(ctx.training) &&
-          previousSale.cityVerified && previousSale.city && previousSale.department &&
-          normalizeIntentText(String(result.order.city??""))===normalizeIntentText(previousSale.city) &&
-          normalizeIntentText(String(result.order.departamento??""))===normalizeIntentText(previousSale.department)) {
+          verifiedSaleState.cityVerified && verifiedSaleState.city && verifiedSaleState.department &&
+          normalizeIntentText(String(result.order.city??""))===normalizeIntentText(verifiedSaleState.city) &&
+          normalizeIntentText(String(result.order.departamento??""))===normalizeIntentText(verifiedSaleState.department)) {
         result.order.payment_method="anticipado";
       }
     }
@@ -1823,9 +1859,10 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     // ciclo actual; no aceptar el destino inventado solo en el JSON de Gemini.
     const nationwideAdvanceApproved = isAdvance &&
       sellerAllowsNationwideAdvance(ctx.training) &&
-      Boolean(previousSale.cityVerified && previousSale.city && previousSale.department &&
-        result.order && normalizeIntentText(String(result.order.city??"")) === normalizeIntentText(previousSale.city) &&
-        normalizeIntentText(String(result.order.departamento??"")) === normalizeIntentText(previousSale.department)) &&
+      Boolean(verifiedSaleState.cityVerified && verifiedSaleState.city && verifiedSaleState.department &&
+        verifiedSaleState.coverageStatus === "uncovered" &&
+        result.order && normalizeIntentText(String(result.order.city??"")) === normalizeIntentText(verifiedSaleState.city) &&
+        normalizeIntentText(String(result.order.departamento??"")) === normalizeIntentText(verifiedSaleState.department)) &&
       !verifiedOrderCoverage?.active;
     let orderWasCreated = false;
     if (!conversation.sale_closed && result.order && orderReady && (verifiedOrderCoverage?.active || (isAdvance && /ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(verifiedOrderCoverage?.method ?? "")) || nationwideAdvanceApproved) &&
