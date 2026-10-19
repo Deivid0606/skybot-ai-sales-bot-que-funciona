@@ -440,7 +440,8 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       /encomienda/i.test(workspaceTrainingText) &&
       /(?:pago\s+anticipado|transferencia|pagar\s+antes)/i.test(workspaceTrainingText);
     const valid = (!isAdvanceInbox || receiptVerifiedAsFile) && !conversation.sale_closed && Boolean(orderCoverage?.active || (isAdvanceInbox && /ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(orderCoverage?.method ?? "")) || nationwideAdvanceApproved) &&
-      (!orderCoverage?.addressRequired || Boolean(isValidDeliveryAddress(result.order?.street) || isValidDeliveryAddress(step?.state.locationUrl) || isValidDeliveryAddress(previous.locationUrl))) && Boolean(result.order) &&
+      ((isAdvanceInbox && nationwideAdvanceApproved && !orderCoverage?.active) ||
+       !orderCoverage?.addressRequired || Boolean(isValidDeliveryAddress(result.order?.street) || isValidDeliveryAddress(step?.state.locationUrl) || isValidDeliveryAddress(previous.locationUrl))) && Boolean(result.order) &&
       isOrderReady(result.order, detectedProduct) &&
       (Boolean(step?.state.cartLines?.length) || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory));
     if (valid && result.order && detectedProduct) {
@@ -613,7 +614,16 @@ export const recoverPendingWithRules = createServerFn({ method: "POST" })
         quantity:st.quantity!,product_price_id:st.optionId??undefined,payment_method:st.paymentMethod!,phone:convo.contacts.phone};
       const productId=step.productId??st.productId??convo.product_id;
       const verified=verifiedCoverage(String(order.city),String(order.departamento),parseCoverage(ctx.training));
-      const canCreate=Boolean(verified.active && (!verified.addressRequired || isValidDeliveryAddress(order.street) || isValidDeliveryAddress(st.locationUrl)) && productId && isOrderReady(order,productId) &&
+      // Ruta secundaria: nunca registrar un pago anticipado sin validación documental.
+      // La autorización nacional viene SOLO del entrenamiento de este workspace.
+      const trainingText = ctx.training.map(item=>String(item.content??"")).join("\n");
+      const advance = /anticip|transfer|deposit|giro/i.test(String(order.payment_method??""));
+      const nationwide = advance && st.cityVerified===true && Boolean(st.department) &&
+        /(?:todo\s+(?:el\s+)?paraguay|(?:cualquier|todas\s+las)\s+ciudad(?:es)?\s+(?:del\s+)?paraguay|env[ií]os?\s+nacionales?)/i.test(trainingText) &&
+        /encomienda/i.test(trainingText) && /(?:pago\s+anticipado|transferencia|pagar\s+antes)/i.test(trainingText);
+      const documented = !advance || Boolean(st.receiptPath && !st.receiptReview && (st.receiptDocuments??[]).length);
+      const canCreate=Boolean(documented && (verified.active || nationwide) &&
+        ((nationwide && !verified.active) || !verified.addressRequired || isValidDeliveryAddress(order.street) || isValidDeliveryAddress(st.locationUrl)) && productId && isOrderReady(order,productId) &&
         (Boolean(st.cartLines?.length)||isUnambiguousPriceSelection(order,productId,ctx.products,chatHistory)));
       if(!canCreate)return {skipped:true,reason:"Pedido requiere revisión de cobertura o variante"};
       createdOrder=await createOrderFromAi({workspaceId:convo.workspace_id,ownerId:convo.user_id,conversationId:convo.id,
