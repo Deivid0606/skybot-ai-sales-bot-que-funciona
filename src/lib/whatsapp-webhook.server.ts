@@ -1445,7 +1445,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         const age = Date.now() - new Date(row.created_at).getTime();
         const retry = ledger[row.media_url];
         return age >= 0 && age < 3*60*60*1000 && (!retry ||
-          (retry.count < 3 && Date.now()-retry.lastAt > 60_000));
+          (retry.count < 3 && Date.now()-retry.lastAt > (retry.count === 1 ? 4_000 : 30_000)));
       });
       if (pending?.media_url) {
         const path = pending.media_url;
@@ -1456,7 +1456,10 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
           const {describeImage,toBase64} = await import("@/lib/media-ai.server");
           const description = await describeImage(toBase64(await blob.arrayBuffer()),blob.type || "image/jpeg");
           const fields = parseReceiptFields(description);
-          if (!fields) throw new Error("La imagen no produjo campos de comprobante");
+          if (!fields) throw new Error("Gemini respondió, pero no identificó un comprobante estructurado: " + description.slice(0, 180));
+          console.info("[BOT_SKY_RECEIPT_PARSED]", JSON.stringify({conversationId:conversation.id,
+            path,hasAmount:fields.amountGs!==null,hasDestination:Boolean(fields.destinationAccount),
+            hasBeneficiary:Boolean(fields.beneficiary)}));
           const {error: transcriptError} = await supabaseAdmin.from("messages")
             .update({transcript:description}).eq("id",pending.id)
             .eq("conversation_id",conversation.id).eq("workspace_id",workspaceId);
@@ -1505,6 +1508,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       const bankText = ctx.training.filter(t => /transferencias|comprobantes|datos bancarios/i.test(t.title))
         .map(t => String(t.content ?? "")).join("\n");
       const configuredAccount = bankText.match(/(?:número de cuenta|n[úu]mero de cuenta|nº de cuenta|cuenta bancaria)\s*:\s*([0-9\s-]{6,24})/i)?.[1] ?? null;
+      if (!configuredAccount) console.warn("[BOT_SKY_RECEIPT_CONFIGURATION] Cuenta autorizada no extraíble del entrenamiento",{workspaceId,conversationId:conversation.id});
       for (const source of receiptSources) {
         const candidate = parseReceiptFields(source.transcript);
         if (!source.media_url || !candidate) continue;
@@ -1514,6 +1518,9 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         const wrongAccount = Boolean(configuredAccount && candidate.destinationAccount && !accountOk);
         const amountOk = candidate.amountGs !== null && Number.isSafeInteger(candidate.amountGs);
         if (!accountOk || !amountOk) {
+          console.warn("[BOT_SKY_RECEIPT_REJECTED]",JSON.stringify({conversationId:conversation.id,
+            path:source.media_url,hasConfiguredAccount:Boolean(configuredAccount),
+            hasDestinationAccount:Boolean(candidate.destinationAccount),amountOk,wrongAccount}));
           // El último comprobante incompleto bloquea el registro; jamás se inventa monto.
           // No se debe sobreescribir un comprobante válido anterior con otro ilegible.
           if (!previousSale.receiptDocuments?.length)
