@@ -352,9 +352,48 @@ export async function transcribeAudio(
  * Interpreta una imagen enviada por un cliente.
  * El resultado se guarda como transcript y entra al contexto de la IA.
  */
+
+/** Claves aisladas por workspace; nunca se reciben desde el navegador. */
+type VisionProvider = {kind:"gemini"|"openai"; key:string; model:string; label:string};
+async function visionProviders(workspaceId?: string): Promise<VisionProvider[]> {
+  const providers: VisionProvider[] = [];
+  if (workspaceId) {
+    const {supabaseAdmin} = await import("@/integrations/supabase/client.server");
+    const {data, error} = await supabaseAdmin.from("ai_settings")
+      .select("gemini_api_key,gemini_api_key_2,gemini_api_key_3,openai_api_key,model,provider_models,provider_order")
+      .eq("workspace_id",workspaceId).maybeSingle();
+    if (error) throw new Error("No se pudo consultar la configuración de IA del vendedor: " + error.message);
+    if (data) {
+      const model = String(data.model ?? "").trim().replace(/^models\//, "") || "gemini-3.5-flash-lite";
+      const keys = [data.gemini_api_key,data.gemini_api_key_2,data.gemini_api_key_3];
+      keys.forEach((k,i)=> {if (typeof k === "string" && k.trim()) providers.push({kind:"gemini",key:k.trim(),model,label:`gemini${i+1}`});});
+      const openKey = data.openai_api_key;
+      if (typeof openKey === "string" && openKey.trim()) providers.push({kind:"openai",key:openKey.trim(),model:"gpt-4o-mini",label:"openai"});
+    }
+  }
+  // Retrocompatibilidad para otras funciones sin workspace configurado.
+  // Nunca dar prioridad a una clave global inválida sobre las claves del vendedor.
+  if (!providers.length && process.env.GEMINI_API_KEY?.trim()) providers.push({kind:"gemini",key:process.env.GEMINI_API_KEY.trim(),model:GEMINI_MODEL,label:"gemini_global"});
+  return providers;
+}
+
+async function callOpenAiImage(apiKey:string, model:string, mime:string, base64:string, instruction:string):Promise<string> {
+  const response=await fetch("https://api.openai.com/v1/chat/completions",{
+    method:"POST",headers:{Authorization:`Bearer ${apiKey}`,"Content-Type":"application/json"},
+    body:JSON.stringify({model,temperature:0,max_tokens:800,messages:[{role:"user",content:[
+      {type:"text",text:instruction},
+      {type:"image_url",image_url:{url:`data:${mime};base64,${base64}`,detail:"high"}}
+    ]}]})
+  });
+  if(!response.ok) {console.warn("[Media AI] Respaldo OpenAI falló",{status:response.status});throw new Error(`OpenAI imagen HTTP ${response.status}`);}
+  const data=await response.json();
+  return clean(data?.choices?.[0]?.message?.content);
+}
+
 export async function describeImage(
   base64: string,
   mime: string,
+  workspaceId?: string,
 ): Promise<string> {
   if (!base64?.trim()) {
     throw new Error("La imagen no contiene datos");
@@ -366,15 +405,16 @@ export async function describeImage(
     throw new Error(`El archivo no es una imagen válida: ${normalizedMime}`);
   }
 
-  const apiKey = requireGeminiKey();
+  const providers = await visionProviders(workspaceId);
+  if (!providers.length) throw new Error("El vendedor no tiene claves de IA para analizar imágenes");
 
   console.log("[Media AI] Analizando imagen", {
-    model: GEMINI_MODEL,
+    model: providers[0].model,
     mime: normalizedMime,
     base64Length: base64.length,
   });
 
-  const requestImage = (model: string) => callGemini({
+  const requestImage = (model: string, apiKey: string) => callGemini({
     apiKey,
     model,
     system:
@@ -435,21 +475,35 @@ export async function describeImage(
     temperature: 0.1,
     maxTokens: 1024,
   });
-  // Modelo alternativo solo si se configura explícitamente en ESTE despliegue.
-  // Se reutilizan exactamente los bytes de la imagen; no se inventan datos.
-  const fallback = process.env.GEMINI_MEDIA_FALLBACK_MODEL?.trim();
+  const instructions = [
+    "Analizá esta imagen de WhatsApp. No inventes datos no visibles.",
+    "Si es comprobante, la primera línea EXACTA es COMPROBANTE y luego, una línea por clave:",
+    "MONTO_GS: [dígitos del importe transferido o NO_LEGIBLE]",
+    "BENEFICIARIO: [nombre bajo PARA o NO_LEGIBLE]",
+    "CUENTA_DESTINO: [cuenta bajo PARA o NO_LEGIBLE]",
+    "EMISOR: [nombre bajo DE o NO_LEGIBLE]",
+    "BANCO: [banco o NO_LEGIBLE]",
+    "OPERACION: [referencia u operación o NO_LEGIBLE]",
+    "FECHA: [fecha visible o NO_LEGIBLE]",
+    "Nunca uses precio del catálogo como MONTO_GS ni confundas remitente con destinatario.",
+    "Para otras imágenes, comenzá PRODUCTO, CONSULTA o IMAGEN y describí brevemente."
+  ].join("\n");
   let response = "";
-  let primaryError: unknown = null;
-  try { response = await requestImage(GEMINI_MODEL); }
-  catch (error) { primaryError = error; console.error("[BOT_SKY_IMAGE_PRIMARY_FAILED]",error); }
-  if ((!response || response === "__GEMINI_QUOTA_EXCEEDED__") && fallback && fallback !== GEMINI_MODEL) {
-    console.warn("[BOT_SKY_IMAGE_FALLBACK]",{from:GEMINI_MODEL,to:fallback});
-    try { response = await requestImage(fallback); }
-    catch (error) { console.error("[BOT_SKY_IMAGE_FALLBACK_FAILED]",error); }
+  const failures:string[]=[];
+  for(const provider of providers) {
+    try {
+      const next=provider.kind === "gemini"
+        ? await requestImage(provider.model,provider.key)
+        : await callOpenAiImage(provider.key,provider.model,normalizedMime,base64,instructions);
+      if(next && next !== "__GEMINI_QUOTA_EXCEEDED__") {response=next; console.info("[Media AI] Imagen interpretada",{provider:provider.label,model:provider.model});break;}
+      failures.push(`${provider.label}:sin_respuesta_o_cuota`);
+    } catch(error) {
+      // No registrar la API key, respuesta completa del proveedor ni contenido sensible.
+      failures.push(`${provider.label}:${error instanceof Error?error.message.slice(0,80):"error"}`);
+      console.warn("[Media AI] Proveedor de imagen no disponible",{provider:provider.label});
+    }
   }
-  if (!response || response === "__GEMINI_QUOTA_EXCEEDED__") {
-    throw new Error(`No se pudo interpretar la imagen con Gemini; principal=${GEMINI_MODEL}; alternativo=${fallback || 'no configurado'}; motivo=${String(primaryError ?? 'respuesta vacía o cuota')}`);
-  }
+  if(!response) throw new Error("No se pudo interpretar la imagen con las IA configuradas: "+failures.join("; "));
   const cleanDescription = clean(response);
 
   if (!cleanDescription) {
