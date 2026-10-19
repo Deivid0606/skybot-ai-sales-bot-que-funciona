@@ -455,7 +455,7 @@ export type ReceiptFields = {
 };
 export function parseReceiptFields(description: string | null | undefined): ReceiptFields | null {
   const raw = String(description ?? "").trim();
-  if (!/^(?:\[imagen\]\s*)?COMPROBANTE\b/i.test(raw)) return null;
+  if (!/^(?:\uFEFF)?\s*(?:\[imagen\]\s*)?COMPROBANTE\b/i.test(raw)) return null;
   const value = (key: string) => {
     const match = raw.match(new RegExp(`^${key}\\s*:\\s*(.+)$`, "im"));
     const v = match?.[1]?.trim() ?? "";
