@@ -84,16 +84,28 @@ export function parseCoverage(training: AiContext["training"]): Coverage[] {
   const unique = out.filter((c,i)=>out.findIndex(x=>norm(x.city)===norm(c.city) && norm(x.department)===norm(c.department))===i);
   const clean = unique.filter(c=>!out.some(x=>norm(x.city)===norm(c.city) && norm(x.department)===norm(c.department) &&
     (x.active!==c.active || norm(x.method)!==norm(c.method) || x.addressRequired!==c.addressRequired)));
-  // La política nacional NO transforma las ciudades fuera de cobertura en contraentrega.
-  // Solo se incluyen destinos cuya ciudad y departamento conocemos inequívocamente.
-  const policy = training.some(t => /(?:todas las ciudades de paraguay|cualquier ciudad de paraguay|sin contraentrega.{0,100}encomienda|encomienda.{0,100}pago anticipado obligatorio)/is.test(t.content));
-  if (policy) {
-    const destinations = [{city:"Filadelfia",department:"Boquerón"},{city:"Encarnación",department:"Itapúa"}];
-    for (const d of destinations) if (!clean.some(c=>norm(c.city)===norm(d.city))) clean.push({
-      ...d,aliases:[],active:false,method:"ENCOMIENDA PAGO ANTICIPADO",addressRequired:false
-    });
-  }
+  // No agregar ciudades nacionales al listado de contraentrega.
+  // Las localidades fuera de la lista se resuelven desde el pedido y la política del vendedor.
   return clean;
+}
+
+/** Solo el entrenamiento ACTIVO del vendedor puede autorizar encomienda nacional. */
+export function sellerAllowsNationwideAdvance(training: AiContext["training"]): boolean {
+  return training.some(entry => {
+    const body = String(entry.content ?? "");
+    return /(?:todo\s+(?:el\s+)?paraguay|(?:cualquier|todas\s+las)\s+ciudad(?:es)?\s+(?:del\s+)?paraguay|encomienda\s+nacional|encomienda\s+a\s+todo\s+paraguay|ciudad(?:es)?\s+(?:de\s+)?paraguay\s+(?:que|sin|fuera))/i.test(body) &&
+      /encomienda/i.test(body) && /(?:anticipado|transferencia|pagar\s+antes)/i.test(body);
+  });
+}
+
+/** No se consideran destinos confirmados los nombres incompletos o dudosos. */
+function declaredDestination(text:string): {city:string;department:string}|null {
+  const s=text.trim().replace(/^(?:soy\s+de|vivo\s+en|para|enviar\s+a|mandar\s+a|a\s+)\s*/i,"");
+  const m=s.match(/^([\p{L}][\p{L} .'-]{2,55}?)\s*(?:,|\s+del?\s+departamento\s+de|\s+depto\.?\s+|\s+-\s+)\s*([\p{L}][\p{L} .'-]{2,40})\s*[.!]?$/iu);
+  if(!m)return null;
+  const city=m[1].trim(),department=m[2].trim();
+  if(/\b(?:calle|barrio|casi|esquina|ruta|direccion|ubicacion)\b/i.test(city))return null;
+  return {city,department};
 }
 
 function cityIn(text:string, coverage:Coverage[]): Coverage | null {
@@ -342,11 +354,30 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   const match=cityIn(text,coverage);
   if(match && !gpsUrl && !/\b(?:calle|esquina|casi|barrio|referencia)\b/.test(n)){s.city=match.city;s.department=match.department;s.cityVerified=true;s.coverageStatus=match.active?"covered":"uncovered";}
   else if(s.awaiting==="city" && !gpsUrl && !s.cityVerified && n.length>=3 && n.length<=55 && /^[a-z ]+$/.test(n)) {
-    // Puede ser una ciudad no registrada o una frase ambigua. No inventar cobertura.
-    // No conservar como ciudad verificada ni convertirla en pago anticipado.
+    // La ciudad sola no determina el departamento. Solicitar aclaración, sin inventar.
+    s.city = text.trim();
+    s.department = null;
+    s.cityVerified = false;
     s.coverageStatus="unknown";
   }
 
+  if (!match && sellerAllowsNationwideAdvance(ctx.training) && !gpsUrl &&
+      (s.awaiting === "city" || (s.city && !s.cityVerified))) {
+    const destination=declaredDestination(text);
+    if(destination) {
+      const listed=verifiedCoverage(destination.city,destination.department,coverage);
+      s.city=listed?.city ?? destination.city;
+      s.department=listed?.department ?? destination.department;
+      s.cityVerified=true; // Ciudad/departamento declarados por el cliente; no equivale a verificación logística.
+      s.coverageStatus=listed?.active ? "covered" : "uncovered";
+    } else if(s.city && !s.cityVerified && /^[\p{L} .'-]{3,45}$/u.test(text.trim()) &&
+             !/\b(?:quiero|litros|gracias|costo|pedido|precio|envio)\b/i.test(text)) {
+      const candidate=verifiedCoverage(s.city,text.trim(),coverage);
+      s.department=candidate?.department ?? text.trim();
+      s.cityVerified=true; // Declarado expresamente, pendiente de confirmación logística real.
+      s.coverageStatus=candidate?.active ? "covered" : "uncovered";
+    }
+  }
   if(s.awaiting==="details" || s.awaiting==="address" || s.awaiting==="name") {
     const details=extractCheckoutDetails(text,true);
     if(details.name && !s.customerName)s.customerName=details.name;
@@ -382,7 +413,8 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   if (existing.awaiting === "city" && s.cityVerified && s.city &&
       variants.length > 1 && !selected && !s.cartLines?.length) {
     const cityCoverage = verifiedCoverage(s.city, s.department ?? "", coverage);
-    if (!cityCoverage || (!cityCoverage.active && !/ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(cityCoverage.method))) {
+    if ((!cityCoverage && !sellerAllowsNationwideAdvance(ctx.training)) ||
+        (cityCoverage && !cityCoverage.active && !/ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(cityCoverage.method) && !sellerAllowsNationwideAdvance(ctx.training))) {
       return answer("📍 Para esa ciudad no tengo una modalidad habilitada de entrega confirmada. Un asesor revisará las opciones.", null, false, true);
     }
     return answer(`📍 ¡Gracias! Ciudad registrada: *${s.city}*. 🚚\n\n📦 Para continuar, elegí la presentación de *${p.name}*:\n${variants.map(v=>`• ${v.label} — ${money(v.price)}`).join("\n")}\n\n¿Cuál preferís?`, "variant");
@@ -393,20 +425,25 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     if(s.awaiting==="city" && !isNudge && !gpsUrl && !/^\s*📍/.test(text)) {
       return answer("📍 Todavía no pude confirmar tu ciudad con nuestra lista de cobertura. 😊 Un asesor puede verificarla; no te pediré pago anticipado sin confirmación.",null,false,true);
     }
-    return answer(s.locationUrl ? "📍 ¡Ya tengo tu ubicación guardada! 😊 ¿En qué *ciudad* estás para confirmar la cobertura? 🚚" : "🚚 ¡Genial! 😊 ¿En qué ciudad estás para verificar la entrega?","city");
+    return answer(s.city && !s.department ? `📍 ¡Gracias! ¿De qué departamento es ${s.city}? 😊` :
+      (s.locationUrl ? "📍 ¡Ya tengo tu ubicación guardada! 😊 ¿En qué *ciudad* querés recibir el pedido? 🚚" : "🚚 ¡Genial! 😊 ¿En qué ciudad querés recibir tu pedido?"),"city");
   }
   const location=coverage.find(c=>norm(c.city)===norm(s.city)&&norm(c.department)===norm(s.department));
-  if(!location) return answer("📍 Necesito verificar tu ciudad y departamento antes de informar cobertura o formas de pago. ¿Podés confirmar tu ciudad? 😊", "city");
-  if(!location.active && !/ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(location.method)) return answer("📍 Tu ciudad está identificada, pero actualmente no figura en las zonas de contraentrega. Un asesor puede revisar opciones disponibles; no voy a pedirte pago anticipado sin tu elección. 😊",null,false,true);
+  const nationwide = sellerAllowsNationwideAdvance(ctx.training);
+  if(!location && !nationwide) return answer("📍 Necesito verificar tu ciudad y departamento antes de informar cobertura o formas de pago. ¿Podés confirmar tu ciudad? 😊", "city");
+  if(location && !location.active && !/ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(location.method) && !nationwide) return answer("📍 Tu ciudad está identificada, pero actualmente no figura en las zonas habilitadas. Un asesor puede revisar opciones disponibles. 😊",null,false,true);
   if(!location && !s.city)return answer("📍 ¿Me confirmás tu ciudad para verificar si llegamos hasta vos? 😊","city");
   const bank=ctx.training.find(t=>norm(t.title)==="datos bancarios")?.content?.trim()??"";
   if(!s.paymentMethod){
     if(location?.active && /CONTRA ENTREGA/i.test(location.method))s.paymentMethod="contraentrega";
     // Encomienda autorizada por la política nacional para un destino con departamento conocido.
-    else if(location && /ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(location.method))s.paymentMethod="anticipado";
+    else if((location && /ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(location.method)) || (!location?.active && nationwide))s.paymentMethod="anticipado";
     else return answer("📍 ¡Gracias por pasarme tu ciudad! 😊 Un asesor necesita revisar la modalidad de entrega para darte una información correcta. 🙌",null,false,true);
   }
-  if(s.paymentMethod==="contraentrega" && (!location || !location.active))return answer("🚚 Por ahora, esa ciudad no figura en nuestras zonas habilitadas para pagar al recibir. 😊 ¿Querés que consultemos si hay otra forma de envío?",null,false,true);
+  if(s.paymentMethod==="contraentrega" && (!location || !location.active)) {
+    if(nationwide) s.paymentMethod="anticipado";
+    else return answer("🚚 Esa ciudad no figura en las zonas autorizadas para pagar al recibir. Un asesor puede revisar otras opciones de envío. 😊",null,false,true);
+  }
   if(!s.quantity)return answer(`📦 ¡Buenísimo! 😍 ¿Cuántas unidades querés llevar${selected?` de *${selected.label}*`:""}?`,"quantity");
   const total=s.cartLines?.length ? s.cartLines.reduce((sum,line)=>{const v=variants.find(o=>o.id===line.optionId);return sum+(v?Number(v.price)*line.quantity:NaN);},0) : priceFor(p,selected,s.quantity);
   if(!total)return answer("💰 Para esa cantidad todavía no tengo un precio confirmado. 😊 Un asesor puede revisarlo para evitar cobrarte de más.",null,false,true);
@@ -424,7 +461,24 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   if (s.locationUrl && !s.street) s.street=s.locationUrl;
   else if(s.locationUrl && s.street && !s.street.includes(s.locationUrl)) s.street += ` | GPS: ${s.locationUrl}`;
   if(!s.customerName || (needsAddress && !s.street)) {
-    if(s.awaiting==="details" || s.awaiting==="address" || s.awaiting==="name") {
+    if (!match && sellerAllowsNationwideAdvance(ctx.training) && !gpsUrl &&
+      (s.awaiting === "city" || (s.city && !s.cityVerified))) {
+    const destination=declaredDestination(text);
+    if(destination) {
+      const listed=verifiedCoverage(destination.city,destination.department,coverage);
+      s.city=listed?.city ?? destination.city;
+      s.department=listed?.department ?? destination.department;
+      s.cityVerified=true; // Ciudad/departamento declarados por el cliente; no equivale a verificación logística.
+      s.coverageStatus=listed?.active ? "covered" : "uncovered";
+    } else if(s.city && !s.cityVerified && /^[\p{L} .'-]{3,45}$/u.test(text.trim()) &&
+             !/\b(?:quiero|litros|gracias|costo|pedido|precio|envio)\b/i.test(text)) {
+      const candidate=verifiedCoverage(s.city,text.trim(),coverage);
+      s.department=candidate?.department ?? text.trim();
+      s.cityVerified=true; // Declarado expresamente, pendiente de confirmación logística real.
+      s.coverageStatus=candidate?.active ? "covered" : "uncovered";
+    }
+  }
+  if(s.awaiting==="details" || s.awaiting==="address" || s.awaiting==="name") {
       if(!s.customerName && s.street)return answer("¡Recibí tu dirección! 🏠💚 Solo me falta tu *nombre y apellido* para registrar el pedido. 😊","details");
       if(s.customerName && needsAddress && !s.street)return answer(`¡Gracias, ${s.customerName}! 😍 Solo me falta tu *dirección completa* o ubicación de Google Maps. 📍 Si tenés, agregá una referencia cercana.`,"details");
     }
