@@ -394,7 +394,6 @@ export async function describeImage(
   base64: string,
   mime: string,
   workspaceId?: string,
-  mediaKind: "image" | "sticker" | "gif" = "image",
 ): Promise<string> {
   if (!base64?.trim()) {
     throw new Error("La imagen no contiene datos");
