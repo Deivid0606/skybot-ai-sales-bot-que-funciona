@@ -1798,7 +1798,11 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       Boolean(previousSale.cityVerified && previousSale.city && previousSale.department);
     let orderWasCreated = false;
     if (!conversation.sale_closed && result.order && orderReady && (verifiedOrderCoverage?.active || (isAdvance && /ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(verifiedOrderCoverage?.method ?? "")) || nationwideAdvanceApproved) &&
-      (!verifiedOrderCoverage?.addressRequired || Boolean(isValidDeliveryAddress(result.order.street) || isValidDeliveryAddress(saveStep?.state.locationUrl) || isValidDeliveryAddress(previousSale.locationUrl)))) {
+      // La dirección de domicilio se exige solo a entregas domiciliarias con esa obligación.
+      // Encomienda anticipada nacional autorizada: ciudad y departamento bastan como destino.
+      (isAdvance && nationwideAdvanceApproved && !verifiedOrderCoverage?.active ||
+       !verifiedOrderCoverage?.addressRequired ||
+       Boolean(isValidDeliveryAddress(result.order.street) || isValidDeliveryAddress(saveStep?.state.locationUrl) || isValidDeliveryAddress(previousSale.locationUrl)))) {
       const completedOrder = {
         ...result.order,
         phone,
@@ -1919,7 +1923,17 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
           `La IA marcó la venta como cerrada, pero faltan datos obligatorios. ` +
           `Conversación: ${conversation.id}. ` +
           `Producto: ${detectedProduct ?? "sin producto"}. ` +
-          `Pedido recibido: ${JSON.stringify(result.order)}`,
+          `Causas: ${JSON.stringify({
+            structurallyReady:isOrderReady(result.order,detectedProduct),
+            financiallyReady,
+            hasReceiptForOrder,
+            receiptPaths:(paymentSaleState.receiptDocuments??[]).map(r=>r.path),
+            receiptReview:paymentSaleState.receiptReview??null,
+            expectedTotal,receivedTotal,
+            priceSelected:isUnambiguousPriceSelection(result.order,detectedProduct,ctx.products,chatHistory),
+            coverageApproved:Boolean(verifiedOrderCoverage?.active || (isAdvance && /ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(verifiedOrderCoverage?.method??"")) || nationwideAdvanceApproved),
+            nationwideAdvanceApproved,
+          })}. Pedido recibido: ${JSON.stringify(result.order)}`,
       });
     }
     // Respuesta normal SOLO si no se registró pedido. Nunca anunciar un cierre ficticio.
