@@ -858,7 +858,7 @@ export const transcribeMessage = createServerFn({ method: "POST" })
 
     const { data: message, error } = await supabase
       .from("messages")
-      .select("id, media_url, media_type, transcript")
+      .select("id, workspace_id, media_url, media_type, transcript")
       .eq("id", data.messageId)
       .single();
     if (error || !message?.media_url) throw new Error("El mensaje no tiene archivo");
@@ -880,7 +880,7 @@ export const transcribeMessage = createServerFn({ method: "POST" })
 
     const transcript =
       message.media_type === "image"
-        ? await describeImage(base64, mime)
+        ? await describeImage(base64, mime, message.workspace_id)
         : await transcribeAudio(base64, mime);
 
     await supabase.from("messages").update({ transcript }).eq("id", message.id);
