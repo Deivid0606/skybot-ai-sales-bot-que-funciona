@@ -72,7 +72,6 @@ function textOf(message: IncomingMessage) {
 }
 
 function mediaOf(message: IncomingMessage) {
-  const isSticker = message.type === "sticker";
   const map: [string, MediaPart | undefined][] = [
     ["image", message.image ?? message.sticker],
     ["audio", message.audio ?? message.voice],
@@ -80,7 +79,7 @@ function mediaOf(message: IncomingMessage) {
     ["document", message.document],
   ];
   for (const [type, part] of map) {
-    if (part?.id) return { type: type as "image" | "audio" | "video" | "document", part, isSticker };
+    if (part?.id) return { type: type as "image" | "audio" | "video" | "document", part };
   }
   return null;
 }
@@ -224,7 +223,6 @@ async function ingestMedia(args: {
   mediaId: string;
   type: "image" | "audio" | "video" | "document";
   allowAiInterpretation?: boolean;
-  mediaKind?: "image" | "sticker";
 }) {
   const { downloadWhatsAppMediaUrl } = await import("@/lib/whatsapp.server");
   const { transcribeAudio, describeImage, toBase64 } = await import(
@@ -371,8 +369,7 @@ async function ingestMedia(args: {
           });
         }
       } else if (base64 && args.type === "image") {
-        const result = await describeImage(base64, mime, args.workspaceId,
-          args.mediaKind === "sticker" ? "sticker" : mime === "image/gif" ? "gif" : "image");
+        const result = await describeImage(base64, mime, args.workspaceId);
         transcript = result?.trim() || null;
 
         if (!transcript) {
@@ -1159,7 +1156,6 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         accessToken: conn.access_token,
         mediaId: media.part.id!,
         type: media.type,
-        mediaKind: media.isSticker ? "sticker" : "image",
         allowAiInterpretation: media.type === "image" || media.type === "document" ? true : mediaMode?.hybrid_mode !== "rules_only",
       });
 
@@ -1170,7 +1166,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         body =
           media.type === "audio"
             ? transcript
-            : `${body && body !== `[${message.type}]` ? body + "\n" : ""}${media.isSticker ? "[sticker]" : "[imagen]"} ${transcript}`;
+            : `${body && body !== `[${message.type}]` ? body + "\n" : ""}[imagen] ${transcript}`;
       }
     }
   }
@@ -1187,7 +1183,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       body,
       transcript,
       media_url: mediaPath,
-      media_type: media?.isSticker ? "sticker" : media?.type ?? null,
+      media_type: media?.type ?? null,
       latitude,
       longitude,
       location_name: locationName,
@@ -1202,9 +1198,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
    * Si ya existe un pedido anticipado para esta conversación, el archivo
    * recibido se convierte inmediatamente en su comprobante.
    */
-  if (mediaPath && media && !media.isSticker &&
-      (media.type === "image" || media.type === "document") &&
-      Boolean(parseReceiptFields(transcript))) {
+  if (mediaPath && media) {
     await attachPaymentReceiptToLatestOrder({
       workspaceId,
       ownerId,
@@ -1505,7 +1499,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       .eq("direction","inbound").in("media_type",["image","document"])
       .order("created_at",{ascending:false}).limit(10);
     const receiptSources = [
-      ...(mediaPath && media && !media.isSticker && (media.type === "image" || media.type === "document")
+      ...(mediaPath && media && (media.type === "image" || media.type === "document")
         ? [{media_url:mediaPath,transcript}] : []),
       ...(receiptHistory ?? []),
     ];
@@ -1592,7 +1586,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     // como comprobantes cuando no hay una compra anticipada en curso.
     const pendingAdvanceReceipt = Boolean(previousSale.productId &&
       /anticip|transfer|deposit|giro/i.test(String(previousSale.paymentMethod ?? "")) &&
-      mediaPath && media && !media.isSticker && (media.type === "image" || media.type === "document"));
+      mediaPath && media && (media.type === "image" || media.type === "document"));
     const bypassSale = !pendingAdvanceReceipt && intent !== "checkout" && !savedSaleReadyForFinalization && !awaitingCheckoutDetail &&
       !(previousSale.productId && !conversation.sale_closed && /(?:calle|barrio|casi|esquina|avenida|ruta|direccion|ubicacion|^[\p{L}]+(?:\s+[\p{L}]+){1,3}$)/iu.test(body));
     const answerContextBase = intent === "order_status" && hybridMode !== "rules_only"
@@ -1607,7 +1601,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
           `La IA no puede registrar un pedido ni modificar precios a partir de la ubicación.`}
       : bypassSale && hybridMode !== "rules_only" ? addPendingSaleContext(answerContextBase, previousSale) : answerContextBase;
     const ruleStep = hybridMode !== "ai_first" && !bypassSale
-      ? advanceRuleSale(ctx, saleInput, previousSale, media && !media.isSticker && (media.type === "image" || media.type === "document") ? mediaPath : null, gpsUrl)
+      ? advanceRuleSale(ctx, saleInput, previousSale, media && (media.type === "image" || media.type === "document") ? mediaPath : null, gpsUrl)
       : null;
     // Inyectar a la IA solo datos de venta efectivamente reconocidos por código.
     const verifiedSaleState = ruleStep?.state ?? previousSale;
