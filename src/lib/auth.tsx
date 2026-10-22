@@ -125,6 +125,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [loadProfile]);
 
   const signOut = useCallback(async () => {
+    // Quitar el vínculo del usuario al salir para evitar recibir avisos privados
+    // después del cierre de sesión. Conservar la suscripción del navegador para
+    // restaurarla automáticamente al volver a iniciar sesión.
+    try {
+      if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+        const registration = await navigator.serviceWorker.getRegistration('/botsky-sw.js');
+        const subscription = await registration?.pushManager.getSubscription();
+        const { data: { session: activeSession } } = await supabase.auth.getSession();
+        if (subscription && activeSession) {
+          await fetch('/api/push/unsubscribe', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${activeSession.access_token}`,
+            },
+            body: JSON.stringify({ endpoint: subscription.endpoint }),
+          });
+        }
+      }
+    } catch (error) {
+      console.warn('[BOT SKY] No se pudo desvincular push durante cierre de sesión', error);
+    }
     await supabase.auth.signOut();
     setSession(null);
     setProfile(null);
