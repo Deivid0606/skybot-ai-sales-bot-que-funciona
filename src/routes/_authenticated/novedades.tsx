@@ -221,14 +221,15 @@ function NovedadesPage() {
       for (const file of files) {
         const ext = file.name.split(".").pop()?.toLowerCase();
         const valid = (ext === "pdf" && file.type === "application/pdf") ||
-          (ext === "csv" && ["text/csv", "application/csv", "application/vnd.ms-excel", "text/plain", ""].includes(file.type));
+          (ext === "csv" && ["text/csv", "application/csv", "application/vnd.ms-excel", "text/plain", ""].includes(file.type)) ||
+          (ext === "txt" && ["text/plain", "application/octet-stream", ""].includes(file.type));
         if (!valid || file.size > MAX_FILE_BYTES || file.size === 0) {
-          throw new Error("Solo se admiten archivos PDF o CSV de hasta 15 MB cada uno.");
+          throw new Error("Solo se admiten archivos PDF, CSV o TXT de hasta 15 MB cada uno.");
         }
         const path = `${user.id}/${crypto.randomUUID()}.${ext}`;
         const { error: uploadError } = await supabase.storage.from(FILE_BUCKET).upload(path, file, {
           upsert: false,
-          contentType: ext === "pdf" ? "application/pdf" : "text/csv",
+          contentType: ext === "pdf" ? "application/pdf" : ext === "csv" ? "text/csv" : "text/plain",
           cacheControl: "3600",
         });
         if (uploadError) throw uploadError;
@@ -296,7 +297,7 @@ function NovedadesPage() {
               </label>
             </div>
             <div className="space-y-2">
-              <span className="text-sm font-medium">Archivos adjuntos PDF / CSV ({form.links.filter(link => link.kind === "file").length}/{MAX_ATTACHMENTS})</span>
+              <span className="text-sm font-medium">Archivos adjuntos PDF / CSV / TXT ({form.links.filter(link => link.kind === "file").length}/{MAX_ATTACHMENTS})</span>
               {form.links.map((link, index) => link.kind === "file" && (
                 <div key={`${link.url}-${index}`} className="flex items-center justify-between gap-3 rounded-lg border p-3 text-sm">
                   <span className="flex min-w-0 items-center gap-2"><FileText className="h-4 w-4 shrink-0" /><span className="truncate">{link.label}</span></span>
@@ -304,8 +305,8 @@ function NovedadesPage() {
                 </div>
               ))}
               <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-accent">
-                <Paperclip className="h-4 w-4" />{uploading ? "Subiendo..." : "Adjuntar PDF o CSV"}
-                <input type="file" multiple accept=".pdf,.csv,application/pdf,text/csv" disabled={uploading} onChange={uploadFiles} className="sr-only" />
+                <Paperclip className="h-4 w-4" />{uploading ? "Subiendo..." : "Adjuntar PDF, CSV o TXT"}
+                <input type="file" multiple accept=".pdf,.csv,.txt,application/pdf,text/csv,text/plain" disabled={uploading} onChange={uploadFiles} className="sr-only" />
               </label>
               <p className="text-xs text-muted-foreground">Hasta 10 archivos de 15 MB. Los usuarios podrán descargarlos.</p>
             </div>
