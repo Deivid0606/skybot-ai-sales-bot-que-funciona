@@ -19,6 +19,7 @@ import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/lib/auth";
+import { SellerNotificationPreferences } from "@/components/seller-notification-preferences";
 
 export const Route = createFileRoute("/_authenticated/configuraciones")({
   head: () => ({
@@ -290,12 +291,17 @@ function SettingsPage() {
     <PageShell>
       <PageHeader title="Configuraciones" description="Conexión, inteligencia artificial y negocio." />
 
-      <Tabs defaultValue="whatsapp">
+      <Tabs defaultValue="avisos">
         <TabsList>
+          <TabsTrigger value="avisos">Mis avisos WhatsApp</TabsTrigger>
           <TabsTrigger value="whatsapp">WhatsApp</TabsTrigger>
           <TabsTrigger value="ia">Inteligencia artificial</TabsTrigger>
           <TabsTrigger value="negocio">Negocio</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="avisos" className="mt-4">
+          <SellerNotificationPreferences />
+        </TabsContent>
 
         <TabsContent value="whatsapp" className="mt-4">
           <Card>
