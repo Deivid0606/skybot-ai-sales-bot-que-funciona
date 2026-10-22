@@ -76,6 +76,18 @@ function linkifyBody(body: string) {
   nodes.push(body.slice(previous));
   return nodes;
 }
+// Reconoce adjuntos aun cuando publicaciones anteriores no guardaron kind: "file".
+function isFileLink(link: NewsLink): boolean {
+  if (link.kind === "file") return true;
+  const url = httpUrl(link.url);
+  if (!url) return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.pathname.includes("/storage/v1/object/public/news-files/") ||
+      /\.(pdf|csv|txt)$/i.test(decodeURIComponent(parsed.pathname));
+  } catch { return false; }
+}
+
 function whatsappUrl(number: string | null, message: string | null): string | null {
   const digits = (number ?? "").replace(/\D/g, "");
   if (digits.length < 8 || digits.length > 15) return null;
@@ -142,10 +154,10 @@ function NovedadesPage() {
       const links = payload.value.links.filter(link => link.label.trim() || link.url.trim()).map(link => {
         const url = httpUrl(link.url);
         if (!link.label.trim() || !url) throw new Error("Cada enlace necesita título y URL http(s) válida.");
-        return { label: link.label.trim().slice(0, 100), url, ...(link.kind === "file" ? { kind: "file" as const } : {}) };
+        return { label: link.label.trim().slice(0, 100), url, ...(isFileLink(link) ? { kind: "file" as const } : {}) };
       });
-      if (links.filter(link => link.kind !== "file").length > 10) throw new Error("Podés agregar hasta 10 enlaces web.");
-      if (links.filter(link => link.kind === "file").length > MAX_ATTACHMENTS) throw new Error("Demasiados archivos adjuntos.");
+      if (links.filter(link => !isFileLink(link)).length > 10) throw new Error("Podés agregar hasta 10 enlaces web.");
+      if (links.filter(link => isFileLink(link)).length > MAX_ATTACHMENTS) throw new Error("Demasiados archivos adjuntos.");
       const row = {
         title, body, links, images: payload.value.images,
         whatsapp_number: number || null,
@@ -211,7 +223,7 @@ function NovedadesPage() {
     const files = Array.from(event.target.files ?? []);
     event.target.value = "";
     if (!isAdmin || !user || !files.length) return;
-    const existing = form.links.filter(link => link.kind === "file").length;
+    const existing = form.links.filter(link => isFileLink(link)).length;
     if (existing + files.length > MAX_ATTACHMENTS) {
       setErrorText(`Máximo ${MAX_ATTACHMENTS} archivos adjuntos.`); return;
     }
@@ -297,8 +309,8 @@ function NovedadesPage() {
               </label>
             </div>
             <div className="space-y-2">
-              <span className="text-sm font-medium">Archivos adjuntos PDF / CSV / TXT ({form.links.filter(link => link.kind === "file").length}/{MAX_ATTACHMENTS})</span>
-              {form.links.map((link, index) => link.kind === "file" && (
+              <span className="text-sm font-medium">Archivos adjuntos PDF / CSV / TXT ({form.links.filter(link => isFileLink(link)).length}/{MAX_ATTACHMENTS})</span>
+              {form.links.map((link, index) => isFileLink(link) && (
                 <div key={`${link.url}-${index}`} className="flex items-center justify-between gap-3 rounded-lg border p-3 text-sm">
                   <span className="flex min-w-0 items-center gap-2"><FileText className="h-4 w-4 shrink-0" /><span className="truncate">{link.label}</span></span>
                   <Button type="button" size="icon" variant="outline" aria-label="Quitar archivo adjunto" onClick={() => setForm(prev => ({ ...prev, links: prev.links.filter((_, i) => i !== index) }))}><X className="h-4 w-4" /></Button>
@@ -312,9 +324,9 @@ function NovedadesPage() {
             </div>
             <div className="space-y-2">
               <div className="flex items-center justify-between"><span className="text-sm font-medium">Enlaces web</span>
-                <Button type="button" variant="outline" size="sm" disabled={form.links.filter(link => link.kind !== "file").length >= 10} onClick={() => setForm(prev => ({ ...prev, links: [...prev.links, { label: "", url: "" }] }))}><Plus className="mr-1 h-4 w-4" />Enlace</Button>
+                <Button type="button" variant="outline" size="sm" disabled={form.links.filter(link => !isFileLink(link)).length >= 10} onClick={() => setForm(prev => ({ ...prev, links: [...prev.links, { label: "", url: "" }] }))}><Plus className="mr-1 h-4 w-4" />Enlace</Button>
               </div>
-              {form.links.map((link, index) => link.kind !== "file" && <div className="flex flex-wrap gap-2" key={index}>
+              {form.links.map((link, index) => !isFileLink(link) && <div className="flex flex-wrap gap-2" key={index}>
                 <input aria-label="Nombre del enlace" className="min-w-40 flex-1 rounded-md border bg-background p-2 text-sm" placeholder="Texto del botón" value={link.label} onChange={e => setForm(prev => ({ ...prev, links: prev.links.map((l, i) => i === index ? { ...l, label: e.target.value } : l) }))} />
                 <input aria-label="URL del enlace" className="min-w-52 flex-[2] rounded-md border bg-background p-2 text-sm" placeholder="https://pagina.com" value={link.url} onChange={e => setForm(prev => ({ ...prev, links: prev.links.map((l, i) => i === index ? { ...l, url: e.target.value } : l) }))} />
                 <Button type="button" variant="outline" size="icon" aria-label="Eliminar enlace" onClick={() => setForm(prev => ({ ...prev, links: prev.links.filter((_, i) => i !== index) }))}><X className="h-4 w-4" /></Button>
@@ -399,21 +411,24 @@ function NovedadesPage() {
                     {wa && <a href={wa} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[#19b85a] px-5 py-2.5 text-sm font-bold text-white shadow-sm transition hover:bg-[#139c4a]">
                       <MessageCircle className="h-5 w-5" /> Consultar por WhatsApp
                     </a>}
-                    {item.links.filter(link => link.kind !== "file").map((link, index) => { const url = httpUrl(link.url); return url ? <a key={index} href={url} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-violet-500/30 bg-violet-500/10 px-5 py-2.5 text-sm font-semibold text-violet-700 transition hover:bg-violet-500/20 dark:text-violet-200">
+                    {item.links.filter(link => !isFileLink(link)).map((link, index) => { const url = httpUrl(link.url); return url ? <a key={index} href={url} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-violet-500/30 bg-violet-500/10 px-5 py-2.5 text-sm font-semibold text-violet-700 transition hover:bg-violet-500/20 dark:text-violet-200">
                       <ExternalLink className="h-4 w-4" /> {link.label}
                     </a> : null; })}
                   </div>}
-                  {item.links.some(link => link.kind === "file") && (
+                  {item.links.some(link => isFileLink(link)) && (
                     <div className="space-y-3 border-t px-5 py-5 sm:px-7">
                       <h3 className="flex items-center gap-2 text-sm font-bold"><Paperclip className="h-4 w-4" />Archivos para descargar</h3>
                       <div className="flex flex-wrap gap-2">
-                        {item.links.filter(link => link.kind === "file").map((file, index) => {
+                        {item.links.filter(link => isFileLink(link)).map((file, index) => {
                           const url = httpUrl(file.url);
                           // Supabase Storage permite forzar la descarga con ?download=nombre.ext.
                           if (!url) return null;
                           const downloadUrl = new URL(url);
-                          downloadUrl.searchParams.set("download", file.label);
-                          return <a key={`${url}-${index}`} href={downloadUrl.toString()} download={file.label} className="inline-flex min-h-11 items-center gap-2 rounded-xl border px-4 py-2 text-sm font-semibold hover:bg-accent">
+                          // Solo Supabase Storage admite el parámetro download.
+                          if (downloadUrl.pathname.includes("/storage/v1/object/public/")) {
+                            downloadUrl.searchParams.set("download", file.label);
+                          }
+                          return <a key={`${url}-${index}`} href={downloadUrl.toString()} download={file.label} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center gap-2 rounded-xl border px-4 py-2 text-sm font-semibold hover:bg-accent">
                             <Download className="h-4 w-4" />Descargar {file.label}
                           </a>;
                         })}
