@@ -1,11 +1,13 @@
+// BOT SKY: logo solo para notificaciones push.
+// No cambia el icono de la aplicacion, el manifest ni la logica de pedidos.
 self.addEventListener('push', (event) => {
   let payload = {};
   try { payload = event.data ? event.data.json() : {}; } catch (_) {}
   const title = String(payload.title || 'BOT SKY');
   const opts = {
     body: String(payload.body || 'Tenés una notificación nueva.'),
-    icon: '/botsky-icon.svg',
-    badge: '/botsky-icon.svg',
+    icon: '/botsky-ia-notification-192.png',
+    badge: '/botsky-notification-badge.png',
     tag: String(payload.tag || 'botsky'),
     renotify: true,
     data: { url: String(payload.url || '/') },
