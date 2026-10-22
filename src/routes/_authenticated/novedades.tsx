@@ -1,7 +1,7 @@
-import { useState, type ChangeEvent, type FormEvent } from "react";
+import { useState, type ChangeEvent, type FormEvent, type ReactNode } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CalendarDays, ChevronLeft, ChevronRight, ExternalLink, ImagePlus, Megaphone, MessageCircle, Pencil, Plus, Trash2, X } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight, Download, ExternalLink, FileText, ImagePlus, Paperclip, Megaphone, MessageCircle, Pencil, Plus, Trash2, X } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/lib/auth";
 import { PageShell, EmptyState } from "@/components/page-shell";
@@ -17,7 +17,7 @@ export const Route = createFileRoute("/_authenticated/novedades")({
   component: NovedadesPage,
 });
 
-type NewsLink = { label: string; url: string };
+type NewsLink = { label: string; url: string; kind?: "file" };
 type NewsItem = {
   id: string;
   title: string;
@@ -45,6 +45,9 @@ const emptyForm = (): NewsForm => ({
   whatsapp_message: "", is_published: false, is_pinned: false,
 });
 const BUCKET = "news-images";
+const FILE_BUCKET = "news-files";
+const MAX_ATTACHMENTS = 10;
+const MAX_FILE_BYTES = 15 * 1024 * 1024;
 const MAX_IMAGES = 10;
 const MAX_BYTES = 5 * 1024 * 1024;
 
@@ -53,6 +56,25 @@ function httpUrl(value: string): string | null {
     const parsed = new URL(value.trim());
     return parsed.protocol === "https:" || parsed.protocol === "http:" ? parsed.toString() : null;
   } catch { return null; }
+}
+// Convierte direcciones web escritas en el texto en enlaces clicables sin insertar HTML.
+function linkifyBody(body: string) {
+  const matcher = /https?:\/\/[^\s<>"']+/gi;
+  const nodes: ReactNode[] = [];
+  let previous = 0;
+  for (const match of body.matchAll(matcher)) {
+    const start = match.index ?? 0;
+    if (start > previous) nodes.push(body.slice(previous, start));
+    const raw = match[0];
+    const clean = raw.replace(/[.,;:!?)}\]]+$/, "");
+    const url = httpUrl(clean);
+    if (url) nodes.push(<a key={start} href={url} target="_blank" rel="noopener noreferrer" className="font-semibold text-violet-600 underline underline-offset-2 break-all hover:text-violet-500 dark:text-violet-300">{clean}</a>);
+    else nodes.push(clean);
+    if (raw.length > clean.length) nodes.push(raw.slice(clean.length));
+    previous = start + raw.length;
+  }
+  nodes.push(body.slice(previous));
+  return nodes;
 }
 function whatsappUrl(number: string | null, message: string | null): string | null {
   const digits = (number ?? "").replace(/\D/g, "");
@@ -73,7 +95,7 @@ function normalizeItem(value: Record<string, unknown>): NewsItem {
     id: String(value.id), title: String(value.title ?? ""), body: String(value.body ?? ""),
     images: Array.isArray(value.images) ? value.images.filter((x): x is string => typeof x === "string") : [],
     links: Array.isArray(value.links) ? value.links.filter((x): x is NewsLink =>
-      !!x && typeof x === "object" && typeof x.label === "string" && typeof x.url === "string") : [],
+      !!x && typeof x === "object" && typeof x.label === "string" && typeof x.url === "string" && (x.kind === undefined || x.kind === "file")) : [],
     whatsapp_number: typeof value.whatsapp_number === "string" ? value.whatsapp_number : null,
     whatsapp_message: typeof value.whatsapp_message === "string" ? value.whatsapp_message : null,
     is_published: value.is_published === true, is_pinned: value.is_pinned === true,
@@ -120,9 +142,10 @@ function NovedadesPage() {
       const links = payload.value.links.filter(link => link.label.trim() || link.url.trim()).map(link => {
         const url = httpUrl(link.url);
         if (!link.label.trim() || !url) throw new Error("Cada enlace necesita título y URL http(s) válida.");
-        return { label: link.label.trim().slice(0, 100), url };
+        return { label: link.label.trim().slice(0, 100), url, ...(link.kind === "file" ? { kind: "file" as const } : {}) };
       });
-      if (links.length > 10) throw new Error("Podés agregar hasta 10 enlaces.");
+      if (links.filter(link => link.kind !== "file").length > 10) throw new Error("Podés agregar hasta 10 enlaces web.");
+      if (links.filter(link => link.kind === "file").length > MAX_ATTACHMENTS) throw new Error("Demasiados archivos adjuntos.");
       const row = {
         title, body, links, images: payload.value.images,
         whatsapp_number: number || null,
@@ -184,6 +207,39 @@ function NovedadesPage() {
     finally { setUploading(false); }
   };
 
+  const uploadFiles = async (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    if (!isAdmin || !user || !files.length) return;
+    const existing = form.links.filter(link => link.kind === "file").length;
+    if (existing + files.length > MAX_ATTACHMENTS) {
+      setErrorText(`Máximo ${MAX_ATTACHMENTS} archivos adjuntos.`); return;
+    }
+    setUploading(true); setErrorText("");
+    try {
+      const attachments: NewsLink[] = [];
+      for (const file of files) {
+        const ext = file.name.split(".").pop()?.toLowerCase();
+        const valid = (ext === "pdf" && file.type === "application/pdf") ||
+          (ext === "csv" && ["text/csv", "application/csv", "application/vnd.ms-excel", "text/plain", ""].includes(file.type));
+        if (!valid || file.size > MAX_FILE_BYTES || file.size === 0) {
+          throw new Error("Solo se admiten archivos PDF o CSV de hasta 15 MB cada uno.");
+        }
+        const path = `${user.id}/${crypto.randomUUID()}.${ext}`;
+        const { error: uploadError } = await supabase.storage.from(FILE_BUCKET).upload(path, file, {
+          upsert: false,
+          contentType: ext === "pdf" ? "application/pdf" : "text/csv",
+          cacheControl: "3600",
+        });
+        if (uploadError) throw uploadError;
+        const url = supabase.storage.from(FILE_BUCKET).getPublicUrl(path).data.publicUrl;
+        attachments.push({ label: file.name.slice(0, 100), url, kind: "file" });
+      }
+      setForm(previous => ({ ...previous, links: [...previous.links, ...attachments] }));
+    } catch (e) { setErrorText(e instanceof Error ? e.message : "No se pudieron subir los archivos."); }
+    finally { setUploading(false); }
+  };
+
   const startCreate = () => { setEditingId(null); setForm(emptyForm()); setErrorText(""); setNotice(""); setOpenEditor(true); };
   const startEdit = (item: NewsItem) => { setEditingId(item.id); setForm(toForm(item)); setErrorText(""); setNotice(""); setOpenEditor(true); };
   const submit = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); if (!uploading) save.mutate({ id: editingId, value: form }); };
@@ -240,10 +296,24 @@ function NovedadesPage() {
               </label>
             </div>
             <div className="space-y-2">
+              <span className="text-sm font-medium">Archivos adjuntos PDF / CSV ({form.links.filter(link => link.kind === "file").length}/{MAX_ATTACHMENTS})</span>
+              {form.links.map((link, index) => link.kind === "file" && (
+                <div key={`${link.url}-${index}`} className="flex items-center justify-between gap-3 rounded-lg border p-3 text-sm">
+                  <span className="flex min-w-0 items-center gap-2"><FileText className="h-4 w-4 shrink-0" /><span className="truncate">{link.label}</span></span>
+                  <Button type="button" size="icon" variant="outline" aria-label="Quitar archivo adjunto" onClick={() => setForm(prev => ({ ...prev, links: prev.links.filter((_, i) => i !== index) }))}><X className="h-4 w-4" /></Button>
+                </div>
+              ))}
+              <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-accent">
+                <Paperclip className="h-4 w-4" />{uploading ? "Subiendo..." : "Adjuntar PDF o CSV"}
+                <input type="file" multiple accept=".pdf,.csv,application/pdf,text/csv" disabled={uploading} onChange={uploadFiles} className="sr-only" />
+              </label>
+              <p className="text-xs text-muted-foreground">Hasta 10 archivos de 15 MB. Los usuarios podrán descargarlos.</p>
+            </div>
+            <div className="space-y-2">
               <div className="flex items-center justify-between"><span className="text-sm font-medium">Enlaces web</span>
-                <Button type="button" variant="outline" size="sm" disabled={form.links.length >= 10} onClick={() => setForm(prev => ({ ...prev, links: [...prev.links, { label: "", url: "" }] }))}><Plus className="mr-1 h-4 w-4" />Enlace</Button>
+                <Button type="button" variant="outline" size="sm" disabled={form.links.filter(link => link.kind !== "file").length >= 10} onClick={() => setForm(prev => ({ ...prev, links: [...prev.links, { label: "", url: "" }] }))}><Plus className="mr-1 h-4 w-4" />Enlace</Button>
               </div>
-              {form.links.map((link, index) => <div className="flex flex-wrap gap-2" key={index}>
+              {form.links.map((link, index) => link.kind !== "file" && <div className="flex flex-wrap gap-2" key={index}>
                 <input aria-label="Nombre del enlace" className="min-w-40 flex-1 rounded-md border bg-background p-2 text-sm" placeholder="Texto del botón" value={link.label} onChange={e => setForm(prev => ({ ...prev, links: prev.links.map((l, i) => i === index ? { ...l, label: e.target.value } : l) }))} />
                 <input aria-label="URL del enlace" className="min-w-52 flex-[2] rounded-md border bg-background p-2 text-sm" placeholder="https://pagina.com" value={link.url} onChange={e => setForm(prev => ({ ...prev, links: prev.links.map((l, i) => i === index ? { ...l, url: e.target.value } : l) }))} />
                 <Button type="button" variant="outline" size="icon" aria-label="Eliminar enlace" onClick={() => setForm(prev => ({ ...prev, links: prev.links.filter((_, i) => i !== index) }))}><X className="h-4 w-4" /></Button>
@@ -305,7 +375,7 @@ function NovedadesPage() {
 
                   <div className="space-y-3 px-5 pb-5 sm:px-7">
                     <h2 className="break-words text-xl font-extrabold leading-tight tracking-tight sm:text-2xl">{item.title}</h2>
-                    <p className="whitespace-pre-wrap break-words text-[15px] leading-7 text-foreground/85 sm:text-base">{item.body}</p>
+                    <p className="whitespace-pre-wrap break-words text-[15px] leading-7 text-foreground/85 sm:text-base">{linkifyBody(item.body)}</p>
                   </div>
 
                   {item.images.length > 0 && (
@@ -328,10 +398,27 @@ function NovedadesPage() {
                     {wa && <a href={wa} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[#19b85a] px-5 py-2.5 text-sm font-bold text-white shadow-sm transition hover:bg-[#139c4a]">
                       <MessageCircle className="h-5 w-5" /> Consultar por WhatsApp
                     </a>}
-                    {item.links.map((link, index) => { const url = httpUrl(link.url); return url ? <a key={index} href={url} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-violet-500/30 bg-violet-500/10 px-5 py-2.5 text-sm font-semibold text-violet-700 transition hover:bg-violet-500/20 dark:text-violet-200">
+                    {item.links.filter(link => link.kind !== "file").map((link, index) => { const url = httpUrl(link.url); return url ? <a key={index} href={url} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-violet-500/30 bg-violet-500/10 px-5 py-2.5 text-sm font-semibold text-violet-700 transition hover:bg-violet-500/20 dark:text-violet-200">
                       <ExternalLink className="h-4 w-4" /> {link.label}
                     </a> : null; })}
                   </div>}
+                  {item.links.some(link => link.kind === "file") && (
+                    <div className="space-y-3 border-t px-5 py-5 sm:px-7">
+                      <h3 className="flex items-center gap-2 text-sm font-bold"><Paperclip className="h-4 w-4" />Archivos para descargar</h3>
+                      <div className="flex flex-wrap gap-2">
+                        {item.links.filter(link => link.kind === "file").map((file, index) => {
+                          const url = httpUrl(file.url);
+                          // Supabase Storage permite forzar la descarga con ?download=nombre.ext.
+                          if (!url) return null;
+                          const downloadUrl = new URL(url);
+                          downloadUrl.searchParams.set("download", file.label);
+                          return <a key={`${url}-${index}`} href={downloadUrl.toString()} download={file.label} className="inline-flex min-h-11 items-center gap-2 rounded-xl border px-4 py-2 text-sm font-semibold hover:bg-accent">
+                            <Download className="h-4 w-4" />Descargar {file.label}
+                          </a>;
+                        })}
+                      </div>
+                    </div>
+                  )}
                 </article>
               );
             })}
