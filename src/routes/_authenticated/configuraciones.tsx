@@ -19,7 +19,7 @@ import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/lib/auth";
-import { SellerNotificationPreferences } from "@/components/seller-notification-preferences";
+import ActivarNotificacionesBotSky from "@/components/ActivarNotificacionesBotSky";
 
 export const Route = createFileRoute("/_authenticated/configuraciones")({
   head: () => ({
@@ -293,14 +293,14 @@ function SettingsPage() {
 
       <Tabs defaultValue="avisos">
         <TabsList>
-          <TabsTrigger value="avisos">Mis avisos WhatsApp</TabsTrigger>
+          <TabsTrigger value="avisos">Notificaciones al celular</TabsTrigger>
           <TabsTrigger value="whatsapp">WhatsApp</TabsTrigger>
           <TabsTrigger value="ia">Inteligencia artificial</TabsTrigger>
           <TabsTrigger value="negocio">Negocio</TabsTrigger>
         </TabsList>
 
         <TabsContent value="avisos" className="mt-4">
-          <SellerNotificationPreferences />
+          <ActivarNotificacionesBotSky />
         </TabsContent>
 
         <TabsContent value="whatsapp" className="mt-4">
