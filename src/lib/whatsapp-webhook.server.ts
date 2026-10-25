@@ -1356,45 +1356,18 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     return;
   }
 
-  // Palabra clave → envía la plantilla del producto (multimedia + copy).
-  // Si el catálogo fue enviado AHORA, terminamos este turno para evitar que
-  // generateAiReply() vuelva a mandar el mismo copy en el mismo webhook.
+  // La detección por palabras clave solo identifica el producto de ESTE workspace.
+  // No envía copy ni preguntas: toda respuesta comercial la genera la IA.
   const catalogResult = await sendCatalogByKeyword({
-    workspaceId,
-    ownerId,
-    conversationId: conversation.id,
-    adId: attributedAdId,
-    conn,
-    phone,
-    text: body,
-    cityFirst: aiSettings.hybrid_mode === "hybrid" || !aiSettings.hybrid_mode,
+    workspaceId, ownerId, conversationId: conversation.id,
+    adId: attributedAdId, conn, phone, text: body, identifyOnly: true,
   });
-
-  if (catalogResult) {
+  if (catalogResult?.productId && catalogResult.productId !== conversation.product_id) {
     conversation.product_id = catalogResult.productId;
-    // El copy del catálogo es la ÚNICA respuesta comercial en este turno.
-    // No mandar oferta corta duplicada ni preguntar ciudad antes de elegir variante.
-    if (catalogResult.sent) {
-      if (aiSettings.hybrid_mode === "hybrid" || !aiSettings.hybrid_mode) {
-        // La presentación comercial ya salió: persistir qué esperamos sin consumir IA.
-        // Nunca borrar otra venta activa con datos ya capturados.
-        const { data: existingState, error: stateError } = await supabaseAdmin
-          .from("bot_sale_states").select("state")
-          .eq("workspace_id", workspaceId).eq("conversation_id", conversation.id).maybeSingle();
-        if (stateError) throw stateError;
-        const current = (existingState?.state ?? {}) as SaleState;
-        if (!current.cityVerified && (!current.productId || current.productId === catalogResult.productId)) {
-          await supabaseAdmin.from("bot_sale_states").upsert({
-            workspace_id: workspaceId, conversation_id: conversation.id,
-            state: { ...current, productId: catalogResult.productId, awaiting: "variant" },
-            updated_at: new Date().toISOString(),
-          }, { onConflict: "workspace_id,conversation_id" }).then(({ error }) => {
-            if (error) throw error;
-          });
-        }
-      }
-      return;
-    }
+    const { error: productUpdateError } = await supabaseAdmin.from("conversations")
+      .update({ product_id: catalogResult.productId })
+      .eq("workspace_id", workspaceId).eq("id", conversation.id);
+    if (productUpdateError) throw productUpdateError;
   }
 
   const { data: history } = await supabaseAdmin
@@ -2951,11 +2924,7 @@ function buildSafeAiReply(args: {
   const cleanReply = args.reply.trim();
 
   if (!cleanReply) {
-    return buildShortProductOffer({
-      products: args.products,
-      productId: args.productId,
-      lastCustomerMessage: args.lastCustomerMessage,
-    });
+    throw new Error("La IA devolvió una respuesta vacía; no se enviará texto comercial fijo.");
   }
 
   // Los importes de opciones se toman del catálogo, jamás de redondeos de la IA.
@@ -2968,19 +2937,9 @@ function buildSafeAiReply(args: {
     if(near.length!==1) return full;
     return full.replace(digits,near[0].toLocaleString("es-PY"));
   });
-  if (!looksLikeRepeatedCatalogCopy(correctedReply, args.history)) {
-    return correctedReply;
-  }
-
-  console.info("[IA] Copy repetido bloqueado; se envía respuesta comercial breve", {
-    productId: args.productId,
-  });
-
-  return buildShortProductOffer({
-    products: args.products,
-    productId: args.productId,
-    lastCustomerMessage: args.lastCustomerMessage,
-  });
+  // Nunca reemplazar la respuesta de la IA por ofertas/preguntas programadas.
+  // La corrección mínima de un guaraní de diferencia conserva el precio del catálogo.
+  return correctedReply;
 }
 
 /**
@@ -2997,6 +2956,7 @@ async function sendCatalogByKeyword(args: {
   phone: string;
   text: string;
   cityFirst?: boolean;
+  identifyOnly?: boolean;
 }): Promise<CatalogKeywordResult | null> {
   const raw = (args.text ?? "").toLowerCase().trim();
   if (!raw) return null;
@@ -3065,6 +3025,7 @@ async function sendCatalogByKeyword(args: {
   if (!match?.products) return null;
 
   const productId = match.products.id;
+  if (args.identifyOnly) return { productId, sent: false };
 
   const { data: alreadySent } = await supabaseAdmin
     .from("messages")
