@@ -41,7 +41,6 @@ import { useAuth } from "@/lib/auth";
 import {
   aiReplyNow,
   registerPendingSale,
-  recoverPendingWithRules,
   deleteMessages,
   sendManualMessage,
   sendMediaMessage,
@@ -935,7 +934,7 @@ function InboxPage() {
               };
             }
 
-            const recovery = await recoverPendingWithRules({
+            const recovery = await aiReplyNow({
               data: { conversationId: conversation.id },
             });
             if (recovery.skipped) return {status:"skipped" as const,conversationId:conversation.id};
@@ -952,7 +951,7 @@ function InboxPage() {
         results.forEach((result) => {
           if (result.status === "rejected") {
             failed += 1;
-            console.error("Error al recuperar conversación por código:", result.reason);
+            console.error("Error al recuperar conversación con IA:", result.reason);
           } else if (result.value.status === "responded") {
             responded += 1;
             resolvedInThisBatch.push(result.value.conversationId);
