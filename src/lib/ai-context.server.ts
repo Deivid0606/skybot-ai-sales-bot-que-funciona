@@ -79,7 +79,7 @@ export async function buildWorkspaceAiContext(
     };
   });
   return {
-    systemInstruction: [currentTimeInstruction(), "INSTRUCCIONES GENERALES DEL NEGOCIO:", aiSettingsResult.data?.system_instruction ?? ""].join("\n\n"),
+    systemInstruction: [currentTimeInstruction(), "INSTRUCCIONES GENERALES DEL NEGOCIO:", aiSettingsResult.data?.system_instruction ?? "", "PRIORIDAD DE DATOS: el catálogo, la cobertura y el entrenamiento se obtienen únicamente del workspace_id de este vendedor. Las ciudades y modalidades ajenas nunca se reutilizan. Para preparar un pedido, verificá primero la ciudad de entrega y luego solicitá solo los datos requeridos por esa cobertura; respondé consultas intercaladas sin perder el contexto."].join("\n\n"),
     geminiApiKey: aiSettingsResult.data?.gemini_api_key ?? null,
     geminiApiKey2: aiSettingsResult.data?.gemini_api_key_2 ?? null,
     geminiApiKey3: aiSettingsResult.data?.gemini_api_key_3 ?? null,
