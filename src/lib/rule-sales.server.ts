@@ -89,6 +89,20 @@ export function parseCoverage(training: AiContext["training"]): Coverage[] {
   return clean;
 }
 
+/** La modalidad se obtiene de la ficha de cobertura ACTIVA DEL VENDEDOR.
+ * Una ciudad con contraentrega no puede convertirse silenciosamente en anticipado.
+ * No usar esta función para inferir municipio desde GPS.
+ */
+export function deliveryPolicyForCity(city: string | null | undefined, department: string | null | undefined, training: AiContext["training"]) {
+  if (!city || !department) return null;
+  const place = verifiedCoverage(city, department, parseCoverage(training));
+  if (!place) return null;
+  const method = norm(place.method);
+  const contraentrega = place.active && /contra entrega|contraentrega|pago al recibir/.test(method);
+  const anticipado = /encomienda|anticipado|transferencia/.test(method) && !contraentrega;
+  return { ...place, paymentMethod: contraentrega ? "contraentrega" as const : anticipado ? "anticipado" as const : null };
+}
+
 /** Solo el entrenamiento ACTIVO del vendedor puede autorizar encomienda nacional. */
 export function sellerAllowsNationwideAdvance(training: AiContext["training"]): boolean {
   return training.some(entry => {
@@ -389,6 +403,12 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   }
   if(s.awaiting==="address" && !match && !gpsUrl && n.length>=6 && !/^(?:si|no|hola|gracias|si por favor|dale|ok)$/.test(n) && !/\b(?:ubicacion|maps|pedido|precio|llega|ya te|ya le|pase|comparti|envie|mand[eé])\b/.test(n))s.street=text.trim();
   if(/\b(?:transferencia|transferir|anticipado|deposito|giro)\b/.test(n))s.paymentMethod="anticipado";
+  // El mensaje del cliente no puede cambiar la política logística de la ciudad.
+  // Mantener la modalidad oficial incluso si el estado previo traía un dato incorrecto.
+  if (s.cityVerified) {
+    const policy = deliveryPolicyForCity(s.city,s.department,ctx.training);
+    if (policy?.paymentMethod) s.paymentMethod = policy.paymentMethod;
+  }
   if(mediaPath && /^\s*(?:\[imagen\]\s*)?COMPROBANTE\b/i.test(text) &&
      (s.awaiting==="receipt" || s.paymentMethod==="anticipado")) s.receiptPath=mediaPath;
   // Usar la primera promoción solo si ESTA tienda lo instruyó, sin pisar una
@@ -434,6 +454,10 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   if(location && !location.active && !/ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(location.method) && !nationwide) return answer("📍 Tu ciudad está identificada, pero actualmente no figura en las zonas habilitadas. Un asesor puede revisar opciones disponibles. 😊",null,false,true);
   if(!location && !s.city)return answer("📍 ¿Me confirmás tu ciudad para verificar si llegamos hasta vos? 😊","city");
   const bank=ctx.training.find(t=>norm(t.title)==="datos bancarios")?.content?.trim()??"";
+  // Recalcular en cada turno: corrige estados antiguos que asignaban anticipado
+  // a ciudades con ENVÍO GRATIS CONTRA ENTREGA, sin afectar otros vendedores.
+  const officialPayment = deliveryPolicyForCity(s.city,s.department,ctx.training)?.paymentMethod;
+  if (officialPayment) s.paymentMethod = officialPayment;
   if(!s.paymentMethod){
     if(location?.active && /CONTRA ENTREGA/i.test(location.method))s.paymentMethod="contraentrega";
     // Encomienda autorizada por la política nacional para un destino con departamento conocido.
