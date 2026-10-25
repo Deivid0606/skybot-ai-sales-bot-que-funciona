@@ -246,7 +246,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     if (!aiSettings?.ai_enabled) return { skipped: true, reply: "" };
     const ctx = await buildWorkspaceAiContext(supabase, conversation.workspace_id,
       chatHistory, conversation.product_id, conversation.contacts?.phone ?? null, conversation.id);
-    const mode: "hybrid" = "hybrid"; // Responde la IA; el entrenamiento activo del workspace define las preguntas.
+    const mode: "hybrid" = "hybrid"; // IA redacta siempre; reglas solo extraen/validan datos técnicos.
     const text = String(newest.body ?? "");
     const {coordinatesFromText}=await import("@/lib/hybrid-intent.server");
     const {parseCoverage,verifiedCoverage}=await import("@/lib/rule-sales.server");
@@ -383,7 +383,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     } else {
       const verifiedSale=step?.state??previous;
       const aiContext=mode==="hybrid"?{...answerContext,systemInstruction:answerContext.systemInstruction+
-        `\nHÍBRIDO: El código ya presentó catálogo/precios. Desde la siguiente respuesta vendé con IA, sin repetir lista de precios ni preguntas ya contestadas. Datos de la venta actual verificados por código: ${JSON.stringify({productId:verifiedSale.productId,optionId:verifiedSale.optionId,quantity:verifiedSale.quantity,city:verifiedSale.city,department:verifiedSale.department,cityVerified:verifiedSale.cityVerified===true,coverageStatus:verifiedSale.coverageStatus,customerName:verifiedSale.customerName,gpsReceived:Boolean(verifiedSale.locationUrl),addressReceived:Boolean(verifiedSale.street)})}. No inventes cobertura, datos ni pedido registrado. El código validará y guardará pedidos. Respetá el orden de preguntas del entrenamiento del vendedor y no repitas datos ya conocidos. No exijas dirección escrita cuando ya hay GPS válido. Preguntá solo lo pendiente.`}:answerContext;
+        `\nIA + ENTRENAMIENTO: Redactá la respuesta SOLO a partir del entrenamiento activo y el catálogo de este vendedor; los cálculos técnicos no sustituyen el diálogo. No repitas ofertas ni preguntas ya contestadas. Datos de la venta actual verificados por código: ${JSON.stringify({productId:verifiedSale.productId,optionId:verifiedSale.optionId,quantity:verifiedSale.quantity,city:verifiedSale.city,department:verifiedSale.department,cityVerified:verifiedSale.cityVerified===true,coverageStatus:verifiedSale.coverageStatus,customerName:verifiedSale.customerName,gpsReceived:Boolean(verifiedSale.locationUrl),addressReceived:Boolean(verifiedSale.street)})}. No inventes cobertura, datos ni pedido registrado. El código validará y guardará pedidos. Respetá el orden de preguntas del entrenamiento del vendedor y no repitas datos ya conocidos. No exijas dirección escrita cuando ya hay GPS válido. Preguntá solo lo pendiente.`}:answerContext;
       aiContext.saleState = verifiedSale;
       try {result=await generateAiReply(aiContext);}
       catch (err) {
