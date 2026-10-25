@@ -1,3 +1,4 @@
+
 function isAiQuotaFailure(error: unknown): boolean {
   const e = error as {status?:number;code?:string;message?:string};
   const msg = String(e?.message ?? error ?? "").toLowerCase();
@@ -14,7 +15,7 @@ import { decideHybridReply } from "@/lib/hybrid-rules.server";
 import { advanceRuleSale, sellerUsesFirstOffer, type SaleState } from "@/lib/rule-sales.server";
 import { classifyCustomerIntent, addVerifiedOrderContext, addPendingSaleContext } from "@/lib/hybrid-intent.server";
 import { coordinatesFromText, validCoords } from "@/lib/hybrid-intent.server";
-import { parseCoverage, verifiedCoverage, sellerAllowsNationwideAdvance } from "@/lib/rule-sales.server";
+import { parseCoverage, verifiedCoverage, sellerAllowsNationwideAdvance, deliveryPolicyForCity } from "@/lib/rule-sales.server";
 import { sendWhatsAppText } from "@/lib/whatsapp.server";
 import { detectComplaint, COMPLAINT_REASON_LABELS } from "@/lib/complaints";
 
@@ -1652,6 +1653,10 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       : null;
     // Inyectar a la IA solo datos de venta efectivamente reconocidos por código.
     const verifiedSaleState = ruleStep?.state ?? previousSale;
+    // Fuente autoritativa: cobertura del vendedor, nunca una inferencia de IA.
+    const officialDelivery = verifiedSaleState.cityVerified
+      ? deliveryPolicyForCity(verifiedSaleState.city,verifiedSaleState.department,ctx.training) : null;
+    if (officialDelivery?.paymentMethod) verifiedSaleState.paymentMethod = officialDelivery.paymentMethod;
     answerContext.saleState = verifiedSaleState;
     console.info("[BOT_SKY_CHECKOUT_STATE]", JSON.stringify({conversationId:conversation.id,
       coverageRows:parseCoverage(ctx.training).length,productId:verifiedSaleState.productId,
@@ -1661,9 +1666,12 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       optionId:verifiedSaleState.optionId,awaiting:verifiedSaleState.awaiting,
       paymentMethod:verifiedSaleState.paymentMethod,receiptCount:verifiedSaleState.receiptDocuments?.length??0,
       receiptReview:verifiedSaleState.receiptReview??null}));
+    const officialPolicyInstruction = officialDelivery?.paymentMethod
+      ? `\nCOBERTURA DEL VENDEDOR COMPROBADA: ciudad ${officialDelivery.city}, departamento ${officialDelivery.department}; modalidad EXACTA ${officialDelivery.method}; pago permitido ${officialDelivery.paymentMethod}. Esta información es obligatoria, no la reemplaces con pago anticipado ni preguntes cómo quiere pagar cuando el vendedor exige una modalidad. No confundas envío con modalidad de pago.`
+      : `\nCOBERTURA PENDIENTE: antes de pedir nombre, dirección, GPS o modalidad de pago, preguntá la CIUDAD DE ENTREGA si todavía no consta una ciudad válida. No deduzcas municipio desde una ubicación GPS. Si el cliente hace una consulta distinta, respondela y luego continuá sin borrar datos.`;
     const aiAnswerContext = hybridMode !== "rules_only" ? {
       ...answerContext,
-      systemInstruction: answerContext.systemInstruction + `\nMODO IA + ENTRENAMIENTO BOT SKY, PRIORIDAD ALTA: Las respuestas comerciales las generás vos usando únicamente catálogo y entrenamiento de esta tienda. CONVERSÁ VOS con el comprador de forma natural: resolvé una sola pregunta por vez y no repitas catálogo/precios completos ni datos ya recibidos. Cantidad y variante se capturan mediante código y deben respetarse. No confirmes pedidos sin número real generado por Supabase. El cliente puede comprar varias veces. DATOS VERIFICADOS DEL CICLO ACTUAL (no mezclar con pedidos previos): ${JSON.stringify({productId:verifiedSaleState.productId,optionId:verifiedSaleState.optionId,quantity:verifiedSaleState.quantity,city:verifiedSaleState.city,department:verifiedSaleState.department,cityVerified:verifiedSaleState.cityVerified===true,coverageStatus:verifiedSaleState.coverageStatus,customerName:verifiedSaleState.customerName,hasAddress:Boolean(verifiedSaleState.street),gpsReceived:Boolean(verifiedSaleState.locationUrl),paymentMethod:verifiedSaleState.paymentMethod,awaiting:verifiedSaleState.awaiting})}. COBERTURA: si cityVerified no es true, NUNCA digas que tenemos cobertura; consultá la ciudad si falta. GPS no prueba por sí mismo ninguna ciudad. Si recibiste GPS no vuelvas a solicitarlo. El GPS es dirección suficiente si la configuración de la ciudad admite dirección por ubicación. Respetá el orden de preguntas definido en el entrenamiento del vendedor; nunca repitas hechos conocidos. Si no tenés precio/variante sin ambigüedad pedí aclaración. Si está completo, el código registrará el pedido; no inventes un número de orden ni digas que está confirmado.`
+      systemInstruction: answerContext.systemInstruction + officialPolicyInstruction + `\nMODO IA + ENTRENAMIENTO BOT SKY, PRIORIDAD ALTA: Las respuestas comerciales las generás vos usando únicamente catálogo y entrenamiento de esta tienda. CONVERSÁ VOS con el comprador de forma natural: resolvé una sola pregunta por vez y no repitas catálogo/precios completos ni datos ya recibidos. Cantidad y variante se capturan mediante código y deben respetarse. No confirmes pedidos sin número real generado por Supabase. El cliente puede comprar varias veces. DATOS VERIFICADOS DEL CICLO ACTUAL (no mezclar con pedidos previos): ${JSON.stringify({productId:verifiedSaleState.productId,optionId:verifiedSaleState.optionId,quantity:verifiedSaleState.quantity,city:verifiedSaleState.city,department:verifiedSaleState.department,cityVerified:verifiedSaleState.cityVerified===true,coverageStatus:verifiedSaleState.coverageStatus,customerName:verifiedSaleState.customerName,hasAddress:Boolean(verifiedSaleState.street),gpsReceived:Boolean(verifiedSaleState.locationUrl),paymentMethod:verifiedSaleState.paymentMethod,awaiting:verifiedSaleState.awaiting})}. COBERTURA: si cityVerified no es true, NUNCA digas que tenemos cobertura; consultá la ciudad si falta. GPS no prueba por sí mismo ninguna ciudad. Si recibiste GPS no vuelvas a solicitarlo. El GPS es dirección suficiente si la configuración de la ciudad admite dirección por ubicación. Respetá el orden de preguntas definido en el entrenamiento del vendedor; nunca repitas hechos conocidos. Si no tenés precio/variante sin ambigüedad pedí aclaración. Si está completo, el código registrará el pedido; no inventes un número de orden ni digas que está confirmado.`
     } : answerContext;
     // El motor nunca puede borrar hechos ya verificados al procesar una dirección.
     if (ruleStep && previousSale.cityVerified && previousSale.city && previousSale.department &&
@@ -1774,6 +1782,16 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     // Segunda barrera anti-repetición:
     // si la IA intenta volver a mandar prácticamente el mismo copy largo del
     // catálogo, lo reemplazamos por una oferta breve con los precios reales.
+    // Corregir una afirmación logística errónea con IA, no con un guion fijo.
+    if (officialDelivery?.paymentMethod === "contraentrega" &&
+        /(?:pago\s+anticipado|pag[oa]r?\s+por\s+transferencia|transferencia\s+obligatoria|solo\s+transferencia)/i.test(result.reply)) {
+      try {
+        const correction = await generateAiReply({...aiAnswerContext,
+          systemInstruction:aiAnswerContext.systemInstruction +
+            `\nCORRECCIÓN PRIORITARIA: la respuesta anterior contradecía el entrenamiento. El destino ${officialDelivery.city} admite ${officialDelivery.method} y método ${officialDelivery.paymentMethod}. Reformulá la respuesta al cliente respetando esa modalidad. No preguntes pago anticipado ni inventes condiciones.`});
+        result = {...result, reply:correction.reply};
+      } catch (error) { console.error("[BOT SKY cobertura] IA no pudo corregir respuesta",error); return; }
+    }
     const safeReply = bypassSale && hybridMode !== "rules_only" ? result.reply : buildSafeAiReply({
       reply: result.reply,
       history: chatHistory,
@@ -1784,6 +1802,12 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
 
     result.order=applySellerFirstOffer(result.order,detectedProduct,ctx.products,ctx.training,chatHistory);
     result.order = reconcileOrderWithSaleState(result.order, saveStep?.state ?? previousSale, ctx.training);
+    // Garantía final para la persistencia: ninguna salida del modelo ni un estado
+    // antiguo puede imponer transferencia en una ciudad con contraentrega.
+    if (result.order && verifiedSaleState.cityVerified) {
+      const verifiedPolicy = deliveryPolicyForCity(result.order.city,result.order.departamento,ctx.training);
+      if (verifiedPolicy?.paymentMethod) result.order.payment_method = verifiedPolicy.paymentMethod;
+    }
     // Pago al recibir solo en ciudad explícitamente autorizada por ESTA tienda.
     // Una localidad ajena a la lista puede ser encomienda únicamente cuando
     // existe autorización nacional y destino declarado en este ciclo.
@@ -1799,7 +1823,8 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     }
     // No depender del indicador sale_closed del modelo: cuando nombre, ciudad,
     // producto y cantidad estén completos, usar la información técnica recuperada.
-    if (result.order && previousSale.paymentMethod === "anticipado") result.order.payment_method = "anticipado";
+    if (result.order && previousSale.paymentMethod === "anticipado" && !deliveryPolicyForCity(result.order.city,result.order.departamento,ctx.training)?.paymentMethod)
+      result.order.payment_method = "anticipado";
     // Con estado reconocido, nunca depender de un JSON completo de Gemini.
     // El backend continuará validando variante, dirección y pago antes del INSERT.
     const optionConfirmed = Boolean(saveStep?.state.cartLines?.length) || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory);
