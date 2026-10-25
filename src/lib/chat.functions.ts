@@ -397,6 +397,26 @@ export const aiReplyNow = createServerFn({ method: "POST" })
         return {skipped:true,reason:"IA no disponible; no se envió respuesta automática de código"};
       }
     }
+    // Mismo control en Inbox: ciudad de entrega antes de solicitar datos posteriores.
+    const cityVerifiedNow = Boolean((step?.state ?? previous).cityVerified);
+    const checkoutProductNow = Boolean((step?.state ?? previous).productId);
+    if (!bypassSale && checkoutProductNow && !cityVerifiedNow &&
+        /\b(?:nombre|apellido|direcci[oó]n|domicilio|ubicaci[oó]n|google maps|transferencia|pago anticipado|m[eé]todo de pago)\b/i.test(result.reply) &&
+        (/[¿?]/.test(result.reply) || /pas[aá]me|indic[aá]me|confirm[aá]me|envi[aá]me|necesito|falta/i.test(result.reply))) {
+      try {
+        const cityContext = {...answerContext,
+          saleState: step?.state ?? previous,
+          systemInstruction:answerContext.systemInstruction+
+            "\nREGLA CRÍTICA: Ciudad de entrega AÚN NO VERIFICADA. El vendedor exige ciudad antes " +
+            "de nombre, dirección, GPS o pago. Responde de forma natural desde el entrenamiento; " +
+            "pedí únicamente la ciudad si corresponde, sin datos posteriores."};
+        const corrected = await generateAiReply(cityContext);
+        if (/\b(?:nombre|apellido|direcci[oó]n|domicilio|ubicaci[oó]n|google maps|transferencia|pago anticipado|m[eé]todo de pago)\b/i.test(corrected.reply) &&
+            (/[¿?]/.test(corrected.reply) || /pas[aá]me|indic[aá]me|confirm[aá]me|envi[aá]me|necesito|falta/i.test(corrected.reply)))
+          return {skipped:true,reason:"IA intentó avanzar sin ciudad verificada"};
+        result={...result,reply:corrected.reply};
+      } catch(error){console.error("[Inbox City Guard]",error);return {skipped:true,reason:"IA no disponible"};}
+    }
     // En híbrido, no sobrescribir la respuesta de la IA con el mensaje genérico de GPS.
     // Si el código completó el pedido, el INSERT decidirá la confirmación.
     if(bypassSale && !result.order)result={...result,sale_closed:false,order:null};
