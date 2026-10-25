@@ -1624,8 +1624,12 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     const pendingAdvanceReceipt = Boolean(previousSale.productId &&
       /anticip|transfer|deposit|giro/i.test(String(previousSale.paymentMethod ?? "")) &&
       mediaPath && media && (media.type === "image" || media.type === "document"));
-    const bypassSale = !pendingAdvanceReceipt && intent !== "checkout" && !savedSaleReadyForFinalization && !awaitingCheckoutDetail &&
-      !(previousSale.productId && !conversation.sale_closed && /(?:calle|barrio|casi|esquina|avenida|ruta|direccion|ubicacion|^[\p{L}]+(?:\s+[\p{L}]+){1,3}$)/iu.test(body));
+    // Preguntar por la tienda no es proporcionar ciudad ni continuar checkout.
+    // Solo se clasifica la intención: el contenido de la respuesta lo crea la IA
+    // desde el entrenamiento de este workspace.
+    const asksAboutSeller = /\b(?:de\s+d[oó]nde\s+(?:son|son\s+ustedes|es\s+(?:la\s+)?tienda|est[aá]n|queda)|d[oó]nde\s+(?:queda|est[aá])\s+(?:la\s+)?(?:tienda|local|negocio)|tienen\s+(?:local|sucursal|direcci[oó]n)|cu[aá]l\s+es\s+(?:su|la)\s+direcci[oó]n)\b/i.test(body);
+    const bypassSale = asksAboutSeller || (!pendingAdvanceReceipt && intent !== "checkout" && !savedSaleReadyForFinalization && !awaitingCheckoutDetail &&
+      !(previousSale.productId && !conversation.sale_closed && /(?:calle|barrio|casi|esquina|avenida|ruta|direccion|ubicacion|^[\p{L}]+(?:\s+[\p{L}]+){1,3}$)/iu.test(body)));
     const answerContextBase = intent === "order_status" && hybridMode !== "rules_only"
       ? await addVerifiedOrderContext(supabaseAdmin, ctx, workspaceId, phone)
       : ctx;
@@ -1637,6 +1641,9 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
           `Nunca pidas pago anticipado por una ubicación desconocida. `+
           `La IA no puede registrar un pedido ni modificar precios a partir de la ubicación.`}
       : bypassSale && hybridMode !== "rules_only" ? addPendingSaleContext(answerContextBase, previousSale) : answerContextBase;
+    if (asksAboutSeller) {
+      answerContext.systemInstruction += "\nPRIORIDAD PARA ESTE MENSAJE: el cliente pregunta por la ubicación u origen de LA TIENDA, NO informa su ciudad de entrega. Respondé la consulta concreta basándote exclusivamente en el entrenamiento de este vendedor. Si la dirección de la tienda no está documentada, indicá que no tenés ese dato confirmado. No repitas la pregunta anterior de ciudad en esta respuesta ni cambies los datos guardados del pedido. Conservá el progreso para el siguiente turno.";
+    }
     const ruleStep = hybridMode !== "ai_first" && !bypassSale
       ? advanceRuleSale(ctx, saleInput, previousSale, media && (media.type === "image" || media.type === "document") ? mediaPath : null, gpsUrl)
       : null;
@@ -1653,7 +1660,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       receiptReview:verifiedSaleState.receiptReview??null}));
     const aiAnswerContext = hybridMode !== "rules_only" ? {
       ...answerContext,
-      systemInstruction: answerContext.systemInstruction + `\nMODO HÍBRIDO BOT SKY, PRIORIDAD ALTA: Ya fue enviado por CÓDIGO el copy, la imagen y los precios del catálogo. DESDE AHORA CONVERSÁ VOS con el comprador de forma natural: resolvé una sola pregunta por vez y no repitas catálogo/precios completos ni datos ya recibidos. Cantidad y variante se capturan mediante código y deben respetarse. No confirmes pedidos sin número real generado por Supabase. El cliente puede comprar varias veces. DATOS VERIFICADOS DEL CICLO ACTUAL (no mezclar con pedidos previos): ${JSON.stringify({productId:verifiedSaleState.productId,optionId:verifiedSaleState.optionId,quantity:verifiedSaleState.quantity,city:verifiedSaleState.city,department:verifiedSaleState.department,cityVerified:verifiedSaleState.cityVerified===true,coverageStatus:verifiedSaleState.coverageStatus,customerName:verifiedSaleState.customerName,hasAddress:Boolean(verifiedSaleState.street),gpsReceived:Boolean(verifiedSaleState.locationUrl),paymentMethod:verifiedSaleState.paymentMethod,awaiting:verifiedSaleState.awaiting})}. COBERTURA: si cityVerified no es true, NUNCA digas que tenemos cobertura; consultá la ciudad si falta. GPS no prueba por sí mismo ninguna ciudad. Si recibiste GPS no vuelvas a solicitarlo. El GPS es dirección suficiente si la configuración de la ciudad admite dirección por ubicación. Respetá el orden de preguntas definido en el entrenamiento del vendedor; nunca repitas hechos conocidos. Si no tenés precio/variante sin ambigüedad pedí aclaración. Si está completo, el código registrará el pedido; no inventes un número de orden ni digas que está confirmado.`
+      systemInstruction: answerContext.systemInstruction + `\nMODO IA + ENTRENAMIENTO BOT SKY, PRIORIDAD ALTA: Las respuestas comerciales las generás vos usando únicamente catálogo y entrenamiento de esta tienda. CONVERSÁ VOS con el comprador de forma natural: resolvé una sola pregunta por vez y no repitas catálogo/precios completos ni datos ya recibidos. Cantidad y variante se capturan mediante código y deben respetarse. No confirmes pedidos sin número real generado por Supabase. El cliente puede comprar varias veces. DATOS VERIFICADOS DEL CICLO ACTUAL (no mezclar con pedidos previos): ${JSON.stringify({productId:verifiedSaleState.productId,optionId:verifiedSaleState.optionId,quantity:verifiedSaleState.quantity,city:verifiedSaleState.city,department:verifiedSaleState.department,cityVerified:verifiedSaleState.cityVerified===true,coverageStatus:verifiedSaleState.coverageStatus,customerName:verifiedSaleState.customerName,hasAddress:Boolean(verifiedSaleState.street),gpsReceived:Boolean(verifiedSaleState.locationUrl),paymentMethod:verifiedSaleState.paymentMethod,awaiting:verifiedSaleState.awaiting})}. COBERTURA: si cityVerified no es true, NUNCA digas que tenemos cobertura; consultá la ciudad si falta. GPS no prueba por sí mismo ninguna ciudad. Si recibiste GPS no vuelvas a solicitarlo. El GPS es dirección suficiente si la configuración de la ciudad admite dirección por ubicación. Respetá el orden de preguntas definido en el entrenamiento del vendedor; nunca repitas hechos conocidos. Si no tenés precio/variante sin ambigüedad pedí aclaración. Si está completo, el código registrará el pedido; no inventes un número de orden ni digas que está confirmado.`
     } : answerContext;
     // El motor nunca puede borrar hechos ya verificados al procesar una dirección.
     if (ruleStep && previousSale.cityVerified && previousSale.city && previousSale.department &&
