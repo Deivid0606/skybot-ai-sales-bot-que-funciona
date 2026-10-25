@@ -392,16 +392,16 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
       s.coverageStatus=candidate?.active ? "covered" : "uncovered";
     }
   }
-  if(s.awaiting==="details" || s.awaiting==="address" || s.awaiting==="name") {
+  if(s.cityVerified && (s.awaiting==="details" || s.awaiting==="address" || s.awaiting==="name")) {
     const details=extractCheckoutDetails(text,true);
     if(details.name && !s.customerName)s.customerName=details.name;
     if(details.street && (!s.street || s.street === s.locationUrl))s.street=details.street;
     if(details.alternatePhone)s.alternatePhone=details.alternatePhone;
   }
-  if(s.awaiting==="name" || /^\s*(?:me llamo|mi nombre es)\b/i.test(text)) {
+  if(s.cityVerified && (s.awaiting==="name" || /^\s*(?:me llamo|mi nombre es)\b/i.test(text))) {
     const name=humanName(text,s.awaiting==="name");if(name)s.customerName=name;
   }
-  if(s.awaiting==="address" && !match && !gpsUrl && n.length>=6 && !/^(?:si|no|hola|gracias|si por favor|dale|ok)$/.test(n) && !/\b(?:ubicacion|maps|pedido|precio|llega|ya te|ya le|pase|comparti|envie|mand[eé])\b/.test(n))s.street=text.trim();
+  if(s.cityVerified && s.awaiting==="address" && !match && !gpsUrl && n.length>=6 && !/^(?:si|no|hola|gracias|si por favor|dale|ok)$/.test(n) && !/\b(?:ubicacion|maps|pedido|precio|llega|ya te|ya le|pase|comparti|envie|mand[eé])\b/.test(n))s.street=text.trim();
   if(/\b(?:transferencia|transferir|anticipado|deposito|giro)\b/.test(n))s.paymentMethod="anticipado";
   // El mensaje del cliente no puede cambiar la política logística de la ciudad.
   // Mantener la modalidad oficial incluso si el estado previo traía un dato incorrecto.
