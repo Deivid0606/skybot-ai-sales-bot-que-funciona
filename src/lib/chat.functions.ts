@@ -389,7 +389,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       if(policy?.paymentMethod)verifiedSale.paymentMethod=policy.paymentMethod;
       aiContext.systemInstruction += policy?.paymentMethod
         ? `\nPOLÍTICA DE COBERTURA AUTORIZADA DEL VENDEDOR: ciudad ${policy.city}; departamento ${policy.department}; modalidad ${policy.method}; pago ${policy.paymentMethod}. No pedir ni afirmar pago anticipado para una ciudad cuya modalidad es contraentrega.`
-        : `\nAntes de pedir nombre, dirección o forma de pago, necesitás conocer y verificar la ciudad de entrega. Respondé cualquier consulta intermedia sin perder la selección actual.`;
+        : `\nLa CIUDAD DE ENTREGA se verifica ANTES de pedir nombre, dirección, GPS o forma de pago. No decidas pago anticipado hasta consultar la política de cobertura del vendedor. Si el cliente hace una consulta intermedia, respondela y conservá la selección ya realizada. No tomes barrio o GPS como prueba de ciudad.`;
       aiContext.saleState = verifiedSale;
       try {result=await generateAiReply(aiContext);}
       catch (err) {
