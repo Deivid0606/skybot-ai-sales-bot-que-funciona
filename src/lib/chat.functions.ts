@@ -384,6 +384,12 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       const verifiedSale=step?.state??previous;
       const aiContext=mode==="hybrid"?{...answerContext,systemInstruction:answerContext.systemInstruction+
         `\nIA + ENTRENAMIENTO: Redactá la respuesta SOLO a partir del entrenamiento activo y el catálogo de este vendedor; los cálculos técnicos no sustituyen el diálogo. No repitas ofertas ni preguntas ya contestadas. Datos de la venta actual verificados por código: ${JSON.stringify({productId:verifiedSale.productId,optionId:verifiedSale.optionId,quantity:verifiedSale.quantity,city:verifiedSale.city,department:verifiedSale.department,cityVerified:verifiedSale.cityVerified===true,coverageStatus:verifiedSale.coverageStatus,customerName:verifiedSale.customerName,gpsReceived:Boolean(verifiedSale.locationUrl),addressReceived:Boolean(verifiedSale.street)})}. No inventes cobertura, datos ni pedido registrado. El código validará y guardará pedidos. Respetá el orden de preguntas del entrenamiento del vendedor y no repitas datos ya conocidos. No exijas dirección escrita cuando ya hay GPS válido. Preguntá solo lo pendiente.`}:answerContext;
+      const {deliveryPolicyForCity}=await import("@/lib/rule-sales.server");
+      const policy=verifiedSale.cityVerified ? deliveryPolicyForCity(verifiedSale.city,verifiedSale.department,ctx.training):null;
+      if(policy?.paymentMethod)verifiedSale.paymentMethod=policy.paymentMethod;
+      aiContext.systemInstruction += policy?.paymentMethod
+        ? `\nPOLÍTICA DE COBERTURA AUTORIZADA DEL VENDEDOR: ciudad ${policy.city}; departamento ${policy.department}; modalidad ${policy.method}; pago ${policy.paymentMethod}. No pedir ni afirmar pago anticipado para una ciudad cuya modalidad es contraentrega.`
+        : `\nAntes de pedir nombre, dirección o forma de pago, necesitás conocer y verificar la ciudad de entrega. Respondé cualquier consulta intermedia sin perder la selección actual.`;
       aiContext.saleState = verifiedSale;
       try {result=await generateAiReply(aiContext);}
       catch (err) {
@@ -414,6 +420,12 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       ? result.product_id : conversation.product_id;
     result.order=applySellerFirstOffer(result.order,detectedProduct,ctx.products,ctx.training,chatHistory);
     result.order=reconcileOrderWithSaleState(result.order,step?.state??previous,ctx.training);
+    // Validación de modalidad oficial por workspace antes de registrar.
+    if (result.order) {
+      const {deliveryPolicyForCity}=await import("@/lib/rule-sales.server");
+      const policy=deliveryPolicyForCity(result.order.city,result.order.departamento,ctx.training);
+      if(policy?.paymentMethod)result.order.payment_method=policy.paymentMethod;
+    }
     const phone = conversation.contacts?.phone;
     if (!phone) throw new Error("El contacto no tiene teléfono");
 
