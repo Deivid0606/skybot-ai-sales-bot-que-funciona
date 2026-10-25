@@ -1,4 +1,3 @@
-
 function isAiQuotaFailure(error: unknown): boolean {
   const e = error as {status?:number;code?:string;message?:string};
   const msg = String(e?.message ?? error ?? "").toLowerCase();
@@ -1356,11 +1355,12 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     return;
   }
 
-  // La detección por palabras clave solo identifica el producto de ESTE workspace.
-  // No envía copy ni preguntas: toda respuesta comercial la genera la IA.
+  // Primera consulta de un producto identificado: enviar UNA VEZ el copy y las
+  // imágenes que el VENDEDOR guardó en su catálogo. No redactar guiones aquí.
+  // Después de la presentación, todas las respuestas conversacionales usan IA.
   const catalogResult = await sendCatalogByKeyword({
     workspaceId, ownerId, conversationId: conversation.id,
-    adId: attributedAdId, conn, phone, text: body, identifyOnly: true,
+    adId: attributedAdId, conn, phone, text: body,
   });
   if (catalogResult?.productId && catalogResult.productId !== conversation.product_id) {
     conversation.product_id = catalogResult.productId;
@@ -1369,6 +1369,9 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       .eq("workspace_id", workspaceId).eq("id", conversation.id);
     if (productUpdateError) throw productUpdateError;
   }
+  // El copy y la foto ya constituyen la presentación del producto en este turno.
+  // No enviar además una respuesta IA duplicada; IA asume los turnos siguientes.
+  if (catalogResult?.sent) return;
 
   const { data: history } = await supabaseAdmin
     .from("messages")
@@ -3037,6 +3040,7 @@ async function sendCatalogByKeyword(args: {
   const { data: alreadySent } = await supabaseAdmin
     .from("messages")
     .select("id")
+    .eq("workspace_id", args.workspaceId)
     .eq("conversation_id", args.conversationId)
     .eq("direction", "outbound")
     .eq("catalog_product_id", productId)
@@ -3065,9 +3069,9 @@ ${match.products.description ?? ""}`.trim();
   });
   // Nunca presentar opciones solo como "1 unidad" si las etiquetas son capacidades.
   const variantLines = options.length > 1 && missingNames.length > 0
-    ? `\n\n💥 *Opciones disponibles:*\n${options.map((o) => `• *${o.label}* — ${formatGs(Number(o.price))}`).join("\n")}${args.cityFirst ? "" : "\n¿Cuál preferís?"}`
+    ? `\n\n💥 *Opciones disponibles:*\n${options.map((o) => `• *${o.label}* — ${formatGs(Number(o.price))}`).join("\n")}`
     : "";
-  const copy = baseCopy + variantLines + (args.cityFirst ? "\n\n📍 ¿De qué ciudad sos? Así verifico tu modalidad de entrega. 🚚" : "");
+  const copy = baseCopy + variantLines;
 
   const { sendWhatsAppMedia } = await import("@/lib/whatsapp.server");
 
