@@ -1751,6 +1751,35 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         return;
       }
     }
+    // GARANTÍA DE ORDEN COMERCIAL: la IA redacta, pero no puede saltarse ciudad.
+    // Si propone pedir datos personales o una dirección sin ciudad verificada,
+    // volver a consultar a LA MISMA IA con el entrenamiento del workspace.
+    const cityMissingForCheckout = Boolean(
+      !bypassSale && verifiedSaleState.productId && !verifiedSaleState.cityVerified
+    );
+    if (cityMissingForCheckout && /(?:\b(?:nombre|apellido|direcci[oó]n|domicilio|ubicaci[oó]n|google maps|transferencia|pago anticipado|m[eé]todo de pago)\b)/i.test(result.reply) &&
+        /[¿?]|(?:pas[aá]me|indic[aá]me|confirm[aá]me|envi[aá]me|compart[ií]me|necesito|falta)/i.test(result.reply)) {
+      try {
+        const retried = await generateAiReply({
+          ...aiAnswerContext,
+          systemInstruction: aiAnswerContext.systemInstruction +
+            "\nCONTROL DE SECUENCIA OBLIGATORIO: La ciudad de entrega NO está verificada. " +
+            "Tu respuesta anterior intentó pedir nombre, apellido, dirección, GPS o método de pago antes de conocer la ciudad. " +
+            "Eso contradice el entrenamiento del vendedor. Redactá de nuevo una respuesta natural, " +
+            "sobre lo que acaba de decir el comprador y, cuando corresponda continuar el pedido, solicitá ÚNICAMENTE " +
+            "la ciudad de entrega; no solicites datos posteriores. Nunca inventes cobertura ni modalidad."
+        });
+        if (/(?:\b(?:nombre|apellido|direcci[oó]n|domicilio|ubicaci[oó]n|google maps|transferencia|pago anticipado|m[eé]todo de pago)\b)/i.test(retried.reply) &&
+            /[¿?]|(?:pas[aá]me|indic[aá]me|confirm[aá]me|envi[aá]me|compart[ií]me|necesito|falta)/i.test(retried.reply)) {
+          console.error("[BOT SKY CITY GUARD] IA reiteró datos posteriores sin ciudad", conversation.id);
+          return; // No inventar una respuesta fija ni enviar una pregunta fuera de orden.
+        }
+        result = {...result, reply: retried.reply};
+      } catch (error) {
+        console.error("[BOT SKY CITY GUARD] No se pudo revalidar respuesta", error);
+        return;
+      }
+    }
     // Consultar precio/garantía/seguimiento no debe completar ni crear pedidos.
     if (hybridMode === "rules_only" && isGpsMessage && ruleStep && !ruleStep.needsAi && /(?:sin cobertura|no tenemos cobertura|pago anticipado|datos bancarios)/i.test(result.reply) && previousSale.coverageStatus !== "uncovered") {
       result = {...result,reply:ruleStep.reply};
