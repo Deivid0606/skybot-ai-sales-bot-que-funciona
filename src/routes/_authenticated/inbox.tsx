@@ -504,7 +504,23 @@ function InboxPage() {
   const [adProductId, setAdProductId] = useState("");
   const [statusNow, setStatusNow] = useState(() => Date.now());
   const [verifiedPendingIds, setVerifiedPendingIds] = useState<string[] | null>(null);
+  // Último inbound realmente sin contestar en un turno que corresponde a la IA.
+  // Nunca usar conversations.last_message_at: puede representar un copy/imagen enviado por código.
+  const [aiUnansweredSince, setAiUnansweredSince] = useState<Record<string, string>>({});
   const [isCheckingPending, setIsCheckingPending] = useState(false);
+  const { data: inboxAiSettings } = useQuery({
+    queryKey: ["inbox-ai-monitoring-enabled", workspaceId],
+    enabled: Boolean(workspaceId),
+    queryFn: async () => {
+      const { data, error } = await supabase.from("ai_settings")
+        .select("ai_enabled")
+        .eq("workspace_id", workspaceId!)
+        .maybeSingle();
+      if (error) throw error;
+      return data;
+    },
+    staleTime: 60_000,
+  });
 
 
   const { data: conversations } = useQuery({
@@ -1033,7 +1049,7 @@ function InboxPage() {
   const unreadCandidatesSignature = unreadCandidates
     .map(
       (conversation) =>
-        `${conversation.id}:${conversation.last_message_at ?? ""}`,
+        `${conversation.id}:${conversation.last_message_at ?? ""}:${conversation.unread_count ?? 0}`,
     )
     .join("|");
 
@@ -1042,6 +1058,7 @@ function InboxPage() {
 
     if (!workspaceId || unreadCandidates.length === 0) {
       setVerifiedPendingIds([]);
+      setAiUnansweredSince({});
       setIsCheckingPending(false);
       return () => {
         cancelled = true;
@@ -1052,46 +1069,93 @@ function InboxPage() {
 
     const verifyPendingConversations = async () => {
       const confirmedPendingIds: string[] = [];
+      const unansweredAi: Record<string, string> = {};
       const batchSize = 10;
 
-      // Se verifica en tandas para obtener el último mensaje real sin bloquear
-      // ni sobrecargar la carga normal del Inbox.
+      // Mirar mensajes reales, no solo unread_count ni conversations.last_message_at.
+      // Un copy, foto o plantilla saliente por código también cuenta como respuesta
+      // para ese inbound: NO es un fallo de IA.
       for (let index = 0; index < unreadCandidates.length; index += batchSize) {
         if (cancelled) return;
-
         const batch = unreadCandidates.slice(index, index + batchSize);
         const results = await Promise.allSettled(
           batch.map(async (conversation) => {
-            const { data: lastMessage, error } = await supabase
+            const { data: recentMessages, error } = await supabase
               .from("messages")
-              .select("direction")
+              .select("id,direction,sender,response_origin,status,created_at")
+              .eq("workspace_id", workspaceId)
               .eq("conversation_id", conversation.id)
               .order("created_at", { ascending: false })
-              .limit(1)
-              .maybeSingle();
-
+              .order("id", { ascending: false })
+              .limit(40);
             if (error) throw error;
 
-            return lastMessage?.direction === "inbound"
-              ? conversation.id
-              : null;
+            const rows = recentMessages ?? [];
+            // Mantener exactamente la definición original de pendiente:
+            // el último mensaje del chat tiene que venir del cliente.
+            if (rows[0]?.direction !== "inbound") return null;
+            const lastCustomer = rows.find(
+              (message) => message.direction === "inbound" && message.sender === "customer",
+            );
+            if (!lastCustomer) return null;
+            const lastInboundTime = Date.parse(lastCustomer.created_at);
+            if (!Number.isFinite(lastInboundTime)) return null;
+
+            // Un envío exitoso posterior (IA, humano o código con copy/imagen)
+            // resuelve el turno. Empates de timestamp se toman como respondidos
+            // para evitar alarmas falsas por inserciones muy próximas.
+            const laterOutbound = rows.filter((message) =>
+              message.direction === "outbound" &&
+              Date.parse(message.created_at) >= lastInboundTime,
+            );
+            const validOutbound = laterOutbound.some((message) => {
+              const status = String(message.status ?? "").toLowerCase();
+              return !status || ["sent", "delivered", "read"].includes(status);
+            });
+            if (validOutbound) return null;
+
+            const pending = { id: conversation.id, lastInboundAt: lastCustomer.created_at };
+
+            // Si lo que falló fue exclusivamente el envío técnico del copy/imagen,
+            // no atribuirlo falsamente al modelo de IA.
+            const failedCodeOnly = laterOutbound.some((message) =>
+              message.response_origin === "code" &&
+              ["failed", "error"].includes(String(message.status ?? "").toLowerCase()),
+            ) && !laterOutbound.some((message) =>
+              message.response_origin === "ai" || message.sender === "ai",
+            );
+            if (failedCodeOnly) return { ...pending, aiExpected: false };
+
+            // Solo una conversación que ya tuvo atención anterior o un intento
+            // explícito de IA permite inferir que el siguiente turno requería IA.
+            // Sin esa evidencia podría tratarse del PRIMER copy/imagen por código.
+            const previousOutbound = rows.some((message) =>
+              message.direction === "outbound" &&
+              Date.parse(message.created_at) < lastInboundTime &&
+              !["failed", "error"].includes(String(message.status ?? "").toLowerCase()),
+            );
+            const failedAiAttempt = laterOutbound.some((message) =>
+              message.response_origin === "ai" || message.sender === "ai",
+            );
+            return { ...pending, aiExpected: previousOutbound || failedAiAttempt };
           }),
         );
 
-        results.forEach((result) => {
+        for (const result of results) {
           if (result.status === "fulfilled" && result.value) {
-            confirmedPendingIds.push(result.value);
+            confirmedPendingIds.push(result.value.id);
+            if (result.value.aiExpected) {
+              unansweredAi[result.value.id] = result.value.lastInboundAt;
+            }
           } else if (result.status === "rejected") {
-            console.error(
-              "No se pudo verificar una conversación pendiente:",
-              result.reason,
-            );
+            console.error("No se pudo comprobar si la IA dejó de responder:", result.reason);
           }
-        });
+        }
       }
 
       if (!cancelled) {
         setVerifiedPendingIds(confirmedPendingIds);
+        setAiUnansweredSince(unansweredAi);
         setIsCheckingPending(false);
       }
     };
@@ -1422,14 +1486,14 @@ function InboxPage() {
   }, [activeId]);
 
 
-  const possibleAiFailures = pendingCandidates.filter((conversation) => {
-    if (!conversation.last_message_at) return false;
-
-    const lastMessageAt = new Date(conversation.last_message_at).getTime();
-    if (!Number.isFinite(lastMessageAt)) return false;
-
-    return statusNow - lastMessageAt >= 3 * 60 * 1000;
-  });
+  const possibleAiFailures = inboxAiSettings?.ai_enabled === true && !isCheckingPending
+    ? pendingCandidates.filter((conversation) => {
+        const lastCustomerAt = aiUnansweredSince[conversation.id];
+        if (!lastCustomerAt) return false;
+        const inboundTime = Date.parse(lastCustomerAt);
+        return Number.isFinite(inboundTime) && statusNow - inboundTime >= 3 * 60 * 1000;
+      })
+    : [];
 
   const hasPossibleAiFailure = possibleAiFailures.length > 0;
   const aiAlertShownRef = useRef(false);
@@ -1599,7 +1663,7 @@ function InboxPage() {
                   <p className="mt-1">
                     {possibleAiFailures.length} conversación{
                       possibleAiFailures.length === 1 ? "" : "es"
-                    } lleva{possibleAiFailures.length === 1 ? "" : "n"} más de 3 minutos sin respuesta.
+                    } lleva{possibleAiFailures.length === 1 ? "" : "n"} más de 3 minutos sin respuesta de IA tras el último mensaje del cliente. Los copies e imágenes enviados por código no cuentan como fallos.
                   </p>
                 </div>
               </div>
