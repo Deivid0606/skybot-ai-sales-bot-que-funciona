@@ -16,6 +16,10 @@ import {
   Save,
   Send,
   Sparkles,
+  Minimize2,
+  Maximize2,
+  Activity,
+  Layers3,
   Paperclip,
   ShoppingBag,
   Tag,
@@ -128,6 +132,181 @@ function InboxAnimatedOffice({ businessName }: { businessName: string }) {
           <div className="sky-office-motion absolute bottom-5 right-3 rounded-xl border border-emerald-400/30 bg-emerald-500/15 px-3 py-2 text-xs font-semibold text-emerald-100 backdrop-blur" style={{ animation: 'skyOfficeMessage 5s ease-in-out infinite' }}>💬 Conversaciones en movimiento</div>
         </div>
       </div>
+    </div>
+  );
+}
+
+
+/**
+ * Oficina 3D estilizada: escena SVG original con animación continua del
+ * trabajador, teclado, notificaciones y luces. Es una animación decorativa,
+ * NO una cámara ni una afirmación de que existe un agente humano conectado.
+ * Los contadores provienen de los datos reales del Inbox.
+ */
+function InboxLiveOfficeCorner({
+  businessName,
+  pending,
+  conversationsInPeriod,
+  aiWarning,
+  activityStamp,
+}: {
+  businessName: string;
+  pending: number;
+  conversationsInPeriod: number;
+  aiWarning: boolean;
+  activityStamp: string;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const [newActivity, setNewActivity] = useState(false);
+  const lastStampRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!activityStamp) return;
+    const previous = lastStampRef.current;
+    lastStampRef.current = activityStamp;
+    // No mostrar una alerta falsa al cargar el Inbox o cambiar filtros.
+    if (!previous || previous === activityStamp) return;
+    const ageMs = Date.now() - new Date(activityStamp).getTime();
+    if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs > 120_000) return;
+    setNewActivity(true);
+    const timeout = window.setTimeout(() => setNewActivity(false), 4500);
+    return () => window.clearTimeout(timeout);
+  }, [activityStamp]);
+  return (
+    <div className="sky-live-office fixed bottom-4 right-4 z-40 max-w-[calc(100vw-2rem)] sm:bottom-5 sm:right-6">
+      <style>{`
+        @keyframes skyLiveTypeL { 0%,100% { transform: rotate(-8deg) translate(0,0) } 48% { transform: rotate(9deg) translate(2px,5px) } }
+        @keyframes skyLiveTypeR { 0%,100% { transform: rotate(8deg) translate(0,0) } 52% { transform: rotate(-9deg) translate(-2px,5px) } }
+        @keyframes skyLiveHead { 0%,100% { transform: rotate(-3deg) translateY(0) } 45% { transform: rotate(3deg) translateY(1px) } }
+        @keyframes skyLiveBlink { 0%,88%,95%,100% { transform: scaleY(1) } 91% { transform: scaleY(.08) } }
+        @keyframes skyLiveKey { 0%,100% { opacity: .35 } 40% { opacity: 1 } }
+        @keyframes skyLiveFloat { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-6px) } }
+        @keyframes skyLiveNotify { 0%,13%,100% { opacity: 0; transform: translateY(12px) scale(.93) } 24%,78% { opacity: 1; transform: translateY(0) scale(1) } 89% { opacity: 0 } }
+        @keyframes skyLiveBreath { 0%,100% { transform: scaleY(1) } 50% { transform: scaleY(1.022) } }
+        @keyframes skyLivePulse { 0%,100% { opacity: .55; box-shadow: 0 0 2px #34d399 } 50% { opacity: 1; box-shadow: 0 0 13px #34d399 } }
+        .sky-live-motion { will-change: transform; }
+        @media (prefers-reduced-motion: reduce) {
+          .sky-live-office .sky-live-motion, .sky-live-office .sky-live-light { animation: none !important; }
+        }
+        @media (max-width: 639px) { .sky-live-office .sky-live-stage { height: 148px; } }
+      `}</style>
+      {!expanded ? (
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          aria-label="Mostrar oficina animada"
+          title="Mostrar oficina animada"
+          className="flex items-center gap-2 rounded-2xl border border-sky-400/40 bg-[#081b34] px-3 py-2.5 text-white shadow-2xl shadow-sky-950/40 transition-transform hover:-translate-y-0.5"
+        >
+          <span className="relative flex h-9 w-9 items-center justify-center rounded-xl bg-sky-400/20 text-xl">👨🏻‍💻
+            <span className="sky-live-light absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-emerald-400" style={{animation: 'skyLivePulse 2.2s infinite'}} />
+          </span>
+          <span className="min-w-0 text-left">
+            <span className="block max-w-36 truncate text-xs font-bold">{businessName}</span>
+            <span className="block text-[10px] text-sky-200">Ver mini oficina animada</span>
+          </span>
+          <Maximize2 className="ml-1 h-4 w-4 text-sky-200" />
+        </button>
+      ) : (
+        <div className="w-[266px] overflow-hidden rounded-[22px] border border-sky-400/35 bg-[#0a1b33] text-white shadow-[0_20px_65px_rgba(0,14,45,.55)] sm:w-[286px]">
+          <div className="flex items-center gap-2 border-b border-white/10 bg-[#0c2342] px-3 py-2.5">
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-sky-400/15"><Layers3 className="h-4 w-4 text-sky-300"/></span>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-xs font-extrabold tracking-wide">{businessName}</p>
+              <p className="flex items-center gap-1.5 text-[10px] text-sky-200">
+                <span className="sky-live-light h-1.5 w-1.5 rounded-full bg-emerald-400" style={{animation: 'skyLivePulse 2.2s infinite'}} />
+                Mini oficina animada
+              </p>
+            </div>
+            <button type="button" onClick={() => setExpanded(false)} aria-label="Minimizar mini oficina" title="Minimizar" className="rounded-lg border border-white/10 bg-white/5 p-2 text-sky-100 transition-colors hover:bg-white/15">
+              <Minimize2 className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <div className="sky-live-stage relative h-[172px] overflow-hidden bg-[radial-gradient(ellipse_at_52%_12%,#245687_0%,#0e2746_43%,#08182d_100%)]">
+            <span className="absolute right-3 top-2 z-10 rounded-full border border-emerald-300/20 bg-emerald-300/10 px-2 py-0.5 text-[9px] font-bold text-emerald-200">● Animación activa</span>
+            <svg viewBox="0 0 360 250" className="h-full w-full" role="img" aria-label="Mini oficina en perspectiva con persona animada escribiendo en computadora">
+              <defs>
+                <linearGradient id="liveWall" x1="0" x2="0" y1="0" y2="1"><stop stopColor="#4775a4"/><stop offset="1" stopColor="#173556"/></linearGradient>
+                <linearGradient id="liveDesk" x1="0" x2="1" y1="0" y2="1"><stop stopColor="#f9c579"/><stop offset="1" stopColor="#cb8c4a"/></linearGradient>
+                <linearGradient id="liveShirt" x1="0" x2="1"><stop stopColor="#3d83ee"/><stop offset="1" stopColor="#1e3e9b"/></linearGradient>
+                <linearGradient id="liveScreen" x1="0" x2="1" y1="0" y2="1"><stop stopColor="#152c50"/><stop offset="1" stopColor="#050c1b"/></linearGradient>
+              </defs>
+              {/* Suelo y paredes con profundidad isométrica */}
+              <path d="M18 104 L176 28 L351 100 L192 214 Z" fill="#254364" opacity=".58"/>
+              <path d="M18 88 L173 13 L173 112 L18 191 Z" fill="#1f3f64"/>
+              <path d="M173 13 L350 83 L350 185 L173 112 Z" fill="url(#liveWall)"/>
+              <path d="M28 126 L169 58" stroke="#4b78a5" strokeWidth="3" opacity=".7"/>
+              <path d="M177 63 L339 124" stroke="#91bce0" strokeWidth="2" opacity=".25"/>
+              <path d="M27 191 L180 119 L349 184 L194 246 Z" fill="#40648a"/>
+              <path d="M27 191 L194 246 L194 252 L27 198 Z" fill="#172d4d"/>
+              <path d="M194 246 L349 184 L349 192 L194 252 Z" fill="#203f66"/>
+              {/* Decoración de la oficina */}
+              <path d="M43 131 L61 122 L61 159 L43 167 Z" fill="#1a2b46"/>
+              <path d="M47 138 L57 132 M47 145 L57 139" stroke="#31bbdb" strokeWidth="3"/>
+              <path d="M283 108 L300 99 L316 108 L299 118 Z" fill="#3a4b59"/>
+              <path className="sky-live-motion" style={{animation:'skyLiveFloat 3.9s ease-in-out infinite', transformOrigin:'297px 100px'}} d="M296 104 Q284 87 290 75 M298 105 Q303 86 315 78 M297 105 Q283 98 279 89" fill="none" stroke="#55c992" strokeWidth="5" strokeLinecap="round"/>
+              {/* Silla */}
+              <ellipse cx="175" cy="195" rx="65" ry="19" fill="#081527" opacity=".48"/>
+              <path d="M143 129 Q144 112 179 112 Q216 114 211 140 L208 185 Q179 201 144 184 Z" fill="#182338" stroke="#6483a6" strokeWidth="3"/>
+              {/* Cuerpo / cuello */}
+              <g className="sky-live-motion" style={{transformOrigin:'180px 155px', animation:'skyLiveBreath 2.7s ease-in-out infinite'}}>
+                <path d="M129 185 Q130 151 154 140 L206 139 Q229 153 234 192 L195 210 L156 206 Z" fill="url(#liveShirt)"/>
+                <path d="M169 137 L170 151 Q180 162 193 146 L192 134" fill="#edab7b"/>
+              </g>
+              {/* Cabeza y pelo */}
+              <g className="sky-live-motion" style={{transformOrigin:'181px 136px', animation:'skyLiveHead 3.3s ease-in-out infinite'}}>
+                <ellipse cx="180" cy="114" rx="29" ry="34" fill="#edb18b"/>
+                <path d="M150 111 Q145 78 171 76 Q180 61 202 81 Q216 86 210 114 L203 99 Q186 100 173 91 Q165 107 154 108 Z" fill="#172233"/>
+                <path d="M154 105 L152 118 L157 129" fill="#172233"/>
+                <g className="sky-live-motion" style={{transformOrigin:'181px 119px', animation:'skyLiveBlink 6s infinite'}}>
+                  <path d="M167 114 h10 M187 114 h10" stroke="#1c2936" strokeWidth="2.5" strokeLinecap="round"/>
+                </g>
+                <path d="M176 132 Q182 137 190 131" stroke="#b56f64" strokeWidth="2" fill="none" strokeLinecap="round"/>
+              </g>
+              {/* Mesa 3D y patas */}
+              <path d="M79 181 L203 155 L306 195 L181 226 Z" fill="url(#liveDesk)" stroke="#ffe0a9" strokeWidth="2"/>
+              <path d="M79 181 L181 226 L181 234 L79 190 Z" fill="#ac6c35"/>
+              <path d="M181 226 L306 195 L306 202 L181 234 Z" fill="#d89b56"/>
+              <path d="M96 191 L96 227 M286 208 L286 232" stroke="#1e293b" strokeWidth="7"/>
+              {/* Teclado con luces */}
+              <path d="M155 197 L210 184 L238 195 L183 208 Z" fill="#1a2942" stroke="#6980a2" strokeWidth="2"/>
+              <path className="sky-live-motion" style={{animation:'skyLiveKey .42s steps(2) infinite'}} d="M171 195 l36 -8 M181 201 l40 -9" stroke="#5eead4" strokeWidth="2" opacity=".6"/>
+              {/* Brazos escribiendo de manera independiente */}
+              <g className="sky-live-motion" style={{transformOrigin:'147px 168px', animation:'skyLiveTypeL .48s ease-in-out infinite'}}>
+                <path d="M146 164 Q128 172 153 198" fill="none" stroke="#2d64bc" strokeWidth="16" strokeLinecap="round"/>
+                <ellipse cx="159" cy="200" rx="12" ry="7" fill="#e9ad83"/>
+              </g>
+              <g className="sky-live-motion" style={{transformOrigin:'220px 162px', animation:'skyLiveTypeR .57s ease-in-out infinite'}}>
+                <path d="M220 163 Q239 170 214 201" fill="none" stroke="#2458a6" strokeWidth="16" strokeLinecap="round"/>
+                <ellipse cx="210" cy="202" rx="12" ry="7" fill="#f3b48b"/>
+              </g>
+              {/* Monitor y base */}
+              <path d="M193 154 L252 136 L252 198 L193 214 Z" fill="#091321" stroke="#506684" strokeWidth="3"/>
+              <path d="M198 159 L247 144 L247 193 L198 207 Z" fill="url(#liveScreen)"/>
+              <path d="M207 171 L237 162 M207 180 L239 170 M207 187 L233 179" stroke="#38bdf8" strokeWidth="3" strokeLinecap="round" opacity=".8"/>
+              <path d="M228 204 L230 216 L242 220 L220 226 L206 220 L223 216" fill="#243b58"/>
+              {/* Taza de café */}
+              <ellipse cx="276" cy="192" rx="11" ry="5" fill="#dceafe"/><path d="M265 193 L269 207 Q277 211 283 204 L287 193" fill="#dceafe"/><path d="M284 197 Q297 196 289 204" stroke="#dceafe" strokeWidth="3" fill="none"/>
+            </svg>
+            <div className="sky-live-motion pointer-events-none absolute bottom-3 left-3 rounded-lg border border-sky-300/25 bg-[#0e2a4a]/95 px-2 py-1.5 text-[10px] font-semibold text-sky-100 shadow-xl" style={{animation:'skyLiveNotify 7.5s ease-in-out infinite'}}>
+              {newActivity ? '🔔 Actividad reciente en tus chats' : '💬 Oficina de atención'}
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-2 border-t border-white/10 bg-[#0e2340] p-2.5 text-[10px]">
+            <div className="rounded-lg border border-white/10 bg-white/5 px-2 py-2">
+              <span className="block text-sky-200">Chats del período</span>
+              <span className="mt-0.5 block text-lg font-extrabold tabular-nums">{conversationsInPeriod}</span>
+            </div>
+            <div className="rounded-lg border border-white/10 bg-white/5 px-2 py-2">
+              <span className="block text-sky-200">Pendientes detectados</span>
+              <span className="mt-0.5 block text-lg font-extrabold tabular-nums">{pending}</span>
+            </div>
+            <p className="col-span-2 flex items-center gap-1.5 text-[10px] text-slate-300">
+              <Activity className="h-3 w-3 shrink-0" />
+              {aiWarning ? 'Hay conversaciones con posible fallo de IA' : 'Indicadores vinculados al Inbox'}
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1267,6 +1446,11 @@ function InboxPage() {
     return matchesSearch && matchesLabel && matchesSmartTab;
   });
 
+  const latestInboxMessageAt = allKnownConversations.reduce((latest, conversation) => {
+    const at = conversation.last_message_at ?? '';
+    return at > latest ? at : latest;
+  }, '');
+
   const resetFilters = () => {
     const today = getTodayDate();
     setSearch("");
@@ -1277,16 +1461,34 @@ function InboxPage() {
   };
 
   return (
-    <div className="flex h-[calc(100vh-3.5rem)] w-full">
+    <div className="relative flex h-[calc(100vh-3.5rem)] w-full flex-col overflow-hidden bg-gradient-to-br from-background via-background to-sky-500/[.035]">
+      {/* Cabecera premium. Todos los contadores provienen del Inbox, no son simulados. */}
+      <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-sky-500/15 bg-gradient-to-r from-[#0c2341] via-[#142e55] to-[#092a3f] px-4 py-3 text-white shadow-sm sm:px-5">
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-white/15 bg-white/10 text-sky-200 shadow-inner"><MessageSquare className="h-5 w-5" /></span>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-extrabold tracking-wide sm:text-base">{inboxWorkspace?.name?.trim() || 'Mi tienda'} <span className="font-medium text-sky-200">· Inbox PRO</span></p>
+          <p className="hidden truncate text-[11px] text-sky-100/70 sm:block">Centro de atención · WhatsApp · IA · Pedidos</p>
+        </div>
+        <div className="hidden items-center gap-2 lg:flex">
+          <div className="min-w-[92px] rounded-xl border border-white/10 bg-white/10 px-3 py-1.5"><p className="text-[10px] text-sky-100/75">Conversaciones</p><p className="text-lg font-bold tabular-nums">{smartCounts.all}</p></div>
+          <div className="min-w-[92px] rounded-xl border border-white/10 bg-white/10 px-3 py-1.5"><p className="text-[10px] text-sky-100/75">Pendientes</p><p className="text-lg font-bold tabular-nums">{pendingCandidates.length}</p></div>
+          <div className="min-w-[105px] rounded-xl border border-white/10 bg-white/10 px-3 py-1.5"><p className="text-[10px] text-sky-100/75">Ventas registradas</p><p className="text-lg font-bold tabular-nums">{smartCounts.closed}</p></div>
+        </div>
+        <span className={cn('hidden items-center gap-1.5 rounded-full border px-3 py-1.5 text-[10px] font-semibold sm:inline-flex', hasPossibleAiFailure?'border-rose-400/35 bg-rose-400/15 text-rose-100':'border-emerald-400/25 bg-emerald-400/10 text-emerald-100')}>
+          <span className={cn('h-1.5 w-1.5 rounded-full',hasPossibleAiFailure?'bg-rose-400':'bg-emerald-400')} />
+          {hasPossibleAiFailure?'Revisar IA':'Sin alertas IA'}
+        </span>
+      </div>
+      <div className="flex min-h-0 flex-1">
       <aside
         className={cn(
-          "flex w-full flex-col border-r border-border sm:w-80",
+          "flex min-h-0 w-full shrink-0 flex-col border-r border-sky-500/15 bg-card/85 shadow-[4px_0_20px_rgba(15,23,42,.035)] sm:w-72 lg:w-80 xl:w-[360px]",
           activeId && "hidden sm:flex",
         )}
       >
-        <div className="space-y-3 border-b border-border bg-card/60 p-3 backdrop-blur">
+        <div className="space-y-3 border-b border-sky-500/15 bg-gradient-to-b from-sky-500/[.065] to-card/60 p-3 backdrop-blur">
           <div className="grid grid-cols-2 gap-2">
-            <div className="rounded-lg border border-border bg-background p-3">
+            <div className="rounded-2xl border border-sky-500/20 bg-background/85 p-3 shadow-sm">
               <p className="text-[11px] font-medium text-muted-foreground">
                 Respuestas pendientes
               </p>
@@ -1297,7 +1499,7 @@ function InboxPage() {
 
             <div
               className={cn(
-                "rounded-lg border p-3",
+                "rounded-2xl border p-3 shadow-sm",
                 isCheckingPending
                   ? "border-border bg-muted/40"
                   : hasPossibleAiFailure
@@ -1497,8 +1699,8 @@ function InboxPage() {
               key={c.id}
               onClick={() => setActiveId(c.id)}
               className={cn(
-                "flex w-full flex-col gap-1 border-b border-border px-3 py-3 text-left transition-colors hover:bg-accent",
-                activeId === c.id && "bg-accent",
+                "mx-1 my-1 flex w-[calc(100%_-_0.5rem)] flex-col gap-1 rounded-xl border border-transparent px-3 py-3 text-left transition-all hover:border-sky-500/20 hover:bg-sky-500/[.055]",
+                activeId === c.id && "!border-sky-500/30 !bg-sky-500/10 shadow-sm ring-1 ring-sky-500/10",
               )}
             >
               <div className="flex items-center gap-2">
@@ -1555,14 +1757,14 @@ function InboxPage() {
         </ScrollArea>
       </aside>
 
-      <section className={cn("flex min-w-0 flex-1 flex-col", !activeId && "hidden sm:flex")}>
+      <section className={cn("flex min-h-0 min-w-0 flex-1 flex-col bg-background/70", !activeId && "hidden sm:flex")}>
         {!active ? (
           <div className="flex flex-1 items-center justify-center overflow-y-auto p-4 sm:p-7">
             <InboxAnimatedOffice businessName={inboxWorkspace?.name?.trim() || "Mi tienda"} />
           </div>
         ) : (
           <>
-            <header className="flex flex-wrap items-center gap-2 border-b border-border p-3">
+            <header className="flex flex-wrap items-center gap-2 border-b border-sky-500/15 bg-card/80 p-3 shadow-sm backdrop-blur">
               <Button
                 variant="ghost"
                 size="sm"
@@ -1776,7 +1978,7 @@ function InboxPage() {
               </div>
             )}
 
-            <ScrollArea className="flex-1 bg-muted/30 p-4">
+            <ScrollArea className="min-h-0 flex-1 bg-[radial-gradient(circle_at_25%_20%,rgba(56,189,248,.035),transparent_45%),radial-gradient(circle_at_80%_60%,rgba(16,185,129,.025),transparent_45%)] p-4">
               <div className="mx-auto flex max-w-3xl flex-col gap-2">
                 {active.ad_id && (
                   <div className="mb-2 rounded-2xl border bg-card p-4 shadow-sm">
@@ -1871,7 +2073,7 @@ function InboxPage() {
                           toggleSelect();
                         }}
                         className={cn(
-                          "cursor-pointer rounded-2xl px-3 py-2 text-sm shadow-sm",
+                          "cursor-pointer rounded-2xl px-3 py-2.5 text-sm shadow-sm ring-1 ring-border/20",
                           m.direction === "inbound"
                             ? "rounded-bl-sm bg-card"
                             : "rounded-br-sm bg-primary text-primary-foreground",
@@ -1996,7 +2198,7 @@ function InboxPage() {
             </ScrollArea>
 
 
-            <footer className="flex items-end gap-2 border-t border-border p-3">
+            <footer className="flex items-end gap-2 border-t border-sky-500/15 bg-card/90 p-3 shadow-[0_-5px_18px_rgba(2,8,23,.035)]">
               <input
                 ref={fileRef}
                 type="file"
@@ -2052,6 +2254,14 @@ function InboxPage() {
 
         )}
       </section>
+      </div>
+      <InboxLiveOfficeCorner
+        businessName={inboxWorkspace?.name?.trim() || 'Mi tienda'}
+        pending={pendingCandidates.length}
+        conversationsInPeriod={smartCounts.all}
+        aiWarning={hasPossibleAiFailure}
+        activityStamp={latestInboxMessageAt}
+      />
     </div>
   );
 }
