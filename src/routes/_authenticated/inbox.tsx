@@ -16,8 +16,6 @@ import {
   Save,
   Send,
   Sparkles,
-  Minimize2,
-  Maximize2,
   Activity,
   Layers3,
   Paperclip,
@@ -57,122 +55,26 @@ import { AdOriginCard } from "@/components/ad-origin-card";
 import { ContactInfoDialog } from "@/components/contact-info-dialog";
 
 
-/** Oficina visual: animación CSS liviana, sin videos ni servicios externos. */
-function InboxAnimatedOffice({ businessName }: { businessName: string }) {
-  return (
-    <div className="relative mx-auto w-full max-w-4xl overflow-hidden rounded-3xl border border-sky-400/20 bg-[#091629] p-5 text-white shadow-2xl sm:p-8">
-      <style>{`
-        @keyframes skyOfficeTypeLeft { 0%, 100% { transform: rotate(-11deg) translateY(0) } 50% { transform: rotate(5deg) translateY(8px) } }
-        @keyframes skyOfficeTypeRight { 0%, 100% { transform: rotate(9deg) translateY(6px) } 50% { transform: rotate(-10deg) translateY(0) } }
-        @keyframes skyOfficeFloat { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-7px) } }
-        @keyframes skyOfficeMessage { 0%,12% { opacity: 0; transform: translateY(12px) scale(.96) } 20%,80% { opacity: 1; transform: translateY(0) scale(1) } 94%,100% { opacity: 0; transform: translateY(-8px) scale(.98) } }
-        @keyframes skyOfficeBlink { 0%,90%,100% { transform: scaleY(1) } 94% { transform: scaleY(.12) } }
-        @keyframes skyOfficePulse { 0%,100% { opacity: .45; transform: scale(.9) } 50% { opacity: 1; transform: scale(1.12) } }
-        @media (prefers-reduced-motion: reduce) { .sky-office-motion { animation: none !important } }
-      `}</style>
-      <div className="pointer-events-none absolute -right-24 -top-24 h-64 w-64 rounded-full bg-blue-500/15 blur-3xl" />
-      <div className="pointer-events-none absolute -bottom-24 -left-24 h-64 w-64 rounded-full bg-cyan-400/10 blur-3xl" />
-      <div className="relative z-10 grid items-center gap-6 md:grid-cols-[.95fr_1.05fr]">
-        <div className="space-y-4">
-          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[.18em] text-cyan-300">
-            <span className="sky-office-motion h-2.5 w-2.5 rounded-full bg-emerald-400 shadow-[0_0_12px_#34d399]" style={{ animation: 'skyOfficePulse 2s infinite' }} />
-            Oficina de ventas · en actividad
-          </div>
-          <p className="break-words text-3xl font-black tracking-tight sm:text-4xl">{businessName}</p>
-          <p className="text-lg font-semibold text-sky-100">Tu centro de atención inteligente</p>
-          <p className="max-w-sm text-sm leading-relaxed text-slate-300">Gestioná tus conversaciones y pedidos desde un solo lugar. Seleccioná un chat para comenzar.</p>
-          <div className="flex flex-wrap gap-2 text-xs">
-            <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1.5 text-emerald-200">● Atención activa</span>
-            <span className="rounded-full border border-sky-400/30 bg-sky-400/10 px-3 py-1.5 text-sky-200">WhatsApp + IA</span>
-          </div>
-        </div>
-        <div className="relative mx-auto w-full max-w-[420px]" aria-label="Ilustración animada de una persona trabajando en una oficina">
-          <svg viewBox="0 0 440 320" role="img" aria-label="Asistente trabajando y escribiendo en una computadora" className="h-auto w-full">
-            <defs>
-              <linearGradient id="sky-office-screen" x1="0" y1="0" x2="1" y2="1"><stop stopColor="#152e52"/><stop offset="1" stopColor="#0b1f38"/></linearGradient>
-              <linearGradient id="sky-office-shirt" x1="0" y1="0" x2="1" y2="1"><stop stopColor="#3b82f6"/><stop offset="1" stopColor="#1d4ed8"/></linearGradient>
-            </defs>
-            <rect x="17" y="26" width="405" height="254" rx="20" fill="#102644" stroke="#24527b" strokeWidth="2" />
-            <rect x="29" y="38" width="382" height="215" rx="12" fill="url(#sky-office-screen)" />
-            <circle cx="51" cy="55" r="4" fill="#fb7185"/><circle cx="66" cy="55" r="4" fill="#fbbf24"/><circle cx="81" cy="55" r="4" fill="#34d399"/>
-            <rect x="42" y="79" width="109" height="12" rx="6" fill="#28466a"/><rect x="42" y="102" width="81" height="9" rx="4" fill="#1b4066"/><rect x="42" y="121" width="91" height="9" rx="4" fill="#1b4066"/>
-            <rect x="42" y="142" width="91" height="9" rx="4" fill="#1b4066"/><rect x="42" y="170" width="97" height="30" rx="8" fill="#144a47"/>
-            <rect x="164" y="78" width="223" height="92" rx="10" fill="#102b4d" stroke="#244a74"/>
-            <path d="M180 148 L220 128 L251 136 L286 104 L320 116 L363 90" fill="none" stroke="#38bdf8" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round"/>
-            <circle className="sky-office-motion" cx="363" cy="90" r="6" fill="#34d399" style={{ animation: 'skyOfficePulse 2s infinite' }}/>
-            <ellipse cx="222" cy="276" rx="190" ry="12" fill="#061426" opacity=".8"/>
-            <path d="M77 260 Q221 246 367 260 L386 286 H55 Z" fill="#365579" />
-            <rect x="180" y="202" width="147" height="72" rx="9" fill="#07172b" stroke="#7dd3fc" strokeWidth="3"/>
-            <rect x="191" y="212" width="125" height="48" rx="4" fill="#153e64"/>
-            <rect x="206" y="226" width="51" height="6" rx="3" fill="#67e8f9"/><rect x="206" y="239" width="88" height="5" rx="2" fill="#60a5fa"/>
-            <path d="M170 272 H335 L354 283 H155 Z" fill="#94a3b8"/><rect x="211" y="274" width="70" height="4" rx="2" fill="#475569" />
-            <path d="M111 258 Q115 180 182 174 Q239 165 260 258" fill="url(#sky-office-shirt)"/>
-            <rect x="162" y="165" width="24" height="35" rx="9" fill="#f7b68b" />
-            <ellipse cx="169" cy="131" rx="39" ry="46" fill="#f7b68b" />
-            <path d="M129 132 Q119 78 167 78 Q213 79 207 130 Q200 114 186 110 Q161 119 139 104 Z" fill="#192a3f"/>
-            <g className="sky-office-motion" style={{ transformOrigin: '160px 136px', animation: 'skyOfficeBlink 5.4s infinite' }}>
-              <ellipse cx="153" cy="136" rx="3" ry="4" fill="#18304d"/><ellipse cx="180" cy="136" rx="3" ry="4" fill="#18304d"/>
-            </g>
-            <path d="M159 155 Q171 163 182 154" stroke="#b76f60" strokeWidth="3" fill="none" strokeLinecap="round"/>
-            <g className="sky-office-motion" style={{ transformOrigin: '132px 206px', animation: 'skyOfficeTypeLeft .52s ease-in-out infinite' }}>
-              <path d="M127 202 Q114 228 166 263" fill="none" stroke="#2563eb" strokeWidth="20" strokeLinecap="round"/>
-              <ellipse cx="170" cy="265" rx="13" ry="8" fill="#f7b68b"/>
-            </g>
-            <g className="sky-office-motion" style={{ transformOrigin: '243px 206px', animation: 'skyOfficeTypeRight .47s ease-in-out infinite' }}>
-              <path d="M247 202 Q270 232 274 264" fill="none" stroke="#1d4ed8" strokeWidth="19" strokeLinecap="round"/>
-              <ellipse cx="268" cy="266" rx="14" ry="8" fill="#f7b68b"/>
-            </g>
-            <g className="sky-office-motion" style={{ animation: 'skyOfficeFloat 3s ease-in-out infinite' }}>
-              <rect x="273" y="16" width="134" height="48" rx="12" fill="#eff6ff"/>
-              <circle cx="290" cy="40" r="10" fill="#16a34a"/><path d="M286 39 L289 43 L295 35" stroke="white" strokeWidth="2.5" fill="none"/>
-              <text x="307" y="35" fontSize="12" fontWeight="bold" fill="#1e293b">Nuevo mensaje</text>
-              <text x="307" y="51" fontSize="10" fill="#475569">Atención en línea</text>
-            </g>
-          </svg>
-          <div className="sky-office-motion absolute bottom-5 right-3 rounded-xl border border-emerald-400/30 bg-emerald-500/15 px-3 py-2 text-xs font-semibold text-emerald-100 backdrop-blur" style={{ animation: 'skyOfficeMessage 5s ease-in-out infinite' }}>💬 Conversaciones en movimiento</div>
-        </div>
-      </div>
-    </div>
-  );
-}
+/** Resumen real de pedidos de hoy, aislado por workspace. El pago no se considera acreditado por una imagen. */
+type OfficeOrder = {
+  id: string;
+  created_at: string;
+  customer_name: string;
+  order_number: string;
+  total: number;
+  payment_method: string | null;
+  payment_status: string | null;
+  receipt_url: string | null;
+  status: string | null;
+};
 
+const moneyGs = (value: number) => `Gs. ${new Intl.NumberFormat("es-PY", { maximumFractionDigits: 0 }).format(value)}`;
+const shortName = (value: string) => value.trim().split(/\s+/).slice(0, 2).join(" ") || "Cliente";
+const isAdvanceSale = (method: string | null) => /anticip|transfer|dep[oó]sit|giro|encomienda/i.test(method ?? "");
 
-/**
- * Oficina 3D estilizada: escena SVG original con animación continua del
- * trabajador, teclado, notificaciones y luces. Es una animación decorativa,
- * NO una cámara ni una afirmación de que existe un agente humano conectado.
- * Los contadores provienen de los datos reales del Inbox.
- */
-function InboxLiveOfficeCorner({
-  businessName,
-  pending,
-  conversationsInPeriod,
-  aiWarning,
-  activityStamp,
-}: {
-  businessName: string;
-  pending: number;
-  conversationsInPeriod: number;
-  aiWarning: boolean;
-  activityStamp: string;
-}) {
-  const [expanded, setExpanded] = useState(true);
-  const [newActivity, setNewActivity] = useState(false);
-  const lastStampRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!activityStamp) return;
-    const previous = lastStampRef.current;
-    lastStampRef.current = activityStamp;
-    // No mostrar una alerta falsa al cargar el Inbox o cambiar filtros.
-    if (!previous || previous === activityStamp) return;
-    const ageMs = Date.now() - new Date(activityStamp).getTime();
-    if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs > 120_000) return;
-    setNewActivity(true);
-    const timeout = window.setTimeout(() => setNewActivity(false), 4500);
-    return () => window.clearTimeout(timeout);
-  }, [activityStamp]);
+function OfficeScene({businessName, recentActivity}: {businessName: string;recentActivity: OfficeOrder | null}) {
   return (
-    <div className="sky-live-office fixed bottom-4 right-4 z-40 max-w-[calc(100vw-2rem)] sm:bottom-5 sm:right-6">
+    <div className="inbox-office-scene relative isolate overflow-hidden bg-[radial-gradient(ellipse_at_54%_4%,#234f87_0%,#102946_40%,#071528_90%)]">
       <style>{`
         @keyframes skyLiveTypeL { 0%,100% { transform: rotate(-8deg) translate(0,0) } 48% { transform: rotate(9deg) translate(2px,5px) } }
         @keyframes skyLiveTypeR { 0%,100% { transform: rotate(8deg) translate(0,0) } 52% { transform: rotate(-9deg) translate(-2px,5px) } }
@@ -180,50 +82,24 @@ function InboxLiveOfficeCorner({
         @keyframes skyLiveBlink { 0%,88%,95%,100% { transform: scaleY(1) } 91% { transform: scaleY(.08) } }
         @keyframes skyLiveKey { 0%,100% { opacity: .35 } 40% { opacity: 1 } }
         @keyframes skyLiveFloat { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-6px) } }
-        @keyframes skyLiveNotify { 0%,13%,100% { opacity: 0; transform: translateY(12px) scale(.93) } 24%,78% { opacity: 1; transform: translateY(0) scale(1) } 89% { opacity: 0 } }
         @keyframes skyLiveBreath { 0%,100% { transform: scaleY(1) } 50% { transform: scaleY(1.022) } }
-        @keyframes skyLivePulse { 0%,100% { opacity: .55; box-shadow: 0 0 2px #34d399 } 50% { opacity: 1; box-shadow: 0 0 13px #34d399 } }
-        .sky-live-motion { will-change: transform; }
-        @media (prefers-reduced-motion: reduce) {
-          .sky-live-office .sky-live-motion, .sky-live-office .sky-live-light { animation: none !important; }
-        }
-        @media (max-width: 639px) { .sky-live-office .sky-live-stage { height: 148px; } }
+        @keyframes skyOfficeRise { from { opacity: 0; transform: translateY(22px) scale(.95) } to { opacity: 1; transform: translateY(0) scale(1) } }
+        @keyframes skyOfficeGlow { 0%,100% {opacity:.4} 50% {opacity:1} }
+        @keyframes skyOfficeSweep { from { transform: translateX(-120%) } to { transform: translateX(350%) } }
+        .inbox-office-scene .sky-live-motion { will-change:transform; }
+        @media (prefers-reduced-motion: reduce) { .inbox-office-scene .sky-live-motion, .inbox-office-scene .office-floating { animation:none !important; } }
       `}</style>
-      {!expanded ? (
-        <button
-          type="button"
-          onClick={() => setExpanded(true)}
-          aria-label="Mostrar oficina animada"
-          title="Mostrar oficina animada"
-          className="flex items-center gap-2 rounded-2xl border border-sky-400/40 bg-[#081b34] px-3 py-2.5 text-white shadow-2xl shadow-sky-950/40 transition-transform hover:-translate-y-0.5"
-        >
-          <span className="relative flex h-9 w-9 items-center justify-center rounded-xl bg-sky-400/20 text-xl">👨🏻‍💻
-            <span className="sky-live-light absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-emerald-400" style={{animation: 'skyLivePulse 2.2s infinite'}} />
-          </span>
-          <span className="min-w-0 text-left">
-            <span className="block max-w-36 truncate text-xs font-bold">{businessName}</span>
-            <span className="block text-[10px] text-sky-200">Ver mini oficina animada</span>
-          </span>
-          <Maximize2 className="ml-1 h-4 w-4 text-sky-200" />
-        </button>
-      ) : (
-        <div className="w-[266px] overflow-hidden rounded-[22px] border border-sky-400/35 bg-[#0a1b33] text-white shadow-[0_20px_65px_rgba(0,14,45,.55)] sm:w-[286px]">
-          <div className="flex items-center gap-2 border-b border-white/10 bg-[#0c2342] px-3 py-2.5">
-            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-sky-400/15"><Layers3 className="h-4 w-4 text-sky-300"/></span>
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-xs font-extrabold tracking-wide">{businessName}</p>
-              <p className="flex items-center gap-1.5 text-[10px] text-sky-200">
-                <span className="sky-live-light h-1.5 w-1.5 rounded-full bg-emerald-400" style={{animation: 'skyLivePulse 2.2s infinite'}} />
-                Mini oficina animada
-              </p>
-            </div>
-            <button type="button" onClick={() => setExpanded(false)} aria-label="Minimizar mini oficina" title="Minimizar" className="rounded-lg border border-white/10 bg-white/5 p-2 text-sky-100 transition-colors hover:bg-white/15">
-              <Minimize2 className="h-3.5 w-3.5" />
-            </button>
-          </div>
-          <div className="sky-live-stage relative h-[172px] overflow-hidden bg-[radial-gradient(ellipse_at_52%_12%,#245687_0%,#0e2746_43%,#08182d_100%)]">
-            <span className="absolute right-3 top-2 z-10 rounded-full border border-emerald-300/20 bg-emerald-300/10 px-2 py-0.5 text-[9px] font-bold text-emerald-200">● Animación activa</span>
-            <svg viewBox="0 0 360 250" className="h-full w-full" role="img" aria-label="Mini oficina en perspectiva con persona animada escribiendo en computadora">
+      <div className="pointer-events-none absolute -left-20 top-12 h-44 w-44 rounded-full bg-sky-400/15 blur-3xl" />
+      <div className="pointer-events-none absolute -right-16 bottom-2 h-44 w-44 rounded-full bg-cyan-500/15 blur-3xl" />
+      <div className="relative flex items-center justify-between gap-2 px-4 pt-4">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-black tracking-wide text-white">{businessName}</p>
+          <p className="text-[11px] text-sky-200/80">Centro de operaciones · oficina animada</p>
+        </div>
+        <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-emerald-400/25 bg-emerald-400/10 px-2 py-1 text-[10px] font-semibold text-emerald-200"><span className="office-floating h-1.5 w-1.5 rounded-full bg-emerald-400" style={{animation:'skyOfficeGlow 2s ease-in-out infinite'}}/>En vivo</span>
+      </div>
+      <div className="relative mx-auto aspect-[360/250] w-full max-w-[500px] px-2 pb-1 sm:px-4">
+        <svg viewBox="0 0 360 250" className="h-full w-full drop-shadow-[0_22px_28px_rgba(0,7,22,.38)]" role="img" aria-label="Oficina isométrica vectorial, con una persona animada trabajando en su computadora">
               <defs>
                 <linearGradient id="liveWall" x1="0" x2="0" y1="0" y2="1"><stop stopColor="#4775a4"/><stop offset="1" stopColor="#173556"/></linearGradient>
                 <linearGradient id="liveDesk" x1="0" x2="1" y1="0" y2="1"><stop stopColor="#f9c579"/><stop offset="1" stopColor="#cb8c4a"/></linearGradient>
@@ -287,30 +163,104 @@ function InboxLiveOfficeCorner({
               {/* Taza de café */}
               <ellipse cx="276" cy="192" rx="11" ry="5" fill="#dceafe"/><path d="M265 193 L269 207 Q277 211 283 204 L287 193" fill="#dceafe"/><path d="M284 197 Q297 196 289 204" stroke="#dceafe" strokeWidth="3" fill="none"/>
             </svg>
-            <div className="sky-live-motion pointer-events-none absolute bottom-3 left-3 rounded-lg border border-sky-300/25 bg-[#0e2a4a]/95 px-2 py-1.5 text-[10px] font-semibold text-sky-100 shadow-xl" style={{animation:'skyLiveNotify 7.5s ease-in-out infinite'}}>
-              {newActivity ? '🔔 Actividad reciente en tus chats' : '💬 Oficina de atención'}
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-2 border-t border-white/10 bg-[#0e2340] p-2.5 text-[10px]">
-            <div className="rounded-lg border border-white/10 bg-white/5 px-2 py-2">
-              <span className="block text-sky-200">Chats del período</span>
-              <span className="mt-0.5 block text-lg font-extrabold tabular-nums">{conversationsInPeriod}</span>
-            </div>
-            <div className="rounded-lg border border-white/10 bg-white/5 px-2 py-2">
-              <span className="block text-sky-200">Pendientes detectados</span>
-              <span className="mt-0.5 block text-lg font-extrabold tabular-nums">{pending}</span>
-            </div>
-            <p className="col-span-2 flex items-center gap-1.5 text-[10px] text-slate-300">
-              <Activity className="h-3 w-3 shrink-0" />
-              {aiWarning ? 'Hay conversaciones con posible fallo de IA' : 'Indicadores vinculados al Inbox'}
-            </p>
-          </div>
+        <div className="absolute left-5 top-4 rounded-xl border border-sky-300/15 bg-[#06152a]/65 px-2.5 py-1.5 shadow-lg backdrop-blur-sm">
+          <span className="block text-[9px] font-semibold uppercase tracking-[.15em] text-sky-200/80">Atención IA</span>
+          <span className="flex items-center gap-1 text-xs font-bold text-white"><Activity className="h-3 w-3 text-cyan-300"/>Operando</span>
         </div>
-      )}
+        {recentActivity && (
+          <div key={recentActivity.id} className="office-floating absolute bottom-3 right-4 max-w-[65%] rounded-xl border border-emerald-300/25 bg-[#062b2b]/95 px-3 py-2 shadow-[0_15px_40px_rgba(0,0,0,.45)]" style={{animation:'skyOfficeRise .6s ease-out both'}}>
+            <p className="flex items-center gap-1.5 text-[10px] font-bold text-emerald-200"><CheckCircle2 className="h-3.5 w-3.5"/>Nuevo pedido registrado</p>
+            <p className="mt-0.5 truncate text-xs text-white">{shortName(recentActivity.customer_name)}</p>
+            <p className="text-xs font-bold text-emerald-300">{moneyGs(recentActivity.total)}</p>
+          </div>
+        )}
+      </div>
+      <div className="flex items-center justify-between border-t border-white/10 bg-[#071a30]/70 px-4 py-2 text-[10px] text-sky-100/70">
+        <span className="flex items-center gap-1.5"><span className="office-floating h-1.5 w-1.5 rounded-full bg-cyan-300" style={{animation:'skyOfficeGlow 2.1s infinite'}}/>Personaje trabajando continuamente</span>
+        <span>Escena vectorial HD</span>
+      </div>
     </div>
   );
 }
 
+function InboxOperationsPanel({
+  businessName, orders, pending, totalChats, loading, failed, recentActivity
+}: {
+  businessName: string;
+  orders: OfficeOrder[];
+  pending: number;
+  totalChats: number;
+  loading: boolean;
+  failed: boolean;
+  recentActivity: OfficeOrder | null;
+}) {
+  const sales = orders.filter(order => order.status !== "cancelado");
+  const amount = sales.reduce((total, order) => total + (Number.isFinite(Number(order.total)) ? Number(order.total) : 0), 0);
+  const transfers = sales.filter(order => isAdvanceSale(order.payment_method));
+  const onDelivery = sales.filter(order => !isAdvanceSale(order.payment_method) && /contraentrega|contra entrega|al recibir/i.test(order.payment_method ?? ""));
+  const attached = sales.filter(order => Boolean(order.receipt_url));
+  const hourly = Array.from({length:24}, (_,hour) => sales.filter(order => new Date(order.created_at).getHours() === hour).reduce((sum,order) => sum + Number(order.total || 0),0));
+  const peak = Math.max(1,...hourly);
+  const line = hourly.map((number,hour) => `${hour === 0 ? "M" : "L"}${(hour*12.4+8).toFixed(1)},${(86-(number/peak)*69).toFixed(1)}`).join(" ");
+  const fill = `${line} L293,92 L8,92 Z`;
+  const statCards = [
+    {label:"Ventas registradas", value: String(sales.length), icon:<ShoppingBag className="h-4 w-4"/>, tone:"text-sky-300 bg-sky-400/10"},
+    {label:"Valor de pedidos", value: moneyGs(amount), icon:<Activity className="h-4 w-4"/>, tone:"text-emerald-300 bg-emerald-400/10"},
+    {label:"Por transferencia", value: String(transfers.length), icon:<CheckCircle2 className="h-4 w-4"/>, tone:"text-violet-300 bg-violet-400/10"},
+    {label:"Contraentregas", value: String(onDelivery.length), icon:<ShoppingBag className="h-4 w-4"/>, tone:"text-amber-300 bg-amber-400/10"},
+    {label:"Comprobantes", value: String(attached.length), icon:<Paperclip className="h-4 w-4"/>, tone:"text-cyan-300 bg-cyan-400/10"},
+    {label:"Chats del período", value: String(totalChats), icon:<MessageSquare className="h-4 w-4"/>, tone:"text-slate-200 bg-slate-400/10"},
+  ];
+  return (
+    <div className="flex min-h-0 h-full flex-col bg-[#071527] text-white">
+      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3 [scrollbar-width:thin] [scrollbar-color:#274765_transparent]">
+        <div className="overflow-hidden rounded-[20px] border border-sky-500/25 bg-[#0d2542] shadow-[0_12px_40px_rgba(0,10,28,.24)]">
+          <OfficeScene businessName={businessName} recentActivity={recentActivity}/>
+        </div>
+        <div className="rounded-[20px] border border-sky-500/20 bg-[#0b2039] p-3.5 shadow-inner">
+          <div className="mb-3 flex items-start justify-between gap-3">
+            <div><h3 className="text-sm font-extrabold tracking-tight">Resumen de hoy</h3><p className="mt-0.5 text-[10px] text-slate-400">Pedidos registrados en esta tienda</p></div>
+            <span className="shrink-0 rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-[10px] font-semibold text-slate-200">{getTodayDate().split('-').reverse().join('/')}</span>
+          </div>
+          {failed ? <p className="rounded-xl border border-rose-400/30 bg-rose-400/10 p-2 text-xs text-rose-200">No se pudieron cargar las estadísticas. Revisá permisos de pedidos.</p> : null}
+          <div className="grid grid-cols-2 gap-2">
+            {statCards.map(stat => (
+              <div key={stat.label} className="min-w-0 rounded-xl border border-white/[.08] bg-[#102b4b] p-2.5">
+                <div className="mb-2 flex items-center gap-1.5 text-[10px] text-slate-300"><span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-lg ${stat.tone}`}>{stat.icon}</span><span className="leading-tight">{stat.label}</span></div>
+                <p className="break-words text-[15px] font-black leading-tight tabular-nums sm:text-base">{loading && !orders.length ? "…" : stat.value}</p>
+              </div>
+            ))}
+          </div>
+          <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-400/15 bg-sky-400/5 px-3 py-2 text-xs"><span className="text-slate-300">Respuestas pendientes</span><span className={`font-black ${pending > 0 ? 'text-amber-300':'text-emerald-300'}`}>{pending}</span></div>
+        </div>
+        <div className="rounded-[20px] border border-sky-500/20 bg-[#0b2039] p-3.5">
+          <div className="mb-2 flex items-center justify-between gap-2"><h3 className="text-sm font-extrabold">Pedidos por hora</h3><span className="text-[10px] text-slate-400">Hoy · Gs.</span></div>
+          <svg role="img" aria-label="Gráfico de valor de pedidos por hora de hoy" viewBox="0 0 306 111" className="h-[115px] w-full">
+            <defs><linearGradient id="skyOfficeIncome" x1="0" x2="0" y1="0" y2="1"><stop stopColor="#06b6d4" stopOpacity=".45"/><stop offset="1" stopColor="#06b6d4" stopOpacity="0"/></linearGradient></defs>
+            {[18,42,66,92].map(y=><line key={y} x1="8" x2="293" y1={y} y2={y} stroke="#496987" strokeWidth=".7" opacity=".4"/>)}
+            <path d={fill} fill="url(#skyOfficeIncome)"/><path d={line} fill="none" stroke="#22d3ee" strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round"/>
+            {[0,6,12,18,23].map(h=><text key={h} x={h*12.4+8} y="106" fill="#94a3b8" fontSize="9" textAnchor="middle">{String(h).padStart(2,'0')}h</text>)}
+          </svg>
+          <p className="text-[10px] leading-relaxed text-slate-400">Valor de pedidos ingresados, no dinero acreditado. Los comprobantes requieren verificación bancaria.</p>
+        </div>
+        <div className="rounded-[20px] border border-sky-500/20 bg-[#0b2039] p-3.5">
+          <h3 className="mb-2.5 text-sm font-extrabold">Actividad reciente</h3>
+          {sales.length === 0 ? <p className="text-xs leading-relaxed text-slate-400">Todavía no hay ventas registradas hoy.</p> : (
+            <div className="space-y-2">
+              {sales.slice(0,5).map(order=>(
+                <div key={order.id} className="flex min-w-0 items-center gap-2 rounded-xl border border-white/[.07] bg-white/[.035] px-2.5 py-2">
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-400/10 text-emerald-300"><ShoppingBag className="h-4 w-4"/></div>
+                  <div className="min-w-0 flex-1"><p className="truncate text-[11px] font-semibold">{shortName(order.customer_name)}</p><p className="truncate text-[10px] text-slate-400">Pedido registrado · {new Date(order.created_at).toLocaleTimeString('es-PY',{hour:'2-digit',minute:'2-digit'})}</p></div>
+                  <span className="shrink-0 text-right text-[11px] font-bold text-emerald-300">{moneyGs(Number(order.total || 0))}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 function getTodayDate() {
   const today = new Date();
   const year = today.getFullYear();
@@ -430,7 +380,63 @@ function InboxPage() {
     staleTime: 5 * 60 * 1000,
   });
 
+  // Consulta solo los pedidos reales del workspace durante el día LOCAL del usuario.
+  // Son pedidos, NO transferencias bancarias acreditadas.
+  const todayOfficeDate = getTodayDate();
+  const { data: todayOfficeOrders, isLoading: officeLoading, error: officeError } = useQuery({
+    queryKey: ["inbox-office-orders-today", workspaceId, todayOfficeDate],
+    enabled: Boolean(workspaceId),
+    refetchInterval: 15000,
+    queryFn: async (): Promise<OfficeOrder[]> => {
+      const period = getLocalDateRange(todayOfficeDate, todayOfficeDate);
+      if (!period) return [];
+      const all: OfficeOrder[] = [];
+      const pageSize = 1000;
+      for (let page = 0; page < 100; page++) {
+        const { data, error } = await supabase.from("orders")
+          .select("id,created_at,customer_name,order_number,total,payment_method,payment_status,receipt_url,status")
+          .eq("workspace_id",workspaceId!)
+          .gte("created_at",period.start)
+          .lt("created_at",period.endExclusive)
+          .order("created_at",{ascending:false})
+          .order("id",{ascending:false})
+          .range(page*pageSize, (page+1)*pageSize-1);
+        if (error) throw error;
+        all.push(...(data ?? []));
+        if (!data || data.length < pageSize) break;
+      }
+      return all;
+    },
+  });
+  const [officeActivity, setOfficeActivity] = useState<OfficeOrder | null>(null);
+  const knownOfficeOrderIds = useRef<Set<string> | null>(null);
+  const activityClearRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!todayOfficeOrders) return;
+    const current = new Set(todayOfficeOrders.map(order => order.id));
+    if (knownOfficeOrderIds.current) {
+      const newOrder = todayOfficeOrders.find(order => !knownOfficeOrderIds.current!.has(order.id) && order.status !== "cancelado");
+      if (newOrder) {
+        setOfficeActivity(newOrder);
+        if (activityClearRef.current) clearTimeout(activityClearRef.current);
+        activityClearRef.current = setTimeout(() => setOfficeActivity(null), 8000);
+      }
+    }
+    knownOfficeOrderIds.current = current;
+  }, [todayOfficeOrders]);
+  useEffect(() => () => { if (activityClearRef.current) clearTimeout(activityClearRef.current); }, []);
+  const [smallOfficeOpen, setSmallOfficeOpen] = useState(false);
+
   const queryClient = useQueryClient();
+
+  useEffect(() => {
+    if (!workspaceId) return;
+    const channel = supabase.channel(`inbox-office-orders-${workspaceId}`)
+      .on("postgres_changes", {event:"*",schema:"public",table:"orders",filter:`workspace_id=eq.${workspaceId}`}, () => {
+        queryClient.invalidateQueries({queryKey:["inbox-office-orders-today",workspaceId]});
+      }).subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [workspaceId, queryClient]);
   const [activeId, setActiveId] = useState<string | null>(initialConversationId ?? null);
   const [search, setSearch] = useState("");
   const [smartTab, setSmartTab] = useState<SmartTab>("all");
@@ -1446,11 +1452,6 @@ function InboxPage() {
     return matchesSearch && matchesLabel && matchesSmartTab;
   });
 
-  const latestInboxMessageAt = allKnownConversations.reduce((latest, conversation) => {
-    const at = conversation.last_message_at ?? '';
-    return at > latest ? at : latest;
-  }, '');
-
   const resetFilters = () => {
     const today = getTodayDate();
     setSearch("");
@@ -1474,6 +1475,7 @@ function InboxPage() {
           <div className="min-w-[92px] rounded-xl border border-white/10 bg-white/10 px-3 py-1.5"><p className="text-[10px] text-sky-100/75">Pendientes</p><p className="text-lg font-bold tabular-nums">{pendingCandidates.length}</p></div>
           <div className="min-w-[105px] rounded-xl border border-white/10 bg-white/10 px-3 py-1.5"><p className="text-[10px] text-sky-100/75">Ventas registradas</p><p className="text-lg font-bold tabular-nums">{smartCounts.closed}</p></div>
         </div>
+        <button type="button" onClick={() => setSmallOfficeOpen(true)} className="inline-flex shrink-0 items-center gap-2 rounded-xl border border-sky-300/25 bg-white/10 px-3 py-2 text-xs font-bold text-sky-50 transition hover:bg-white/15 2xl:hidden" aria-label="Abrir oficina y resumen de hoy"><Layers3 className="h-4 w-4"/><span className="hidden md:inline">Oficina y ventas</span></button>
         <span className={cn('hidden items-center gap-1.5 rounded-full border px-3 py-1.5 text-[10px] font-semibold sm:inline-flex', hasPossibleAiFailure?'border-rose-400/35 bg-rose-400/15 text-rose-100':'border-emerald-400/25 bg-emerald-400/10 text-emerald-100')}>
           <span className={cn('h-1.5 w-1.5 rounded-full',hasPossibleAiFailure?'bg-rose-400':'bg-emerald-400')} />
           {hasPossibleAiFailure?'Revisar IA':'Sin alertas IA'}
@@ -1486,7 +1488,7 @@ function InboxPage() {
           activeId && "hidden sm:flex",
         )}
       >
-        <div className="space-y-3 border-b border-sky-500/15 bg-gradient-to-b from-sky-500/[.065] to-card/60 p-3 backdrop-blur">
+        <div className="max-h-[48vh] shrink-0 space-y-3 overflow-y-auto border-b border-sky-500/15 bg-gradient-to-b from-sky-500/[.065] to-card/60 p-3 backdrop-blur [scrollbar-width:thin]">
           <div className="grid grid-cols-2 gap-2">
             <div className="rounded-2xl border border-sky-500/20 bg-background/85 p-3 shadow-sm">
               <p className="text-[11px] font-medium text-muted-foreground">
@@ -1545,7 +1547,7 @@ function InboxPage() {
 
           <Button
             type="button"
-            className="w-full"
+            className="h-auto min-h-10 w-full whitespace-normal px-3 py-2 text-center text-xs"
             disabled={isCheckingPending || aiReplyAll.isPending || codeReplyAll.isPending || pendingCandidates.length === 0}
             onClick={() => {
               if (!pendingCandidates.length) { toast.info("No hay respuestas pendientes"); return; }
@@ -1560,7 +1562,7 @@ function InboxPage() {
 
           <Button
             type="button"
-            className="w-full bg-lime-500 font-bold text-slate-950 hover:bg-lime-400"
+            className="h-auto min-h-10 w-full whitespace-normal break-words px-3 py-2 text-center text-[11px] font-bold leading-snug bg-lime-500 text-slate-950 hover:bg-lime-400"
             disabled={isCheckingPending || codeReplyAll.isPending || aiReplyAll.isPending || pendingCandidates.length === 0}
             onClick={() => {
               if (!pendingCandidates.length) { toast.info("No hay respuestas pendientes"); return; }
@@ -1576,11 +1578,11 @@ function InboxPage() {
           {/* Pestañas de atención: no modifican ni mueven mensajes en la base. */}
           <div className="space-y-2">
             <p className="text-xs font-semibold">Organizar conversaciones</p>
-            <div className="flex max-h-40 flex-wrap gap-1.5 overflow-y-auto">
+            <div className="flex max-h-44 flex-wrap content-start gap-1.5 overflow-y-auto">
               {SMART_TABS.map(tab=>(
                 <button key={tab.id} type="button" onClick={()=>setSmartTab(tab.id)}
                   aria-pressed={smartTab===tab.id}
-                  className={cn("rounded-lg border px-2 py-1.5 text-[11px] font-semibold transition-colors",
+                  className={cn("max-w-full whitespace-normal break-words rounded-lg border px-2 py-1.5 text-[11px] font-semibold leading-snug transition-colors",
                     smartTab===tab.id?"border-primary bg-primary text-primary-foreground":"border-border bg-background hover:bg-accent")}
                 >{tab.icon} {tab.label} ({smartCounts[tab.id]??0})</button>
               ))}
@@ -1760,7 +1762,7 @@ function InboxPage() {
       <section className={cn("flex min-h-0 min-w-0 flex-1 flex-col bg-background/70", !activeId && "hidden sm:flex")}>
         {!active ? (
           <div className="flex flex-1 items-center justify-center overflow-y-auto p-4 sm:p-7">
-            <InboxAnimatedOffice businessName={inboxWorkspace?.name?.trim() || "Mi tienda"} />
+            <div className="mx-auto flex max-w-md flex-col items-center gap-4 rounded-[24px] border border-sky-500/15 bg-card/85 px-8 py-10 text-center shadow-[0_16px_40px_rgba(0,0,0,.08)]"><div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-sky-400/25 bg-sky-400/10"><MessageSquare className="h-8 w-8 text-sky-500"/></div><div><h2 className="text-xl font-extrabold">Tu centro de atención está listo</h2><p className="mt-2 text-sm leading-relaxed text-muted-foreground">Seleccioná una conversación para responder. El resumen de ventas y la oficina animada están en el panel derecho.</p></div></div>
           </div>
         ) : (
           <>
@@ -2254,14 +2256,16 @@ function InboxPage() {
 
         )}
       </section>
+      <aside className="hidden h-full min-h-0 w-[350px] shrink-0 border-l border-sky-500/20 2xl:flex 2xl:w-[395px]">
+        <InboxOperationsPanel businessName={inboxWorkspace?.name?.trim() || "Mi tienda"} orders={todayOfficeOrders ?? []} pending={pendingCandidates.length} totalChats={smartCounts.all} loading={officeLoading} failed={Boolean(officeError)} recentActivity={officeActivity}/>
+      </aside>
       </div>
-      <InboxLiveOfficeCorner
-        businessName={inboxWorkspace?.name?.trim() || 'Mi tienda'}
-        pending={pendingCandidates.length}
-        conversationsInPeriod={smartCounts.all}
-        aiWarning={hasPossibleAiFailure}
-        activityStamp={latestInboxMessageAt}
-      />
+      {smallOfficeOpen && <div className="fixed inset-0 z-[80] bg-black/65 backdrop-blur-sm 2xl:hidden" onClick={() => setSmallOfficeOpen(false)} role="presentation">
+        <aside role="dialog" aria-label="Oficina y ventas de hoy" aria-modal="true" className="absolute inset-y-0 right-0 w-[min(420px,94vw)] border-l border-sky-500/20 shadow-2xl" onClick={event=>event.stopPropagation()}>
+          <button onClick={() => setSmallOfficeOpen(false)} type="button" className="absolute right-3 top-3 z-30 rounded-lg bg-[#071527] p-2 text-white shadow-lg" aria-label="Cerrar oficina"><X className="h-4 w-4"/></button>
+          <InboxOperationsPanel businessName={inboxWorkspace?.name?.trim() || "Mi tienda"} orders={todayOfficeOrders ?? []} pending={pendingCandidates.length} totalChats={smartCounts.all} loading={officeLoading} failed={Boolean(officeError)} recentActivity={officeActivity}/>
+        </aside>
+      </div>}
     </div>
   );
 }
