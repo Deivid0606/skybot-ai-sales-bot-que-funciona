@@ -1491,7 +1491,7 @@ function InboxPage() {
         const lastCustomerAt = aiUnansweredSince[conversation.id];
         if (!lastCustomerAt) return false;
         const inboundTime = Date.parse(lastCustomerAt);
-        return Number.isFinite(inboundTime) && statusNow - inboundTime >= 3 * 60 * 1000;
+        return Number.isFinite(inboundTime) && statusNow - inboundTime > 6 * 60 * 1000;
       })
     : [];
 
@@ -1503,7 +1503,7 @@ function InboxPage() {
       toast.warning(
         `Posible fallo de IA: ${possibleAiFailures.length} conversación${
           possibleAiFailures.length === 1 ? "" : "es"
-        } lleva${possibleAiFailures.length === 1 ? "" : "n"} más de 3 minutos pendiente${
+        } lleva${possibleAiFailures.length === 1 ? "" : "n"} más de 6 minutos pendiente${
           possibleAiFailures.length === 1 ? "" : "s"
         }`,
       );
@@ -1663,7 +1663,7 @@ function InboxPage() {
                   <p className="mt-1">
                     {possibleAiFailures.length} conversación{
                       possibleAiFailures.length === 1 ? "" : "es"
-                    } lleva{possibleAiFailures.length === 1 ? "" : "n"} más de 3 minutos sin respuesta de IA tras el último mensaje del cliente. Los copies e imágenes enviados por código no cuentan como fallos.
+                    } lleva{possibleAiFailures.length === 1 ? "" : "n"} más de 6 minutos sin respuesta de IA tras el último mensaje del cliente. Los copies e imágenes enviados por código no cuentan como fallos.
                   </p>
                 </div>
               </div>
