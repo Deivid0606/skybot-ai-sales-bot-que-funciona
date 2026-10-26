@@ -52,6 +52,86 @@ import { MAX_FILE_BYTES, guessMediaType, uploadWorkspaceFile } from "@/lib/stora
 import { AdOriginCard } from "@/components/ad-origin-card";
 import { ContactInfoDialog } from "@/components/contact-info-dialog";
 
+
+/** Oficina visual: animación CSS liviana, sin videos ni servicios externos. */
+function InboxAnimatedOffice({ businessName }: { businessName: string }) {
+  return (
+    <div className="relative mx-auto w-full max-w-4xl overflow-hidden rounded-3xl border border-sky-400/20 bg-[#091629] p-5 text-white shadow-2xl sm:p-8">
+      <style>{`
+        @keyframes skyOfficeTypeLeft { 0%, 100% { transform: rotate(-11deg) translateY(0) } 50% { transform: rotate(5deg) translateY(8px) } }
+        @keyframes skyOfficeTypeRight { 0%, 100% { transform: rotate(9deg) translateY(6px) } 50% { transform: rotate(-10deg) translateY(0) } }
+        @keyframes skyOfficeFloat { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-7px) } }
+        @keyframes skyOfficeMessage { 0%,12% { opacity: 0; transform: translateY(12px) scale(.96) } 20%,80% { opacity: 1; transform: translateY(0) scale(1) } 94%,100% { opacity: 0; transform: translateY(-8px) scale(.98) } }
+        @keyframes skyOfficeBlink { 0%,90%,100% { transform: scaleY(1) } 94% { transform: scaleY(.12) } }
+        @keyframes skyOfficePulse { 0%,100% { opacity: .45; transform: scale(.9) } 50% { opacity: 1; transform: scale(1.12) } }
+        @media (prefers-reduced-motion: reduce) { .sky-office-motion { animation: none !important } }
+      `}</style>
+      <div className="pointer-events-none absolute -right-24 -top-24 h-64 w-64 rounded-full bg-blue-500/15 blur-3xl" />
+      <div className="pointer-events-none absolute -bottom-24 -left-24 h-64 w-64 rounded-full bg-cyan-400/10 blur-3xl" />
+      <div className="relative z-10 grid items-center gap-6 md:grid-cols-[.95fr_1.05fr]">
+        <div className="space-y-4">
+          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[.18em] text-cyan-300">
+            <span className="sky-office-motion h-2.5 w-2.5 rounded-full bg-emerald-400 shadow-[0_0_12px_#34d399]" style={{ animation: 'skyOfficePulse 2s infinite' }} />
+            Oficina de ventas · en actividad
+          </div>
+          <p className="break-words text-3xl font-black tracking-tight sm:text-4xl">{businessName}</p>
+          <p className="text-lg font-semibold text-sky-100">Tu centro de atención inteligente</p>
+          <p className="max-w-sm text-sm leading-relaxed text-slate-300">Gestioná tus conversaciones y pedidos desde un solo lugar. Seleccioná un chat para comenzar.</p>
+          <div className="flex flex-wrap gap-2 text-xs">
+            <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1.5 text-emerald-200">● Atención activa</span>
+            <span className="rounded-full border border-sky-400/30 bg-sky-400/10 px-3 py-1.5 text-sky-200">WhatsApp + IA</span>
+          </div>
+        </div>
+        <div className="relative mx-auto w-full max-w-[420px]" aria-label="Ilustración animada de una persona trabajando en una oficina">
+          <svg viewBox="0 0 440 320" role="img" aria-label="Asistente trabajando y escribiendo en una computadora" className="h-auto w-full">
+            <defs>
+              <linearGradient id="sky-office-screen" x1="0" y1="0" x2="1" y2="1"><stop stopColor="#152e52"/><stop offset="1" stopColor="#0b1f38"/></linearGradient>
+              <linearGradient id="sky-office-shirt" x1="0" y1="0" x2="1" y2="1"><stop stopColor="#3b82f6"/><stop offset="1" stopColor="#1d4ed8"/></linearGradient>
+            </defs>
+            <rect x="17" y="26" width="405" height="254" rx="20" fill="#102644" stroke="#24527b" strokeWidth="2" />
+            <rect x="29" y="38" width="382" height="215" rx="12" fill="url(#sky-office-screen)" />
+            <circle cx="51" cy="55" r="4" fill="#fb7185"/><circle cx="66" cy="55" r="4" fill="#fbbf24"/><circle cx="81" cy="55" r="4" fill="#34d399"/>
+            <rect x="42" y="79" width="109" height="12" rx="6" fill="#28466a"/><rect x="42" y="102" width="81" height="9" rx="4" fill="#1b4066"/><rect x="42" y="121" width="91" height="9" rx="4" fill="#1b4066"/>
+            <rect x="42" y="142" width="91" height="9" rx="4" fill="#1b4066"/><rect x="42" y="170" width="97" height="30" rx="8" fill="#144a47"/>
+            <rect x="164" y="78" width="223" height="92" rx="10" fill="#102b4d" stroke="#244a74"/>
+            <path d="M180 148 L220 128 L251 136 L286 104 L320 116 L363 90" fill="none" stroke="#38bdf8" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round"/>
+            <circle className="sky-office-motion" cx="363" cy="90" r="6" fill="#34d399" style={{ animation: 'skyOfficePulse 2s infinite' }}/>
+            <ellipse cx="222" cy="276" rx="190" ry="12" fill="#061426" opacity=".8"/>
+            <path d="M77 260 Q221 246 367 260 L386 286 H55 Z" fill="#365579" />
+            <rect x="180" y="202" width="147" height="72" rx="9" fill="#07172b" stroke="#7dd3fc" strokeWidth="3"/>
+            <rect x="191" y="212" width="125" height="48" rx="4" fill="#153e64"/>
+            <rect x="206" y="226" width="51" height="6" rx="3" fill="#67e8f9"/><rect x="206" y="239" width="88" height="5" rx="2" fill="#60a5fa"/>
+            <path d="M170 272 H335 L354 283 H155 Z" fill="#94a3b8"/><rect x="211" y="274" width="70" height="4" rx="2" fill="#475569" />
+            <path d="M111 258 Q115 180 182 174 Q239 165 260 258" fill="url(#sky-office-shirt)"/>
+            <rect x="162" y="165" width="24" height="35" rx="9" fill="#f7b68b" />
+            <ellipse cx="169" cy="131" rx="39" ry="46" fill="#f7b68b" />
+            <path d="M129 132 Q119 78 167 78 Q213 79 207 130 Q200 114 186 110 Q161 119 139 104 Z" fill="#192a3f"/>
+            <g className="sky-office-motion" style={{ transformOrigin: '160px 136px', animation: 'skyOfficeBlink 5.4s infinite' }}>
+              <ellipse cx="153" cy="136" rx="3" ry="4" fill="#18304d"/><ellipse cx="180" cy="136" rx="3" ry="4" fill="#18304d"/>
+            </g>
+            <path d="M159 155 Q171 163 182 154" stroke="#b76f60" strokeWidth="3" fill="none" strokeLinecap="round"/>
+            <g className="sky-office-motion" style={{ transformOrigin: '132px 206px', animation: 'skyOfficeTypeLeft .52s ease-in-out infinite' }}>
+              <path d="M127 202 Q114 228 166 263" fill="none" stroke="#2563eb" strokeWidth="20" strokeLinecap="round"/>
+              <ellipse cx="170" cy="265" rx="13" ry="8" fill="#f7b68b"/>
+            </g>
+            <g className="sky-office-motion" style={{ transformOrigin: '243px 206px', animation: 'skyOfficeTypeRight .47s ease-in-out infinite' }}>
+              <path d="M247 202 Q270 232 274 264" fill="none" stroke="#1d4ed8" strokeWidth="19" strokeLinecap="round"/>
+              <ellipse cx="268" cy="266" rx="14" ry="8" fill="#f7b68b"/>
+            </g>
+            <g className="sky-office-motion" style={{ animation: 'skyOfficeFloat 3s ease-in-out infinite' }}>
+              <rect x="273" y="16" width="134" height="48" rx="12" fill="#eff6ff"/>
+              <circle cx="290" cy="40" r="10" fill="#16a34a"/><path d="M286 39 L289 43 L295 35" stroke="white" strokeWidth="2.5" fill="none"/>
+              <text x="307" y="35" fontSize="12" fontWeight="bold" fill="#1e293b">Nuevo mensaje</text>
+              <text x="307" y="51" fontSize="10" fill="#475569">Atención en línea</text>
+            </g>
+          </svg>
+          <div className="sky-office-motion absolute bottom-5 right-3 rounded-xl border border-emerald-400/30 bg-emerald-500/15 px-3 py-2 text-xs font-semibold text-emerald-100 backdrop-blur" style={{ animation: 'skyOfficeMessage 5s ease-in-out infinite' }}>💬 Conversaciones en movimiento</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function getTodayDate() {
   const today = new Date();
   const year = today.getFullYear();
@@ -159,6 +239,18 @@ function InboxPage() {
   const { c: initialConversationId } = Route.useSearch();
   const { profile } = useAuth();
   const workspaceId = profile?.workspace_id ?? null;
+  const { data: inboxWorkspace } = useQuery({
+    queryKey: ["inbox-workspace-name", workspaceId],
+    enabled: Boolean(workspaceId),
+    queryFn: async () => {
+      const { data, error } = await supabase.from("workspaces")
+        .select("name").eq("id", workspaceId!).maybeSingle();
+      if (error) throw error;
+      return data;
+    },
+    staleTime: 5 * 60 * 1000,
+  });
+
   const queryClient = useQueryClient();
   const [activeId, setActiveId] = useState<string | null>(initialConversationId ?? null);
   const [search, setSearch] = useState("");
@@ -1465,9 +1557,8 @@ function InboxPage() {
 
       <section className={cn("flex min-w-0 flex-1 flex-col", !activeId && "hidden sm:flex")}>
         {!active ? (
-          <div className="flex flex-1 flex-col items-center justify-center gap-2 text-muted-foreground">
-            <MessageSquare className="h-8 w-8" />
-            <p className="text-sm">Selecciona una conversación</p>
+          <div className="flex flex-1 items-center justify-center overflow-y-auto p-4 sm:p-7">
+            <InboxAnimatedOffice businessName={inboxWorkspace?.name?.trim() || "Mi tienda"} />
           </div>
         ) : (
           <>
