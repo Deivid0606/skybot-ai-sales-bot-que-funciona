@@ -74,7 +74,7 @@ const isAdvanceSale = (method: string | null) => /anticip|transfer|dep[oó]sit|g
 
 function OfficeScene({businessName, recentActivity}: {businessName: string;recentActivity: OfficeOrder | null}) {
   return (
-    <div className="inbox-office-scene relative isolate overflow-hidden bg-[radial-gradient(ellipse_at_54%_4%,#234f87_0%,#102946_40%,#071528_90%)]">
+    <div className="inbox-office-scene relative isolate h-full overflow-hidden bg-transparent">
       <style>{`
         @keyframes skyLiveTypeL { 0%,100% { transform: rotate(-8deg) translate(0,0) } 48% { transform: rotate(9deg) translate(2px,5px) } }
         @keyframes skyLiveTypeR { 0%,100% { transform: rotate(8deg) translate(0,0) } 52% { transform: rotate(-9deg) translate(-2px,5px) } }
@@ -91,15 +91,8 @@ function OfficeScene({businessName, recentActivity}: {businessName: string;recen
       `}</style>
       <div className="pointer-events-none absolute -left-20 top-12 h-44 w-44 rounded-full bg-sky-400/15 blur-3xl" />
       <div className="pointer-events-none absolute -right-16 bottom-2 h-44 w-44 rounded-full bg-cyan-500/15 blur-3xl" />
-      <div className="relative flex items-center justify-between gap-2 px-4 pt-4">
-        <div className="min-w-0">
-          <p className="truncate text-sm font-black tracking-wide text-white">{businessName}</p>
-          <p className="text-[11px] text-sky-200/80">Centro de operaciones · oficina animada</p>
-        </div>
-        <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-emerald-400/25 bg-emerald-400/10 px-2 py-1 text-[10px] font-semibold text-emerald-200"><span className="office-floating h-1.5 w-1.5 rounded-full bg-emerald-400" style={{animation:'skyOfficeGlow 2s ease-in-out infinite'}}/>En vivo</span>
-      </div>
-      <div className="relative mx-auto aspect-[360/250] w-full max-w-[500px] px-2 pb-1 sm:px-4">
-        <svg viewBox="0 0 360 250" className="h-full w-full drop-shadow-[0_22px_28px_rgba(0,7,22,.38)]" role="img" aria-label="Oficina isométrica vectorial, con una persona animada trabajando en su computadora">
+      <div className="relative mx-auto h-full w-full max-w-[550px] px-2 py-0 sm:px-4">
+        <svg viewBox="0 0 360 250" className="h-full w-full drop-shadow-[0_20px_26px_rgba(0,7,22,.48)]" role="img" aria-label={`Oficina virtual animada de ${businessName}: una persona trabaja continuamente en una computadora`}>
               <defs>
                 <linearGradient id="liveWall" x1="0" x2="0" y1="0" y2="1"><stop stopColor="#4775a4"/><stop offset="1" stopColor="#173556"/></linearGradient>
                 <linearGradient id="liveDesk" x1="0" x2="1" y1="0" y2="1"><stop stopColor="#f9c579"/><stop offset="1" stopColor="#cb8c4a"/></linearGradient>
@@ -163,21 +156,71 @@ function OfficeScene({businessName, recentActivity}: {businessName: string;recen
               {/* Taza de café */}
               <ellipse cx="276" cy="192" rx="11" ry="5" fill="#dceafe"/><path d="M265 193 L269 207 Q277 211 283 204 L287 193" fill="#dceafe"/><path d="M284 197 Q297 196 289 204" stroke="#dceafe" strokeWidth="3" fill="none"/>
             </svg>
-        <div className="absolute left-5 top-4 rounded-xl border border-sky-300/15 bg-[#06152a]/65 px-2.5 py-1.5 shadow-lg backdrop-blur-sm">
-          <span className="block text-[9px] font-semibold uppercase tracking-[.15em] text-sky-200/80">Atención IA</span>
-          <span className="flex items-center gap-1 text-xs font-bold text-white"><Activity className="h-3 w-3 text-cyan-300"/>Operando</span>
-        </div>
-        {recentActivity && (
-          <div key={recentActivity.id} className="office-floating absolute bottom-3 right-4 max-w-[65%] rounded-xl border border-emerald-300/25 bg-[#062b2b]/95 px-3 py-2 shadow-[0_15px_40px_rgba(0,0,0,.45)]" style={{animation:'skyOfficeRise .6s ease-out both'}}>
-            <p className="flex items-center gap-1.5 text-[10px] font-bold text-emerald-200"><CheckCircle2 className="h-3.5 w-3.5"/>Nuevo pedido registrado</p>
-            <p className="mt-0.5 truncate text-xs text-white">{shortName(recentActivity.customer_name)}</p>
-            <p className="text-xs font-bold text-emerald-300">{moneyGs(recentActivity.total)}</p>
-          </div>
-        )}
       </div>
-      <div className="flex items-center justify-between border-t border-white/10 bg-[#071a30]/70 px-4 py-2 text-[10px] text-sky-100/70">
-        <span className="flex items-center gap-1.5"><span className="office-floating h-1.5 w-1.5 rounded-full bg-cyan-300" style={{animation:'skyOfficeGlow 2.1s infinite'}}/>Personaje trabajando continuamente</span>
-        <span>Escena vectorial HD</span>
+    </div>
+  );
+}
+
+/** Banner superior: oficina vectorial animada con actividad real del workspace, sin videos ni librerías. */
+function InboxPanoramicOffice({ businessName, recentActivity, pending, salesCount, amount, onHide }: {
+  businessName: string;
+  recentActivity: OfficeOrder | null;
+  pending: number;
+  salesCount: number;
+  amount: number;
+  onHide: () => void;
+}) {
+  return (
+    <div className="relative isolate hidden h-[196px] shrink-0 overflow-hidden border-b border-sky-400/25 bg-[#071427] text-white shadow-[inset_0_-22px_55px_rgba(0,4,19,.55)] md:block xl:h-[213px]">
+      <style>{`
+        @keyframes officeBannerFloat {0%,100%{transform:translateY(0)}50%{transform:translateY(-7px)}}
+        @keyframes officeBannerPulse {0%,100%{opacity:.45}50%{opacity:1}}
+        @keyframes officeBannerScroll {0%{transform:translateX(-100%)}100%{transform:translateX(370%)}}
+        @media (prefers-reduced-motion:reduce){.office-panorama-motion{animation:none!important}}
+      `}</style>
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_62%_42%,rgba(29,112,192,.42),transparent_48%),linear-gradient(108deg,#091326_0%,#071c37_42%,#0b1932_100%)]"/>
+      {/* Profundidad de oficina panorámica, sin depender de imágenes externas. */}
+      <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 1400 215" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+        <defs>
+          <linearGradient id="skyBannerWindows" x1="0" y1="0" x2="1" y2="1"><stop stopColor="#193759"/><stop offset="1" stopColor="#071527"/></linearGradient>
+          <linearGradient id="skyBannerFloor" x1="0" y1="0" x2="0" y2="1"><stop stopColor="#153b69"/><stop offset="1" stopColor="#09182a"/></linearGradient>
+        </defs>
+        <path d="M0 177 L1400 147 L1400 215 L0 215Z" fill="url(#skyBannerFloor)" opacity=".75"/>
+        <path d="M450 0H1400V146H450Z" fill="url(#skyBannerWindows)" opacity=".54"/>
+        {[610,790,970,1150,1330].map(x=><g key={x}><path d={`M${x} 0V145`} stroke="#3a6d9e" strokeWidth="5" opacity=".35"/><path d={`M${x+15} 0V142`} stroke="#1a3552" strokeWidth="3" opacity=".65"/></g>)}
+        {[25,50,76,103,131].map((y,i)=><path key={y} d={`M470 ${y}H1400`} stroke="#356193" opacity={i%2===0?'.23':'.13'}/>)}
+        {[690,733,768,802,864,1000,1105,1170,1245,1320].map((x,i)=><rect key={x} x={x} y={33+(i%3)*12} width={5+i%3*3} height={20+(i%4)*9} fill={i%2===0?'#38bdf8':'#fdba74'} opacity=".17"/>)}
+        <path d="M440 147H1400" stroke="#39b9f9" strokeWidth="2" opacity=".28"/>
+        <path d="M500 173L1400 165 M430 198L1400 180" stroke="#1e4d7d" strokeWidth="1.5" opacity=".5"/>
+        <path d="M440 10H1370V12H440Z" fill="#0ea5e9" opacity=".15"/>
+      </svg>
+      <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-[#061427] via-[#061427]/30 to-[#071427]/35"/>
+      <div className="relative z-10 flex h-full w-full items-center justify-between gap-3 px-4 sm:px-6 xl:px-8">
+        <div className="z-20 flex h-full min-w-0 max-w-[40%] flex-col justify-center gap-2 py-3 sm:max-w-[37%] xl:max-w-[32%]">
+          <div className="flex items-center gap-2"><span className="rounded-md border border-sky-300/25 bg-sky-400/10 p-1.5 text-sky-200"><Bot className="h-4 w-4"/></span><span className="truncate text-[10px] font-bold uppercase tracking-[.19em] text-sky-200">BOT SKY · INBOX PRO</span></div>
+          <h2 className="max-w-[420px] truncate text-lg font-black tracking-tight text-white sm:text-xl xl:text-[25px]">{businessName}</h2>
+          <p className="hidden max-w-[375px] text-[11px] leading-relaxed text-sky-100/75 lg:block">Tu centro de operaciones: conversá, organizá clientes y seguí cada pedido registrado.</p>
+          <div className="mt-1 flex flex-wrap gap-1.5">
+            <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-400/20 bg-emerald-400/10 px-2 py-1.5 text-[10px] font-semibold text-emerald-200"><span className="office-panorama-motion h-1.5 w-1.5 rounded-full bg-emerald-400" style={{animation:'officeBannerPulse 2s infinite'}}/> Oficina animada</span>
+            <span className="rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-[10px] font-semibold text-white/90">{salesCount} pedido{salesCount===1?'':'s'} hoy</span>
+            <span className="hidden rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-[10px] font-semibold text-white/90 xl:inline-flex">{pending} pendiente{pending===1?'':'s'}</span>
+          </div>
+          <p className="hidden truncate text-[10px] font-semibold text-sky-300 xl:block">Valor de pedidos de hoy: {moneyGs(amount)}</p>
+        </div>
+        <div className="pointer-events-none absolute bottom-0 right-[8%] top-0 w-[48%] min-w-[390px] max-w-[770px] overflow-hidden [mask-image:linear-gradient(to_right,transparent,black_10%,black_95%,transparent)]">
+          <OfficeScene businessName={businessName} recentActivity={null}/>
+        </div>
+        <div className="z-20 ml-auto hidden w-[195px] shrink-0 space-y-2 xl:block 2xl:w-[225px]">
+          <div className="office-panorama-motion rounded-xl border border-sky-300/20 bg-[#0a2444]/90 px-3 py-2.5 shadow-xl backdrop-blur-sm" style={{animation:'officeBannerFloat 5.4s ease-in-out infinite'}}>
+            <div className="flex items-center gap-2"><Activity className="h-4 w-4 text-cyan-300"/><span className="text-[10px] font-extrabold text-cyan-100">Centro de operaciones</span></div>
+            <p className="mt-1 text-[10px] leading-relaxed text-sky-100/75">La oficina se mueve de forma continua, incluso mientras atendés clientes.</p>
+          </div>
+          <div className="rounded-xl border border-emerald-400/20 bg-[#092d2e]/85 px-3 py-2.5 shadow-xl backdrop-blur-sm">
+            <span className="flex items-center gap-1.5 text-[10px] font-extrabold text-emerald-200"><ShoppingBag className="h-3.5 w-3.5"/>{recentActivity?'Nuevo pedido registrado':'Registro de pedidos'}</span>
+            {recentActivity ? <><p className="mt-1 truncate text-[11px] font-medium text-white">{shortName(recentActivity.customer_name)}</p><p className="text-sm font-black text-emerald-300">{moneyGs(recentActivity.total)}</p></> : <p className="mt-1 text-[10px] text-emerald-100/65">Los pedidos nuevos aparecerán aquí cuando se registren.</p>}
+          </div>
+        </div>
+        <button type="button" onClick={onHide} className="absolute right-3 top-2.5 z-30 rounded-lg border border-white/15 bg-[#081b32]/85 px-2.5 py-1.5 text-[10px] font-semibold text-sky-100 transition hover:bg-[#1b395a]" aria-label="Ocultar oficina animada" title="Ocultar oficina">Ocultar oficina</button>
       </div>
     </div>
   );
@@ -214,8 +257,10 @@ function InboxOperationsPanel({
   return (
     <div className="flex min-h-0 h-full flex-col bg-[#071527] text-white">
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3 [scrollbar-width:thin] [scrollbar-color:#274765_transparent]">
-        <div className="overflow-hidden rounded-[20px] border border-sky-500/25 bg-[#0d2542] shadow-[0_12px_40px_rgba(0,10,28,.24)]">
-          <OfficeScene businessName={businessName} recentActivity={recentActivity}/>
+        <div className="rounded-[18px] border border-sky-500/20 bg-gradient-to-r from-[#122d4d] to-[#091d35] px-3 py-3">
+          <p className="truncate text-[11px] font-black uppercase tracking-wide text-sky-100">{businessName}</p>
+          <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-sky-200/75"><span>Panel de operaciones</span><span className="font-bold text-emerald-300">Datos registrados</span></div>
+          {recentActivity && <p className="mt-2 truncate rounded-lg border border-emerald-400/20 bg-emerald-400/10 px-2 py-1.5 text-[10px] text-emerald-100">Nuevo pedido: {shortName(recentActivity.customer_name)} · {moneyGs(recentActivity.total)}</p>}
         </div>
         <div className="rounded-[20px] border border-sky-500/20 bg-[#0b2039] p-3.5 shadow-inner">
           <div className="mb-3 flex items-start justify-between gap-3">
@@ -244,7 +289,7 @@ function InboxOperationsPanel({
           <p className="text-[10px] leading-relaxed text-slate-400">Valor de pedidos ingresados, no dinero acreditado. Los comprobantes requieren verificación bancaria.</p>
         </div>
         <div className="rounded-[20px] border border-sky-500/20 bg-[#0b2039] p-3.5">
-          <h3 className="mb-2.5 text-sm font-extrabold">Actividad reciente</h3>
+          <h3 className="mb-2.5 text-sm font-extrabold">Últimos pedidos registrados</h3>
           {sales.length === 0 ? <p className="text-xs leading-relaxed text-slate-400">Todavía no hay ventas registradas hoy.</p> : (
             <div className="space-y-2">
               {sales.slice(0,5).map(order=>(
@@ -425,7 +470,10 @@ function InboxPage() {
     knownOfficeOrderIds.current = current;
   }, [todayOfficeOrders]);
   useEffect(() => () => { if (activityClearRef.current) clearTimeout(activityClearRef.current); }, []);
+  useEffect(() => { knownOfficeOrderIds.current = null; setOfficeActivity(null); }, [workspaceId]);
   const [smallOfficeOpen, setSmallOfficeOpen] = useState(false);
+  const [showPanoramaOffice, setShowPanoramaOffice] = useState(true);
+  const [showAdvancedInboxFilters, setShowAdvancedInboxFilters] = useState(false);
 
   const queryClient = useQueryClient();
 
@@ -1461,34 +1509,47 @@ function InboxPage() {
     setSmartTab("all");
   };
 
+  const heroSales = (todayOfficeOrders ?? []).filter(order => order.status !== "cancelado");
+  const heroSalesTotal = heroSales.reduce((sum, order) => sum + (Number(order.total) || 0), 0);
   return (
     <div className="relative flex h-[calc(100vh-3.5rem)] w-full flex-col overflow-hidden bg-gradient-to-br from-background via-background to-sky-500/[.035]">
       {/* Cabecera premium. Todos los contadores provienen del Inbox, no son simulados. */}
-      <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-sky-500/15 bg-gradient-to-r from-[#0c2341] via-[#142e55] to-[#092a3f] px-4 py-3 text-white shadow-sm sm:px-5">
-        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-white/15 bg-white/10 text-sky-200 shadow-inner"><MessageSquare className="h-5 w-5" /></span>
+      <div className="flex min-h-[52px] shrink-0 items-center gap-3 border-b border-sky-500/15 bg-gradient-to-r from-[#0c2341] via-[#142e55] to-[#092a3f] px-3 py-2 text-white shadow-sm sm:px-5">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-white/15 bg-white/10 text-sky-200 shadow-inner"><MessageSquare className="h-5 w-5" /></span>
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-extrabold tracking-wide sm:text-base">{inboxWorkspace?.name?.trim() || 'Mi tienda'} <span className="font-medium text-sky-200">· Inbox PRO</span></p>
           <p className="hidden truncate text-[11px] text-sky-100/70 sm:block">Centro de atención · WhatsApp · IA · Pedidos</p>
         </div>
-        <div className="hidden items-center gap-2 lg:flex">
+        <div className="hidden items-center gap-2 xl:flex">
           <div className="min-w-[92px] rounded-xl border border-white/10 bg-white/10 px-3 py-1.5"><p className="text-[10px] text-sky-100/75">Conversaciones</p><p className="text-lg font-bold tabular-nums">{smartCounts.all}</p></div>
           <div className="min-w-[92px] rounded-xl border border-white/10 bg-white/10 px-3 py-1.5"><p className="text-[10px] text-sky-100/75">Pendientes</p><p className="text-lg font-bold tabular-nums">{pendingCandidates.length}</p></div>
           <div className="min-w-[105px] rounded-xl border border-white/10 bg-white/10 px-3 py-1.5"><p className="text-[10px] text-sky-100/75">Ventas registradas</p><p className="text-lg font-bold tabular-nums">{smartCounts.closed}</p></div>
         </div>
-        <button type="button" onClick={() => setSmallOfficeOpen(true)} className="inline-flex shrink-0 items-center gap-2 rounded-xl border border-sky-300/25 bg-white/10 px-3 py-2 text-xs font-bold text-sky-50 transition hover:bg-white/15 2xl:hidden" aria-label="Abrir oficina y resumen de hoy"><Layers3 className="h-4 w-4"/><span className="hidden md:inline">Oficina y ventas</span></button>
+        <button type="button" onClick={() => setSmallOfficeOpen(true)} className="inline-flex shrink-0 items-center gap-2 rounded-xl border border-sky-300/25 bg-white/10 px-3 py-2 text-xs font-bold text-sky-50 transition hover:bg-white/15 2xl:hidden" aria-label="Abrir oficina y resumen de hoy"><Layers3 className="h-4 w-4"/><span className="hidden md:inline">Resumen de hoy</span></button>
         <span className={cn('hidden items-center gap-1.5 rounded-full border px-3 py-1.5 text-[10px] font-semibold sm:inline-flex', hasPossibleAiFailure?'border-rose-400/35 bg-rose-400/15 text-rose-100':'border-emerald-400/25 bg-emerald-400/10 text-emerald-100')}>
           <span className={cn('h-1.5 w-1.5 rounded-full',hasPossibleAiFailure?'bg-rose-400':'bg-emerald-400')} />
           {hasPossibleAiFailure?'Revisar IA':'Sin alertas IA'}
         </span>
       </div>
+      {showPanoramaOffice ? (
+        <InboxPanoramicOffice businessName={inboxWorkspace?.name?.trim() || "Mi tienda"}
+          recentActivity={officeActivity} pending={pendingCandidates.length}
+          salesCount={heroSales.length} amount={heroSalesTotal}
+          onHide={() => setShowPanoramaOffice(false)} />
+      ) : (
+        <div className="hidden shrink-0 items-center justify-between border-b border-sky-500/20 bg-[#0b2038] px-4 py-1.5 text-xs text-sky-100 md:flex">
+          <span className="flex items-center gap-2"><Layers3 className="h-3.5 w-3.5 text-sky-300" /> Oficina de {inboxWorkspace?.name?.trim() || "Mi tienda"} · {heroSales.length} pedidos registrados hoy</span>
+          <button type="button" onClick={() => setShowPanoramaOffice(true)} className="rounded-lg border border-sky-300/20 px-2.5 py-1 font-semibold hover:bg-white/10">Mostrar oficina 3D</button>
+        </div>
+      )}
       <div className="flex min-h-0 flex-1">
       <aside
         className={cn(
-          "flex min-h-0 w-full shrink-0 flex-col border-r border-sky-500/15 bg-card/85 shadow-[4px_0_20px_rgba(15,23,42,.035)] sm:w-72 lg:w-80 xl:w-[360px]",
+          "flex min-h-0 w-full shrink-0 flex-col border-r border-sky-500/15 bg-card/85 shadow-[4px_0_20px_rgba(15,23,42,.035)] sm:w-64 lg:w-[290px] xl:w-[315px] 2xl:w-[330px]",
           activeId && "hidden sm:flex",
         )}
       >
-        <div className="max-h-[48vh] shrink-0 space-y-3 overflow-y-auto border-b border-sky-500/15 bg-gradient-to-b from-sky-500/[.065] to-card/60 p-3 backdrop-blur [scrollbar-width:thin]">
+        <div className="max-h-[min(52vh,390px)] shrink-0 space-y-2 overflow-y-auto border-b border-sky-500/15 bg-gradient-to-b from-sky-500/[.065] to-card/60 p-2.5 backdrop-blur [scrollbar-width:thin]">
           <div className="grid grid-cols-2 gap-2">
             <div className="rounded-2xl border border-sky-500/20 bg-background/85 p-3 shadow-sm">
               <p className="text-[11px] font-medium text-muted-foreground">
@@ -1545,6 +1606,9 @@ function InboxPage() {
             </div>
           )}
 
+          <details className="group overflow-hidden rounded-xl border border-sky-500/15 bg-background/45">
+            <summary className="cursor-pointer select-none px-3 py-2 text-[11px] font-semibold text-sky-600 dark:text-sky-200">⚡ Acciones de recuperación de chats</summary>
+            <div className="space-y-2 px-2 pb-2">
           <Button
             type="button"
             className="h-auto min-h-10 w-full whitespace-normal px-3 py-2 text-center text-xs"
@@ -1575,10 +1639,13 @@ function InboxPage() {
             {codeReplyAll.isPending ? "Recuperando por código..." : `⚡ RECUPERAR VENTAS Y CHATS POR CÓDIGO (${pendingCandidates.length})`}
           </Button>
 
+            </div>
+          </details>
+
           {/* Pestañas de atención: no modifican ni mueven mensajes en la base. */}
           <div className="space-y-2">
             <p className="text-xs font-semibold">Organizar conversaciones</p>
-            <div className="flex max-h-44 flex-wrap content-start gap-1.5 overflow-y-auto">
+            <div className="flex max-h-[104px] flex-wrap content-start gap-1.5 overflow-y-auto [scrollbar-width:thin]">
               {SMART_TABS.map(tab=>(
                 <button key={tab.id} type="button" onClick={()=>setSmartTab(tab.id)}
                   aria-pressed={smartTab===tab.id}
@@ -1604,6 +1671,13 @@ function InboxPage() {
             />
           </div>
 
+          <button type="button" onClick={() => setShowAdvancedInboxFilters(value => !value)}
+            className="flex w-full items-center justify-between rounded-lg border border-border/70 bg-background/55 px-3 py-2 text-[11px] font-semibold text-muted-foreground hover:text-foreground"
+            aria-expanded={showAdvancedInboxFilters}>
+            <span><Tag className="mr-1 inline h-3 w-3"/> Filtrar por fecha y etiqueta</span>
+            <span>{showAdvancedInboxFilters ? "Ocultar −" : "Mostrar +"}</span>
+          </button>
+          {showAdvancedInboxFilters && <div className="space-y-2 rounded-xl border border-border/70 bg-background/30 p-2">
           <div className="grid grid-cols-2 gap-2">
             <label className="space-y-1">
               <span className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
@@ -1669,6 +1743,8 @@ function InboxPage() {
               <X className="h-4 w-4" />
             </Button>
           </div>
+
+          </div>}
 
           <div className="flex items-center justify-between text-[11px] text-muted-foreground">
             <span>
@@ -1762,7 +1838,7 @@ function InboxPage() {
       <section className={cn("flex min-h-0 min-w-0 flex-1 flex-col bg-background/70", !activeId && "hidden sm:flex")}>
         {!active ? (
           <div className="flex flex-1 items-center justify-center overflow-y-auto p-4 sm:p-7">
-            <div className="mx-auto flex max-w-md flex-col items-center gap-4 rounded-[24px] border border-sky-500/15 bg-card/85 px-8 py-10 text-center shadow-[0_16px_40px_rgba(0,0,0,.08)]"><div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-sky-400/25 bg-sky-400/10"><MessageSquare className="h-8 w-8 text-sky-500"/></div><div><h2 className="text-xl font-extrabold">Tu centro de atención está listo</h2><p className="mt-2 text-sm leading-relaxed text-muted-foreground">Seleccioná una conversación para responder. El resumen de ventas y la oficina animada están en el panel derecho.</p></div></div>
+            <div className="mx-auto flex max-w-md flex-col items-center gap-4 rounded-[24px] border border-sky-500/15 bg-card/85 px-8 py-10 text-center shadow-[0_16px_40px_rgba(0,0,0,.08)]"><div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-sky-400/25 bg-sky-400/10"><MessageSquare className="h-8 w-8 text-sky-500"/></div><div><h2 className="text-xl font-extrabold">Tu centro de atención está listo</h2><p className="mt-2 text-sm leading-relaxed text-muted-foreground">Seleccioná una conversación para responder. La oficina animada está arriba y el resumen real de pedidos a la derecha.</p></div></div>
           </div>
         ) : (
           <>
@@ -2256,11 +2332,11 @@ function InboxPage() {
 
         )}
       </section>
-      <aside className="hidden h-full min-h-0 w-[350px] shrink-0 border-l border-sky-500/20 2xl:flex 2xl:w-[395px]">
+      <aside className="hidden h-full min-h-0 w-[290px] shrink-0 border-l border-sky-500/20 xl:flex 2xl:w-[325px]">
         <InboxOperationsPanel businessName={inboxWorkspace?.name?.trim() || "Mi tienda"} orders={todayOfficeOrders ?? []} pending={pendingCandidates.length} totalChats={smartCounts.all} loading={officeLoading} failed={Boolean(officeError)} recentActivity={officeActivity}/>
       </aside>
       </div>
-      {smallOfficeOpen && <div className="fixed inset-0 z-[80] bg-black/65 backdrop-blur-sm 2xl:hidden" onClick={() => setSmallOfficeOpen(false)} role="presentation">
+      {smallOfficeOpen && <div className="fixed inset-0 z-[80] bg-black/65 backdrop-blur-sm xl:hidden" onClick={() => setSmallOfficeOpen(false)} role="presentation">
         <aside role="dialog" aria-label="Oficina y ventas de hoy" aria-modal="true" className="absolute inset-y-0 right-0 w-[min(420px,94vw)] border-l border-sky-500/20 shadow-2xl" onClick={event=>event.stopPropagation()}>
           <button onClick={() => setSmallOfficeOpen(false)} type="button" className="absolute right-3 top-3 z-30 rounded-lg bg-[#071527] p-2 text-white shadow-lg" aria-label="Cerrar oficina"><X className="h-4 w-4"/></button>
           <InboxOperationsPanel businessName={inboxWorkspace?.name?.trim() || "Mi tienda"} orders={todayOfficeOrders ?? []} pending={pendingCandidates.length} totalChats={smartCounts.all} loading={officeLoading} failed={Boolean(officeError)} recentActivity={officeActivity}/>
