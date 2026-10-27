@@ -1028,11 +1028,16 @@ function InboxPage() {
 
   const aiNow = useMutation({
     mutationFn: async () => {
-      if (!activeId) return;
-      await aiReplyNow({ data: { conversationId: activeId } });
+      if (!activeId) return null;
+      return await aiReplyNow({ data: { conversationId: activeId } });
     },
-    onSuccess: () => {
-      toast.success("Respuesta enviada");
+    onSuccess: (result) => {
+      const r = result as { skipped?: boolean; reason?: string } | null;
+      if (!r || r.skipped) {
+        toast.warning(`No se envió nada: ${r?.reason ?? "la IA no generó respuesta"}`);
+      } else {
+        toast.success("Respuesta enviada");
+      }
       queryClient.invalidateQueries({ queryKey: ["messages"] });
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
     },
