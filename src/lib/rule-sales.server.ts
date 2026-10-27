@@ -112,6 +112,25 @@ export function sellerAllowsNationwideAdvance(training: AiContext["training"]): 
   });
 }
 
+/** Referencia geográfica: identificar localidades no incluidas en la lista de
+ * CONTRAENTREGA. Esta tabla NO habilita cobertura ni confirma transportistas.
+ * Cualquier destino no reconocido se debe aclarar con ciudad y departamento.
+ */
+export function nationwideDestinationFromText(text: string): {city:string;department:string}|null {
+  const normalized = norm(text);
+  const paraguayanCities = [
+    {city:"Capitán Bado",department:"Amambay",aliases:["capitan bado"]},
+    {city:"Pedro Juan Caballero",department:"Amambay",aliases:["pedro juan caballero","pedro juan","pjc"]},
+  ];
+  const matches = paraguayanCities.filter(place => place.aliases.some(alias =>
+    (` ${normalized} `).includes(` ${alias} `)));
+  if (matches.length !== 1) return null;
+  // "¿Y Pedro Juan?" es una consulta, NO un cambio de dirección confirmado.
+  const direct = matches[0].aliases.includes(normalized) ||
+    /\b(?:ciudad de|soy de|vivo en|enviar a|envien a|mandar a|destino|entrega (?:en|a)|para)\b/.test(normalized);
+  return direct ? {city:matches[0].city,department:matches[0].department} : null;
+}
+
 /** No se consideran destinos confirmados los nombres incompletos o dudosos. */
 function declaredDestination(text:string): {city:string;department:string}|null {
   const s=text.trim().replace(/^(?:soy\s+de|vivo\s+en|para|enviar\s+a|mandar\s+a|a\s+)\s*/i,"");
@@ -366,7 +385,14 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   }
   const coverage=parseCoverage(ctx.training);
   const match=cityIn(text,coverage);
+  const nationalDestination = sellerAllowsNationwideAdvance(ctx.training) && !gpsUrl
+    ? nationwideDestinationFromText(text) : null;
   if(match && !gpsUrl && !/\b(?:calle|esquina|casi|barrio|referencia)\b/.test(n)){s.city=match.city;s.department=match.department;s.cityVerified=true;s.coverageStatus=match.active?"covered":"uncovered";}
+  else if(nationalDestination && !/\b(?:calle|esquina|casi|barrio|referencia)\b/.test(n)) {
+    // Municipio/departamento de referencia, no disponibilidad de transporte.
+    s.city=nationalDestination.city;s.department=nationalDestination.department;
+    s.cityVerified=true;s.coverageStatus="uncovered";s.paymentMethod="anticipado";
+  }
   else if(s.awaiting==="city" && !gpsUrl && !s.cityVerified && n.length>=3 && n.length<=55 && /^[a-z ]+$/.test(n)) {
     // La ciudad sola no determina el departamento. Solicitar aclaración, sin inventar.
     s.city = text.trim();
