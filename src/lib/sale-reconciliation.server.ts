@@ -207,8 +207,6 @@ export function nextVerifiedSaleQuestion(ctx: AiContext, state: SaleState): stri
   const isEncomienda=isEncomiendaAdvanceOrder(ctx.training,state.city,state.department,state.paymentMethod);
   if(isEncomienda && (!state.receiptPath || state.receiptReview))return "📎 ¿Me enviás el comprobante de transferencia para continuar con tu encomienda?";
   if (!isValidCustomerName(state.customerName)) return "😊 ¿Me indicás tu nombre y apellido para el pedido?";
-  if(isEncomienda && sellerRequiresEncomiendaCi(ctx.training) && !isValidRecipientCi(state.recipientCi))
-    return "🪪 ¿Me pasás el número de cédula del destinatario para la encomienda?";
   const national = sellerAllowsNationwideAdvance(ctx.training) && state.cityVerified &&
     Boolean(state.city && state.department) && state.coverageStatus === "uncovered";
   if ((!place && !national) || !state.cityVerified) return state.city && !state.department
