@@ -1515,10 +1515,15 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       // Las cuentas bancarias y los ALIAS explícitamente autorizados son
       // identificadores distintos del mismo destinatario. Nunca se debe usar
       // una cédula suelta, teléfono ni dato de otra tienda como alias válido.
-      const bankLines = authorizedBankBlock.split(/\r?\n/);
+      // Limpia emojis, viñetas y negritas (**Titular:**) para que las líneas
+      // del entrenamiento se reconozcan aunque tengan formato de WhatsApp.
+      const bankLines = authorizedBankBlock.split(/\r?\n/).map(line => line
+        .replace(/[*_~`]/g, "")
+        .replace(/^[^A-Za-zÁÉÍÓÚÑáéíóúñ0-9]+/u, "")
+        .trim());
       const authorizedAccounts = [...new Set(bankLines.flatMap(line => {
         const match = line.trim().replace(/^[-*]\s*/, "").match(
-          /^(?:(?:n[úu]mero|n[.º°o\s]*|nro\.?)\s*(?:de\s+)?)?cuenta(?:\s+bancaria|\s+para\s+transferencias?[^:]*)?\s*:\s*([\d\s.-]{6,30})\s*$/i
+          /^(?:(?:n[úu]mero|n[.º°o\s]*|nro\.?)\s*(?:de\s+)?)?cuenta\b[^:]{0,60}:\s*([\d\s.-]{6,30})\s*$/i
         );
         const account = match?.[1]?.replace(/\D/g, "") ?? "";
         return account.length >= 6 ? [account] : [];
@@ -1530,13 +1535,16 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         const result = value.toUpperCase().normalize("NFD")
           .replace(/[\u0300-\u036f]/g, "").replace(/[\s._-]/g, "");
         if (!/^[A-Z0-9]{4,80}$/.test(result)) return "";
+        // "CI 4804126", "C.I. 4804126" o "Alias ci 4804126" = mismo alias numérico.
+        const ciDigits = result.match(/^(?:ALIAS)?(?:CI|CEDULA|RUC)(\d{5,12})$/)?.[1];
+        if (ciDigits) return ciDigits.replace(/^0+(?=\d)/, "");
         return /^\d+$/.test(result) ? result.replace(/^0+(?=\d)/, "") : result;
       };
       const authorizedAliases = [...new Set(bankLines.flatMap(line => {
         const match = line.trim().replace(/^[-*]\s*/, "").match(
           /^(?:alias\b|clave\s+(?:de\s+)?transferencia\b)[^:]*:\s*(.+)$/i
         );
-        const alias = match?.[1]?.trim() ?? "";
+        const alias = (match?.[1]?.trim() ?? "").replace(/\s+/g, "");
         // Para evitar tomar explicaciones por alias, requerir un identificador
         // único y concreto, no una frase descriptiva.
         const normalized = /^[A-Z0-9._-]{4,80}$/i.test(alias)
@@ -2164,6 +2172,8 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
           : "📎 Recibí el archivo, pero no pude comprobar con claridad la cuenta y el monto. ¿Me enviás un comprobante más legible, por favor?"
         : isAdvance && expectedTotal !== null && receivedTotal > 0 && receivedTotal < expectedTotal
           ? `📎 Recibí tu comprobante por Gs. ${receivedTotal.toLocaleString("es-PY")}. El total de tu pedido es Gs. ${expectedTotal.toLocaleString("es-PY")}; faltan Gs. ${(expectedTotal-receivedTotal).toLocaleString("es-PY")}. ¿Me enviás el comprobante de la diferencia?`
+          : isAdvance && expectedTotal !== null && receivedTotal > expectedTotal
+          ? `📎 Recibí tu comprobante por Gs. ${receivedTotal.toLocaleString("es-PY")}, pero el total de tu pedido es Gs. ${expectedTotal.toLocaleString("es-PY")}. El monto no coincide; un asesor va a revisar el caso antes de continuar. Por favor no hagas otra transferencia todavía. 🙏`
           : null;
       // La IA formula preguntas según el entrenamiento, no este archivo. Las
       // discrepancias documentales verificadas sí bloquean el registro; no
