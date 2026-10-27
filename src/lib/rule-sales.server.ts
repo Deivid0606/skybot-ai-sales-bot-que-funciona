@@ -188,7 +188,7 @@ export function enforceVerifiedPaymentReply(args: {
   };
 }
 
-/** Solo se exige CI cuando el entrenamiento ACTIVO lo pide de manera expresa. */
+/** Política de solicitud POSTERIOR al registro, nunca requisito para crearlo. */
 export function sellerRequiresEncomiendaCi(training: AiContext["training"]): boolean {
   return training.some(entry => /encomienda/i.test(entry.content) &&
     /(?:n[uú]mero de c[eé]dula del destinatario|c[eé]dula de identidad del destinatario|c[eé]dula del destinatario)/i.test(entry.content) &&
@@ -207,7 +207,8 @@ export function isValidRecipientCi(value: unknown): boolean {
 export function extractRecipientCiFromCustomerText(text: string, awaitingCi=false): string | null {
   if (/^\s*(?:\[imagen\]|COMPROBANTE|\[documento\]|\[audio\])/i.test(text)) return null;
   const raw=text.trim();
-  const explicit=raw.match(/(?:\b(?:mi|la|el|n[uú]mero de)\s+)?(?:c[eé]dula|c\.?\s*i\.?)(?:\s*(?:n[uú]mero|nro\.?|es|:|=))?\s*[:#-]?\s*([0-9][0-9.\s-]{2,14}[0-9])/i);
+  if (/\b(?:alias|cuenta|banco|titular|beneficiario|operaci[oó]n|celular|tel[eé]fono|whatsapp)\b/i.test(raw)) return null;
+  const explicit=raw.match(/(?:\bc[eé]dula\b|\bc\.?\s*i\.?(?=\s|[:=#-]|\d|$))(?:\s+(?:del\s+destinatario|de\s+identidad))?(?:\s*(?:n[uú]mero|nro\.?|es|ser[ií]a))?\s*[:#=-]?\s*(\S.*)$/im);
   const candidate=explicit?.[1] ?? (awaitingCi && /^[0-9.\s-]{4,16}$/.test(raw) ? raw : null);
   if (!candidate || !isValidRecipientCi(candidate)) return null;
   return candidate.replace(/[^0-9]/g,"");
@@ -385,13 +386,18 @@ function humanName(text:string, expecting:boolean):string|null {
   return cleaned;
 }
 /** Extrae solo información reconocible, sin adivinar nombres o domicilios. */
-function extractCheckoutDetails(raw:string, expecting:boolean):{name?:string;street?:string;alternatePhone?:string} {
+function extractCheckoutDetails(raw:string, expecting:boolean, city?:string|null):{name?:string;street?:string;alternatePhone?:string} {
   const text=raw.trim();
   if(!expecting || !text || /[¿?]/.test(text) || /^(?:s[ií]|dale|ok|claro|perfecto|est[aá] bien|gracias|por favor|listo)(?:\s|[!.]|$)/i.test(text)) return {};
   const output:{name?:string;street?:string;alternatePhone?:string}={};
   // WhatsApp: si se incluye un número secundario, es opcional. Nunca se exige.
   const phone=text.match(/(?:otro\s+n[uú]mero|n[uú]mero\s+alternativo|tel[eé]fono\s+alternativo|contacto\s+alternativo)\s*(?::|es)?\s*(\+?\d[\d\s-]{7,17}\d)/i);
   if(phone) output.alternatePhone=phone[1].replace(/[^\d+]/g, "");
+  // Teléfono suelto en su propia línea (p. ej. «0981-385913»); nunca la cédula.
+  if(!output.alternatePhone) {
+    const bare=(text.split(/[\n;]+/).map(t=>t.trim()).find(t=>/^\+?0?\d[\d\s-]{6,}$/.test(t)) ?? null);
+    if(bare) output.alternatePhone=bare.replace(/[^\d+]/g, "");
+  }
   const cleaned=text.replace(/(?:otro\s+n[uú]mero|n[uú]mero\s+alternativo|tel[eé]fono\s+alternativo|contacto\s+alternativo)\s*(?::|es)?\s*\+?\d[\d\s-]{7,17}\d/ig, "").trim();
   // Admite: "Juan Pérez, calle ...", "Soy Juan Pérez, vivo en ...", y campos etiquetados.
   const nameLabel=cleaned.match(/(?:nombre(?:\s+y\s+apellido)?\s*[:=-]\s*|me\s+llamo\s+|soy\s+)([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+(?:[ '-]+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+){1,4})(?=\s*[,;\n]|\s+(?:direcci[oó]n|calle|av(?:enida)?\.?|vivo\s+en)\b|$)/i);
@@ -399,9 +405,13 @@ function extractCheckoutDetails(raw:string, expecting:boolean):{name?:string;str
   const parts=cleaned.split(/[,;\n]+|\.\s+(?=[A-Za-zÁÉÍÓÚÜÑáéíóúüñ])/).map(t=>t.trim()).filter(Boolean);
   const first=parts[0]?.replace(/^(?:mi\s+nombre\s+es|nombre\s*[:=-]|soy)\s*/i, "");
   const rawName=nameLabel?.[1] || (first && humanName(first,true) ? first : null);
-  if(rawName && humanName(rawName,true)) output.name=rawName.trim();
+  if(rawName && humanName(rawName,true) && !(city && norm(rawName)===norm(city))) output.name=rawName.trim();
   let addr=cleaned.match(/(?:direcci[oó]n\s*[:=-]\s*|vivo\s+en\s+)(.+)$/i)?.[1]?.trim();
-  if(!addr && parts.length>1 && output.name) addr=parts.slice(1).join(", ");
+  if(!addr && parts.length>1 && output.name) {
+    // Nunca tomar la cédula, un teléfono suelto ni la propia ciudad como dirección.
+    const rest=parts.slice(1).filter(t=>!/^(?:\b(?:ci|c[eé]dula|c\.?\s*i\.?)\b|\+?0?\d[\d\s.-]*$)/i.test(t) && !(city && norm(t)===norm(city)));
+    if(rest.length) addr=rest.join(", ");
+  }
   if(!addr && !output.name && /\b(?:calle|avenida|av\.|ruta|barrio|casa|frente|esquina|casi)\b/i.test(cleaned)) addr=cleaned;
   const map=cleaned.match(/https?:\/\/(?:www\.)?(?:maps\.app\.goo\.gl|goo\.gl\/maps|google\.[^\s/]+\/maps|maps\.google\.[^\s/]+)\/[^\s,;]+/i);
   if(map) addr=[addr && !addr.includes(map[0]) ? addr : null, map[0]].filter(Boolean).join(" | ");
@@ -537,12 +547,23 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     s.city=nationalDestination.city;s.department=nationalDestination.department;
     s.cityVerified=true;s.coverageStatus="uncovered";s.paymentMethod="anticipado";
   }
-  else if(s.awaiting==="city" && !gpsUrl && !s.cityVerified && n.length>=3 && n.length<=55 && /^[a-z ]+$/.test(n)) {
-    // La ciudad sola no determina el departamento. Solicitar aclaración, sin inventar.
-    s.city = text.trim();
-    s.department = null;
-    s.cityVerified = false;
-    s.coverageStatus="unknown";
+  else if(s.awaiting==="city" && !gpsUrl && !s.cityVerified) {
+    // Mensaje multilínea (nombre, cédula, teléfono y ciudad juntos): la ciudad
+    // es la línea que coincide con la lista de cobertura.
+    const lineHit=text.split(/[\n;]+/).map(t=>t.trim()).find(line=>{
+      const ln=norm(line);
+      return ln.length>=3 && ln.length<=45 && /^[a-z ]+$/.test(ln) && cityIn(line,coverage);
+    });
+    const lineCoverage=lineHit ? cityIn(lineHit,coverage) : null;
+    if(lineCoverage) {
+      s.city=lineCoverage.city;s.department=lineCoverage.department;s.cityVerified=true;s.coverageStatus=lineCoverage.active?"covered":"uncovered";
+    } else if(n.length>=3 && n.length<=55 && /^[a-z ]+$/.test(n)) {
+      // La ciudad sola no determina el departamento. Solicitar aclaración, sin inventar.
+      s.city = text.trim();
+      s.department = null;
+      s.cityVerified = false;
+      s.coverageStatus="unknown";
+    }
   }
 
   if (!match && sellerAllowsNationwideAdvance(ctx.training) && !gpsUrl &&
@@ -562,11 +583,11 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
       s.coverageStatus=candidate?.active ? "covered" : "uncovered";
     }
   }
-  if(s.cityVerified && (s.awaiting==="details" || s.awaiting==="address" || s.awaiting==="name")) {
-    const details=extractCheckoutDetails(text,true);
+  if(s.cityVerified && (s.awaiting==="details" || s.awaiting==="address" || s.awaiting==="name" || s.awaiting==="city")) {
+    const details=extractCheckoutDetails(text,true,s.city);
     if(details.name && !s.customerName)s.customerName=details.name;
     if(details.street && (!s.street || s.street === s.locationUrl))s.street=details.street;
-    if(details.alternatePhone)s.alternatePhone=details.alternatePhone;
+    if(details.alternatePhone && !s.alternatePhone)s.alternatePhone=details.alternatePhone;
   }
   if(s.cityVerified && (s.awaiting==="name" || /^\s*(?:me llamo|mi nombre es)\b/i.test(text))) {
     const name=humanName(text,s.awaiting==="name");if(name)s.customerName=name;
@@ -655,9 +676,6 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     if(!bank)return answer("💳 Todavía no tengo los datos bancarios confirmados. 😊 Un asesor te ayudará a continuar de forma segura.",null,false,true);
     if(!s.receiptPath)return answer(`💳✨ *¡Ya casi está tu pedido!*\n\n📦 *Producto:* ${p.name}${s.cartLines?.length?` (${summaryLabel})`:selected?` (${selected.label})`:""}\n🔢 *Cantidad:* ${s.quantity}\n💰 *Total:* ${money(total)}\n\n🏦 *Datos para el pago:*\n${bank.slice(0,1600)}\n\n📸 Cuando hagas la transferencia, enviame el comprobante para adjuntarlo. 😊 El vendedor revisará la acreditación antes de confirmarla.`,"receipt");
     if(!s.customerName)return answer("📸 ¡Recibí tu comprobante! 😊 Quedará pendiente de verificación. ¿Me indicás tu nombre y apellido para completar el pedido?","name");
-    if(isEncomiendaAdvanceOrder(ctx.training,s.city,s.department,s.paymentMethod) &&
-       sellerRequiresEncomiendaCi(ctx.training) && !isValidRecipientCi(s.recipientCi))
-      return answer("😊 ¡Gracias! Para registrar la encomienda, ¿me pasás el número de cédula del destinatario?", "recipient_ci");
     return answer(`✅📸 ¡Gracias! Tu comprobante quedó adjunto para revisión. 📦 *${p.name}* (${summaryLabel}), total *${money(total)}*. El vendedor verificará el pago. 😊`,null,true);
   }
   // Un solo mensaje de requisitos una vez elegidos producto, precio, cantidad y ciudad.
