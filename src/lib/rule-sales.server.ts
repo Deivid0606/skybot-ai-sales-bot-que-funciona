@@ -27,6 +27,8 @@ export type SaleState = {
   receiptDocuments?: Array<{path:string; amountGs:number; operation:string|null}>;
   receiptAnalysisAttemptedPaths?: string[];
   receiptReview?: string | null;
+  /** Horario o indicaciones de entrega dichas por el cliente (no es dirección). */
+  deliveryNotes?: string | null;
 };
 export type SaleStep = {
   reply: string;
@@ -353,12 +355,25 @@ function countOf(text:string, expecting:boolean):number|null {
   const word:Record<string,number>={un:1,uno:1,una:1,dos:2,tres:3,cuatro:4,cinco:5,seis:6};
   const m=n.match(/\b(\d{1,3}|un|uno|una|dos|tres|cuatro|cinco|seis)\s*(?:unidad(?:es)?|piezas?)\b/)
     ?? n.match(/\b(?:quiero|llevo|dame|necesito|mandame|pido)\s+(\d{1,3}|un|uno|una|dos|tres|cuatro|cinco|seis)\b/)
-    ?? (expecting ? n.match(/^(\d{1,3}|un|uno|una|dos|tres|cuatro|cinco|seis)$/) : null);
+    ?? n.match(/\bcada\s+(?:uno|una)\b[\s,.;y]*(\d{1,2}|dos|tres|cuatro|cinco|seis)\b/)
+    ?? n.match(/\b(\d{1,2}|dos|tres|cuatro|cinco|seis)\s+(?:cajas?|packs?|juegos?)\b/)
+    ?? (expecting ? n.match(/^(\d{1,3}|un|uno|una|dos|tres|cuatro|cinco|seis)$/) ?? n.match(/(?:^|,)\s*(dos|tres|cuatro|cinco|seis)\s*$/) : null);
   if(!m)return null;
   const num=word[m[1]]??Number(m[1]);return Number.isInteger(num)&&num>0&&num<=100?num:null;
 }
+/** Palabras que indican lugar, horario o pedido: nunca forman parte de un nombre. */
+const NOT_A_NAME=/\b(?:estoy|estamos|en|aeropuerto|trabajo|oficina|empresa|salgo|almorzar|almuerzo|horas?|hs|hasta|desde|avisa|avisame|avisas|traigas|traer|trae|aca|aqui|alla|cerca|frente|casa|shopping|colegio|hospital|terminal|cada|unidades?|cajas?)\b/;
+const PLACE_REF=/\b(?:aeropuerto|trabajo|oficina|empresa|shopping|colegio|escuela|universidad|hospital|sanatorio|terminal|supermercado|estacion|iglesia|plaza|frente|al lado|esquina|casi)\b/;
+const SCHEDULE_REF=/\b(?:\d{1,2}\s*(?::|\.|h)\s*\d{2}|\d{1,2}\s*(?:hs|horas?)|de\s+\d{1,2}\s+a\s+\d{1,2}|hasta\s+las|almorzar|almuerzo|salgo|horario)\b/;
+/** Mensaje que solo indica horario (p. ej. «Salgo a almorzar 12:30 a 13:30»). */
+export function isScheduleOnly(text:string):boolean {
+  const n=norm(text);
+  return SCHEDULE_REF.test(n) && !PLACE_REF.test(n) && !/\b(?:calle|avenida|av|ruta|barrio|casa|nro|numero)\b/.test(n) && !/https?:\/\//.test(text);
+}
+export function isPlaceReference(text:string):boolean { return PLACE_REF.test(norm(text)); }
 function humanName(text:string, expecting:boolean):string|null {
-  const cleaned=text.trim().replace(/^(?:me llamo|mi nombre es|soy)\s+/i, "").trim();
+  const cleaned=text.trim().replace(/^(?:me llamo|mi nombre es|soy)\s+/i, "").replace(/\s+soy\s*$/i, "").trim();
+  if(NOT_A_NAME.test(norm(cleaned)))return null;
   if(!expecting&&!/^(?:me llamo|mi nombre es)\s+/i.test(text))return null;
   if(!/^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+(?:[\s'-]+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+){1,5}$/.test(cleaned))return null;
   if(/\b(?:quiero|litros|gracias|buenas|cuanto|cuando|llegaria|llega|entrega|pedido|precio|ciudad|calle|preguntando|garantia|tarda|demora|necesito|saber|como|donde|favor|dale|ok|esta|bien|si|no|perfecto|listo|ubicacion|maps|numero|direccion)\b/i.test(cleaned))return null;
@@ -387,7 +402,7 @@ function extractCheckoutDetails(raw:string, expecting:boolean):{name?:string;str
   if(map) addr=[addr && !addr.includes(map[0]) ? addr : null, map[0]].filter(Boolean).join(" | ");
   if(addr) {
     addr=addr.replace(/(?:otro\s+n[uú]mero|contacto\s+alternativo)\s*[:=-]?.*$/i,"").trim();
-    if(addr.length>=8 && !/^(?:no\s+tengo|no\s+hay|no\s+se)$/i.test(addr)) output.street=addr;
+    if(addr.length>=8 && !isScheduleOnly(addr) && !/^(?:no\s+tengo|no\s+hay|no\s+se)$/i.test(addr)) output.street=addr;
   }
   return output;
 }
@@ -540,7 +555,16 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   if(s.cityVerified && (s.awaiting==="name" || /^\s*(?:me llamo|mi nombre es)\b/i.test(text))) {
     const name=humanName(text,s.awaiting==="name");if(name)s.customerName=name;
   }
-  if(s.cityVerified && s.awaiting==="address" && !match && !gpsUrl && n.length>=6 && !/^(?:si|no|hola|gracias|si por favor|dale|ok)$/.test(n) && !/\b(?:ubicacion|maps|pedido|precio|llega|ya te|ya le|pase|comparti|envie|mand[eé])\b/.test(n))s.street=text.trim();
+  // Horario de entrega: se guarda aparte y nunca reemplaza la dirección.
+  if(s.cityVerified && SCHEDULE_REF.test(n)) {
+    const note=text.trim().slice(0,200);
+    if(!(s.deliveryNotes??"").includes(note)) s.deliveryNotes=[s.deliveryNotes,note].filter(Boolean).join(" · ");
+  }
+  // Lugar de entrega dicho en cualquier momento («Estoy en el aeropuerto…», «traémelo a mi trabajo…»).
+  if(s.cityVerified && !gpsUrl && isPlaceReference(text) && !/[¿?]/.test(text) && (!s.street || s.street===s.locationUrl)) {
+    s.street=text.trim().replace(/[,;.]?\s*(?:me\s+avis\w*|avisame|avisas)\b.*$/i,"").replace(/^(?:y\s+)?(?:estoy\s+en|quiero\s+que\s+me\s+traigas\s+(?:en|a))\s+/i,"").trim() || text.trim();
+  }
+  if(s.cityVerified && s.awaiting==="address" && !isScheduleOnly(text) && !match && !gpsUrl && n.length>=6 && !/^(?:si|no|hola|gracias|si por favor|dale|ok)$/.test(n) && !/\b(?:ubicacion|maps|pedido|precio|llega|ya te|ya le|pase|comparti|envie|mand[eé])\b/.test(n))s.street=text.trim();
   if(/\b(?:transferencia|transferir|anticipado|deposito|giro)\b/.test(n))s.paymentMethod="anticipado";
   // El mensaje del cliente no puede cambiar la política logística de la ciudad.
   // Mantener la modalidad oficial incluso si el estado previo traía un dato incorrecto.
@@ -626,6 +650,7 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   // La ubicación GPS sirve como referencia de domicilio; no identifica ciudad sin geocodificación verificada.
   if (s.locationUrl && !s.street) s.street=s.locationUrl;
   else if(s.locationUrl && s.street && !s.street.includes(s.locationUrl)) s.street += ` | GPS: ${s.locationUrl}`;
+  if(s.deliveryNotes && s.street && !s.street.includes(s.deliveryNotes)) s.street += ` | Horario: ${s.deliveryNotes}`;
   if(!s.customerName || (needsAddress && !s.street)) {
     if (!match && sellerAllowsNationwideAdvance(ctx.training) && !gpsUrl &&
       (s.awaiting === "city" || (s.city && !s.cityVerified))) {
