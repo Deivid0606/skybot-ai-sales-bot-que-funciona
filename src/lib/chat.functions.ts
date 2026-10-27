@@ -387,6 +387,10 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       const {deliveryPolicyForCity}=await import("@/lib/rule-sales.server");
       const policy=verifiedSale.cityVerified ? deliveryPolicyForCity(verifiedSale.city,verifiedSale.department,ctx.training):null;
       if(policy?.paymentMethod)verifiedSale.paymentMethod=policy.paymentMethod;
+      const {sellerAllowsNationwideAdvance}=await import("@/lib/rule-sales.server");
+      aiContext.systemInstruction += sellerAllowsNationwideAdvance(ctx.training)
+        ? "\nENCOMIENDA NACIONAL DEL VENDEDOR AUTORIZADA: ciudades de Paraguay fuera de la lista de CONTRAENTREGA pueden solicitar encomienda con pago anticipado. No rechaces todo envío por ausencia de contraentrega; la disponibilidad del transportista y el costo deben comprobarse antes de cobrar. "
+        : "\nESTE VENDEDOR NO TIENE ENCOMIENDA NACIONAL EXPLÍCITAMENTE AUTORIZADA. ";
       aiContext.systemInstruction += policy?.paymentMethod
         ? `\nPOLÍTICA DE COBERTURA AUTORIZADA DEL VENDEDOR: ciudad ${policy.city}; departamento ${policy.department}; modalidad ${policy.method}; pago ${policy.paymentMethod}. No pedir ni afirmar pago anticipado para una ciudad cuya modalidad es contraentrega.`
         : `\nLa CIUDAD DE ENTREGA se verifica ANTES de pedir nombre, dirección, GPS o forma de pago. No decidas pago anticipado hasta consultar la política de cobertura del vendedor. Si el cliente hace una consulta intermedia, respondela y conservá la selección ya realizada. No tomes barrio o GPS como prueba de ciudad.`;
@@ -395,6 +399,27 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       catch (err) {
         console.error("[BOT SKY Inbox IA] Proveedor no disponible; mensaje sigue pendiente",err);
         return {skipped:true,reason:"IA no disponible; no se envió respuesta automática de código"};
+      }
+    }
+    // Corregir rechazos comerciales que contradicen la encomienda nacional
+    // autorizada por este vendedor; el texto lo redacta la IA.
+    if (mode !== "rules_only") {
+      const {sellerAllowsNationwideAdvance}=await import("@/lib/rule-sales.server");
+      const known = (step?.state??previous);
+      const listed=known.cityVerified ? verifiedCoverage(String(known.city??""),String(known.department??""),parseCoverage(ctx.training)) : null;
+      if(sellerAllowsNationwideAdvance(ctx.training) && !listed?.active &&
+          !/(?:s[ií] (?:hacemos|enviamos|trabajamos|podemos|ofrecemos)|(?:trabajamos|ofrecemos|enviamos|podemos (?:enviar|gestionar))[^.!?]*encomienda|encomienda[^.!?]*pago anticipado)/i.test(result.reply) &&
+          /(?:no (?:hacemos|realizamos|podemos|tenemos|ofrecemos|enviamos|llegamos)|tampoco (?:hacemos|enviamos|llegamos)|no es posible|no se puede|lamentablemente)/i.test(result.reply) &&
+          /(?:env[ií]os?|entregas?|cobertura|encomienda|interior|anticipad[oa])/i.test(result.reply)) {
+        const correctedCtx={...answerContext,saleState:known,
+          systemInstruction:answerContext.systemInstruction+
+          "\nPRIORIDAD: este vendedor SÍ autoriza encomienda nacional anticipada en ciudades sin contraentrega. No afirmes que es imposible enviar solo por estar fuera del listado de contraentrega. Contestá nuevamente con IA; disponibilidad logística y costo sujetos a verificar. No inventes transportista ni fechas. Pedí solo ciudad/departamento si no están confirmados."};
+        try {
+          const revised=await generateAiReply(correctedCtx);
+          if (/(?:no (?:hacemos|realizamos|podemos|tenemos|ofrecemos|enviamos|llegamos)|tampoco (?:hacemos|enviamos|llegamos))/i.test(revised.reply))
+            return {skipped:true,reason:"IA reiteró rechazo contrario a encomienda autorizada"};
+          result={...result,reply:revised.reply};
+        } catch(error){console.error("[BOT SKY Inbox encomienda] Error corrigiendo IA",error);return {skipped:true,reason:"IA no disponible"};}
       }
     }
     // Mismo control en Inbox: ciudad de entrega antes de solicitar datos posteriores.
@@ -466,11 +491,10 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     const expectedAmount = selectedPrice && Number.isSafeInteger(promoCount) && promoCount>0 ? Number(selectedPrice.price)*promoCount : null;
     const receiptVerifiedAsFile = Boolean(paymentState.receiptPath && !paymentState.receiptReview &&
       expectedAmount !== null && Number.isFinite(expectedAmount) && receiptTotal >= expectedAmount);
-    const workspaceTrainingText = ctx.training.map(t=>String(t.content??"")).join("\n");
-    const nationwideAdvanceApproved = isAdvanceInbox && Boolean(previous.cityVerified && previous.city && previous.department) &&
-      /(?:todo\s+(?:el\s+)?paraguay|(?:cualquier|todas\s+las)\s+ciudad(?:es)?\s+(?:del\s+)?paraguay|env[ií]os?\s+nacionales?)/i.test(workspaceTrainingText) &&
-      /encomienda/i.test(workspaceTrainingText) &&
-      /(?:pago\s+anticipado|transferencia|pagar\s+antes)/i.test(workspaceTrainingText);
+    const {sellerAllowsNationwideAdvance}=await import("@/lib/rule-sales.server");
+    const nationalState=step?.state??previous;
+    const nationwideAdvanceApproved = isAdvanceInbox && Boolean(nationalState.cityVerified && nationalState.city && nationalState.department) &&
+      sellerAllowsNationwideAdvance(ctx.training);
     const valid = (!isAdvanceInbox || receiptVerifiedAsFile) && !conversation.sale_closed && Boolean(orderCoverage?.active || (isAdvanceInbox && /ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(orderCoverage?.method ?? "")) || nationwideAdvanceApproved) &&
       ((isAdvanceInbox && nationwideAdvanceApproved && !orderCoverage?.active) ||
        !orderCoverage?.addressRequired || Boolean(isValidDeliveryAddress(result.order?.street) || isValidDeliveryAddress(step?.state.locationUrl) || isValidDeliveryAddress(previous.locationUrl))) && Boolean(result.order) &&
@@ -648,14 +672,13 @@ export const recoverPendingWithRules = createServerFn({ method: "POST" })
       const verified=verifiedCoverage(String(order.city),String(order.departamento),parseCoverage(ctx.training));
       // Ruta secundaria: nunca registrar un pago anticipado sin validación documental.
       // La autorización nacional viene SOLO del entrenamiento de este workspace.
-      const trainingText = ctx.training.map(item=>String(item.content??"")).join("\n");
+      const {sellerAllowsNationwideAdvance}=await import("@/lib/rule-sales.server");
       const advance = /anticip|transfer|deposit|giro/i.test(String(order.payment_method??""));
       const nationwide = advance && st.cityVerified===true && Boolean(st.department) &&
-        /(?:todo\s+(?:el\s+)?paraguay|(?:cualquier|todas\s+las)\s+ciudad(?:es)?\s+(?:del\s+)?paraguay|env[ií]os?\s+nacionales?)/i.test(trainingText) &&
-        /encomienda/i.test(trainingText) && /(?:pago\s+anticipado|transferencia|pagar\s+antes)/i.test(trainingText);
+        sellerAllowsNationwideAdvance(ctx.training);
       const documented = !advance || Boolean(st.receiptPath && !st.receiptReview && (st.receiptDocuments??[]).length);
-      const canCreate=Boolean(documented && (verified.active || nationwide) &&
-        ((nationwide && !verified.active) || !verified.addressRequired || isValidDeliveryAddress(order.street) || isValidDeliveryAddress(st.locationUrl)) && productId && isOrderReady(order,productId) &&
+      const canCreate=Boolean(documented && (verified?.active || nationwide) &&
+        ((nationwide && !verified?.active) || !verified?.addressRequired || isValidDeliveryAddress(order.street) || isValidDeliveryAddress(st.locationUrl)) && productId && isOrderReady(order,productId) &&
         (Boolean(st.cartLines?.length)||isUnambiguousPriceSelection(order,productId,ctx.products,chatHistory)));
       if(!canCreate)return {skipped:true,reason:"Pedido requiere revisión de cobertura o variante"};
       createdOrder=await createOrderFromAi({workspaceId:convo.workspace_id,ownerId:convo.user_id,conversationId:convo.id,
