@@ -119,6 +119,10 @@ export function enforceVerifiedPaymentReply(args: {
   department: string | null | undefined;
   cityVerified: boolean | null | undefined;
   training: AiContext["training"];
+  /** Datos del checkout; solo para recuperar la siguiente pregunta sin inventar variantes. */
+  saleState?: SaleState | null;
+  productId?: string | null;
+  products?: AiContext["products"];
 }): { reply: string; corrected: boolean; paymentMethod: "contraentrega" | "anticipado" | null } {
   const original = String(args.reply ?? "").trim();
   if (!args.cityVerified || !args.city || !args.department || !original) {
@@ -131,8 +135,16 @@ export function enforceVerifiedPaymentReply(args: {
   // Detectamos contradicciones del método oficial, no simples referencias
   // generales a otras ciudades en el historial.
   const normalized = norm(original);
-  const wrongForCod = policy.paymentMethod === "contraentrega" &&
-    /\b(?:encomienda|pago anticipado|pagar por transferencia|transferencia|transferir|datos bancarios|cuenta bancaria|alias eko|pago por adelantado|pagas antes|antes de transferir|deposito previo|pago previo|no tenemos contra entrega|no hay contra entrega|no hacemos contra entrega|no hacemos pago al recibir|no hay pago al recibir)\b/.test(normalized);
+  // En contraentrega no se solicita ningún comprobante. Cubrir incluso respuestas
+  // que ya dijeron correctamente "pagás al recibir", pero añaden una pregunta
+  // de comprobante. Esto pasó con Santa Rita pese a cobertura=covered.
+  // Preferimos eliminar toda referencia ambigua al comprobante del mensaje
+  // automático: no es un requisito de esta modalidad.
+  const hasReceiptInstruction = /\b(?:comprobantes?|constancia(?:s)? de (?:pago|transferencia)|recibos? de (?:pago|transferencia)|capturas? de (?:pago|transferencia)|ticket(?:s)? de (?:pago|transferencia))\b/.test(normalized);
+  const wrongForCod = policy.paymentMethod === "contraentrega" && (
+    /\b(?:encomienda|pago anticipado|pagar por transferencia|transferencia|transferir|datos bancarios|cuenta bancaria|alias eko|pago por adelantado|pagas antes|antes de transferir|deposito previo|pago previo|no tenemos contra entrega|no hay contra entrega|no hacemos contra entrega|no hacemos pago al recibir|no hay pago al recibir)\b/.test(normalized) ||
+    hasReceiptInstruction
+  );
   const wrongForAdvance = policy.paymentMethod === "anticipado" &&
     /\b(?:contra entrega|contraentrega|pago al recibir|pagas al recibir|pagar al recibir|pagas cuando recibas|pagas cuando recibis|pagas cuando recibes)\b/.test(normalized);
   if (!wrongForCod && !wrongForAdvance) {
@@ -141,13 +153,29 @@ export function enforceVerifiedPaymentReply(args: {
   // Conservamos SOLO una pregunta independiente sobre el producto/cantidad;
   // nunca arrastramos instrucciones bancarias o logísticas de la respuesta errónea.
   const followUp = (original.match(/¿[^¿?\n]{5,180}\?/g) ?? []).find(question =>
-    !/\b(?:encomienda|transferencia|anticipado|pag[oa]|cobertura|env[ií]o|entrega|banco|cuenta|domicilio|direcci[oó]n|ciudad|ubicaci[oó]n|gps)\b/i.test(question));
+    !/\b(?:encomienda|transferencia|anticipado|pag[oa]|comprobantes?|recibos?|capturas?|constancias?|ticket|adjuntar|cobertura|env[ií]o|entrega|banco|cuenta|domicilio|direcci[oó]n|ciudad|ubicaci[oó]n|gps)\b/i.test(question));
+  // Si la pregunta original era por comprobante, elegir exclusivamente el
+  // próximo dato del pedido. No inventar variantes/precios ni pedir los datos
+  // de nuevo si ya están en el estado.
+  const st = args.saleState;
+  let pendingCodQuestion: string | null = null;
+  if (policy.paymentMethod === "contraentrega" && st) {
+    const product = args.products?.find(p => p.id === (st.productId ?? args.productId));
+    const options = (product?.product_prices ?? []).filter(o => Number(o.price) > 0);
+    const hasChosenOption = Boolean(st.optionId || st.cartLines?.length);
+    if (options.length > 1 && !hasChosenOption) pendingCodQuestion = "¿Cuál de las presentaciones disponibles querés llevar?";
+    else if (!st.quantity && product) pendingCodQuestion = "¿Cuántas unidades querés llevar?";
+    else if (!st.customerName && product) pendingCodQuestion = "¿Me pasás tu nombre y apellido para el pedido?";
+    else if (policy.addressRequired && !st.street?.trim() && !st.locationUrl?.trim())
+      pendingCodQuestion = "¿Me pasás tu dirección con referencia o preferís enviar tu ubicación?";
+  }
   const officialMethod = policy.method.trim().toLowerCase();
   const verifiedText = policy.paymentMethod === "contraentrega"
     ? `🚚 Para ${policy.city}, ${policy.department}, tenemos ${officialMethod}. 💵 Pagás al recibir tu pedido. 😊`
     : `🚚 Para ${policy.city}, ${policy.department}, trabajamos con ${officialMethod}. El pago es anticipado, según las condiciones confirmadas de la tienda. 😊`;
   return {
-    reply: followUp ? `${verifiedText}\n\n${followUp}` : verifiedText,
+    reply: followUp ? `${verifiedText}\n\n${followUp}` :
+      pendingCodQuestion ? `${verifiedText}\n\n${pendingCodQuestion}` : verifiedText,
     corrected: true,
     paymentMethod: policy.paymentMethod,
   };
