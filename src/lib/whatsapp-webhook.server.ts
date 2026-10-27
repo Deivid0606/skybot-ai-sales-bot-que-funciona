@@ -3410,6 +3410,9 @@ ${match.products.description ?? ""}`.trim();
     const priceMsg = options.length === 1
       ? `💰 *Precio:* ${options[0].label} — ${formatGs(Number(options[0].price))}\n\n¿Te lo reservamos? Pasame tu ciudad y te confirmo la entrega 😊`
       : `💰 *Precios disponibles:*\n${options.map((o) => `• *${o.label}* — ${formatGs(Number(o.price))}`).join("\n")}\n\n¿Cuál te reservamos? Pasame también tu ciudad 😊`;
+    // WhatsApp entrega las fotos/videos más lento que el texto: esperar
+    // para que los precios lleguen DESPUÉS del copy y la imagen.
+    await new Promise((r) => setTimeout(r, sentMediaCount > 0 ? 6000 : 2500));
     try {
       const wamid = await sendWhatsAppText(args.conn, args.phone, priceMsg);
       lastMessage = priceMsg;
