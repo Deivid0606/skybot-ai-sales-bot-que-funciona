@@ -2173,12 +2173,18 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         : isAdvance && expectedTotal !== null && receivedTotal > 0 && receivedTotal < expectedTotal
           ? `📎 Recibí tu comprobante por Gs. ${receivedTotal.toLocaleString("es-PY")}. El total de tu pedido es Gs. ${expectedTotal.toLocaleString("es-PY")}; faltan Gs. ${(expectedTotal-receivedTotal).toLocaleString("es-PY")}. ¿Me enviás el comprobante de la diferencia?`
           : isAdvance && expectedTotal !== null && receivedTotal > expectedTotal
-          ? `📎 Recibí tu comprobante por Gs. ${receivedTotal.toLocaleString("es-PY")}, pero el total de tu pedido es Gs. ${expectedTotal.toLocaleString("es-PY")}. El monto no coincide; un asesor va a revisar el caso antes de continuar. Por favor no hagas otra transferencia todavía. 🙏`
+          ? `📎 Recibí tu comprobante por Gs. ${receivedTotal.toLocaleString("es-PY")}, pero el total de tu pedido es Gs. ${expectedTotal.toLocaleString("es-PY")}. Hay Gs. ${(receivedTotal-expectedTotal).toLocaleString("es-PY")} a tu favor. La diferencia queda pendiente de verificación y no necesitás enviar otro comprobante. 😊 Para continuar, ¿me pasás el nombre y apellido completos de quien va a recibir el pedido?`
           : null;
       // La IA formula preguntas según el entrenamiento, no este archivo. Las
       // discrepancias documentales verificadas sí bloquean el registro; no
       // deben confundirse con un comprobante pagado/acreditado.
-      const outgoingProposal = receiptPendingReply ?? (claimsClosed || result.sale_closed
+      // Si el cliente pagó IGUAL o DE MÁS, nunca pedir "complemento" ni "comprobante de la diferencia".
+      const paidEnoughOrMore = isAdvance && expectedTotal !== null && receivedTotal > 0 && receivedTotal >= expectedTotal;
+      const asksForComplement = /(complemento|comprobante\s+de\s+la\s+diferencia|faltan?\s+gs)/i.test(safeBeforeInsert);
+      const overpaidReply = `📎 Recibí tu comprobante por Gs. ${receivedTotal.toLocaleString("es-PY")}. El total de tu pedido es Gs. ${(expectedTotal ?? 0).toLocaleString("es-PY")}, así que hay Gs. ${(receivedTotal-(expectedTotal ?? 0)).toLocaleString("es-PY")} a tu favor. La diferencia queda pendiente de verificación y no necesitás enviar otro comprobante. 😊 Para continuar, ¿me pasás el nombre y apellido completos de quien va a recibir el pedido?`;
+      const outgoingProposal = receiptPendingReply ?? (paidEnoughOrMore && asksForComplement
+        ? overpaidReply
+        : claimsClosed || result.sale_closed
         ? "Recibí tus datos. El pedido aún no fue registrado; un asesor revisará lo pendiente. 🙏"
         : safeBeforeInsert);
       // Segunda verificación determinista DESPUÉS de generar/corregir el texto
