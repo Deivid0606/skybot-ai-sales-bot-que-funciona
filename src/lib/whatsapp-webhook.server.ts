@@ -3403,11 +3403,41 @@ ${match.products.description ?? ""}`.trim();
     }
   }
 
+  // Después del copy + imagen, mandar SIEMPRE un mensaje aparte con precios
+  // para que el cliente elija sin tener que preguntar.
+  let lastMessage = copy;
+  if ((copySent || sentMediaCount > 0) && options.length > 0) {
+    const priceMsg = options.length === 1
+      ? `💰 *Precio:* ${options[0].label} — ${formatGs(Number(options[0].price))}\n\n¿Te lo reservamos? Pasame tu ciudad y te confirmo la entrega 😊`
+      : `💰 *Precios disponibles:*\n${options.map((o) => `• *${o.label}* — ${formatGs(Number(o.price))}`).join("\n")}\n\n¿Cuál te reservamos? Pasame también tu ciudad 😊`;
+    try {
+      const wamid = await sendWhatsAppText(args.conn, args.phone, priceMsg);
+      lastMessage = priceMsg;
+      await supabaseAdmin.from("messages").insert({
+        workspace_id: args.workspaceId,
+        user_id: args.ownerId,
+        conversation_id: args.conversationId,
+        ad_id: args.adId,
+        direction: "outbound",
+        sender: "ai",
+        response_origin: "code",
+        body: priceMsg,
+        status: "sent",
+        wamid,
+      });
+    } catch (error) {
+      console.error("[Catálogo] Error enviando precios", {
+        productId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   await supabaseAdmin
     .from("conversations")
     .update({
       product_id: productId,
-      last_message: copy,
+      last_message: lastMessage,
       last_message_at: new Date().toISOString(),
     })
     .eq("id", args.conversationId);
