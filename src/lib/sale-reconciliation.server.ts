@@ -1,6 +1,6 @@
 import type { AiContext, AiOrder } from "@/lib/ai.server";
 import type { SaleState } from "@/lib/rule-sales.server";
-import { verifiedCoverage, parseCoverage, sellerAllowsNationwideAdvance } from "@/lib/rule-sales.server";
+import { verifiedCoverage, parseCoverage, sellerAllowsNationwideAdvance, nationwideDestinationFromText } from "@/lib/rule-sales.server";
 
 type ChatLine = { role: "user" | "assistant"; content: string };
 const normal = (s: string) => String(s ?? "").toLowerCase().normalize("NFD")
@@ -81,8 +81,20 @@ export function recoverSaleStateFromHistory(ctx: AiContext, previous: SaleState,
         state.coverageStatus = found.active ? "covered" : "uncovered";
       }
     }
-    // Encomienda nacional: recuperar ciudad y departamento SOLO de respuestas
-    // explícitas del comprador, sin listas fijas ni convertir texto de la IA en verdad.
+    // Identificar localidades paraguayas conocidas fuera de contraentrega.
+    // La localidad es un hecho geográfico; la habilitación de encomienda debe
+    // provenir siempre del entrenamiento del mismo workspace.
+    if (!uniqueHits.length && sellerAllowsNationwideAdvance(ctx.training) &&
+        !/(?:calle|esquina|casi|referencia|barrio|ruta|direcci[oó]n)/i.test(raw)) {
+      const destination = nationwideDestinationFromText(raw);
+      if (destination) {
+        state.city=destination.city;state.department=destination.department;
+        state.cityVerified=true;state.coverageStatus="uncovered";
+        state.paymentMethod="anticipado";
+      }
+    }
+    // Encomienda nacional: para otras ciudades fuera de la tabla solicitar
+    // departamento explícito antes de registrar; jamás fingir geocodificación.
     if (!uniqueHits.length && sellerAllowsNationwideAdvance(ctx.training) &&
         !/(?:calle|esquina|casi|referencia|barrio|ruta|direcci[oó]n)/i.test(raw)) {
       const bare = raw.replace(/^(?:soy de|vivo en|para|enviar a|mandar a|a)\s+/i, "").trim();
