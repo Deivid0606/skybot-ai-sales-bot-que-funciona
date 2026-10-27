@@ -9,7 +9,7 @@ import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { sendWhatsAppText } from "@/lib/whatsapp.server";
 import { reconcileOrderWithSaleState, recoverSaleStateFromHistory, isValidCustomerName, isValidDeliveryAddress } from "@/lib/sale-reconciliation.server";
-import { isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi, isValidRecipientCi } from "@/lib/rule-sales.server";
+import { isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi, isValidRecipientCi, enforceVerifiedPaymentReply } from "@/lib/rule-sales.server";
 import { buildRegisteredOrderConfirmation } from "@/lib/order-confirmation.server";
 
 const SendInput = z.object({
@@ -579,7 +579,15 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       const prices=priceOptions.map(o=>Math.round(Number(o.price))).filter(n=>Math.abs(n-amount)===1);
       return prices.length===1 ? full.replace(digits,prices[0].toLocaleString("es-PY")) : full;
     });
-    const reply = createdOrder ? rawReply : catalogSafe; // No reemplazar preguntas formuladas por IA.
+    const savedCheckoutState = step?.state ?? previous;
+    const checkedInboxReply = createdOrder ? {reply: rawReply, corrected:false, paymentMethod:null} : enforceVerifiedPaymentReply({
+      reply: catalogSafe, city:savedCheckoutState.city, department:savedCheckoutState.department,
+      cityVerified:savedCheckoutState.cityVerified, training:ctx.training,
+    });
+    if (checkedInboxReply.corrected) console.warn("[BOT_SKY_COVERAGE_OUTPUT_GUARD]",JSON.stringify({
+      conversationId:conversation.id,paymentMethod:checkedInboxReply.paymentMethod,channel:"inbox"
+    }));
+    const reply = checkedInboxReply.reply;
     const wamid = await sendWhatsAppText(conn, phone, reply);
     const { error: insertError } = await supabase.from("messages").insert({
       workspace_id: conversation.workspace_id, user_id: conversation.user_id,
