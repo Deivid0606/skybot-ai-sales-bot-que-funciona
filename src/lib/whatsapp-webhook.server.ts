@@ -12,7 +12,7 @@ import { buildRegisteredOrderConfirmation } from "@/lib/order-confirmation.serve
 import { buildWorkspaceAiContext } from "@/lib/ai-context.server";
 import { generateAiReply, type AiContext } from "@/lib/ai.server";
 import { decideHybridReply } from "@/lib/hybrid-rules.server";
-import { advanceRuleSale, sellerUsesFirstOffer, type SaleState } from "@/lib/rule-sales.server";
+import { advanceRuleSale, sellerUsesFirstOffer, isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi, isValidRecipientCi, type SaleState } from "@/lib/rule-sales.server";
 import { classifyCustomerIntent, addVerifiedOrderContext, addPendingSaleContext } from "@/lib/hybrid-intent.server";
 import { coordinatesFromText, validCoords } from "@/lib/hybrid-intent.server";
 import { parseCoverage, verifiedCoverage, sellerAllowsNationwideAdvance, deliveryPolicyForCity } from "@/lib/rule-sales.server";
@@ -1839,7 +1839,9 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
           order:{customer_name:st.customerName!,city:st.city!,departamento:st.department!,
             street:isValidDeliveryAddress(st.street) ? st.street : (isValidDeliveryAddress(result.order?.street) ? result.order?.street : undefined),quantity:(result.order?.promo_quantity ?? 1) > 1 ? result.order?.quantity : st.quantity!,
             promo_quantity:result.order?.promo_quantity,
-            product_price_id:(result.order?.promo_quantity ?? 1) > 1 ? result.order?.product_price_id : st.optionId??undefined,payment_method:st.paymentMethod!,phone}};
+            product_price_id:(result.order?.promo_quantity ?? 1) > 1 ? result.order?.product_price_id : st.optionId??undefined,
+            recipient_ci:isValidRecipientCi(st.recipientCi) ? st.recipientCi!.replace(/\D/g,"") : undefined,
+            payment_method:st.paymentMethod!,phone}};
         responseOrigin=hybridMode === "rules_only" ? "code:venta_completa" : "ai";
       }
     }
@@ -1947,7 +1949,12 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     // El archivo debe pertenecer al pago pendiente del ciclo actual.
     // Nunca tomar una imagen antigua de producto como comprobante.
     const hasReceiptForOrder = Boolean((saveStep?.state.receiptDocuments?.length ?? previousSale.receiptDocuments?.length ?? 0)>0);
-    if (result.order && !result.order.street?.trim() && (saveStep?.state.locationUrl || previousSale.locationUrl)) {
+    if (result.order && isEncomiendaAdvanceOrder(ctx.training,result.order.city,result.order.departamento,result.order.payment_method)) {
+      // El destino de encomienda es la ciudad; no heredar GPS o dirección de otros turnos.
+      delete result.order.street;
+    }
+    if (result.order && !isEncomiendaAdvanceOrder(ctx.training,result.order.city,result.order.departamento,result.order.payment_method) &&
+        !result.order.street?.trim() && (saveStep?.state.locationUrl || previousSale.locationUrl)) {
       result.order.street = saveStep?.state.locationUrl || previousSale.locationUrl || undefined;
     }
     // Barrera de monto: para anticipado no confirmar por un archivo cualquiera.
@@ -1965,7 +1972,11 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     if (isAdvance && paymentSaleState.receiptDocuments?.length && expectedTotal !== null && receivedTotal < expectedTotal) {
       console.info("[BOT_SKY_RECEIPT_SHORTFALL]",JSON.stringify({conversationId:conversation.id,expectedTotal,receivedTotal,missing:expectedTotal-receivedTotal}));
     }
-    const orderReady = financiallyReady && isOrderReady(result.order, detectedProduct) &&
+    const requiresEncomiendaCi = Boolean(result.order &&
+      isEncomiendaAdvanceOrder(ctx.training,result.order.city,result.order.departamento,result.order.payment_method) &&
+      sellerRequiresEncomiendaCi(ctx.training));
+    const recipientCiReady = !requiresEncomiendaCi || isValidRecipientCi(result.order?.recipient_ci);
+    const orderReady = financiallyReady && recipientCiReady && isOrderReady(result.order, detectedProduct) &&
       (Boolean(saveStep?.state.cartLines?.length) || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory)) &&
       (!isAdvance || hasReceiptForOrder);
 
@@ -1996,7 +2007,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     if (!conversation.sale_closed && result.order && orderReady && (verifiedOrderCoverage?.active || (isAdvance && /ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(verifiedOrderCoverage?.method ?? "")) || nationwideAdvanceApproved) &&
       // La dirección de domicilio se exige solo a entregas domiciliarias con esa obligación.
       // Encomienda anticipada nacional autorizada: ciudad y departamento bastan como destino.
-      (isAdvance && nationwideAdvanceApproved && !verifiedOrderCoverage?.active ||
+      (isEncomiendaAdvanceOrder(ctx.training,result.order.city,result.order.departamento,result.order.payment_method) ||
        !verifiedOrderCoverage?.addressRequired ||
        Boolean(isValidDeliveryAddress(result.order.street) || isValidDeliveryAddress(saveStep?.state.locationUrl) || isValidDeliveryAddress(previousSale.locationUrl)))) {
       const completedOrder = {
@@ -2016,6 +2027,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         order: completedOrder,
         products: ctx.products,
         cartLines: saveStep?.state.cartLines,
+        training: ctx.training,
       });
       orderWasCreated = true;
 
@@ -2073,7 +2085,8 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         savedQuantity: Number(savedConfirmationOrder.quantity),
         address: savedConfirmationOrder.street,
         paymentStatus: savedConfirmationOrder.payment_status,
-        deliveryMethod: verifiedOrderCoverage?.method,
+        deliveryMethod: isEncomiendaAdvanceOrder(ctx.training,completedOrder.city,completedOrder.departamento,completedOrder.payment_method)
+          ? "Encomienda con pago anticipado" : verifiedOrderCoverage?.method,
       });
       try {
         const confirmationWamid = await sendWhatsAppText(conn, phone, confirmedMessage);
@@ -2283,7 +2296,11 @@ export function missingOrderQuestion(args: {
   const { order, productId, optionConfirmed } = args;
   if (!productId) return "🛒 ¿Qué producto te gustaría pedir?";
   if (!order) return null; // Sin datos estructurados no inventar un cierre.
+  const isEncomienda=isEncomiendaAdvanceOrder(args.training,order.city,order.departamento,order.payment_method);
+  if (isEncomienda && !args.hasReceipt) return "📎 ¿Me enviás el comprobante de la transferencia por favor?";
   if (!isValidCustomerName(order.customer_name)) return "😊 ¿Me indicás tu nombre y apellido para el pedido?";
+  if (isEncomienda && sellerRequiresEncomiendaCi(args.training) && !isValidRecipientCi(order.recipient_ci))
+    return "🪪 ¿Me pasás el número de cédula del destinatario de la encomienda?";
   if (!String(order.city ?? "").trim()) return "📍 ¿De qué ciudad sos para verificar la entrega?";
   const coverage = parseCoverage(args.training);
   const place = verifiedCoverage(String(order.city), String(order.departamento ?? ""), coverage);
@@ -2296,7 +2313,7 @@ export function missingOrderQuestion(args: {
   if (place && !place.active && !/ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(place.method) && !national) return "📦 No tenemos entrega habilitada para esa ciudad. ¿Querés consultar otra localidad?";
   if (!Number.isFinite(Number(order.quantity)) || Number(order.quantity) < 1) return "📦 ¿Cuántas unidades querés llevar?";
   if (!optionConfirmed) return "📦 ¿Qué tamaño o promoción elegís del producto?";
-  if (place?.addressRequired && !national && !isValidDeliveryAddress(order.street)) return "🏠 ¿Me pasás tu dirección o ubicación para completar el pedido?";
+  if (place?.addressRequired && !isEncomienda && !national && !isValidDeliveryAddress(order.street)) return "🏠 ¿Me pasás tu dirección o ubicación para completar el pedido?";
   if (!String(order.payment_method ?? "").trim()) return "💳 ¿Preferís pagar al recibir o mediante transferencia?";
   if (/anticip|transfer|deposit|giro/i.test(String(order.payment_method ?? "")) && !args.hasReceipt) return "💳 Para seguir con el pago anticipado, enviame el comprobante de transferencia, por favor.";
   return null;
@@ -2361,6 +2378,8 @@ export async function createOrderFromAi(args: {
   sourceMessageId: string;
   order: NonNullable<Awaited<ReturnType<typeof generateAiReply>>["order"]>;
   cartLines?: Array<{ optionId: string; quantity: number }>;
+  /** Entrenamiento ACTIVO del workspace para validar requisitos por modalidad. */
+  training?: AiContext["training"];
   products: {
     id: string;
     name: string;
@@ -2384,9 +2403,16 @@ export async function createOrderFromAi(args: {
    * reutilicen el contacto y la conversación.
    */
   // Última barrera: ninguna ruta de creación puede saltarse estas verificaciones.
-  if (!isOrderReady(args.order, args.productId) ||
-      (args.order.street && !isValidDeliveryAddress(args.order.street))) {
-    throw new Error("Pedido incompleto: nombre, dirección, cantidad o pago inválidos. No se registró la venta.");
+  const orderIsEncomienda=Boolean(args.training && isEncomiendaAdvanceOrder(args.training,args.order.city,args.order.departamento,args.order.payment_method));
+  // Para encomienda no se lee ni se valida el domicilio de entrega.
+  const orderForValidation = orderIsEncomienda ? {...args.order, street: undefined} : args.order;
+  if (!isOrderReady(orderForValidation, args.productId) ||
+      (!orderIsEncomienda && args.order.street && !isValidDeliveryAddress(args.order.street))) {
+    throw new Error("Pedido incompleto: nombre, ciudad, cantidad o pago inválidos. No se registró la venta.");
+  }
+  if (orderIsEncomienda && args.training && sellerRequiresEncomiendaCi(args.training) &&
+      !isValidRecipientCi(args.order.recipient_ci)) {
+    throw new Error("No se registró la encomienda: falta la cédula real del destinatario.");
   }
   const sourceMessageId = cleanOrderText(args.sourceMessageId);
 
@@ -2670,11 +2696,14 @@ export async function createOrderFromAi(args: {
   const city = cleanOrderText(args.order.city);
   const departamento = cleanOrderText(args.order.departamento) || null;
   const district = cleanOrderText(args.order.district) || null;
-  const street = cleanOrderText(args.order.street);
+  const street = orderIsEncomienda ? "" : cleanOrderText(args.order.street);
   const baseObservations =
     cleanOrderText(args.order.observations) || null;
 
   const observations = [
+    // Guardar la CI de encomienda en la columna existente; no imprimirla en logs.
+    orderIsEncomienda && isValidRecipientCi(args.order.recipient_ci)
+      ? `C.I. destinatario encomienda: ${String(args.order.recipient_ci).replace(/\D/g,"")}` : null,
     baseObservations,
     cartResolved
       ? `MULTIVARIANTE (MISMO PRODUCTO): ${cartResolved.map(c=>`${c.quantity} x ${c.label} (${c.price.toLocaleString('es-PY')} Gs. c/u)`).join(' + ')}. TOTAL: ${total.toLocaleString('es-PY')} Gs.`
