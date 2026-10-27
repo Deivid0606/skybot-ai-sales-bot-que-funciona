@@ -1,6 +1,6 @@
 import type { AiContext, AiOrder } from "@/lib/ai.server";
 import type { SaleState } from "@/lib/rule-sales.server";
-import { verifiedCoverage, parseCoverage, sellerAllowsNationwideAdvance, nationwideDestinationFromText } from "@/lib/rule-sales.server";
+import { verifiedCoverage, parseCoverage, sellerAllowsNationwideAdvance, nationwideDestinationFromText, extractRecipientCiFromCustomerText, isValidRecipientCi, isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi } from "@/lib/rule-sales.server";
 
 type ChatLine = { role: "user" | "assistant"; content: string };
 const normal = (s: string) => String(s ?? "").toLowerCase().normalize("NFD")
@@ -65,7 +65,9 @@ export function recoverSaleStateFromHistory(ctx: AiContext, previous: SaleState,
     if (item.role === "assistant") { lastQuestion = normal(item.content); continue; }
     const raw = String(item.content ?? "").trim();
     const n = normal(raw);
-    if (!n || /^\[(?:image|audio|document|video)/i.test(raw)) continue;
+    if (!n || /^\[(?:image|imagen|audio|document|documento|video)/i.test(raw)) continue;
+    const ci=extractRecipientCiFromCustomerText(raw, /(?:c[eé]dula|c\.?i\.?|documento de identidad)/i.test(lastQuestion));
+    if(ci)state.recipientCi=ci;
     const hits = coverage.filter(c => [c.city, ...c.aliases].some(alias => exactToken(raw, alias)));
     const uniqueHits = hits.filter((c,i)=>hits.findIndex(x=>normal(x.city)===normal(c.city) && normal(x.department)===normal(c.department))===i);
     // La última ciudad explícita del cliente gana; no confundir referencias de dirección.
@@ -171,6 +173,10 @@ export function reconcileOrderWithSaleState(order: AiOrder | null, state: SaleSt
   else if (state.locationUrl && isValidDeliveryAddress(state.locationUrl)) next.street = state.locationUrl;
   else if (!isValidDeliveryAddress(next.street)) delete next.street;
   if (state.paymentMethod) next.payment_method = state.paymentMethod;
+  // Nunca aceptar la cédula que la IA pudo copiar del titular bancario o comprobante.
+  if (isValidRecipientCi(state.recipientCi)) next.recipient_ci = state.recipientCi!.replace(/[^0-9]/g,"");
+  else delete next.recipient_ci;
+  if (isEncomiendaAdvanceOrder(training,next.city,next.departamento,next.payment_method)) delete next.street;
   if (state.optionId) next.product_price_id = state.optionId;
   if (state.quantity && state.quantity > 0) next.quantity = state.quantity;
   // Una variante de capacidad 3 litros equivale a 1 unidad, no a 3 promociones.
@@ -195,7 +201,11 @@ export function nextVerifiedSaleQuestion(ctx: AiContext, state: SaleState): stri
   if (options.length > 1 && !selected && !state.cartLines?.length) {
     return `😊 ¿Cuál tamaño de *${product.name}* preferís? ${options.map(o => `${o.label} (${Math.round(o.price).toLocaleString("es-PY")} Gs.)`).join(" · ")}`;
   }
+  const isEncomienda=isEncomiendaAdvanceOrder(ctx.training,state.city,state.department,state.paymentMethod);
+  if(isEncomienda && (!state.receiptPath || state.receiptReview))return "📎 ¿Me enviás el comprobante de transferencia para continuar con tu encomienda?";
   if (!isValidCustomerName(state.customerName)) return "😊 ¿Me indicás tu nombre y apellido para el pedido?";
+  if(isEncomienda && sellerRequiresEncomiendaCi(ctx.training) && !isValidRecipientCi(state.recipientCi))
+    return "🪪 ¿Me pasás el número de cédula del destinatario para la encomienda?";
   const national = sellerAllowsNationwideAdvance(ctx.training) && state.cityVerified &&
     Boolean(state.city && state.department) && state.coverageStatus === "uncovered";
   if ((!place && !national) || !state.cityVerified) return state.city && !state.department
@@ -210,7 +220,7 @@ export function nextVerifiedSaleQuestion(ctx: AiContext, state: SaleState): stri
     }
     return "📦 ¿Cuántas unidades querés llevar?";
   }
-  if (place?.addressRequired && !national && !isValidDeliveryAddress(state.street) && !isValidDeliveryAddress(state.locationUrl))
+  if (place?.addressRequired && !isEncomienda && !national && !isValidDeliveryAddress(state.street) && !isValidDeliveryAddress(state.locationUrl))
     return "🏠 ¿Me pasás tu dirección o ubicación para la entrega?";
   if (!state.paymentMethod?.trim()) {
     if (place?.active && /CONTRA ENTREGA/i.test(place.method))
@@ -228,6 +238,7 @@ export function fixRepeatedCheckoutQuestion(reply: string, ctx: AiContext, state
   const asksCity = /(?:ciudad|departamento|de donde sos|donde vivis|de que zona)/.test(n);
   const asksName = /(?:nombre y apellido|nombre completo|como te llamas)/.test(n);
   const asksAddress = /(?:direccion|domicilio|ubicacion|referencia)/.test(n);
+  const isEncomienda=isEncomiendaAdvanceOrder(ctx.training,state.city,state.department,state.paymentMethod);
   const asksVariant = /(?:cual (?:tamano|tamaño|capacidad)|(?:2|3|5) litros|presentacion)/.test(n);
   const knownCity = state.cityVerified && Boolean(state.city && state.department &&
     verifiedCoverage(state.city!,state.department!,parseCoverage(ctx.training)));
@@ -236,7 +247,7 @@ export function fixRepeatedCheckoutQuestion(reply: string, ctx: AiContext, state
   const product = ctx.products.find(p => p.id === state.productId || p.id === ctx.activeProductId);
   const needsVariant = Boolean(product && (product.product_prices?.length ?? 0) > 1 && !knownVariant);
   if ((asksCity && knownCity) || (asksName && (isValidCustomerName(state.customerName) || needsVariant)) ||
-      (asksAddress && knownAddress) || (asksVariant && knownVariant)) {
+      (asksAddress && (knownAddress || isEncomienda)) || (asksVariant && knownVariant)) {
     return nextVerifiedSaleQuestion(ctx,state) ?? "¡Gracias! 😊 Ya tengo esos datos. Estoy verificando tu pedido.";
   }
   return reply;
