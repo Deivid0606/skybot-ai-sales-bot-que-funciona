@@ -165,7 +165,12 @@ export function enforceVerifiedPaymentReply(args: {
     const product = args.products?.find(p => p.id === (st.productId ?? args.productId));
     const options = (product?.product_prices ?? []).filter(o => Number(o.price) > 0);
     const hasChosenOption = Boolean(st.optionId || st.cartLines?.length);
-    if (options.length > 1 && !hasChosenOption) pendingCodQuestion = "¿Cuál de las presentaciones disponibles querés llevar?";
+    if (options.length > 1 && !hasChosenOption) {
+      const list = options
+        .map(o => `• *${o.label}* — Gs. ${Number(o.price).toLocaleString("es-PY")}`)
+        .join("\n");
+      pendingCodQuestion = `Tenemos estas opciones:\n\n${list}\n\n¿Cuál te reservamos? 😊`;
+    }
     else if (!st.quantity && product) pendingCodQuestion = "¿Cuántas unidades querés llevar?";
     else if (!st.customerName && product) pendingCodQuestion = "¿Me pasás tu nombre y apellido para el pedido?";
     else if (policy.addressRequired && !st.street?.trim() && !st.locationUrl?.trim())
@@ -515,7 +520,18 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   const match=cityIn(text,coverage);
   const nationalDestination = sellerAllowsNationwideAdvance(ctx.training) && !gpsUrl
     ? nationwideDestinationFromText(text) : null;
-  if(match && !gpsUrl && !/\b(?:calle|esquina|casi|barrio|referencia)\b/.test(n)){s.city=match.city;s.department=match.department;s.cityVerified=true;s.coverageStatus=match.active?"covered":"uncovered";}
+  const hasAddressWords=/\b(?:calle|esquina|casi|barrio|referencia|avenida|avda|av|cuadras?|direccion)\b/.test(n);
+  // Mensaje completo: «Estoy en la ciudad de X … Mi dirección es …». Tomar
+  // ciudad Y dirección del mismo mensaje en lugar de quedarse sin responder.
+  const explicitCity=/\b(?:ciudad de|vivo en|soy de|estoy (?:en|n) (?:la ciudad de )?|departamento|depto)\b/.test(n) || s.awaiting==="city";
+  if(match && !gpsUrl && (!hasAddressWords || explicitCity)){
+    s.city=match.city;s.department=match.department;s.cityVerified=true;s.coverageStatus=match.active?"covered":"uncovered";
+    if(hasAddressWords && (!s.street || s.street===s.locationUrl)){
+      const addr=text.match(/(?:mi\s+)?direcci[oó]n\s*(?:es|:)?\s*(.{6,200})/i)?.[1]
+        ?? text.match(/\b((?:calle|avenida|avda\.?|av\.?|barrio)\s.{4,200})/i)?.[1];
+      if(addr)s.street=addr.trim().replace(/[.\s]+$/,"");
+    }
+  }
   else if(nationalDestination && !/\b(?:calle|esquina|casi|barrio|referencia)\b/.test(n)) {
     // Municipio/departamento de referencia, no disponibilidad de transporte.
     s.city=nationalDestination.city;s.department=nationalDestination.department;
