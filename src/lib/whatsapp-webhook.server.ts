@@ -1668,7 +1668,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       receiptReview:verifiedSaleState.receiptReview??null}));
     const officialPolicyInstruction = officialDelivery?.paymentMethod
       ? `\nCOBERTURA DEL VENDEDOR COMPROBADA: ciudad ${officialDelivery.city}, departamento ${officialDelivery.department}; modalidad EXACTA ${officialDelivery.method}; pago permitido ${officialDelivery.paymentMethod}. Esta información es obligatoria, no la reemplaces con pago anticipado ni preguntes cómo quiere pagar cuando el vendedor exige una modalidad. No confundas envío con modalidad de pago.`
-      : `\nCOBERTURA PENDIENTE: la CIUDAD DE ENTREGA es el primer dato logístico obligatorio; NO solicites nombre, dirección, GPS, método de pago ni transferencia antes de verificarla. La ciudad debe estar en la cobertura activa de este vendedor o resolverse según su política de encomienda. No deduzcas municipio desde GPS ni barrio. Si el cliente hace otra consulta, respondela primero sin repetir automáticamente la pregunta de ciudad y conservá la venta.`;
+      : `\n${sellerAllowsNationwideAdvance(ctx.training) ? "ENCOMIENDA NACIONAL AUTORIZADA: fuera de contraentrega se puede ofrecer pago anticipado sujeto a verificar logística; NO negar todo envío por ausencia en la lista. " : ""}COBERTURA PENDIENTE: la CIUDAD DE ENTREGA es el primer dato logístico obligatorio; NO solicites nombre, dirección, GPS, método de pago ni transferencia antes de verificarla. La ciudad debe estar en la cobertura activa de este vendedor o resolverse según su política de encomienda. No deduzcas municipio desde GPS ni barrio. Si el cliente hace otra consulta, respondela primero sin repetir automáticamente la pregunta de ciudad y conservá la venta.`;
     const aiAnswerContext = hybridMode !== "rules_only" ? {
       ...answerContext,
       systemInstruction: answerContext.systemInstruction + officialPolicyInstruction + `\nMODO IA + ENTRENAMIENTO BOT SKY, PRIORIDAD ALTA: Las respuestas comerciales las generás vos usando únicamente catálogo y entrenamiento de esta tienda. CONVERSÁ VOS con el comprador de forma natural: resolvé una sola pregunta por vez y no repitas catálogo/precios completos ni datos ya recibidos. Cantidad y variante se capturan mediante código y deben respetarse. No confirmes pedidos sin número real generado por Supabase. El cliente puede comprar varias veces. DATOS VERIFICADOS DEL CICLO ACTUAL (no mezclar con pedidos previos): ${JSON.stringify({productId:verifiedSaleState.productId,optionId:verifiedSaleState.optionId,quantity:verifiedSaleState.quantity,city:verifiedSaleState.city,department:verifiedSaleState.department,cityVerified:verifiedSaleState.cityVerified===true,coverageStatus:verifiedSaleState.coverageStatus,customerName:verifiedSaleState.customerName,hasAddress:Boolean(verifiedSaleState.street),gpsReceived:Boolean(verifiedSaleState.locationUrl),paymentMethod:verifiedSaleState.paymentMethod,awaiting:verifiedSaleState.awaiting})}. COBERTURA: si cityVerified no es true, NUNCA digas que tenemos cobertura; consultá la ciudad si falta. GPS no prueba por sí mismo ninguna ciudad. Si recibiste GPS no vuelvas a solicitarlo. El GPS es dirección suficiente si la configuración de la ciudad admite dirección por ubicación. Respetá el orden de preguntas definido en el entrenamiento del vendedor; nunca repitas hechos conocidos. Si no tenés precio/variante sin ambigüedad pedí aclaración. Si está completo, el código registrará el pedido; no inventes un número de orden ni digas que está confirmado.`
@@ -1820,6 +1820,25 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
             `\nCORRECCIÓN PRIORITARIA: la respuesta anterior contradecía el entrenamiento. El destino ${officialDelivery.city} admite ${officialDelivery.method} y método ${officialDelivery.paymentMethod}. Reformulá la respuesta al cliente respetando esa modalidad. No preguntes pago anticipado ni inventes condiciones.`});
         result = {...result, reply:correction.reply};
       } catch (error) { console.error("[BOT SKY cobertura] IA no pudo corregir respuesta",error); return; }
+    }
+    // Si el vendedor habilitó encomienda nacional, una ciudad fuera de
+    // contraentrega NO justifica negar también la modalidad anticipada.
+    // La IA redacta la corrección; jamás prometemos transportista ni tarifa.
+    const nationalSellerPolicy = sellerAllowsNationwideAdvance(ctx.training);
+    const explicitlyOffersAdvance = /(?:s[ií] (?:hacemos|enviamos|trabajamos|podemos|ofrecemos)|(?:trabajamos|ofrecemos|enviamos|podemos (?:enviar|gestionar))[^.!?]*encomienda|encomienda[^.!?]*pago anticipado)/i.test(result.reply);
+    const falseNationalDenial = !explicitlyOffersAdvance &&
+      /(?:no (?:hacemos|realizamos|podemos|tenemos|ofrecemos|enviamos|llegamos)|tampoco (?:hacemos|enviamos|tenemos|llegamos)|no es posible|no se puede|lamentablemente)/i.test(result.reply) &&
+      /(?:env[ií]os?|entregas?|cobertura|encomienda|interior|anticipad[oa])/i.test(result.reply);
+    const askingAboutNationalShipping = /(?:encomienda|env[ií]o|entrega|interior|capit[aá]n bado|pedro juan|pago|transferencia|cobertura)/i.test(body) ||
+      verifiedSaleState.coverageStatus === "uncovered";
+    if (nationalSellerPolicy && falseNationalDenial && askingAboutNationalShipping && !officialDelivery?.active && hybridMode !== "rules_only") {
+      try {
+        const revised = await generateAiReply({...aiAnswerContext,
+          systemInstruction:aiAnswerContext.systemInstruction +
+            "\nCORRECCIÓN DE ENCOMIENDA AUTORIZADA: el vendedor ofrece encomienda nacional anticipada para ciudades sin CONTRAENTREGA. Tu respuesta anterior negó erróneamente TODO envío. Reformulá en español paraguayo la respuesta al último mensaje del cliente: sí se puede gestionar encomienda con pago anticipado, siempre sujeta a disponibilidad real de transporte y costo verificable. No afirmes fecha ni tarifa; si falta ciudad/departamento, pedí solamente ese dato. No prometas entrega asegurada, no inventes logística."});
+        if (!/(?:no (?:hacemos|realizamos|podemos|tenemos|ofrecemos|enviamos|llegamos)|tampoco (?:hacemos|enviamos|llegamos))/i.test(revised.reply)) result={...result,reply:revised.reply};
+        else {console.error("[BOT SKY encomienda] La IA reiteró rechazo contrario al entrenamiento");return;}
+      } catch(error) {console.error("[BOT SKY encomienda] No se pudo corregir rechazo",error);return;}
     }
     const safeReply = bypassSale && hybridMode !== "rules_only" ? result.reply : buildSafeAiReply({
       reply: result.reply,
