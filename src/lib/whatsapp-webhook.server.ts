@@ -15,7 +15,7 @@ import { decideHybridReply } from "@/lib/hybrid-rules.server";
 import { advanceRuleSale, sellerUsesFirstOffer, isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi, isValidRecipientCi, type SaleState } from "@/lib/rule-sales.server";
 import { classifyCustomerIntent, addVerifiedOrderContext, addPendingSaleContext } from "@/lib/hybrid-intent.server";
 import { coordinatesFromText, validCoords } from "@/lib/hybrid-intent.server";
-import { parseCoverage, verifiedCoverage, sellerAllowsNationwideAdvance, deliveryPolicyForCity } from "@/lib/rule-sales.server";
+import { parseCoverage, verifiedCoverage, sellerAllowsNationwideAdvance, deliveryPolicyForCity, enforceVerifiedPaymentReply } from "@/lib/rule-sales.server";
 import { sendWhatsAppText } from "@/lib/whatsapp.server";
 import { detectComplaint, COMPLAINT_REASON_LABELS } from "@/lib/complaints";
 
@@ -2109,7 +2109,15 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     } else if (deferGpsReply) {
       // Si la validación final impidió guardar, no dejar el GPS sin respuesta.
       // No formular preguntas fijas cuando el INSERT no procedió. La IA es la autora de la conversación.
-      const pendingText = safeBeforeInsert || "Recibí tus datos. Tu pedido sigue pendiente de verificación.";
+      const pendingProposal = safeBeforeInsert || "Recibí tus datos. Tu pedido sigue pendiente de verificación.";
+      const pendingChecked = enforceVerifiedPaymentReply({
+        reply: pendingProposal, city:verifiedSaleState.city, department:verifiedSaleState.department,
+        cityVerified:verifiedSaleState.cityVerified, training:ctx.training,
+      });
+      if (pendingChecked.corrected) console.warn("[BOT_SKY_COVERAGE_OUTPUT_GUARD]", JSON.stringify({
+        conversationId:conversation.id, paymentMethod:pendingChecked.paymentMethod, channel:"whatsapp_gps"
+      }));
+      const pendingText = pendingChecked.reply;
       const pendingWamid = await sendWhatsAppText(conn, phone, pendingText);
       await supabaseAdmin.from("messages").insert({workspace_id:workspaceId,user_id:ownerId,
         conversation_id:conversation.id,ad_id:attributedAdId,direction:"outbound",sender:"ai",
@@ -2159,9 +2167,20 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       // La IA formula preguntas según el entrenamiento, no este archivo. Las
       // discrepancias documentales verificadas sí bloquean el registro; no
       // deben confundirse con un comprobante pagado/acreditado.
-      const outgoingText = receiptPendingReply ?? (claimsClosed || result.sale_closed
+      const outgoingProposal = receiptPendingReply ?? (claimsClosed || result.sale_closed
         ? "Recibí tus datos. El pedido aún no fue registrado; un asesor revisará lo pendiente. 🙏"
         : safeBeforeInsert);
+      // Segunda verificación determinista DESPUÉS de generar/corregir el texto
+      // y ANTES de WhatsApp: una IA que insiste no vuelve a imponer encomienda
+      // sobre una ciudad cubierta por contraentrega (ni el caso inverso).
+      const outgoingChecked = enforceVerifiedPaymentReply({
+        reply: outgoingProposal, city:verifiedSaleState.city, department:verifiedSaleState.department,
+        cityVerified:verifiedSaleState.cityVerified, training:ctx.training,
+      });
+      if (outgoingChecked.corrected) console.warn("[BOT_SKY_COVERAGE_OUTPUT_GUARD]", JSON.stringify({
+        conversationId:conversation.id, paymentMethod:outgoingChecked.paymentMethod, channel:"whatsapp"
+      }));
+      const outgoingText = outgoingChecked.reply;
       const outgoingWamid = await sendWhatsAppText(conn, phone, outgoingText);
       await supabaseAdmin.from("messages").insert({
         workspace_id: workspaceId, user_id: ownerId, conversation_id: conversation.id,
