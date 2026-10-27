@@ -1446,7 +1446,9 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     // Reintento persistente con límite y espera: un error de Gemini no inutiliza
     // el archivo permanentemente. Los reintentos pertenecen al workspace/chat.
     if (!previousSale.receiptDocuments?.length && !previousSale.receiptPath &&
-        previousSale.productId && /anticip|transfer|deposit|giro/i.test(String(previousSale.paymentMethod ?? ""))) {
+        previousSale.productId) {
+      // Se lee cualquier imagen reciente aunque el método de pago todavía no
+      // esté guardado: en encomienda el "anticipado" se fija recién al validar.
       const {data: recentUnparsed, error: pendingReadError} = await supabaseAdmin.from("messages")
         .select("id,media_url,media_type,transcript,created_at")
         .eq("workspace_id",workspaceId).eq("conversation_id",conversation.id)
@@ -1469,8 +1471,20 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
             .from("chat-media").download(path);
           if (downloadError || !blob) throw downloadError ?? new Error("Archivo no accesible");
           const {describeImage,toBase64} = await import("@/lib/media-ai.server");
-          const description = await describeImage(toBase64(await blob.arrayBuffer()),blob.type || "image/jpeg",workspaceId);
-          const fields = parseReceiptFields(description);
+          const base64 = toBase64(await blob.arrayBuffer());
+          // Reintento inmediato: el cliente suele mandar solo la foto y no
+          // escribe más, así que no se puede esperar a su próximo mensaje.
+          let description = "";
+          let fields: ReturnType<typeof parseReceiptFields> = null;
+          for (let attempt = 0; attempt < 3 && !fields; attempt++) {
+            if (attempt > 0) await new Promise(r => setTimeout(r, 2500));
+            try {
+              description = await describeImage(base64,blob.type || "image/jpeg",workspaceId);
+              fields = parseReceiptFields(description);
+            } catch (readError) {
+              if (attempt === 2) throw readError;
+            }
+          }
           if (!fields) throw new Error("Gemini respondió, pero no identificó un comprobante estructurado: " + description.slice(0, 180));
           console.info("[BOT_SKY_RECEIPT_PARSED]", JSON.stringify({conversationId:conversation.id,
             path,hasAmount:fields.amountGs!==null,hasDestination:Boolean(fields.destinationAccount),
