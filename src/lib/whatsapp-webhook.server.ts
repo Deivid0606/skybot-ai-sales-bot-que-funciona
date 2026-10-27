@@ -1512,7 +1512,9 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       const authorizedBankBlock = bankText.match(/^DATOS BANCARIOS AUTORIZADOS[^\n]*\n([\s\S]*?)(?=\n\s*(?:FORMATO OBLIGATORIO|## CONTROL DE COMPROBANTES|RESPUESTAS MODELO)|(?![\s\S]))/im)?.[1] ?? "";
       // Acepta: "Número de cuenta:", "N.º de cuenta:",
       // "N° de cuenta para transferencias desde otros bancos:", etc.
-      // No confundir teléfono, cédula o alias con CUENTA_DESTINO.
+      // Las cuentas bancarias y los ALIAS explícitamente autorizados son
+      // identificadores distintos del mismo destinatario. Nunca se debe usar
+      // una cédula suelta, teléfono ni dato de otra tienda como alias válido.
       const bankLines = authorizedBankBlock.split(/\r?\n/);
       const authorizedAccounts = [...new Set(bankLines.flatMap(line => {
         const match = line.trim().replace(/^[-*]\s*/, "").match(
@@ -1521,10 +1523,31 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         const account = match?.[1]?.replace(/\D/g, "") ?? "";
         return account.length >= 6 ? [account] : [];
       }))];
+      // Solo aceptar alias mencionados explícitamente en el bloque de datos
+      // bancarios AUTORIZADOS del workspace. "CI del titular" por sí sola NO
+      // habilita la cédula como identificador de transferencia.
+      const normalizeDestination = (value: string) => {
+        const result = value.toUpperCase().normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "").replace(/[\s._-]/g, "");
+        if (!/^[A-Z0-9]{4,80}$/.test(result)) return "";
+        return /^\d+$/.test(result) ? result.replace(/^0+(?=\d)/, "") : result;
+      };
+      const authorizedAliases = [...new Set(bankLines.flatMap(line => {
+        const match = line.trim().replace(/^[-*]\s*/, "").match(
+          /^(?:alias\b|clave\s+(?:de\s+)?transferencia\b)[^:]*:\s*(.+)$/i
+        );
+        const alias = match?.[1]?.trim() ?? "";
+        // Para evitar tomar explicaciones por alias, requerir un identificador
+        // único y concreto, no una frase descriptiva.
+        const normalized = /^[A-Z0-9._-]{4,80}$/i.test(alias)
+          ? normalizeDestination(alias) : "";
+        return normalized ? [normalized] : [];
+      }))];
       const authorizedHolder = bankLines.map(line =>
         line.trim().replace(/^[-*]\s*/, "").match(/^Titular\s*:\s*(.+)$/i)?.[1]?.trim() ?? ""
       ).find(Boolean) ?? null;
-      if (!authorizedAccounts.length) console.warn("[BOT_SKY_RECEIPT_CONFIGURATION] Cuenta autorizada no extraíble del entrenamiento",{workspaceId,conversationId:conversation.id});
+      if (!authorizedAccounts.length && !authorizedAliases.length)
+        console.warn("[BOT_SKY_RECEIPT_CONFIGURATION] No se encontró cuenta ni alias bancario autorizado en este vendedor",{workspaceId,conversationId:conversation.id});
       const normalizeHolder = (value: string) => value.toUpperCase().normalize("NFD")
         .replace(/[\u0300-\u036f]/g, "").replace(/[^A-Z\s]/g, " ").trim().split(/\s+/).filter(Boolean);
       const compatibleHolder = (received: string | null) => {
@@ -1545,16 +1568,35 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         const ageMs = Date.now() - new Date(source.created_at).getTime();
         if (!Number.isFinite(ageMs) || ageMs < -60000 || ageMs > 3*60*60*1000) continue;
         if (previousSale.receiptDocuments?.some(r => r.path === source.media_url)) continue;
-        const accountOk = Boolean(candidate.destinationAccount &&
-          authorizedAccounts.includes(digits(candidate.destinationAccount)));
-        const wrongAccount = Boolean(authorizedAccounts.length && candidate.destinationAccount && !accountOk);
+        const receivedDestinations = [candidate.destinationAccount, candidate.destinationAlias]
+          .filter((value): value is string => Boolean(value && value.trim()));
+        // Hay bancos que muestran el ALIAS donde otros muestran la cuenta.
+        // Admitir ambos campos y sus formatos, siempre cotejándolos con los
+        // identificadores autorizados de ESTE vendedor únicamente.
+        const destinationChecks = receivedDestinations.map(value => {
+          const normalized = normalizeDestination(value);
+          const accountMatch = authorizedAccounts.some(account =>
+            normalizeDestination(account) === normalized && normalized !== "");
+          const aliasMatch = authorizedAliases.includes(normalized) && normalized !== "";
+          return { accountMatch, aliasMatch };
+        });
+        // No ignorar un identificador explícito que contradiga a otro visible.
+        const accountOk = destinationChecks.length > 0 && destinationChecks.every(
+          check => check.accountMatch || check.aliasMatch);
+        const wrongAccount = destinationChecks.length > 0 && !accountOk;
         const holderOk = compatibleHolder(candidate.beneficiary);
         const wrongHolder = Boolean(authorizedHolder && candidate.beneficiary && !holderOk);
+        // Si la coincidencia depende de alias, el nombre del beneficiario debe
+        // aparecer y coincidir: de otro modo, enviar a revisión documental.
+        const needsHolderForAlias = destinationChecks.some(c => c.aliasMatch && !c.accountMatch);
+        const missingAliasHolder = Boolean(needsHolderForAlias && authorizedHolder &&
+          (!candidate.beneficiary || !holderOk));
         const amountOk = candidate.amountGs !== null && Number.isSafeInteger(candidate.amountGs);
-        if (!accountOk || !amountOk || wrongHolder) {
+        if (!accountOk || !amountOk || wrongHolder || missingAliasHolder) {
           console.warn("[BOT_SKY_RECEIPT_REJECTED]",JSON.stringify({conversationId:conversation.id,
             path:source.media_url,hasConfiguredAccount:authorizedAccounts.length > 0,
-            hasDestinationAccount:Boolean(candidate.destinationAccount),amountOk,wrongAccount,wrongHolder}));
+            hasConfiguredAlias:authorizedAliases.length > 0,
+            hasDestination:Boolean(receivedDestinations.length),amountOk,wrongAccount,wrongHolder,missingAliasHolder}));
           // El último comprobante incompleto bloquea el registro; jamás se inventa monto.
           // No se debe sobreescribir un comprobante válido anterior con otro ilegible.
           if (!previousSale.receiptDocuments?.length)
