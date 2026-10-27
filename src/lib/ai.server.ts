@@ -75,6 +75,8 @@ export type AiOrder = {
   /** Nombre de presentación, para compatibilidad con modelos que devuelven texto. */
   price_option_label?: string;
   payment_method?: string;
+  /** Cédula del destinatario de encomienda; el backend solo acepta la confirmada por cliente. */
+  recipient_ci?: string;
   observations?: string;
 };
 
@@ -103,6 +105,7 @@ function buildSystemPrompt(ctx: AiContext): string {
     `Producto: ${selected?.name ?? "pendiente"}`,
     `Variante: ${option?.label ?? "pendiente"}`,
     `Nombre: ${state?.customerName ?? "pendiente"}`,
+    `Cédula del destinatario confirmada por cliente: ${state?.recipientCi ?? "pendiente"}`,
     `Ciudad/departamento: ${coverage}`,
     `Dirección: ${state?.street ?? state?.locationUrl ?? "pendiente"}`,
     `Cantidad: ${state?.quantity ?? "pendiente"}`,
@@ -114,6 +117,7 @@ function buildSystemPrompt(ctx: AiContext): string {
     `Comprobante guardado en ciclo actual: ${Boolean(state?.receiptPath)}`,
     `Revisión documental del comprobante: ${state?.receiptReview ?? "pendiente"}`,
     "Nunca inventes montos leídos ni llames acreditado a un pago documentado.",
+    "ENCOMIENDA AUTORIZADA: NO pedir domicilio, barrio, calle, referencia ni Google Maps. Tras comprobante real guardado y con validación documental suficiente, solicitar nombre y apellido y DESPUÉS el número de cédula del DESTINATARIO solo si el entrenamiento del vendedor exige ese dato. No copiar cédula del titular bancario, alias, comprobante, operación ni teléfono como cédula del destinatario.",
     "Si un campo está completo NO lo preguntes otra vez. Si el cliente cambia explícitamente de ciudad, usa la última válida.",
     "Interpretá una respuesta de ubicación en contexto: por ejemplo Fernando de la Mora zona sur significa ciudad Fernando de la Mora y referencia zona sur; no confundas barrio o zona con otra ciudad.",
     "Cuando la persona contesta a una pregunta anterior, interpretá primero su respuesta dentro del flujo vigente; no reinicies ofertas ni vuelvas a preguntar la cantidad elegida.",
@@ -273,7 +277,7 @@ Forma exacta:
 
 Cuando detectes un producto, product_id debe contener su id real del catálogo.
 Cuando cierres la venta, order debe tener esta forma:
-{"customer_name":"","phone":"","city":"","departamento":"","district":"","street":"","quantity":1,"promo_quantity":1,"product_price_id":"id-real-de-product_prices","price_option_label":"nombre exacto","payment_method":"","observations":""}.`;
+{"customer_name":"","phone":"","city":"","departamento":"","district":"","street":"","quantity":1,"promo_quantity":1,"product_price_id":"id-real-de-product_prices","price_option_label":"nombre exacto","payment_method":"","recipient_ci":"","observations":""}.`;
   // Protección ante entrenamientos anormalmente extensos.
   if (prompt.length <= MAX_PROMPT_CHARS) return prompt;
   // Conservamos SIEMPRE el formato JSON final, esencial para registrar pedidos.
@@ -444,6 +448,7 @@ function normalizeOrder(value: unknown): AiOrder | null {
     "district",
     "street",
     "payment_method",
+    "recipient_ci",
     "observations",
     "product_price_id",
     "price_option_label",
