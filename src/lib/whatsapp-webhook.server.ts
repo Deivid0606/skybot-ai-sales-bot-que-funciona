@@ -4,6 +4,7 @@ function isAiQuotaFailure(error: unknown): boolean {
   const msg = String(e?.message ?? error ?? "").toLowerCase();
   return e?.status === 429 || /(?:insufficient[_ ]quota|resource[_ ]exhausted|quota exceeded|rate[_ -]?limit|credit[s]? exhausted|sin cr[eé]ditos|saldo de ia|429)/i.test(msg);
 }
+import { handlePostSaleRecipientCi, shouldAskPostSaleCi } from "./recipient-ci.server";
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { formatGs } from "@/lib/format";
 import { parseReceiptFields } from "@/lib/media-ai.server";
@@ -1300,6 +1301,27 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
 
   if (!aiSettings?.ai_enabled || conversation.ai_paused || conversation.is_closed) return;
 
+  if (conversation.sale_closed) {
+    let ciResult: Awaited<ReturnType<typeof handlePostSaleRecipientCi>> = null;
+    try {
+      ciResult = await handlePostSaleRecipientCi({client:supabaseAdmin,workspaceId,
+        conversationId:conversation.id,training:(await buildWorkspaceAiContext(supabaseAdmin,workspaceId,[],conversation.product_id,phone)).training,
+        customerText:message.type === "text" ? body : ""});
+    } catch (error) {
+      console.error("[Postventa] No se pudo actualizar la cédula",error);
+      ciResult = {reply:"Tu pedido sigue confirmado. No pude guardar ese dato todavía; un asesor podrá revisarlo. 🙏",orderId:null};
+    }
+    if (ciResult) {
+      const wamid=await sendWhatsAppText(conn,phone,ciResult.reply);
+      await supabaseAdmin.from("messages").insert({workspace_id:workspaceId,user_id:ownerId,
+        conversation_id:conversation.id,ad_id:attributedAdId,direction:"outbound",sender:"ai",
+        body:ciResult.reply,response_origin:"code",wamid,status:"sent"});
+      await supabaseAdmin.from("conversations").update({last_message:ciResult.reply,
+        last_message_at:new Date().toISOString(),unread_count:0}).eq("workspace_id",workspaceId).eq("id",conversation.id);
+      return;
+    }
+  }
+
   // POSTVENTA: nunca reiniciar checkout ni volver a preguntar la ciudad por un GPS.
   // El mensaje ya fue insertado en messages (incluidas coordenadas nativas).
   // Asociar su enlace al pedido realmente registrado, sin tocar PEDIDOS/UI.
@@ -2014,11 +2036,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     if (isAdvance && paymentSaleState.receiptDocuments?.length && expectedTotal !== null && receivedTotal < expectedTotal) {
       console.info("[BOT_SKY_RECEIPT_SHORTFALL]",JSON.stringify({conversationId:conversation.id,expectedTotal,receivedTotal,missing:expectedTotal-receivedTotal}));
     }
-    const requiresEncomiendaCi = Boolean(result.order &&
-      isEncomiendaAdvanceOrder(ctx.training,result.order.city,result.order.departamento,result.order.payment_method) &&
-      sellerRequiresEncomiendaCi(ctx.training));
-    const recipientCiReady = !requiresEncomiendaCi || isValidRecipientCi(result.order?.recipient_ci);
-    const orderReady = financiallyReady && recipientCiReady && isOrderReady(result.order, detectedProduct) &&
+    const orderReady = financiallyReady && isOrderReady(result.order, detectedProduct) &&
       (Boolean(saveStep?.state.cartLines?.length) || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory)) &&
       (!isAdvance || hasReceiptForOrder);
 
@@ -2116,11 +2134,12 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       // Leer el registro guardado: quantity/street/método no se infieren de la IA.
       const { data: savedConfirmationOrder, error: confirmationReadError } = await supabaseAdmin
         .from("orders")
-        .select("id,order_number,customer_name,phone,total,quantity,street,payment_method,payment_status")
+        .select("id,order_number,customer_name,phone,total,quantity,street,payment_method,payment_status,observations")
         .eq("workspace_id", workspaceId).eq("id", createdOrder.id).single();
       if (confirmationReadError || !savedConfirmationOrder) throw confirmationReadError || new Error("Pedido no encontrado tras el INSERT");
       const confirmedMessage = buildRegisteredOrderConfirmation({
         created: savedConfirmationOrder,
+        requestRecipientCi: shouldAskPostSaleCi(ctx.training,completedOrder,savedConfirmationOrder.observations),
         order: { ...completedOrder, payment_method: savedConfirmationOrder.payment_method },
         productName: createdProduct?.name ?? "Producto del pedido",
         productOption: confirmedOption?.label ?? completedOrder.price_option_label,
@@ -2376,8 +2395,6 @@ export function missingOrderQuestion(args: {
   const isEncomienda=isEncomiendaAdvanceOrder(args.training,order.city,order.departamento,order.payment_method);
   if (isEncomienda && !args.hasReceipt) return "📎 ¿Me enviás el comprobante de la transferencia por favor?";
   if (!isValidCustomerName(order.customer_name)) return "😊 ¿Me indicás tu nombre y apellido para el pedido?";
-  if (isEncomienda && sellerRequiresEncomiendaCi(args.training) && !isValidRecipientCi(order.recipient_ci))
-    return "🪪 ¿Me pasás el número de cédula del destinatario de la encomienda?";
   if (!String(order.city ?? "").trim()) return "📍 ¿De qué ciudad sos para verificar la entrega?";
   const coverage = parseCoverage(args.training);
   const place = verifiedCoverage(String(order.city), String(order.departamento ?? ""), coverage);
@@ -2486,10 +2503,6 @@ export async function createOrderFromAi(args: {
   if (!isOrderReady(orderForValidation, args.productId) ||
       (!orderIsEncomienda && args.order.street && !isValidDeliveryAddress(args.order.street))) {
     throw new Error("Pedido incompleto: nombre, ciudad, cantidad o pago inválidos. No se registró la venta.");
-  }
-  if (orderIsEncomienda && args.training && sellerRequiresEncomiendaCi(args.training) &&
-      !isValidRecipientCi(args.order.recipient_ci)) {
-    throw new Error("No se registró la encomienda: falta la cédula real del destinatario.");
   }
   const sourceMessageId = cleanOrderText(args.sourceMessageId);
 
