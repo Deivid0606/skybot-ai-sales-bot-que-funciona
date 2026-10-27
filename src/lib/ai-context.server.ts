@@ -1,7 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { AiContext } from "@/lib/ai.server";
 import type { SaleState } from "@/lib/rule-sales.server";
-import { sellerAllowsNationwideAdvance } from "@/lib/rule-sales.server";
+import { sellerAllowsNationwideAdvance, sellerRequiresEncomiendaCi } from "@/lib/rule-sales.server";
 
 type Client = SupabaseClient;
 const DEFAULT_TIME_ZONE = "America/Asuncion";
@@ -82,7 +82,10 @@ export async function buildWorkspaceAiContext(
   return {
     systemInstruction: [currentTimeInstruction(), "INSTRUCCIONES GENERALES DEL NEGOCIO:", aiSettingsResult.data?.system_instruction ?? "", "PRIORIDAD DE DATOS: el catálogo, la cobertura y el entrenamiento se obtienen únicamente del workspace_id de este vendedor. Las ciudades y modalidades ajenas nunca se reutilizan. Para preparar un pedido, verificá primero la ciudad de entrega y luego solicitá solo los datos requeridos por esa cobertura; respondé consultas intercaladas sin perder el contexto.", sellerAllowsNationwideAdvance(trainingResult.data ?? [])
       ? "POLÍTICA VERIFICADA DEL VENDEDOR: la lista de ZONAS CON COBERTURA es de CONTRAENTREGA, NO una lista de todos los destinos de encomienda. Para ciudades paraguayas no incluidas en contraentrega, SÍ se permite OFRECER encomienda con pago anticipado, sujeto a disponibilidad real de transportista y costo por verificar. NO digas 'no enviamos' por estar fuera de la lista. Identificá ciudad y departamento; si faltan, pedí solo ese dato antes del pago. No prometas despacho, envío gratis ni cobro sin confirmar logística."
-      : "POLÍTICA DE ESTE VENDEDOR: no se ha encontrado autorización de encomienda nacional. No ofrecerla por defecto."].join("\n\n"),
+      : "POLÍTICA DE ESTE VENDEDOR: no se ha encontrado autorización de encomienda nacional. No ofrecerla por defecto.",
+      sellerRequiresEncomiendaCi(trainingResult.data ?? [])
+      ? "REQUISITO EXPLÍCITO DE ENCOMIENDA DE ESTE VENDEDOR: NO solicitar calle, dirección, barrio, referencia, ni GPS. SOLO DESPUÉS de recibir un comprobante REAL guardado, pedir nombre y apellido si faltan y, a continuación, número de cédula del destinatario si falta. No copiar la CI del titular bancario o el alias. El registro real lo valida el backend y la acreditación bancaria queda pendiente de verificación."
+      : "ENCOMIENDA: usar exclusivamente los datos exigidos por el entrenamiento activo de este vendedor; no imponer por defecto requisitos de otras tiendas."].join("\n\n"),
     geminiApiKey: aiSettingsResult.data?.gemini_api_key ?? null,
     geminiApiKey2: aiSettingsResult.data?.gemini_api_key_2 ?? null,
     geminiApiKey3: aiSettingsResult.data?.gemini_api_key_3 ?? null,
