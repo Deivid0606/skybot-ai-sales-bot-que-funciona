@@ -1278,6 +1278,17 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       wamid: message.id,
     });
   } else if (!balance || balance.available <= 0) {
+    const since = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const { data: recentSaldo } = await supabaseAdmin.from("notifications").select("id")
+      .eq("workspace_id", workspaceId).eq("type", "saldo").gte("created_at", since).limit(1);
+    if (!recentSaldo?.length) {
+      await supabaseAdmin.from("notifications").insert({
+        workspace_id: workspaceId, user_id: ownerId, type: "saldo",
+        title: "Sin conversaciones disponibles",
+        body: `Tu bot no respondió a ${phone} porque se agotaron las conversaciones de tu plan BOT SKY (no es el saldo de la API de IA). Recarga un plan para continuar.`,
+        link: "/planes", audience: "user",
+      });
+    }
     return;
   }
 
@@ -1347,8 +1358,13 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     const verified=await addVerifiedOrderContext(supabaseAdmin,ctx,workspaceId,phone);
     const safeCtx={...verified,systemInstruction:verified.systemInstruction+`\nPRIORIDAD ABSOLUTA: El cliente YA COMPRÓ (sale_closed=true). Esto es POSTVENTA. Contestá su último mensaje y su reclamo primero. PROHIBIDO reiniciar venta, ofrecer promociones, solicitar cantidad, ciudad, GPS, nombre o domicilio que ya proporcionó, o generar otro pedido. Si pide entrega hoy, solo confirmala si hay fecha exacta en datos verificados. Nunca afirmes haber avisado a logística, priorizado, coordinado o registrado cambios sin una herramienta que lo haga. Si envía un saludo o agradecimiento, responde muy brevemente. Evitá repeticiones.`};
     let reply:string;
-    try { reply=(await generateAiReply(safeCtx)).reply?.trim() || ""; }
-    catch (error) { console.error("[BOT SKY postventa] IA no disponible; pendiente",error); return; }
+    try { reply=(await generateAiReplyWithRetry(safeCtx)).reply?.trim() || ""; }
+    catch (error) {
+      console.error("[BOT SKY postventa] IA no disponible; pendiente",error);
+      await sendSilenceFallback({conn,workspaceId,ownerId,conversationId:conversation.id,adId:attributedAdId,phone,wamid:message.id,
+        reason:`IA sin respuesta en postventa: ${error instanceof Error ? error.message : String(error)}`});
+      return;
+    }
     if(!reply) reply="Gracias por escribirnos. 😊 Para darte información correcta sobre tu pedido, un asesor debe verificar el estado actual.";
     const wamid=await sendWhatsAppText(conn,phone,reply);
     await supabaseAdmin.from("messages").insert({workspace_id:workspaceId,user_id:ownerId,conversation_id:conversation.id,ad_id:attributedAdId,direction:"outbound",sender:"ai",body:reply,wamid,status:"sent"});
@@ -1787,7 +1803,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       responseOrigin = "code:rules_only";
     } else {
       try {
-        result = await generateAiReply(aiAnswerContext);
+        result = await generateAiReplyWithRetry(aiAnswerContext);
       } catch (aiError) {
         // Mensaje entrante ya almacenado; dejar pendiente antes que inventar una respuesta de código.
         console.error("[BOT SKY IA] Sin respuesta del proveedor; mensaje pendiente", {
@@ -1798,6 +1814,8 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
           workspace_id:workspaceId,user_id:ownerId,integration:"ai",level:"error",
           message:`IA sin respuesta; conversación ${conversation.id}; mensaje ${message.id}`,
         });
+        await sendSilenceFallback({conn,workspaceId,ownerId,conversationId:conversation.id,adId:attributedAdId,phone,wamid:message.id,
+          reason:`IA sin respuesta: ${aiError instanceof Error ? aiError.message : String(aiError)}`});
         return;
       }
     }
@@ -1822,12 +1840,13 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         if (/(?:\b(?:nombre|apellido|direcci[oó]n|domicilio|ubicaci[oó]n|google maps|transferencia|pago anticipado|m[eé]todo de pago)\b)/i.test(retried.reply) &&
             /[¿?]|(?:pas[aá]me|indic[aá]me|confirm[aá]me|envi[aá]me|compart[ií]me|necesito|falta)/i.test(retried.reply)) {
           console.error("[BOT SKY CITY GUARD] IA reiteró datos posteriores sin ciudad", conversation.id);
-          return; // No inventar una respuesta fija ni enviar una pregunta fuera de orden.
+          result = {...result, reply: CITY_QUESTION_FALLBACK};
+        } else {
+          result = {...result, reply: retried.reply};
         }
-        result = {...result, reply: retried.reply};
       } catch (error) {
         console.error("[BOT SKY CITY GUARD] No se pudo revalidar respuesta", error);
-        return;
+        result = {...result, reply: CITY_QUESTION_FALLBACK};
       }
     }
     // Consultar precio/garantía/seguimiento no debe completar ni crear pedidos.
@@ -1871,7 +1890,12 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
           systemInstruction:aiAnswerContext.systemInstruction +
             `\nCORRECCIÓN PRIORITARIA: la respuesta anterior contradecía el entrenamiento. El destino ${officialDelivery.city} admite ${officialDelivery.method} y método ${officialDelivery.paymentMethod}. Reformulá la respuesta al cliente respetando esa modalidad. No preguntes pago anticipado ni inventes condiciones.`});
         result = {...result, reply:correction.reply};
-      } catch (error) { console.error("[BOT SKY cobertura] IA no pudo corregir respuesta",error); return; }
+      } catch (error) {
+        console.error("[BOT SKY cobertura] IA no pudo corregir respuesta",error);
+        await sendSilenceFallback({conn,workspaceId,ownerId,conversationId:conversation.id,adId:attributedAdId,phone,wamid:message.id,
+          reason:"La IA no pudo corregir una respuesta de cobertura"});
+        return;
+      }
     }
     // Si el vendedor habilitó encomienda nacional, una ciudad fuera de
     // contraentrega NO justifica negar también la modalidad anticipada.
@@ -1889,8 +1913,18 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
           systemInstruction:aiAnswerContext.systemInstruction +
             "\nCORRECCIÓN DE ENCOMIENDA AUTORIZADA: el vendedor ofrece encomienda nacional anticipada para ciudades sin CONTRAENTREGA. Tu respuesta anterior negó erróneamente TODO envío. Reformulá en español paraguayo la respuesta al último mensaje del cliente: sí se puede gestionar encomienda con pago anticipado, siempre sujeta a disponibilidad real de transporte y costo verificable. No afirmes fecha ni tarifa; si falta ciudad/departamento, pedí solamente ese dato. No prometas entrega asegurada, no inventes logística."});
         if (!/(?:no (?:hacemos|realizamos|podemos|tenemos|ofrecemos|enviamos|llegamos)|tampoco (?:hacemos|enviamos|llegamos))/i.test(revised.reply)) result={...result,reply:revised.reply};
-        else {console.error("[BOT SKY encomienda] La IA reiteró rechazo contrario al entrenamiento");return;}
-      } catch(error) {console.error("[BOT SKY encomienda] No se pudo corregir rechazo",error);return;}
+        else {
+          console.error("[BOT SKY encomienda] La IA reiteró rechazo contrario al entrenamiento");
+          await sendSilenceFallback({conn,workspaceId,ownerId,conversationId:conversation.id,adId:attributedAdId,phone,wamid:message.id,
+            reason:"La IA negó la encomienda contra el entrenamiento"});
+          return;
+        }
+      } catch(error) {
+        console.error("[BOT SKY encomienda] No se pudo corregir rechazo",error);
+        await sendSilenceFallback({conn,workspaceId,ownerId,conversationId:conversation.id,adId:attributedAdId,phone,wamid:message.id,
+          reason:"La IA no pudo corregir una respuesta de encomienda"});
+        return;
+      }
     }
     const safeReply = bypassSale && hybridMode !== "rules_only" ? result.reply : buildSafeAiReply({
       reply: result.reply,
@@ -2236,6 +2270,12 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       level: "error",
       message: messageText,
     });
+    try {
+      await sendSilenceFallback({conn,workspaceId,ownerId,conversationId:conversation.id,adId:attributedAdId,phone,wamid:message.id,
+        reason:`Error al responder: ${messageText.slice(0, 300)}`, queue:false});
+    } catch (fallbackError) {
+      console.error("[BOT SKY] No se pudo enviar respuesta de respaldo", fallbackError);
+    }
   }
 }
 
@@ -3446,4 +3486,63 @@ ${match.products.description ?? ""}`.trim();
     .eq("id", args.conversationId);
 
   return { productId, sent: copySent || sentMediaCount > 0 };
+}
+
+
+/* ------------------------------------------------------------------ */
+/* NUNCA QUEDARSE CALLADO                                              */
+/* ------------------------------------------------------------------ */
+export const SILENCE_FALLBACK_REPLY = "¡Gracias por tu mensaje! 😊 Un asesor te responde en breve.";
+export const CITY_QUESTION_FALLBACK = "¡Perfecto! 😊 ¿En qué ciudad te gustaría recibir tu pedido?";
+
+/** Reintenta una vez más (tras 2 s) si todos los proveedores de IA fallaron. */
+async function generateAiReplyWithRetry(ctx: Parameters<typeof generateAiReply>[0]) {
+  try {
+    return await generateAiReply(ctx);
+  } catch (firstError) {
+    console.warn("[BOT SKY IA] Primer intento falló; reintentando", firstError instanceof Error ? firstError.message : firstError);
+    await new Promise((r) => setTimeout(r, 2000));
+    return await generateAiReply(ctx);
+  }
+}
+
+/**
+ * Cuando la IA no puede responder, el cliente recibe un aviso corto (una sola
+ * vez seguida, sin repetirlo en cada mensaje) y el dueño recibe una
+ * notificación con el motivo para contestar a mano.
+ */
+async function sendSilenceFallback(args: {
+  conn: Conn; workspaceId: string; ownerId: string; conversationId: string;
+  adId: string | null | undefined; phone: string; wamid: string; reason: string;
+  reply?: string; queue?: boolean;
+}) {
+  const reply = args.reply ?? SILENCE_FALLBACK_REPLY;
+  const { data: last } = await supabaseAdmin.from("messages").select("direction, body")
+    .eq("workspace_id", args.workspaceId).eq("conversation_id", args.conversationId)
+    .eq("direction", "outbound").order("created_at", { ascending: false }).limit(1).maybeSingle();
+  const alreadySent = last?.body?.trim() === reply;
+  if (!alreadySent) {
+    const outWamid = await sendWhatsAppText(args.conn, args.phone, reply);
+    await supabaseAdmin.from("messages").insert({
+      workspace_id: args.workspaceId, user_id: args.ownerId, conversation_id: args.conversationId,
+      ad_id: args.adId ?? null, direction: "outbound", sender: "ai", response_origin: "code",
+      body: reply, wamid: outWamid, status: "sent",
+    } as any);
+    await supabaseAdmin.from("conversations").update({
+      last_message: reply, last_message_at: new Date().toISOString(),
+    }).eq("workspace_id", args.workspaceId).eq("id", args.conversationId);
+  }
+  if (args.queue !== false) {
+    await supabaseAdmin.from("ai_failed_messages").upsert({
+      workspace_id: args.workspaceId, user_id: args.ownerId, conversation_id: args.conversationId,
+      wamid: args.wamid, error_message: args.reason.slice(0, 1500), status: "pending",
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "workspace_id,wamid" });
+  }
+  await supabaseAdmin.from("notifications").insert({
+    workspace_id: args.workspaceId, user_id: args.ownerId, type: "ia",
+    title: `El bot necesita que respondas · ${args.phone}`,
+    body: args.reason.slice(0, 240),
+    link: "/inbox", audience: "user",
+  });
 }
