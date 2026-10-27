@@ -11,6 +11,7 @@ import { sendWhatsAppText } from "@/lib/whatsapp.server";
 import { reconcileOrderWithSaleState, recoverSaleStateFromHistory, isValidCustomerName, isValidDeliveryAddress } from "@/lib/sale-reconciliation.server";
 import { isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi, isValidRecipientCi, enforceVerifiedPaymentReply } from "@/lib/rule-sales.server";
 import { buildRegisteredOrderConfirmation } from "@/lib/order-confirmation.server";
+import { handlePostSaleRecipientCi, shouldAskPostSaleCi } from "./recipient-ci.server";
 
 const SendInput = z.object({
   conversationId: z.string().uuid(),
@@ -289,6 +290,18 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       return {reply,orderId:null};
     }
     if(conversation.sale_closed) {
+      const ciResult=await handlePostSaleRecipientCi({client:supabase,workspaceId:conversation.workspace_id,
+        conversationId:conversation.id,training:ctx.training,
+        customerText:newest.media_url ? "" : text});
+      if(ciResult) {
+        const {data:ciConn}=await supabase.from("whatsapp_connections").select("phone_number_id,access_token").eq("workspace_id",conversation.workspace_id).maybeSingle();
+        if(!ciConn?.phone_number_id || !ciConn.access_token || !conversation.contacts?.phone)throw new Error("WhatsApp no conectado");
+        const wamid=await sendWhatsAppText(ciConn,conversation.contacts.phone,ciResult.reply);
+        const {error:ciMessageError}=await supabase.from("messages").insert({workspace_id:conversation.workspace_id,user_id:conversation.user_id,conversation_id:conversation.id,direction:"outbound",sender:"ai",body:ciResult.reply,wamid,status:"sent"});
+        if(ciMessageError)throw ciMessageError;
+        await supabase.from("conversations").update({last_message:ciResult.reply,last_message_at:new Date().toISOString(),unread_count:0}).eq("workspace_id",conversation.workspace_id).eq("id",conversation.id);
+        return {reply:ciResult.reply,orderId:null};
+      }
       const verified=await addVerifiedOrderContext(supabase,ctx,conversation.workspace_id,conversation.contacts?.phone);
       const safeCtx={...verified,systemInstruction:verified.systemInstruction+"\nPOSTVENTA PRIORITARIA: YA hay pedido registrado. Respondé sobre ese pedido sin promociones, sin nuevas ventas ni pedir datos otra vez. No prometas entregas ni acciones logísticas sin verificación. Si es saludo, respondé breve."};
       let reply:string;
@@ -501,11 +514,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     const nationalState=step?.state??previous;
     const nationwideAdvanceApproved = isAdvanceInbox && Boolean(nationalState.cityVerified && nationalState.city && nationalState.department) &&
       sellerAllowsNationwideAdvance(ctx.training);
-    const requiresEncomiendaCiInbox=Boolean(result.order &&
-      isEncomiendaAdvanceOrder(ctx.training,result.order.city,result.order.departamento,result.order.payment_method) &&
-      sellerRequiresEncomiendaCi(ctx.training));
-    const recipientCiReadyInbox=!requiresEncomiendaCiInbox || isValidRecipientCi(result.order?.recipient_ci);
-    const valid = recipientCiReadyInbox && (!isAdvanceInbox || receiptVerifiedAsFile) && !conversation.sale_closed && Boolean(orderCoverage?.active || (isAdvanceInbox && /ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(orderCoverage?.method ?? "")) || nationwideAdvanceApproved) &&
+    const valid = (!isAdvanceInbox || receiptVerifiedAsFile) && !conversation.sale_closed && Boolean(orderCoverage?.active || (isAdvanceInbox && /ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(orderCoverage?.method ?? "")) || nationwideAdvanceApproved) &&
       (isEncomiendaAdvanceOrder(ctx.training,result.order?.city,result.order?.departamento,result.order?.payment_method) ||
        !orderCoverage?.addressRequired || Boolean(isValidDeliveryAddress(result.order?.street) || isValidDeliveryAddress(step?.state.locationUrl) || isValidDeliveryAddress(previous.locationUrl))) && Boolean(result.order) &&
       isOrderReady(result.order, detectedProduct) &&
@@ -552,13 +561,14 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     let confirmedInboxMessage: string | null = null;
     if (createdOrder && result.order) {
       const { data: savedOrder, error: readError } = await supabase.from("orders")
-        .select("id,order_number,customer_name,phone,total,quantity,street,payment_method,payment_status")
+        .select("id,order_number,customer_name,phone,total,quantity,street,payment_method,payment_status,observations")
         .eq("workspace_id",conversation.workspace_id).eq("id",createdOrder.id).single();
       if (readError || !savedOrder) throw readError || new Error("El pedido no aparece en Supabase");
       const selected = ctx.products.find(p=>p.id===detectedProduct);
       const option = selected?.product_prices?.find(o=>o.id===result.order?.product_price_id);
       confirmedInboxMessage = buildRegisteredOrderConfirmation({
         created:savedOrder,
+        requestRecipientCi:shouldAskPostSaleCi(ctx.training,result.order,savedOrder.observations),
         order:{...result.order,payment_method:savedOrder.payment_method},
         productName:selected?.name??"Producto del pedido",
         productOption:option?.label??result.order.price_option_label,
@@ -700,8 +710,6 @@ export const recoverPendingWithRules = createServerFn({ method: "POST" })
         sellerAllowsNationwideAdvance(ctx.training);
       const documented = !advance || Boolean(st.receiptPath && !st.receiptReview && (st.receiptDocuments??[]).length);
       const canCreate=Boolean(documented &&
-        (!isEncomiendaAdvanceOrder(ctx.training,order.city,order.departamento,order.payment_method) ||
-         !sellerRequiresEncomiendaCi(ctx.training) || isValidRecipientCi(order.recipient_ci)) &&
         (verified?.active || nationwide) &&
         (isEncomiendaAdvanceOrder(ctx.training,order.city,order.departamento,order.payment_method) || !verified?.addressRequired || isValidDeliveryAddress(order.street) || isValidDeliveryAddress(st.locationUrl)) && productId && isOrderReady(order,productId) &&
         (Boolean(st.cartLines?.length)||isUnambiguousPriceSelection(order,productId,ctx.products,chatHistory)));
@@ -712,12 +720,12 @@ export const recoverPendingWithRules = createServerFn({ method: "POST" })
       await recoverRecentPaymentReceiptForOrder({workspaceId:convo.workspace_id,ownerId:convo.user_id,
         conversationId:convo.id,orderId:createdOrder.id});
       const {data:savedOrder,error:readError}=await supabase.from("orders")
-        .select("id,order_number,customer_name,phone,total,quantity,street,payment_method,payment_status")
+        .select("id,order_number,customer_name,phone,total,quantity,street,payment_method,payment_status,observations")
         .eq("workspace_id",convo.workspace_id).eq("id",createdOrder.id).single();
       if(readError||!savedOrder)throw readError||new Error("No se encontró el pedido creado");
       const selectedProduct=ctx.products.find(p=>p.id===productId);
       const selectedOption=selectedProduct?.product_prices?.find(o=>o.id===order.product_price_id);
-      reply=buildRegisteredOrderConfirmation({created:savedOrder,order:{...order,payment_method:savedOrder.payment_method},
+      reply=buildRegisteredOrderConfirmation({created:savedOrder,requestRecipientCi:shouldAskPostSaleCi(ctx.training,order,savedOrder.observations),order:{...order,payment_method:savedOrder.payment_method},
         productName:selectedProduct?.name??"Producto del pedido",productOption:selectedOption?.label,
         savedQuantity:Number(savedOrder.quantity),address:savedOrder.street,paymentStatus:savedOrder.payment_status,
         deliveryMethod:isEncomiendaAdvanceOrder(ctx.training,order.city,order.departamento,order.payment_method)
