@@ -105,6 +105,54 @@ export function deliveryPolicyForCity(city: string | null | undefined, departmen
   return { ...place, paymentMethod: contraentrega ? "contraentrega" as const : anticipado ? "anticipado" as const : null };
 }
 
+
+/**
+ * ÚLTIMA BARRERA DE COBERTURA (WhatsApp + Inbox).
+ * La IA puede redactar la conversación, pero no puede sustituir la modalidad
+ * comprobada en el entrenamiento del workspace. Esta barrera se ejecuta
+ * inmediatamente antes de enviar mensajes AUTOMÁTICOS, nunca sobre mensajes
+ * manuales ni sobre pedidos ya confirmados por el backend.
+ */
+export function enforceVerifiedPaymentReply(args: {
+  reply: string;
+  city: string | null | undefined;
+  department: string | null | undefined;
+  cityVerified: boolean | null | undefined;
+  training: AiContext["training"];
+}): { reply: string; corrected: boolean; paymentMethod: "contraentrega" | "anticipado" | null } {
+  const original = String(args.reply ?? "").trim();
+  if (!args.cityVerified || !args.city || !args.department || !original) {
+    return { reply: original, corrected: false, paymentMethod: null };
+  }
+  const policy = deliveryPolicyForCity(args.city, args.department, args.training);
+  if (!policy?.active || !policy.paymentMethod) {
+    return { reply: original, corrected: false, paymentMethod: null };
+  }
+  // Detectamos contradicciones del método oficial, no simples referencias
+  // generales a otras ciudades en el historial.
+  const normalized = norm(original);
+  const wrongForCod = policy.paymentMethod === "contraentrega" &&
+    /\b(?:encomienda|pago anticipado|pagar por transferencia|transferencia|transferir|datos bancarios|cuenta bancaria|alias eko|pago por adelantado|pagas antes|antes de transferir|deposito previo|pago previo|no tenemos contra entrega|no hay contra entrega|no hacemos contra entrega|no hacemos pago al recibir|no hay pago al recibir)\b/.test(normalized);
+  const wrongForAdvance = policy.paymentMethod === "anticipado" &&
+    /\b(?:contra entrega|contraentrega|pago al recibir|pagas al recibir|pagar al recibir|pagas cuando recibas|pagas cuando recibis|pagas cuando recibes)\b/.test(normalized);
+  if (!wrongForCod && !wrongForAdvance) {
+    return { reply: original, corrected: false, paymentMethod: policy.paymentMethod };
+  }
+  // Conservamos SOLO una pregunta independiente sobre el producto/cantidad;
+  // nunca arrastramos instrucciones bancarias o logísticas de la respuesta errónea.
+  const followUp = (original.match(/¿[^¿?\n]{5,180}\?/g) ?? []).find(question =>
+    !/\b(?:encomienda|transferencia|anticipado|pag[oa]|cobertura|env[ií]o|entrega|banco|cuenta|domicilio|direcci[oó]n|ciudad|ubicaci[oó]n|gps)\b/i.test(question));
+  const officialMethod = policy.method.trim().toLowerCase();
+  const verifiedText = policy.paymentMethod === "contraentrega"
+    ? `🚚 Para ${policy.city}, ${policy.department}, tenemos ${officialMethod}. 💵 Pagás al recibir tu pedido. 😊`
+    : `🚚 Para ${policy.city}, ${policy.department}, trabajamos con ${officialMethod}. El pago es anticipado, según las condiciones confirmadas de la tienda. 😊`;
+  return {
+    reply: followUp ? `${verifiedText}\n\n${followUp}` : verifiedText,
+    corrected: true,
+    paymentMethod: policy.paymentMethod,
+  };
+}
+
 /** Solo se exige CI cuando el entrenamiento ACTIVO lo pide de manera expresa. */
 export function sellerRequiresEncomiendaCi(training: AiContext["training"]): boolean {
   return training.some(entry => /encomienda/i.test(entry.content) &&
