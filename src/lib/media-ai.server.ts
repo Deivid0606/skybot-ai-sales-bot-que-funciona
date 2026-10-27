@@ -442,13 +442,16 @@ export async function describeImage(
               "- Después respondé SOLO con estas claves, una por línea, sin Markdown:",
               "MONTO_GS: [importe exacto de la transferencia, solo dígitos; o NO_LEGIBLE]",
               "BENEFICIARIO: [nombre que figura bajo PARA / destinatario, o NO_LEGIBLE]",
-              "CUENTA_DESTINO: [cuenta del beneficiario, conservando todos los dígitos visibles, o NO_LEGIBLE]",
+              "CUENTA_DESTINO: [número de cuenta del beneficiario visible bajo PARA, o NO_LEGIBLE]",
+              "ALIAS_DESTINO: [alias / CI utilizado para transferir al destinatario, si se muestra como identificador de pago; o NO_LEGIBLE]",
               "EMISOR: [nombre que figura bajo DE / remitente, o NO_LEGIBLE]",
               "BANCO: [nombre visible, o NO_LEGIBLE]",
               "OPERACION: [número de referencia único si es legible, o NO_LEGIBLE]",
               "FECHA: [fecha y hora visibles, o NO_LEGIBLE]",
               "- MONTO_GS es lo transferido, NO el precio del producto, saldo disponible ni total de un pedido.",
               "- Nunca confundas EMISOR con BENEFICIARIO, ni cuenta de origen con CUENTA_DESTINO.",
+              "- Si el comprobante identifica el destino mediante ALIAS, número de cédula o ID de transferencia, conservalo literalmente en ALIAS_DESTINO: no lo marques ilegible por no ser un número de cuenta.",
+              "- No conviertas la cédula del remitente en alias de destino; solo informar si aparece vinculada explícitamente a PARA / destinatario.",
               "- No infieras los últimos dígitos si un número está parcialmente oculto.",
               "- Si hay varios montos o destinatarios y no está claro cuál corresponde, usá NO_LEGIBLE.",
               "- No declares que el pago se acreditó ni que el documento es auténtico.",
@@ -480,11 +483,13 @@ export async function describeImage(
     "Si es comprobante, la primera línea EXACTA es COMPROBANTE y luego, una línea por clave:",
     "MONTO_GS: [dígitos del importe transferido o NO_LEGIBLE]",
     "BENEFICIARIO: [nombre bajo PARA o NO_LEGIBLE]",
-    "CUENTA_DESTINO: [cuenta bajo PARA o NO_LEGIBLE]",
+    "CUENTA_DESTINO: [número de cuenta bajo PARA o NO_LEGIBLE]",
+    "ALIAS_DESTINO: [alias / cédula como identificador de destino bajo PARA o NO_LEGIBLE]",
     "EMISOR: [nombre bajo DE o NO_LEGIBLE]",
     "BANCO: [banco o NO_LEGIBLE]",
     "OPERACION: [referencia u operación o NO_LEGIBLE]",
     "FECHA: [fecha visible o NO_LEGIBLE]",
+    "Si el banco muestra alias / CI en vez de número de cuenta para el destinatario, colocalo en ALIAS_DESTINO; no inventes CUENTA_DESTINO.",
     "Nunca uses precio del catálogo como MONTO_GS ni confundas remitente con destinatario.",
     "Para otras imágenes, comenzá PRODUCTO, CONSULTA o IMAGEN y describí brevemente."
   ].join("\n");
@@ -515,6 +520,7 @@ export async function describeImage(
 /** Lectura documental, nunca acreditación bancaria. Se evita inferir valores ausentes. */
 export type ReceiptFields = {
   amountGs: number | null; beneficiary: string | null; destinationAccount: string | null;
+  destinationAlias: string | null;
   sender: string | null; operation: string | null; bank: string | null; date: string | null;
 };
 export function parseReceiptFields(description: string | null | undefined): ReceiptFields | null {
@@ -530,5 +536,6 @@ export function parseReceiptFields(description: string | null | undefined): Rece
   const digits = amountText?.replace(/[^0-9]/g, "") ?? "";
   const amountGs = /^\d{1,12}$/.test(digits) && Number(digits) > 0 ? Number(digits) : null;
   return {amountGs,beneficiary:value("BENEFICIARIO"),destinationAccount:value("CUENTA_DESTINO"),
+    destinationAlias:value("ALIAS_DESTINO"),
     sender:value("EMISOR"),operation:value("OPERACION"),bank:value("BANCO"),date:value("FECHA")};
 }
