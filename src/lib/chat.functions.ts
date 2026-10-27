@@ -583,6 +583,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     const checkedInboxReply = createdOrder ? {reply: rawReply, corrected:false, paymentMethod:null} : enforceVerifiedPaymentReply({
       reply: catalogSafe, city:savedCheckoutState.city, department:savedCheckoutState.department,
       cityVerified:savedCheckoutState.cityVerified, training:ctx.training,
+      saleState:savedCheckoutState, productId:detectedProduct, products:ctx.products,
     });
     if (checkedInboxReply.corrected) console.warn("[BOT_SKY_COVERAGE_OUTPUT_GUARD]",JSON.stringify({
       conversationId:conversation.id,paymentMethod:checkedInboxReply.paymentMethod,channel:"inbox"
