@@ -2113,6 +2113,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       const pendingChecked = enforceVerifiedPaymentReply({
         reply: pendingProposal, city:verifiedSaleState.city, department:verifiedSaleState.department,
         cityVerified:verifiedSaleState.cityVerified, training:ctx.training,
+        saleState:verifiedSaleState, productId:detectedProduct, products:ctx.products,
       });
       if (pendingChecked.corrected) console.warn("[BOT_SKY_COVERAGE_OUTPUT_GUARD]", JSON.stringify({
         conversationId:conversation.id, paymentMethod:pendingChecked.paymentMethod, channel:"whatsapp_gps"
@@ -2176,6 +2177,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       const outgoingChecked = enforceVerifiedPaymentReply({
         reply: outgoingProposal, city:verifiedSaleState.city, department:verifiedSaleState.department,
         cityVerified:verifiedSaleState.cityVerified, training:ctx.training,
+        saleState:verifiedSaleState, productId:detectedProduct, products:ctx.products,
       });
       if (outgoingChecked.corrected) console.warn("[BOT_SKY_COVERAGE_OUTPUT_GUARD]", JSON.stringify({
         conversationId:conversation.id, paymentMethod:outgoingChecked.paymentMethod, channel:"whatsapp"
