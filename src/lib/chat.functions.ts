@@ -9,6 +9,7 @@ import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { sendWhatsAppText } from "@/lib/whatsapp.server";
 import { reconcileOrderWithSaleState, recoverSaleStateFromHistory, isValidCustomerName, isValidDeliveryAddress } from "@/lib/sale-reconciliation.server";
+import { isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi, isValidRecipientCi } from "@/lib/rule-sales.server";
 import { buildRegisteredOrderConfirmation } from "@/lib/order-confirmation.server";
 
 const SendInput = z.object({
@@ -181,23 +182,25 @@ export const registerPendingSale = createServerFn({ method: "POST" })
       throw new Error("No hay modalidad habilitada para esta ciudad. Configurá la encomienda en cobertura antes de registrar.");
     if(data.paymentMethod==="contraentrega" && !match.active)
       throw new Error("No hay contraentrega para esta ciudad");
-    if(match.addressRequired && !isValidDeliveryAddress(data.street))throw new Error("La dirección es obligatoria para esta ciudad según tu entrenamiento");
+    if(match.addressRequired && !isEncomiendaAdvanceOrder(ctx.training,data.city,data.department,data.paymentMethod) && !isValidDeliveryAddress(data.street))
+      throw new Error("La dirección es obligatoria para esta ciudad según tu entrenamiento");
     const options=[...(product.product_prices??[])].sort((a,b)=>a.sort_order-b.sort_order);
     const option=options.find(o=>o.id===data.optionId)??null;
     if(options.length && !option)throw new Error("Seleccioná una presentación válida del catálogo");
     if(!options.length && data.optionId)throw new Error("Este producto no tiene esa promoción");
     const units=(option?.quantity??1)*data.promoCount;
     if (!isValidCustomerName(data.customerName)) throw new Error("Ingresá nombre y apellido reales del cliente");
-    if (data.street && !isValidDeliveryAddress(data.street)) throw new Error("Dirección inválida: ingresá calle/referencia concreta o ubicación Google Maps");
+    if (data.street && !isEncomiendaAdvanceOrder(ctx.training,data.city,data.department,data.paymentMethod) && !isValidDeliveryAddress(data.street))
+      throw new Error("Dirección inválida: ingresá calle/referencia concreta o ubicación Google Maps");
     const order={customer_name:data.customerName,phone:convo.contacts.phone,
-      city:match.city,departamento:match.department,street:data.street||undefined,
+      city:match.city,departamento:match.department,      street:isEncomiendaAdvanceOrder(ctx.training,data.city,data.department,data.paymentMethod) ? undefined : data.street||undefined,
       quantity:units,promo_quantity:data.promoCount,product_price_id:option?.id,
       price_option_label:option?.label,payment_method:data.paymentMethod,
       observations:"Pedido recuperado manualmente desde Inbox; revisar conversación original"};
     const created=await createOrderFromAi({workspaceId:convo.workspace_id,ownerId:convo.user_id,
       conversationId:convo.id,contactId:convo.contact_id,phone:convo.contacts.phone,
       adId:convo.ad_id??null,productId:data.productId,
-      sourceMessageId:`manual-recovery:${data.sourceMessageId}`,order,products:ctx.products});
+      sourceMessageId:`manual-recovery:${data.sourceMessageId}`,order,products:ctx.products,training:ctx.training});
     const {error: stateError}=await supabase.from("bot_sale_states").delete()
       .eq("workspace_id",convo.workspace_id).eq("conversation_id",convo.id);
     if(stateError)console.error("Se registró el pedido, pero no se pudo limpiar el estado",stateError);
@@ -477,7 +480,10 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     // Los pedidos desde Inbox deben guardar primero, confirmar después.
     // NUNCA reutilizar la compra de una conversación ya cerrada.
     let createdOrder: { id: string; order_number: string } | null = null;
-    if (result.order && !result.order.street?.trim() && (step?.state.locationUrl || previous.locationUrl)) {
+    if (result.order && isEncomiendaAdvanceOrder(ctx.training,result.order.city,result.order.departamento,result.order.payment_method))
+      delete result.order.street;
+    if (result.order && !isEncomiendaAdvanceOrder(ctx.training,result.order.city,result.order.departamento,result.order.payment_method) &&
+        !result.order.street?.trim() && (step?.state.locationUrl || previous.locationUrl)) {
       result.order.street = step?.state.locationUrl || previous.locationUrl || undefined;
     }
     const orderCoverage=result.order ? verifiedCoverage(
@@ -495,8 +501,12 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     const nationalState=step?.state??previous;
     const nationwideAdvanceApproved = isAdvanceInbox && Boolean(nationalState.cityVerified && nationalState.city && nationalState.department) &&
       sellerAllowsNationwideAdvance(ctx.training);
-    const valid = (!isAdvanceInbox || receiptVerifiedAsFile) && !conversation.sale_closed && Boolean(orderCoverage?.active || (isAdvanceInbox && /ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(orderCoverage?.method ?? "")) || nationwideAdvanceApproved) &&
-      ((isAdvanceInbox && nationwideAdvanceApproved && !orderCoverage?.active) ||
+    const requiresEncomiendaCiInbox=Boolean(result.order &&
+      isEncomiendaAdvanceOrder(ctx.training,result.order.city,result.order.departamento,result.order.payment_method) &&
+      sellerRequiresEncomiendaCi(ctx.training));
+    const recipientCiReadyInbox=!requiresEncomiendaCiInbox || isValidRecipientCi(result.order?.recipient_ci);
+    const valid = recipientCiReadyInbox && (!isAdvanceInbox || receiptVerifiedAsFile) && !conversation.sale_closed && Boolean(orderCoverage?.active || (isAdvanceInbox && /ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(orderCoverage?.method ?? "")) || nationwideAdvanceApproved) &&
+      (isEncomiendaAdvanceOrder(ctx.training,result.order?.city,result.order?.departamento,result.order?.payment_method) ||
        !orderCoverage?.addressRequired || Boolean(isValidDeliveryAddress(result.order?.street) || isValidDeliveryAddress(step?.state.locationUrl) || isValidDeliveryAddress(previous.locationUrl))) && Boolean(result.order) &&
       isOrderReady(result.order, detectedProduct) &&
       (Boolean(step?.state.cartLines?.length) || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory));
@@ -513,6 +523,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
         order: { ...result.order, phone },
         products: ctx.products,
         cartLines: step?.state.cartLines,
+        training: ctx.training,
       });
       await recoverRecentPaymentReceiptForOrder({
         workspaceId: conversation.workspace_id,
@@ -666,7 +677,9 @@ export const recoverPendingWithRules = createServerFn({ method: "POST" })
     let createdOrder: {id:string;order_number:string}|null=null;
     if(step?.complete){
       const st=step.state;
-      const order={customer_name:st.customerName!,city:st.city!,departamento:st.department!,street:st.street??undefined,
+      const order={customer_name:st.customerName!,city:st.city!,departamento:st.department!,
+        street:isEncomiendaAdvanceOrder(ctx.training,st.city,st.department,st.paymentMethod) ? undefined : st.street??undefined,
+        recipient_ci:isValidRecipientCi(st.recipientCi) ? st.recipientCi!.replace(/\D/g, "") : undefined,
         quantity:st.quantity!,product_price_id:st.optionId??undefined,payment_method:st.paymentMethod!,phone:convo.contacts.phone};
       const productId=step.productId??st.productId??convo.product_id;
       const verified=verifiedCoverage(String(order.city),String(order.departamento),parseCoverage(ctx.training));
@@ -677,13 +690,16 @@ export const recoverPendingWithRules = createServerFn({ method: "POST" })
       const nationwide = advance && st.cityVerified===true && Boolean(st.department) &&
         sellerAllowsNationwideAdvance(ctx.training);
       const documented = !advance || Boolean(st.receiptPath && !st.receiptReview && (st.receiptDocuments??[]).length);
-      const canCreate=Boolean(documented && (verified?.active || nationwide) &&
-        ((nationwide && !verified?.active) || !verified?.addressRequired || isValidDeliveryAddress(order.street) || isValidDeliveryAddress(st.locationUrl)) && productId && isOrderReady(order,productId) &&
+      const canCreate=Boolean(documented &&
+        (!isEncomiendaAdvanceOrder(ctx.training,order.city,order.departamento,order.payment_method) ||
+         !sellerRequiresEncomiendaCi(ctx.training) || isValidRecipientCi(order.recipient_ci)) &&
+        (verified?.active || nationwide) &&
+        (isEncomiendaAdvanceOrder(ctx.training,order.city,order.departamento,order.payment_method) || !verified?.addressRequired || isValidDeliveryAddress(order.street) || isValidDeliveryAddress(st.locationUrl)) && productId && isOrderReady(order,productId) &&
         (Boolean(st.cartLines?.length)||isUnambiguousPriceSelection(order,productId,ctx.products,chatHistory)));
       if(!canCreate)return {skipped:true,reason:"Pedido requiere revisión de cobertura o variante"};
       createdOrder=await createOrderFromAi({workspaceId:convo.workspace_id,ownerId:convo.user_id,conversationId:convo.id,
         contactId:convo.contact_id,phone:convo.contacts.phone,adId:convo.ad_id??null,productId:productId!,
-        sourceMessageId:newest.wamid||newest.id,order,products:ctx.products,cartLines:st.cartLines});
+        sourceMessageId:newest.wamid||newest.id,order,products:ctx.products,cartLines:st.cartLines,training:ctx.training});
       await recoverRecentPaymentReceiptForOrder({workspaceId:convo.workspace_id,ownerId:convo.user_id,
         conversationId:convo.id,orderId:createdOrder.id});
       const {data:savedOrder,error:readError}=await supabase.from("orders")
@@ -695,7 +711,8 @@ export const recoverPendingWithRules = createServerFn({ method: "POST" })
       reply=buildRegisteredOrderConfirmation({created:savedOrder,order:{...order,payment_method:savedOrder.payment_method},
         productName:selectedProduct?.name??"Producto del pedido",productOption:selectedOption?.label,
         savedQuantity:Number(savedOrder.quantity),address:savedOrder.street,paymentStatus:savedOrder.payment_status,
-        deliveryMethod:verified.method});
+        deliveryMethod:isEncomiendaAdvanceOrder(ctx.training,order.city,order.departamento,order.payment_method)
+          ? "Encomienda con pago anticipado" : verified?.method});
     }
     const {data:conn}=await supabase.from("whatsapp_connections").select("phone_number_id,access_token")
       .eq("workspace_id",convo.workspace_id).maybeSingle();
