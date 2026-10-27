@@ -1,3 +1,4 @@
+import { RECIPIENT_CI_QUESTION } from "./recipient-ci.server";
 import { formatGs } from "@/lib/format";
 import type { AiOrder } from "@/lib/ai.server";
 
@@ -18,6 +19,7 @@ type ConfirmationArgs = {
   paymentStatus?: string | null;
   deliveryMethod?: string | null;
   address?: string | null;
+  requestRecipientCi?: boolean;
 };
 
 /** Solo invocar después del INSERT confirmado en orders. */
@@ -45,5 +47,6 @@ export function buildRegisteredOrderConfirmation(args: ConfirmationArgs): string
     `🧾 Pedido N.º: ${created.order_number}`,
     "",
     "¡Muchas gracias por tu compra! 😊",
+    ...(args.requestRecipientCi ? ["", RECIPIENT_CI_QUESTION] : []),
   ].join("\n");
 }
