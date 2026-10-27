@@ -15,6 +15,8 @@ export type SaleState = {
   cityVerified?: boolean;
   coverageStatus?: "covered" | "uncovered" | "unknown";
   customerName?: string | null;
+  /** CI real del destinatario, proveniente únicamente del cliente. */
+  recipientCi?: string | null;
   street?: string | null;
   locationUrl?: string | null;
   alternatePhone?: string | null;
@@ -101,6 +103,39 @@ export function deliveryPolicyForCity(city: string | null | undefined, departmen
   const contraentrega = place.active && /contra entrega|contraentrega|pago al recibir/.test(method);
   const anticipado = /encomienda|anticipado|transferencia/.test(method) && !contraentrega;
   return { ...place, paymentMethod: contraentrega ? "contraentrega" as const : anticipado ? "anticipado" as const : null };
+}
+
+/** Solo se exige CI cuando el entrenamiento ACTIVO lo pide de manera expresa. */
+export function sellerRequiresEncomiendaCi(training: AiContext["training"]): boolean {
+  return training.some(entry => /encomienda/i.test(entry.content) &&
+    /(?:n[uú]mero de c[eé]dula del destinatario|c[eé]dula de identidad del destinatario|c[eé]dula del destinatario)/i.test(entry.content) &&
+    /(?:obligatori[oa]|requisito|exigir|solicitar|pedir|datos obligatorios)/i.test(entry.content));
+}
+
+export function isValidRecipientCi(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const raw=value.trim();
+  if (!/^[0-9.\s-]+$/.test(raw)) return false;
+  const digits=raw.replace(/[^0-9]/g,"");
+  return digits.length >= 4 && digits.length <= 9;
+}
+
+/** Jamás extraer CI de una imagen/comprobante, alias bancario, teléfono ni código de operación. */
+export function extractRecipientCiFromCustomerText(text: string, awaitingCi=false): string | null {
+  if (/^\s*(?:\[imagen\]|COMPROBANTE|\[documento\]|\[audio\])/i.test(text)) return null;
+  const raw=text.trim();
+  const explicit=raw.match(/(?:\b(?:mi|la|el|n[uú]mero de)\s+)?(?:c[eé]dula|c\.?\s*i\.?)(?:\s*(?:n[uú]mero|nro\.?|es|:|=))?\s*[:#-]?\s*([0-9][0-9.\s-]{2,14}[0-9])/i);
+  const candidate=explicit?.[1] ?? (awaitingCi && /^[0-9.\s-]{4,16}$/.test(raw) ? raw : null);
+  if (!candidate || !isValidRecipientCi(candidate)) return null;
+  return candidate.replace(/[^0-9]/g,"");
+}
+
+/** La dirección domiciliaria jamás es requisito de encomienda anticipada. */
+export function isEncomiendaAdvanceOrder(training: AiContext["training"], city: unknown, department: unknown, payment: unknown): boolean {
+  if (!/anticip|transfer|deposit|giro/i.test(String(payment ?? ""))) return false;
+  const location=verifiedCoverage(String(city??""),String(department??""),parseCoverage(training));
+  if (location) return /encomienda/i.test(location.method) || !location.active;
+  return sellerAllowsNationwideAdvance(training) && Boolean(String(city??"").trim() && String(department??"").trim());
 }
 
 /** Solo el entrenamiento ACTIVO del vendedor puede autorizar encomienda nacional. */
@@ -319,6 +354,8 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   const p=ctx.products.find(x=>x.id===s.productId)??(ctx.activeProductId?ctx.products.find(x=>x.id===ctx.activeProductId):undefined);
   if(!p)return null;
   s.productId=p.id;
+  const ci=extractRecipientCiFromCustomerText(text,s.awaiting==="recipient_ci");
+  if (ci) s.recipientCi=ci;
   const variants=opts(p);
   // «?» después de una selección no es una pregunta técnica: continuar la
   // compra pendiente sin borrar producto, variante, cantidad, ciudad o GPS.
@@ -502,11 +539,14 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     if(!bank)return answer("💳 Todavía no tengo los datos bancarios confirmados. 😊 Un asesor te ayudará a continuar de forma segura.",null,false,true);
     if(!s.receiptPath)return answer(`💳✨ *¡Ya casi está tu pedido!*\n\n📦 *Producto:* ${p.name}${s.cartLines?.length?` (${summaryLabel})`:selected?` (${selected.label})`:""}\n🔢 *Cantidad:* ${s.quantity}\n💰 *Total:* ${money(total)}\n\n🏦 *Datos para el pago:*\n${bank.slice(0,1600)}\n\n📸 Cuando hagas la transferencia, enviame el comprobante para adjuntarlo. 😊 El vendedor revisará la acreditación antes de confirmarla.`,"receipt");
     if(!s.customerName)return answer("📸 ¡Recibí tu comprobante! 😊 Quedará pendiente de verificación. ¿Me indicás tu nombre y apellido para completar el pedido?","name");
+    if(isEncomiendaAdvanceOrder(ctx.training,s.city,s.department,s.paymentMethod) &&
+       sellerRequiresEncomiendaCi(ctx.training) && !isValidRecipientCi(s.recipientCi))
+      return answer("😊 ¡Gracias! Para registrar la encomienda, ¿me pasás el número de cédula del destinatario?", "recipient_ci");
     return answer(`✅📸 ¡Gracias! Tu comprobante quedó adjunto para revisión. 📦 *${p.name}* (${summaryLabel}), total *${money(total)}*. El vendedor verificará el pago. 😊`,null,true);
   }
   // Un solo mensaje de requisitos una vez elegidos producto, precio, cantidad y ciudad.
   // El contacto alternativo NO bloquea el cierre. La ciudad ya debe haberse verificado.
-  const needsAddress=location?.addressRequired !== false;
+  const needsAddress=s.paymentMethod!=="anticipado" && location?.addressRequired !== false;
   // La ubicación GPS sirve como referencia de domicilio; no identifica ciudad sin geocodificación verificada.
   if (s.locationUrl && !s.street) s.street=s.locationUrl;
   else if(s.locationUrl && s.street && !s.street.includes(s.locationUrl)) s.street += ` | GPS: ${s.locationUrl}`;
