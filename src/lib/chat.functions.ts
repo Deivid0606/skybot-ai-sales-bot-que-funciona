@@ -226,7 +226,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       .select("id, workspace_id, user_id, contact_id, product_id, ad_id, ai_paused, is_closed, sale_closed, contacts(phone)")
       .eq("id", data.conversationId).single();
     if (error || !conversation) throw new Error("Conversación no encontrada");
-    if (conversation.ai_paused || conversation.is_closed) return { skipped: true, reply: "" };
+    if (conversation.ai_paused || conversation.is_closed) return { skipped: true, reply: "", reason: "El chat está pausado o cerrado" };
 
     const { data: history, error: historyError } = await supabase.from("messages")
       .select("id, wamid, sender, direction, body, media_url, media_type, created_at")
@@ -236,7 +236,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     if (historyError) throw historyError;
     const newest = history?.[0];
     if (!newest || newest.direction !== "inbound" || newest.sender !== "customer") {
-      return { skipped: true, reply: "" };
+      return { skipped: true, reply: "", reason: "El último mensaje no es del cliente" };
     }
     // No responder de nuevo si otro trabajador ya respondió a este inbound.
     const chatHistory = [...(history ?? [])].reverse().filter(m => Boolean(m.body)).map(m => ({
@@ -246,7 +246,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     const { data: aiSettings } = await supabase.from("ai_settings")
       .select("ai_enabled, hybrid_mode, hybrid_fallback_enabled")
       .eq("workspace_id", conversation.workspace_id).maybeSingle();
-    if (!aiSettings?.ai_enabled) return { skipped: true, reply: "" };
+    if (!aiSettings?.ai_enabled) return { skipped: true, reply: "", reason: "La IA está apagada en Configuraciones" };
     const ctx = await buildWorkspaceAiContext(supabase, conversation.workspace_id,
       chatHistory, conversation.product_id, conversation.contacts?.phone ?? null, conversation.id);
     const mode: "hybrid" = "hybrid"; // IA redacta siempre; reglas solo extraen/validan datos técnicos.
