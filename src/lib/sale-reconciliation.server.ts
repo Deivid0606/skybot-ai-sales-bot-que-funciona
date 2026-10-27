@@ -17,6 +17,7 @@ export function isValidCustomerName(value: unknown): boolean {
   const name = value.replace(/^(?:soy|me llamo|mi nombre es|nombre(?: y apellido)?:)\s*/i, "").trim();
   const n = normal(name);
   if (name.length < 5 || name.length > 160 || !/^[\p{L}]+(?:[ '\-]+[\p{L}]+){1,5}$/u.test(name)) return false;
+  if (/\b(?:estoy|en|aeropuerto|trabajo|oficina|salgo|almorzar|almuerzo|horas?|hasta|desde|avisa|traigas|aca|aqui|cada|unidades?|cajas?)\b/.test(n)) return false;
   if (/\b(?:barrio|ciudad|calle|avenida|avda|ruta|esquina|zona|centro|obrero|direccion|ubicacion|departamento|pedido|entrega|lunes|martes|miercoles|jueves|viernes|sabado|domingo|mañana|manana|hoy|precio|quiero|gracias|okey|perfecto|confirmo|asuncion|central|paraguay)\b/.test(n)) return false;
   return true;
 }
@@ -30,6 +31,8 @@ export function isValidDeliveryAddress(value: unknown): boolean {
   if (address.length < 7 || /^(?:ok|okey|dale|si|no|para el |el |este |proximo |mañana|manana|hoy|lunes|martes|miercoles|jueves|viernes|sabado|domingo)/.test(n)) return false;
   if (/^(?:barrio|zona|ciudad|de )\s+[\p{L} '\-]+$/u.test(n)) return false;
   // Calle, avenida, número o referencia inequívoca. Un barrio aislado no basta.
+  if (/\b(?:\d{1,2}\s*[:.]\s*\d{2}|\d{1,2}\s*(?:hs|horas?)|de\s+\d{1,2}\s+a\s+\d{1,2}|almorzar|almuerzo|salgo|horario|hasta las)\b/.test(n) && !/\b(?:calle|avenida|ruta|casa|aeropuerto|trabajo|oficina|frente|esquina)\b/.test(n)) return false;
+  if (/\b(?:aeropuerto|trabajo|oficina|empresa|shopping|colegio|escuela|universidad|hospital|sanatorio|terminal|supermercado|estacion|iglesia|plaza)\b/.test(n)) return true;
   return /(?:\b(?:calle|avenida|avda|av\.|ruta|numero|nro|casa|manzana|lote|pasaje|esquina|casi|frente|al lado|detras|detrás|entre)\b|\d{1,5}|\b(?:maps|ubicacion exacta)\b)/i.test(n);
 }
 
