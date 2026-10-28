@@ -390,6 +390,7 @@ export function isPlaceReference(text:string):boolean { return PLACE_REF.test(no
 function humanName(text:string, expecting:boolean):string|null {
   const cleaned=text.trim().replace(/^(?:me llamo|mi nombre es|soy)\s+/i, "").replace(/\s+soy\s*$/i, "").trim();
   if(NOT_A_NAME.test(norm(cleaned)))return null;
+  if (/^(?:para|en|a|hacia|desde|ciudad|vivo|estoy|enviar|entregar)\b/.test(norm(cleaned)))return null;
   if(!expecting&&!/^(?:me llamo|mi nombre es)\s+/i.test(text))return null;
   if(!/^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+(?:[\s'-]+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+){1,5}$/.test(cleaned))return null;
   if(/\b(?:pago|pagos|pagar|pago al recibir|recibir|recibo|transferencia|transferir|efectivo|contado|contra|contraentrega|deposito|giro|comprobante|tarjeta|cuota|cuotas|envio|delivery|direccion|dirección|avenida|avda|calle|si|no|ok|dale|listo|gracias|hola|buenas|precio|costo|cuanto|foto|disponible|unidad|und|quiero|tenes|tienen)\b/i.test(norm(cleaned)))return null;
