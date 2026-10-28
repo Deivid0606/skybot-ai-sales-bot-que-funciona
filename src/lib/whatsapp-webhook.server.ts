@@ -57,7 +57,7 @@ function requiredCheckoutPrompt(
     };
   }
   if (state.awaiting === "address" && state.cityVerified && customerNameValid &&
-      state.paymentMethod === "contraentrega" && !state.street && !state.locationUrl) {
+      state.paymentMethod === "contraentrega" && !isValidDeliveryAddress(state.street) && !isValidDeliveryAddress(state.locationUrl)) {
     return {
       stage: "address",
       question: "📍 Para completar la entrega, ¿me pasás tu dirección con una referencia o tu ubicación de Google Maps?",
