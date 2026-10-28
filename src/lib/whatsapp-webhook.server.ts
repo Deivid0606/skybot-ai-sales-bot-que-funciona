@@ -1803,9 +1803,9 @@ RESULTADO TÉCNICO DE LA IMAGEN DE COMPROBANTE RECIBIDA AHORA (NO EQUIVALE A ACR
 - Total de la variante seleccionada según catálogo: ${expectedReceiptTotal ?? "pendiente de identificación inequívoca"} Gs.
 - Ciudad de destino conservada: ${verifiedSaleState.cityVerified ? verifiedSaleState.city : "aún no verificada"}.
 - Nombre y apellido del destinatario: ${verifiedSaleState.customerName ? "recibidos" : "faltantes"}.
-- Cédula de destinatario requerida por ESTA tienda y modalidad: ${requiresCiAfterReceipt}; recibida del CLIENTE: ${isValidRecipientCi(verifiedSaleState.recipientCi)}.
+- Cédula de destinatario: ${requiresCiAfterReceipt ? "se pide SOLO DESPUÉS de que el backend confirme el pedido; NO la pidas ahora" : "no requerida"}.
 ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal ? `- PAGO MAYOR AL TOTAL: el cliente transfirió ${documentedReceiptTotal} Gs y el total es ${expectedReceiptTotal} Gs. El comprobante SE ACEPTA. NO pidas otro comprobante ni que lo reenvíe. Decí solamente que el comprobante quedó recibido, que tiene un SALDO A FAVOR de ${documentedReceiptTotal - expectedReceiptTotal} Gs, y pedí el siguiente dato faltante (nombre y apellido del destinatario).
-` : ""}INSTRUCCIÓN PARA ESTA ÚNICA RESPUESTA: la verificación DOCUMENTAL que puede hacer el backend YA SE EJECUTÓ; NO digas 'ahora voy a verificar', 'un momento', 'te aviso después' ni prometas que se ejecutará otra tarea. Respondé ahora al cliente con la IA y el entrenamiento ACTIVO del vendedor, según los hechos anteriores. Si el comprobante quedó en revisión o es ilegible, explicá que requiere revisión y NO pidas otra transferencia. Si quedó documentado como compatible y el monto es insuficiente frente al total OFICIAL, informá la diferencia exacta; si el total oficial aún no es comprobable, pedí únicamente el dato de producto/variante que falta. Si es suficiente y es encomienda, pedí solo el siguiente dato faltante DESPUÉS del comprobante (nombre y apellido, y luego cédula del destinatario), sin dirección, barrio, GPS ni calle. Si ya está todo, no inventes número de pedido: el backend hace el INSERT y envía la confirmación. No confundas la cédula del beneficiario bancario con la del destinatario ni creas que una imagen acredita el dinero.`;
+` : ""}INSTRUCCIÓN PARA ESTA ÚNICA RESPUESTA: la verificación DOCUMENTAL que puede hacer el backend YA SE EJECUTÓ; NO digas 'ahora voy a verificar', 'un momento', 'te aviso después' ni prometas que se ejecutará otra tarea. Respondé ahora al cliente con la IA y el entrenamiento ACTIVO del vendedor, según los hechos anteriores. Si el comprobante quedó en revisión o es ilegible, explicá que requiere revisión y NO pidas otra transferencia. Si quedó documentado como compatible y el monto es insuficiente frente al total OFICIAL, informá la diferencia exacta; si el total oficial aún no es comprobable, pedí únicamente el dato de producto/variante que falta. Si es suficiente y es encomienda, pedí solo nombre y apellido si faltan (la cédula NO se pide ahora: el backend la pide después de confirmar), sin dirección, barrio, GPS ni calle. Si ya está todo, no inventes número de pedido: el backend hace el INSERT y envía la confirmación. No confundas la cédula del beneficiario bancario con la del destinatario ni creas que una imagen acredita el dinero.`;
       console.info("[BOT_SKY_RECEIPT_TURN_STATUS]", JSON.stringify({
         conversationId: conversation.id, receiptInCurrentOrder,
         receiptReview: verifiedSaleState.receiptReview ?? null,
@@ -2134,9 +2134,9 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
     }
     const orderReady = financiallyReady && isOrderReady(result.order, detectedProduct) &&
       (Boolean(saveStep?.state.cartLines?.length) || stateExpectedTotal !== null || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory)) &&
-      (!isAdvance || hasReceiptForOrder) &&
-      (!result.order || !isEncomiendaAdvanceOrder(ctx.training,result.order.city,result.order.departamento,result.order.payment_method) ||
-        !sellerRequiresEncomiendaCi(ctx.training) || isValidRecipientCi(result.order.recipient_ci));
+      (!isAdvance || hasReceiptForOrder);
+    // La cédula del destinatario de encomienda se pide DESPUÉS de confirmar
+    // (shouldAskPostSaleCi). Nunca bloquea el registro del pedido.
 
     /*
      * No dependemos solamente de sale_closed.
