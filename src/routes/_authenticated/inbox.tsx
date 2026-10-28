@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { formatTime } from "@/lib/format";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -53,6 +53,8 @@ import { ChatMedia } from "@/components/chat-media";
 import { MAX_FILE_BYTES, guessMediaType, uploadWorkspaceFile } from "@/lib/storage";
 import { AdOriginCard } from "@/components/ad-origin-card";
 import { ContactInfoDialog } from "@/components/contact-info-dialog";
+import { CityPicker } from "@/components/city-picker";
+import { DEPARTAMENTOS_PY } from "@/lib/orders";
 
 
 /** Resumen real de pedidos de hoy, aislado por workspace. El pago no se considera acreditado por una imagen. */
@@ -162,7 +164,8 @@ function OfficeScene({businessName, recentActivity}: {businessName: string;recen
 }
 
 /** Banner superior: oficina vectorial animada con actividad real del workspace, sin videos ni librerías. */
-function InboxPanoramicOffice({ businessName, recentActivity, pending, salesCount, amount, onHide }: {
+function InboxPanoramicOffice({ businessName, recentActivity, pending, salesCount, amount, onHide, tabs }: {
+  tabs?: ReactNode;
   businessName: string;
   recentActivity: OfficeOrder | null;
   pending: number;
@@ -220,6 +223,11 @@ function InboxPanoramicOffice({ businessName, recentActivity, pending, salesCoun
             {recentActivity ? <><p className="mt-1 truncate text-[11px] font-medium text-white">{shortName(recentActivity.customer_name)}</p><p className="text-sm font-black text-emerald-300">{moneyGs(recentActivity.total)}</p></> : <p className="mt-1 text-[10px] text-emerald-100/65">Los pedidos nuevos aparecerán aquí cuando se registren.</p>}
           </div>
         </div>
+        {tabs && (
+          <div className="absolute bottom-2 left-[33%] right-[210px] z-30 xl:left-[30%] 2xl:right-[250px]">
+            {tabs}
+          </div>
+        )}
         <button type="button" onClick={onHide} className="absolute right-3 top-2.5 z-30 rounded-lg border border-white/15 bg-[#081b32]/85 px-2.5 py-1.5 text-[10px] font-semibold text-sky-100 transition hover:bg-[#1b395a]" aria-label="Ocultar oficina animada" title="Ocultar oficina">Ocultar oficina</button>
       </div>
     </div>
@@ -364,7 +372,7 @@ function getGoogleMapsUrl(
 
 function getResponseOrigin(message: any): "code" | "ai" | "human" | "unknown" | "incoming" {
   if (message.direction === "inbound") return "incoming";
-  if (message.sender === "agent") return "human";
+  if (message.sender === "agent" || message.response_origin === "human") return "human";
   if (message.response_origin === "code") return "code";
   if (message.response_origin === "ai") return "ai";
   return "unknown";
@@ -384,9 +392,11 @@ function OriginBadge({ origin }: { origin: ReturnType<typeof getResponseOrigin> 
 
 
 /** Categorías de atención. Se usan datos registrados; el texto solo indica prioridades. */
-type SmartTab = "all" | "potential" | "order_query" | "complaints" | "advance" | "closed" | "closed_ai" | "closed_code" | "review";
+type SmartTab = "all" | "ai_failed" | "human" | "potential" | "order_query" | "complaints" | "advance" | "closed" | "closed_ai" | "closed_code" | "review";
 const SMART_TABS: {id:SmartTab;label:string;icon:string}[] = [
   {id:"all",label:"Todos",icon:"📥"},
+  {id:"ai_failed",label:"IA no responde",icon:"🔴"},
+  {id:"human",label:"Atendido por humano",icon:"👤"},
   {id:"potential",label:"Clientes potenciales",icon:"🛒"},
   {id:"order_query",label:"Consulta de pedido",icon:"📦"},
   {id:"complaints",label:"Reclamos",icon:"🚨"},
@@ -507,6 +517,8 @@ function InboxPage() {
   // Último inbound realmente sin contestar en un turno que corresponde a la IA.
   // Nunca usar conversations.last_message_at: puede representar un copy/imagen enviado por código.
   const [aiUnansweredSince, setAiUnansweredSince] = useState<Record<string, string>>({});
+  // Chats donde un humano está escribiendo/atendiendo: nunca cuentan como falla de IA.
+  const [humanHandlingIds, setHumanHandlingIds] = useState<string[]>([]);
   const [isCheckingPending, setIsCheckingPending] = useState(false);
   const { data: inboxAiSettings } = useQuery({
     queryKey: ["inbox-ai-monitoring-enabled", workspaceId],
@@ -1064,6 +1076,7 @@ function InboxPage() {
     if (!workspaceId || unreadCandidates.length === 0) {
       setVerifiedPendingIds([]);
       setAiUnansweredSince({});
+      setHumanHandlingIds([]);
       setIsCheckingPending(false);
       return () => {
         cancelled = true;
@@ -1075,6 +1088,7 @@ function InboxPage() {
     const verifyPendingConversations = async () => {
       const confirmedPendingIds: string[] = [];
       const unansweredAi: Record<string, string> = {};
+      const humanIds: string[] = [];
       const batchSize = 10;
 
       // Mirar mensajes reales, no solo unread_count ni conversations.last_message_at.
@@ -1119,7 +1133,20 @@ function InboxPage() {
             });
             if (validOutbound) return null;
 
-            const pending = { id: conversation.id, lastInboundAt: lastCustomer.created_at };
+            const pending = { id: conversation.id, lastInboundAt: lastCustomer.created_at, humanHandling: false };
+
+            // Si la última respuesta antes del cliente la dio un HUMANO (en las
+            // últimas 3 horas), el chat lo está atendiendo una persona: no es falla de IA.
+            const lastPreviousOutbound = rows.find((message) =>
+              message.direction === "outbound" && Date.parse(message.created_at) < lastInboundTime,
+            );
+            if (
+              lastPreviousOutbound &&
+              getResponseOrigin(lastPreviousOutbound) === "human" &&
+              lastInboundTime - Date.parse(lastPreviousOutbound.created_at) < 3 * 60 * 60 * 1000
+            ) {
+              return { ...pending, aiExpected: false, humanHandling: true };
+            }
 
             // Si lo que falló fue exclusivamente el envío técnico del copy/imagen,
             // no atribuirlo falsamente al modelo de IA.
@@ -1149,6 +1176,7 @@ function InboxPage() {
         for (const result of results) {
           if (result.status === "fulfilled" && result.value) {
             confirmedPendingIds.push(result.value.id);
+            if (result.value.humanHandling) humanIds.push(result.value.id);
             if (result.value.aiExpected) {
               unansweredAi[result.value.id] = result.value.lastInboundAt;
             }
@@ -1161,6 +1189,7 @@ function InboxPage() {
       if (!cancelled) {
         setVerifiedPendingIds(confirmedPendingIds);
         setAiUnansweredSince(unansweredAi);
+        setHumanHandlingIds(humanIds);
         setIsCheckingPending(false);
       }
     };
@@ -1501,6 +1530,8 @@ function InboxPage() {
     : [];
 
   const hasPossibleAiFailure = possibleAiFailures.length > 0;
+  const aiFailureIdSet = new Set(possibleAiFailures.map((c) => c.id));
+  const humanHandlingIdSet = new Set(humanHandlingIds);
   const aiAlertShownRef = useRef(false);
 
   useEffect(() => {
@@ -1534,7 +1565,10 @@ function InboxPage() {
     const topic=messageTopic(customerText);
     const advance=sales.some(isAdvanceOrder);
     const origin=orderClosingOrigins?.[c.id]??"unknown";
+    const humanHandling=Boolean(c.ai_paused) || humanHandlingIdSet.has(c.id) || lastReplyOrigins?.[c.id]==="human";
     return {
+      ai_failed:!humanHandling && aiFailureIdSet.has(c.id),
+      human:humanHandling,
       potential:!hasSale && Boolean(c.product_id || c.ad_id || /(?:precio|quiero|comprar|cuanto|pedido|envio|llevar)/.test(normalizeSmartText(customerText))),
       order_query:topic==="order" && hasSale,
       complaints:topic==="complaint",
@@ -1580,6 +1614,19 @@ function InboxPage() {
 
   const heroSales = (todayOfficeOrders ?? []).filter(order => order.status !== "cancelado");
   const heroSalesTotal = heroSales.reduce((sum, order) => sum + (Number(order.total) || 0), 0);
+  const smartTabsBar = (
+    <div className="flex max-h-[64px] flex-wrap content-start gap-1.5 overflow-y-auto [scrollbar-width:thin]">
+      {SMART_TABS.map(tab=>(
+        <button key={tab.id} type="button" onClick={()=>setSmartTab(tab.id)}
+          aria-pressed={smartTab===tab.id}
+          className={cn("whitespace-nowrap rounded-lg border px-2 py-1 text-[11px] font-semibold leading-snug shadow-sm backdrop-blur-sm transition-colors",
+            smartTab===tab.id?"border-primary bg-primary text-primary-foreground":
+            tab.id==="ai_failed"&&(smartCounts.ai_failed??0)>0?"border-red-500 bg-red-600/80 text-white hover:bg-red-600":
+            "border-sky-300/25 bg-[#0a2444]/85 text-sky-50 hover:bg-[#1b395a]")}
+        >{tab.icon} {tab.label} ({smartCounts[tab.id]??0})</button>
+      ))}
+    </div>
+  );
   return (
     <div className="relative flex h-[calc(100vh-3.5rem)] w-full flex-col overflow-hidden bg-gradient-to-br from-background via-background to-sky-500/[.035]">
       {/* Cabecera premium. Todos los contadores provienen del Inbox, no son simulados. */}
@@ -1604,11 +1651,12 @@ function InboxPage() {
         <InboxPanoramicOffice businessName={inboxWorkspace?.name?.trim() || "Mi tienda"}
           recentActivity={officeActivity} pending={pendingCandidates.length}
           salesCount={heroSales.length} amount={heroSalesTotal}
-          onHide={() => setShowPanoramaOffice(false)} />
+          onHide={() => setShowPanoramaOffice(false)} tabs={smartTabsBar} />
       ) : (
         <div className="hidden shrink-0 items-center justify-between border-b border-sky-500/20 bg-[#0b2038] px-4 py-1.5 text-xs text-sky-100 md:flex">
           <span className="flex items-center gap-2"><Layers3 className="h-3.5 w-3.5 text-sky-300" /> Oficina de {inboxWorkspace?.name?.trim() || "Mi tienda"} · {heroSales.length} pedidos registrados hoy</span>
-          <button type="button" onClick={() => setShowPanoramaOffice(true)} className="rounded-lg border border-sky-300/20 px-2.5 py-1 font-semibold hover:bg-white/10">Mostrar oficina 3D</button>
+          <div className="mx-3 min-w-0 flex-1">{smartTabsBar}</div>
+          <button type="button" onClick={() => setShowPanoramaOffice(true)} className="shrink-0 rounded-lg border border-sky-300/20 px-2.5 py-1 font-semibold hover:bg-white/10">Mostrar oficina 3D</button>
         </div>
       )}
       <div className="flex min-h-0 flex-1">
@@ -1711,18 +1759,10 @@ function InboxPage() {
             </div>
           </details>
 
-          {/* Pestañas de atención: no modifican ni mueven mensajes en la base. */}
+          {/* Pestañas de atención: se muestran arriba, en la barra de la oficina. En celular quedan aquí. */}
           <div className="space-y-2">
-            <p className="text-xs font-semibold">Organizar conversaciones</p>
-            <div className="flex max-h-[104px] flex-wrap content-start gap-1.5 overflow-y-auto [scrollbar-width:thin]">
-              {SMART_TABS.map(tab=>(
-                <button key={tab.id} type="button" onClick={()=>setSmartTab(tab.id)}
-                  aria-pressed={smartTab===tab.id}
-                  className={cn("max-w-full whitespace-normal break-words rounded-lg border px-2 py-1.5 text-[11px] font-semibold leading-snug transition-colors",
-                    smartTab===tab.id?"border-primary bg-primary text-primary-foreground":"border-border bg-background hover:bg-accent")}
-                >{tab.icon} {tab.label} ({smartCounts[tab.id]??0})</button>
-              ))}
-            </div>
+            <p className="text-xs font-semibold md:hidden">Organizar conversaciones</p>
+            <div className="md:hidden">{smartTabsBar}</div>
             {(loadingInboxOrders || loadingSmartMessages || loadingClosingOrigins) &&
               <p className="text-[11px] text-muted-foreground">Clasificando mensajes y verificando pedidos…</p>}
             {(inboxOrdersError || smartMessagesError || closingOriginsError) &&
@@ -1869,6 +1909,8 @@ function InboxPage() {
                  {lastReplyOrigins?.[c.id] === "human" && <span className="rounded-md border border-orange-400 bg-orange-500/25 px-2 py-0.5 text-[10px] font-bold text-orange-200">👤 HUMANO</span>}
                  {lastReplyOrigins?.[c.id] === "incoming" && <span className="rounded-md border border-red-400 bg-red-500/20 px-2 py-0.5 text-[10px] font-bold text-red-200">● CLIENTE ESPERANDO</span>}
                  {lastReplyOrigins?.[c.id] === "unknown" && <span className="rounded-md border border-slate-400 bg-slate-500/20 px-2 py-0.5 text-[10px] text-slate-200">AUTOMÁTICO · SIN ORIGEN</span>}
+                 {getSmartCategories(c).ai_failed && <span className="rounded-md border border-red-500 bg-red-600/30 px-2 py-0.5 text-[10px] font-bold text-red-100">🔴 IA NO RESPONDE</span>}
+                 {getSmartCategories(c).human && lastReplyOrigins?.[c.id] !== "human" && <span className="rounded-md border border-orange-400 bg-orange-500/25 px-2 py-0.5 text-[10px] font-bold text-orange-200">👤 ATENDIENDO HUMANO</span>}
                  {getSmartCategories(c).complaints && <span className="rounded border border-red-500/40 bg-red-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-red-600">🚨 Reclamo</span>}
                  {getSmartCategories(c).order_query && <span className="rounded border border-blue-500/40 bg-blue-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-blue-600">📦 Consulta pedido</span>}
                  {getSmartCategories(c).advance && <span className="rounded border border-violet-500/40 bg-violet-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-violet-600">💳 Anticipado</span>}
@@ -2082,8 +2124,13 @@ function InboxPage() {
                     </select>
                   </label>
                   <label className="text-xs">Cantidad de paquetes/promociones<Input type="number" min={1} max={25} value={recovery.promoCount} onChange={e=>setRecovery(r=>({...r,promoCount:Number(e.target.value)}))}/></label>
-                  <label className="text-xs">Ciudad<Input value={recovery.city} onChange={e=>setRecovery(r=>({...r,city:e.target.value}))}/></label>
-                  <label className="text-xs">Departamento<Input value={recovery.department} onChange={e=>setRecovery(r=>({...r,department:e.target.value}))}/></label>
+                  <label className="text-xs">Ciudad<CityPicker value={recovery.city} onChange={(city,dept)=>setRecovery(r=>({...r,city,department:dept??r.department}))}/></label>
+                  <label className="text-xs">Departamento
+                    <select className="h-10 w-full rounded-md border bg-background px-2" value={recovery.department} onChange={e=>setRecovery(r=>({...r,department:e.target.value}))}>
+                      <option value="">Se completa al elegir la ciudad</option>
+                      {DEPARTAMENTOS_PY.map(d=><option key={d} value={d}>{d}</option>)}
+                    </select>
+                  </label>
                   <label className="text-xs sm:col-span-2">Dirección o GPS (según modalidad)<Input value={recovery.street} onChange={e=>setRecovery(r=>({...r,street:e.target.value}))}/></label>
                   <label className="text-xs">Forma de pago
                     <select className="h-10 w-full rounded-md border bg-background px-2" value={recovery.paymentMethod} onChange={e=>setRecovery(r=>({...r,paymentMethod:e.target.value as typeof r.paymentMethod}))}>
