@@ -8,7 +8,7 @@ import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { sendWhatsAppText } from "@/lib/whatsapp.server";
 import { reconcileOrderWithSaleState, recoverSaleStateFromHistory, isValidCustomerName, isValidDeliveryAddress } from "@/lib/sale-reconciliation.server";
-import { isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi, isValidRecipientCi, enforceVerifiedPaymentReply } from "@/lib/rule-sales.server";
+import { isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi, isValidRecipientCi, enforceVerifiedPaymentReply, type SaleState } from "@/lib/rule-sales.server";
 import { buildRegisteredOrderConfirmation } from "@/lib/order-confirmation.server";
 import { handlePostSaleRecipientCi, shouldAskPostSaleCi } from "./recipient-ci.server";
 
@@ -206,6 +206,59 @@ export const registerPendingSale = createServerFn({ method: "POST" })
     if(stateError)console.error("Se registró el pedido, pero no se pudo limpiar el estado",stateError);
     return {ok:true,orderId:created.id,orderNumber:created.order_number};
   });
+
+/**
+ * Guardarraíl de continuidad para "Responder con IA" desde Inbox.
+ * La IA conserva el contenido comercial y el entrenamiento de cada vendedor.
+ * El servidor solamente asegura que no se salte un dato obligatorio ni anuncie
+ * una venta inexistente. No crea archivos ni un flujo de venta independiente.
+ */
+type InboxCheckoutStage = "variant" | "quantity" | "city" | "name" | "address";
+
+function pendingInboxCheckoutQuestion(state: SaleState): {stage: InboxCheckoutStage; text: string} | null {
+  if (!state.productId) return null;
+  if (state.awaiting === "variant")
+    return {stage: "variant", text: "😊 Para preparar tu pedido, ¿qué presentación del producto querés llevar?"};
+  if (state.awaiting === "quantity")
+    return {stage: "quantity", text: "😊 ¿Cuántas unidades querés llevar?"};
+  if (state.awaiting === "city" && !state.cityVerified)
+    return {stage: "city", text: "📍 ¿En qué ciudad querés recibir tu pedido?"};
+  if (state.awaiting === "name" && state.cityVerified && !isValidCustomerName(state.customerName))
+    return {stage: "name", text: "😊 Para completar tu pedido, ¿me pasás tu nombre y apellido?"};
+  if (state.awaiting === "address" && state.cityVerified &&
+      state.paymentMethod === "contraentrega" && isValidCustomerName(state.customerName) &&
+      !isValidDeliveryAddress(state.street) && !isValidDeliveryAddress(state.locationUrl)) {
+    const firstName = String(state.customerName).trim().split(/\s+/)[0];
+    return {stage: "address", text: `¡Gracias, ${firstName}! 😊 Para completar tu pedido, ¿me pasás tu dirección con una referencia o tu ubicación de Google Maps? 📍`};
+  }
+  return null;
+}
+
+function hasQuestionForInboxStage(reply: string, stage: InboxCheckoutStage): boolean {
+  const questions = reply.match(/¿[^?\n]{1,220}\?|[^\n¿?]{1,220}\?/g) ?? [];
+  const key: Record<InboxCheckoutStage, RegExp> = {
+    variant: /(?:presentaci[oó]n|modelo|variante|opci[oó]n)/i,
+    quantity: /(?:cu[aá]ntas?\s+unidades|cantidad|cu[aá]ntos?\s+(?:quer[eé]s|llev[aá]s))/i,
+    city: /(?:ciudad|localidad|d[oó]nde.*(?:recibir|entregar|enviar))/i,
+    name: /(?:nombre|apellido|c[oó]mo\s+te\s+llam[aá]s|qui[eé]n.*recibe)/i,
+    address: /(?:direcci[oó]n|calle|referencia|ubicaci[oó]n|google\s+maps|domicilio)/i,
+  };
+  return questions.some(question => key[stage].test(question));
+}
+
+function ensureInboxCheckoutProgress(
+  reply: string, pending: ReturnType<typeof pendingInboxCheckoutQuestion>, prematureClose: boolean,
+): string {
+  if (!pending) return prematureClose
+    ? "Tu pedido todavía no pudo registrarse. Necesitamos revisar un dato antes de confirmarlo; por favor, contactá a la tienda para completar la gestión."
+    : reply;
+  // Nunca repetir un cierre ficticio. Preguntar inmediatamente el dato faltante.
+  if (prematureClose || /(?:estoy|estamos)\s+verificando|te\s+(?:aviso|confirmo)\s+(?:en\s+breve|despu[eé]s)/i.test(reply))
+    return pending.text;
+  if (hasQuestionForInboxStage(reply, pending.stage)) return reply;
+  const safe = reply.replace(/\s*¿\s*(?:seguimos|est[aá]\s+bien|as[ií]\s+est[aá]\s+bien|confirm[aá]s\s+(?:tu|el)\s+pedido|te\s+parece)\s*\?[\s😊🙂👍]*$/iu, "").trim();
+  return safe ? `${safe}\n\n${pending.text}` : pending.text;
+}
 
 const AiNowInput = z.object({ conversationId: z.string().uuid() });
 
@@ -456,8 +509,10 @@ export const aiReplyNow = createServerFn({ method: "POST" })
             payment_method:st.paymentMethod!,phone:conversation.contacts?.phone??""}};
       }
     }
-    const detectedProduct = result.product_id && ctx.products.some(p => p.id === result.product_id)
-      ? result.product_id : conversation.product_id;
+    // En un mensaje de nombre/dirección la IA suele omitir product_id.
+    // Recuperarlo del estado técnico evita perder la venta por ese motivo.
+    const detectedProduct = [step?.productId, result.product_id, previous.productId, conversation.product_id]
+      .find(id => Boolean(id && ctx.products.some(p => p.id === id))) ?? null;
     result.order=applySellerFirstOffer(result.order,detectedProduct,ctx.products,ctx.training,chatHistory);
     result.order=reconcileOrderWithSaleState(result.order,step?.state??previous,ctx.training);
     // Validación de modalidad oficial por workspace antes de registrar.
@@ -535,7 +590,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     const candidateReply = result.reply
       .replace(/\bya\s+(?:tenemos|tengo)\s+tu\s+pedido\b/gi, "Estamos preparando los datos de tu pedido")
       .replace(/(?:✅\s*)?PEDIDO\s+(?:CONFIRMADO|REGISTRADO)/gi, "Pedido pendiente de revisión");
-    const falselyConfirmed = /(?:pedido|compra)\s+(?:ya\s+)?(?:qued[oó]|est[aá])\s+(?:registrad[oa]|confirmad[oa])|gracias\s+por\s+tu\s+compra|(?:tu|su)\s+pedido[\s\S]{0,35}(?:registrad[oa]|confirmad[oa])|te\s+llegar[aá]\s+en\s+breve/i.test(candidateReply);
+    const falselyConfirmed = /(?:✅\s*)?PEDIDO\s+(?:CONFIRMADO|REGISTRADO)|(?:pedido|compra)\s+(?:ya\s+)?(?:qued[oó]|est[aá])\s+(?:registrad[oa]|confirmad[oa])|gracias\s+por\s+tu\s+compra|(?:tu|su)\s+pedido[\s\S]{0,35}(?:registrad[oa]|confirmad[oa])|te\s+llegar[aá]\s+en\s+breve/i.test(result.reply);
     let confirmedInboxMessage: string | null = null;
     if (createdOrder && result.order) {
       const { data: savedOrder, error: readError } = await supabase.from("orders")
@@ -556,18 +611,26 @@ export const aiReplyNow = createServerFn({ method: "POST" })
         deliveryMethod:orderCoverage?.method,
       });
     }
+    const savedCheckoutState = step?.state ?? previous;
+    const prematurelyClosed = !createdOrder && (falselyConfirmed || Boolean(result.sale_closed));
+    const pendingCheckout = !createdOrder && !bypassSale
+      ? pendingInboxCheckoutQuestion(savedCheckoutState) : null;
+    if (prematurelyClosed) console.warn("[BOT_SKY_INBOX_PREMATURE_CLOSE]", JSON.stringify({
+      conversationId: conversation.id, awaiting: savedCheckoutState.awaiting ?? null,
+      hasVerifiedCity: Boolean(savedCheckoutState.cityVerified),
+      hasValidName: isValidCustomerName(savedCheckoutState.customerName),
+      hasValidAddress: Boolean(isValidDeliveryAddress(savedCheckoutState.street) || isValidDeliveryAddress(savedCheckoutState.locationUrl)),
+      productSelected: Boolean(detectedProduct),
+    }));
     const rawReply = createdOrder
       ? confirmedInboxMessage!
-      : falselyConfirmed || result.sale_closed
-        ? "Recibí tus datos, pero tu pedido todavía no está registrado. Estoy verificando la información."
-        : candidateReply;
+      : ensureInboxCheckoutProgress(candidateReply, pendingCheckout, prematurelyClosed);
     const priceOptions = ctx.products.find(p=>p.id===detectedProduct)?.product_prices ?? [];
     const catalogSafe = rawReply.replace(/(?:Gs\.?\s*|₲\s*)(\d[\d.,]{3,})/gi,(full,digits:string)=>{
       const amount=Number(digits.replace(/[^0-9]/g,""));
       const prices=priceOptions.map(o=>Math.round(Number(o.price))).filter(n=>Math.abs(n-amount)===1);
       return prices.length===1 ? full.replace(digits,prices[0].toLocaleString("es-PY")) : full;
     });
-    const savedCheckoutState = step?.state ?? previous;
     const checkedInboxReply = createdOrder ? {reply: rawReply, corrected:false, paymentMethod:null} : enforceVerifiedPaymentReply({
       reply: catalogSafe, city:savedCheckoutState.city, department:savedCheckoutState.department,
       cityVerified:savedCheckoutState.cityVerified, training:ctx.training,
@@ -587,6 +650,9 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       if(second.corrected)return {skipped:true,reason:"La IA no corrigió la modalidad de pago"};
       reply=second.reply;
     }
+    // La segunda respuesta IA (corrección de cobertura) también debe continuar
+    // el checkout, nunca terminar en un resumen sin la siguiente pregunta.
+    if (!createdOrder) reply = ensureInboxCheckoutProgress(reply, pendingCheckout, prematurelyClosed);
     const wamid = await sendWhatsAppText(conn, phone, reply);
     const { error: insertError } = await supabase.from("messages").insert({
       workspace_id: conversation.workspace_id, user_id: conversation.user_id,
