@@ -15,7 +15,7 @@ import { generateAiReply, type AiContext } from "@/lib/ai.server";
 import { advanceRuleSale, sellerUsesFirstOffer, isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi, isValidRecipientCi, type SaleState } from "@/lib/rule-sales.server";
 import { classifyCustomerIntent, addVerifiedOrderContext, addPendingSaleContext } from "@/lib/hybrid-intent.server";
 import { coordinatesFromText, validCoords } from "@/lib/hybrid-intent.server";
-import { parseCoverage, verifiedCoverage, sellerAllowsNationwideAdvance, deliveryPolicyForCity, enforceVerifiedPaymentReply } from "@/lib/rule-sales.server";
+import { parseCoverage, verifiedCoverage, sellerAllowsNationwideAdvance, deliveryPolicyForCity, hasTemplatePlaceholder, stripBankDetailsForCod, enforceVerifiedPaymentReply } from "@/lib/rule-sales.server";
 import { sendWhatsAppText } from "@/lib/whatsapp.server";
 import { detectComplaint, COMPLAINT_REASON_LABELS } from "@/lib/complaints";
 
@@ -2039,6 +2039,23 @@ INSTRUCCIÓN PARA ESTA ÚNICA RESPUESTA: la verificación DOCUMENTAL que puede h
       if (/(?:\bpara\s+asunci[oó]n\b|\ben\s+asunci[oó]n\b)/i.test(rewritten.reply))
         throw new Error("La IA continuó sustituyendo el destino del cliente");
       finalReply=rewritten.reply;
+    }
+    // Ciudad con pago al recibir: nunca enviar datos bancarios ni pedir comprobante.
+    const codPolicy = verifiedSaleState.cityVerified
+      ? deliveryPolicyForCity(verifiedSaleState.city, verifiedSaleState.department, ctx.training) : null;
+    const BANK_RE = /(?:\bbanco\b|\btitular\b|cuenta desde|alias\s+eko|comprobante|realices el pago)/i;
+    if (codPolicy?.paymentMethod === "contraentrega" && BANK_RE.test(finalReply)) {
+      const rewritten = await generateAiReplyWithRetry({...aiAnswerContext,
+        systemInstruction: aiAnswerContext.systemInstruction +
+          `\nPara ${verifiedSaleState.city} el pago es AL RECIBIR (contraentrega). NO envíes datos bancarios, cuentas, alias ni pidas comprobante. Pedí solo el siguiente dato faltante (nombre y apellido, dirección).`});
+      finalReply = BANK_RE.test(rewritten.reply) ? stripBankDetailsForCod(rewritten.reply) : rewritten.reply;
+    }
+    // Nunca enviar marcadores de plantilla como [PRECIO REAL] o URL_DE_LA_IMAGEN.
+    if (hasTemplatePlaceholder(finalReply)) {
+      const rewritten = await generateAiReplyWithRetry({...aiAnswerContext,
+        systemInstruction: aiAnswerContext.systemInstruction +
+          `\nTu borrador contenía marcadores como [PRECIO REAL] o URL_DE_LA_IMAGEN. Usá SOLO el precio real del catálogo; si no hay foto disponible, decí que se la envías enseguida. Jamás escribas corchetes ni marcadores.`});
+      finalReply = rewritten.reply.replace(/!\[[^\]]*\]\([^)]*\)/g, "").replace(/\[[A-ZÁÉÍÓÚ _]+\]/g, "").trim();
     }
     // No prometer que el pedido quedó registrado ANTES del INSERT.
     // No permitir confirmaciones comerciales falsas, incluso si la IA no entrega
