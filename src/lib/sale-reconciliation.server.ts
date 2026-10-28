@@ -198,4 +198,13 @@ export function reconcileOrderWithSaleState(order: AiOrder | null, state: SaleSt
   return next;
 }
 
-
+/**
+ * Compatibilidad con webhooks anteriores que todavía importan este símbolo.
+ * Las preguntas de venta pertenecen exclusivamente a la IA y al entrenamiento.
+ * Nunca generar textos comerciales ni decidir el próximo dato desde este módulo.
+ * Se puede retirar esta exportación cuando todos los despliegues usen el
+ * whatsapp-webhook.server.ts actualizado incluido en el mismo paquete.
+ */
+export function nextVerifiedSaleQuestion(_ctx: AiContext, _state: SaleState): null {
+  return null;
+}
