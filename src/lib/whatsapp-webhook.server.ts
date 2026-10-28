@@ -1,4 +1,3 @@
-
 function isAiQuotaFailure(error: unknown): boolean {
   const e = error as {status?:number;code?:string;message?:string};
   const msg = String(e?.message ?? error ?? "").toLowerCase();
@@ -1805,7 +1804,8 @@ RESULTADO TÉCNICO DE LA IMAGEN DE COMPROBANTE RECIBIDA AHORA (NO EQUIVALE A ACR
 - Ciudad de destino conservada: ${verifiedSaleState.cityVerified ? verifiedSaleState.city : "aún no verificada"}.
 - Nombre y apellido del destinatario: ${verifiedSaleState.customerName ? "recibidos" : "faltantes"}.
 - Cédula de destinatario requerida por ESTA tienda y modalidad: ${requiresCiAfterReceipt}; recibida del CLIENTE: ${isValidRecipientCi(verifiedSaleState.recipientCi)}.
-INSTRUCCIÓN PARA ESTA ÚNICA RESPUESTA: la verificación DOCUMENTAL que puede hacer el backend YA SE EJECUTÓ; NO digas 'ahora voy a verificar', 'un momento', 'te aviso después' ni prometas que se ejecutará otra tarea. Respondé ahora al cliente con la IA y el entrenamiento ACTIVO del vendedor, según los hechos anteriores. Si el comprobante quedó en revisión o es ilegible, explicá que requiere revisión y NO pidas otra transferencia. Si quedó documentado como compatible y el monto es insuficiente frente al total OFICIAL, informá la diferencia exacta; si el total oficial aún no es comprobable, pedí únicamente el dato de producto/variante que falta. Si es suficiente y es encomienda, pedí solo el siguiente dato faltante DESPUÉS del comprobante (nombre y apellido, y luego cédula del destinatario), sin dirección, barrio, GPS ni calle. Si ya está todo, no inventes número de pedido: el backend hace el INSERT y envía la confirmación. No confundas la cédula del beneficiario bancario con la del destinatario ni creas que una imagen acredita el dinero.`;
+${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal ? `- PAGO MAYOR AL TOTAL: el cliente transfirió ${documentedReceiptTotal} Gs y el total es ${expectedReceiptTotal} Gs. El comprobante SE ACEPTA. NO pidas otro comprobante ni que lo reenvíe. Decí solamente que el comprobante quedó recibido, que tiene un SALDO A FAVOR de ${documentedReceiptTotal - expectedReceiptTotal} Gs, y pedí el siguiente dato faltante (nombre y apellido del destinatario).
+` : ""}INSTRUCCIÓN PARA ESTA ÚNICA RESPUESTA: la verificación DOCUMENTAL que puede hacer el backend YA SE EJECUTÓ; NO digas 'ahora voy a verificar', 'un momento', 'te aviso después' ni prometas que se ejecutará otra tarea. Respondé ahora al cliente con la IA y el entrenamiento ACTIVO del vendedor, según los hechos anteriores. Si el comprobante quedó en revisión o es ilegible, explicá que requiere revisión y NO pidas otra transferencia. Si quedó documentado como compatible y el monto es insuficiente frente al total OFICIAL, informá la diferencia exacta; si el total oficial aún no es comprobable, pedí únicamente el dato de producto/variante que falta. Si es suficiente y es encomienda, pedí solo el siguiente dato faltante DESPUÉS del comprobante (nombre y apellido, y luego cédula del destinatario), sin dirección, barrio, GPS ni calle. Si ya está todo, no inventes número de pedido: el backend hace el INSERT y envía la confirmación. No confundas la cédula del beneficiario bancario con la del destinatario ni creas que una imagen acredita el dinero.`;
       console.info("[BOT_SKY_RECEIPT_TURN_STATUS]", JSON.stringify({
         conversationId: conversation.id, receiptInCurrentOrder,
         receiptReview: verifiedSaleState.receiptReview ?? null,
@@ -2289,16 +2289,22 @@ INSTRUCCIÓN PARA ESTA ÚNICA RESPUESTA: la verificación DOCUMENTAL que puede h
       // pertenece a la IA con entrenamiento. Nunca imponer preguntas aquí.
       let outgoingProposal = safeBeforeInsert;
       const paidEnoughOrMore=isAdvance && expectedTotal!==null && receivedTotal>=expectedTotal && receivedTotal>0;
-      const asksForComplement=/(complemento|comprobante\s+de\s+la\s+diferencia|faltan?\s+gs)/i.test(outgoingProposal);
+      const resendRe=/(complemento|comprobante\s+de\s+la\s+diferencia|faltan?\s+gs|nuevamente|reenvi|monto\s+sea\s+el\s+correcto|otro\s+comprobante)/i;
+      const asksForComplement=resendRe.test(outgoingProposal);
       const wrongReceiptMessage=Boolean(
         (paidEnoughOrMore && asksForComplement) ||
         (isAdvance && paymentSaleState.receiptReview &&
           /(?:pedido\s+confirmado|pago\s+acreditado|transferencia\s+verificada)/i.test(outgoingProposal)));
       if (wrongReceiptMessage) {
         const corrected=await generateAiReplyWithRetry({...aiAnswerContext,
-          systemInstruction:aiAnswerContext.systemInstruction+`\nHECHOS DOCUMENTALES DEL SERVIDOR: revisión ${paymentSaleState.receiptReview??"ninguna"}; total oficial ${expectedTotal??"no verificado"}; montos documentados únicos ${receivedTotal}. Nunca pidas diferencia si alcanza el total ni afirmes acreditación. Contestá al comprador con el entrenamiento de la tienda, sin inventar una confirmación.`});
+          systemInstruction:aiAnswerContext.systemInstruction+`\nHECHOS DOCUMENTALES DEL SERVIDOR: revisión ${paymentSaleState.receiptReview??"ninguna"}; total oficial ${expectedTotal??"no verificado"}; montos documentados únicos ${receivedTotal}. Nunca pidas diferencia ni otro comprobante si alcanza o supera el total; si lo supera, informá el saldo a favor y pedí nombre y apellido. No afirmes acreditación. Contestá al comprador con el entrenamiento de la tienda, sin inventar una confirmación.`});
         outgoingProposal=corrected.reply;
-        if ((paidEnoughOrMore && /(complemento|comprobante\s+de\s+la\s+diferencia|faltan?\s+gs)/i.test(outgoingProposal)) ||
+        if (paidEnoughOrMore && expectedTotal!==null && resendRe.test(outgoingProposal)) {
+          const fav=receivedTotal-expectedTotal;
+          outgoingProposal=`¡Gracias! 😊 Recibimos tu comprobante.`+
+            (fav>0?` Tenés un saldo a favor de Gs. ${fav.toLocaleString("es-PY")}.`:"")+
+            (paymentSaleState.customerName?"":" ¿Me pasás el nombre y apellido de quien va a recibir el pedido?");
+        } else if ((paidEnoughOrMore && resendRe.test(outgoingProposal)) ||
             (paymentSaleState.receiptReview && /(?:pago\s+acreditado|transferencia\s+verificada)/i.test(outgoingProposal)))
           throw new Error("La IA repitió información documental no válida");
       }
