@@ -14,6 +14,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { CityPicker } from "@/components/city-picker";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
@@ -97,7 +98,7 @@ export function OrderEditDialog({ order, open, onOpenChange }: Props) {
           </div>
           <div className="space-y-1.5">
             <Label>Ciudad</Label>
-            <Input value={form.city ?? ""} onChange={(e) => set("city", e.target.value)} />
+            <CityPicker value={form.city ?? ""} onChange={(city, dept) => { set("city", city); if (dept) set("departamento", dept); }} />
           </div>
           <div className="space-y-1.5">
             <Label>Departamento</Label>
