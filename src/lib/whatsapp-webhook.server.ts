@@ -1906,6 +1906,15 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         result = {...result, reply:"¡Gracias! 😊 Para confirmarte la entrega, ¿me indicás en qué ciudad te lo enviamos?"};
       }
     }
+    // El cliente todavía NO indicó nombre completo: nunca saltar directo a GPS/dirección.
+    // La IA redacta normalmente; esta barrera evita confirmar sin identidad verificable.
+    if (!bypassSale && verifiedSaleState.productId && verifiedSaleState.cityVerified &&
+        verifiedSaleState.quantity && !isValidCustomerName(verifiedSaleState.customerName) &&
+        /(?:\b(?:direcci[oó]n|domicilio|ubicaci[oó]n|google maps|calle|referencia)\b)/i.test(result.reply) &&
+        /[¿?]|(?:pas[aá]me|indic[aá]me|envi[aá]me|compart[ií]me)/i.test(result.reply)) {
+      result = {...result, sale_closed:false, order:null,
+        reply:"😊 ¡Perfecto! Para preparar tu pedido, ¿me indicás tu nombre y apellido, por favor?"};
+    }
     if (bypassSale && !result.order) result = {...result, sale_closed:false, order:null};
     if (saveStep) {
       const {error: saveStateError} = await supabaseAdmin.from("bot_sale_states")
@@ -2288,7 +2297,11 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       const pendingIsEncomienda = Boolean(result.order && isEncomiendaAdvanceOrder(ctx.training, result.order.city, result.order.departamento, result.order.payment_method));
       const pendingHasAddress = Boolean(isValidDeliveryAddress(result.order?.street) || isValidDeliveryAddress(verifiedSaleState.street) || saveStep?.state.locationUrl || previousSale.locationUrl || verifiedSaleState.locationUrl);
       const pendingFirstName = String(verifiedSaleState.customerName || result.order?.customer_name || "").trim().split(/\s+/)[0] || "";
-      const pendingProposal = (!pendingIsEncomienda && !pendingHasAddress)
+      const pendingNeedsName = !isValidCustomerName(verifiedSaleState.customerName) &&
+        !isValidCustomerName(result.order?.customer_name);
+      const pendingProposal = pendingNeedsName
+        ? "😊 ¡Gracias por compartir tu ubicación! Para completar tu pedido, ¿me indicás tu nombre y apellido, por favor?"
+        : (!pendingIsEncomienda && !pendingHasAddress)
         ? `😊 ¡Gracias${pendingFirstName ? ", " + pendingFirstName : ""}! Para que el repartidor llegue bien, ¿me pasás tu dirección (calle y una referencia) o tu ubicación por Google Maps? 📍`
         : (!safeBeforeInsert || /registrand|registrar[eé]?\s+tu\s+pedido|confirmand/i.test(safeBeforeInsert))
         ? "Recibí tus datos 😊 Un asesor está verificando tu pedido y te confirma en breve."
