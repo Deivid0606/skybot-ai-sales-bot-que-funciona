@@ -2577,6 +2577,9 @@ export async function createOrderFromAi(args: {
       .update({
         conversation_id: args.conversationId,
         ad_id: existingOrder.ad_id ?? args.adId,
+        // El cliente corrigió su nombre después de confirmar: actualizar la ficha del pedido.
+        ...(isValidCustomerName(args.order.customer_name, [args.order.city, args.order.departamento])
+          ? { customer_name: cleanOrderText(args.order.customer_name) } : {}),
       })
       .eq("id", existingOrder.id)
       .eq("workspace_id", args.workspaceId);
