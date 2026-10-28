@@ -1,7 +1,7 @@
 // Limites defensivos por mensaje, configurables en Vercel.
 const MAX_HISTORY_MESSAGES = 20;
 const MAX_HISTORY_CHARS = 950;
-const MAX_OUTPUT_TOKENS = 768; // JSON de pedido y respuesta; probar antes de bajar a 512.
+const MAX_OUTPUT_TOKENS = 1536; // Dejar margen para JSON completo y el razonamiento del modelo.
 const MAX_PROVIDER_ATTEMPTS = 4;
 const MAX_PROMPT_CHARS = 100000;
 function limitedHistory(ctx: AiContext) {
@@ -500,10 +500,10 @@ function parseResult(raw: string): AiResult {
   const order = normalizeOrder(directOrder ? parsed : parsed.order);
   const reply = sanitizeVisibleReply(parsed.reply);
 
+  // Nunca reemplazar una salida incompleta de IA por preguntas o esperas
+  // comerciales programadas. ensureValidResult hará probar otro proveedor.
   return {
-    reply: reply || (directOrder
-      ? "Gracias, ya recibí los datos. Estoy verificando tu pedido. 😊"
-      : "Gracias por escribirnos. Estoy revisando tu consulta. 😊"),
+    reply,
     product_id: normalizeProductId(parsed.product_id),
     sale_closed: directOrder ? Boolean(order) : parsed.sale_closed === true,
     order,
