@@ -8,11 +8,10 @@ import { handlePostSaleRecipientCi, shouldAskPostSaleCi } from "./recipient-ci.s
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { formatGs } from "@/lib/format";
 import { parseReceiptFields } from "@/lib/media-ai.server";
-import { reconcileOrderWithSaleState, recoverSaleStateFromHistory, nextVerifiedSaleQuestion, isValidCustomerName, isValidDeliveryAddress } from "@/lib/sale-reconciliation.server";
+import { reconcileOrderWithSaleState, recoverSaleStateFromHistory, isValidCustomerName, isValidDeliveryAddress } from "@/lib/sale-reconciliation.server";
 import { buildRegisteredOrderConfirmation } from "@/lib/order-confirmation.server";
 import { buildWorkspaceAiContext } from "@/lib/ai-context.server";
 import { generateAiReply, type AiContext } from "@/lib/ai.server";
-import { decideHybridReply } from "@/lib/hybrid-rules.server";
 import { advanceRuleSale, sellerUsesFirstOffer, isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi, isValidRecipientCi, type SaleState } from "@/lib/rule-sales.server";
 import { classifyCustomerIntent, addVerifiedOrderContext, addPendingSaleContext } from "@/lib/hybrid-intent.server";
 import { coordinatesFromText, validCoords } from "@/lib/hybrid-intent.server";
@@ -1436,7 +1435,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       phone,
       conversation.id,
     );
-    const hybridMode: "hybrid" | "rules_only" | "ai_first" = "hybrid"; // Siempre responde la IA; reglas solo extraen/verifican/registran.
+    // IA + entrenamiento redactan siempre; el backend solo verifica y persiste.
     // Persistencia por conversación. El estado no depende de la memoria de Vercel.
     const { data: saleRow, error: saleReadError } = await supabaseAdmin
       .from("bot_sale_states").select("state")
@@ -1636,7 +1635,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         const destinationChecks = receivedDestinations.map(value => {
           const normalized = normalizeDestination(value);
           const accountMatch = authorizedAccounts.some(account =>
-            normalizeDestination(account) === normalized && normalized !== "");
+            normalizeDestination(String(account)) === normalized && normalized !== "");
           const aliasMatch = authorizedAliases.includes(normalized) && normalized !== "";
           return { accountMatch, aliasMatch };
         });
@@ -1736,7 +1735,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     const asksAboutSeller = /\b(?:de\s+d[oó]nde\s+(?:son|son\s+ustedes|es\s+(?:la\s+)?tienda|est[aá]n|queda)|d[oó]nde\s+(?:queda|est[aá])\s+(?:la\s+)?(?:tienda|local|negocio)|tienen\s+(?:local|sucursal|direcci[oó]n)|cu[aá]l\s+es\s+(?:su|la)\s+direcci[oó]n)\b/i.test(body);
     const bypassSale = asksAboutSeller || (!pendingAdvanceReceipt && intent !== "checkout" && !savedSaleReadyForFinalization && !awaitingCheckoutDetail &&
       !(previousSale.productId && !conversation.sale_closed && /(?:calle|barrio|casi|esquina|avenida|ruta|direccion|ubicacion|^[\p{L}]+(?:\s+[\p{L}]+){1,3}$)/iu.test(body)));
-    const answerContextBase = intent === "order_status" && hybridMode !== "rules_only"
+    const answerContextBase = intent === "order_status"
       ? await addVerifiedOrderContext(supabaseAdmin, ctx, workspaceId, phone)
       : ctx;
     const answerContext = isGpsMessage ? {...answerContextBase, systemInstruction:answerContextBase.systemInstruction +
@@ -1746,11 +1745,11 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
           `No inventes ciudad, departamento ni cobertura. Si está NO VERIFICADA, pedí ciudad. `+
           `Nunca pidas pago anticipado por una ubicación desconocida. `+
           `La IA no puede registrar un pedido ni modificar precios a partir de la ubicación.`}
-      : bypassSale && hybridMode !== "rules_only" ? addPendingSaleContext(answerContextBase, previousSale) : answerContextBase;
+      : bypassSale ? addPendingSaleContext(answerContextBase, previousSale) : answerContextBase;
     if (asksAboutSeller) {
       answerContext.systemInstruction += "\nPRIORIDAD PARA ESTE MENSAJE: el cliente pregunta por la ubicación u origen de LA TIENDA, NO informa su ciudad de entrega. Respondé la consulta concreta basándote exclusivamente en el entrenamiento de este vendedor. Si la dirección de la tienda no está documentada, indicá que no tenés ese dato confirmado. No repitas la pregunta anterior de ciudad en esta respuesta ni cambies los datos guardados del pedido. Conservá el progreso para el siguiente turno.";
     }
-    const ruleStep = hybridMode !== "ai_first" && !bypassSale
+    const ruleStep = !bypassSale
       ? advanceRuleSale(ctx, saleInput, previousSale, media && (media.type === "image" || media.type === "document") ? mediaPath : null, gpsUrl)
       : null;
     // Inyectar a la IA solo datos de venta efectivamente reconocidos por código.
@@ -1771,10 +1770,11 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     const officialPolicyInstruction = officialDelivery?.paymentMethod
       ? `\nCOBERTURA DEL VENDEDOR COMPROBADA: ciudad ${officialDelivery.city}, departamento ${officialDelivery.department}; modalidad EXACTA ${officialDelivery.method}; pago permitido ${officialDelivery.paymentMethod}. Esta información es obligatoria, no la reemplaces con pago anticipado ni preguntes cómo quiere pagar cuando el vendedor exige una modalidad. No confundas envío con modalidad de pago.`
       : `\n${sellerAllowsNationwideAdvance(ctx.training) ? "ENCOMIENDA NACIONAL AUTORIZADA: fuera de contraentrega se puede ofrecer pago anticipado sujeto a verificar logística; NO negar todo envío por ausencia en la lista. " : ""}COBERTURA PENDIENTE: la CIUDAD DE ENTREGA es el primer dato logístico obligatorio; NO solicites nombre, dirección, GPS, método de pago ni transferencia antes de verificarla. La ciudad debe estar en la cobertura activa de este vendedor o resolverse según su política de encomienda. No deduzcas municipio desde GPS ni barrio. Si el cliente hace otra consulta, respondela primero sin repetir automáticamente la pregunta de ciudad y conservá la venta.`;
-    const aiAnswerContext = hybridMode !== "rules_only" ? {
+    const aiAnswerContext = {
       ...answerContext,
-      systemInstruction: answerContext.systemInstruction + officialPolicyInstruction + `\nMODO IA + ENTRENAMIENTO BOT SKY, PRIORIDAD ALTA: Las respuestas comerciales las generás vos usando únicamente catálogo y entrenamiento de esta tienda. CONVERSÁ VOS con el comprador de forma natural: resolvé una sola pregunta por vez y no repitas catálogo/precios completos ni datos ya recibidos. Cantidad y variante se capturan mediante código y deben respetarse. No confirmes pedidos sin número real generado por Supabase. El cliente puede comprar varias veces. DATOS VERIFICADOS DEL CICLO ACTUAL (no mezclar con pedidos previos): ${JSON.stringify({productId:verifiedSaleState.productId,optionId:verifiedSaleState.optionId,quantity:verifiedSaleState.quantity,city:verifiedSaleState.city,department:verifiedSaleState.department,cityVerified:verifiedSaleState.cityVerified===true,coverageStatus:verifiedSaleState.coverageStatus,customerName:verifiedSaleState.customerName,hasAddress:Boolean(verifiedSaleState.street),gpsReceived:Boolean(verifiedSaleState.locationUrl),paymentMethod:verifiedSaleState.paymentMethod,awaiting:verifiedSaleState.awaiting})}. COBERTURA: si cityVerified no es true, NUNCA digas que tenemos cobertura; consultá la ciudad si falta. GPS no prueba por sí mismo ninguna ciudad. Si recibiste GPS no vuelvas a solicitarlo. El GPS es dirección suficiente si la configuración de la ciudad admite dirección por ubicación. Respetá el orden de preguntas definido en el entrenamiento del vendedor; nunca repitas hechos conocidos. Si no tenés precio/variante sin ambigüedad pedí aclaración. Si está completo, el código registrará el pedido; no inventes un número de orden ni digas que está confirmado.\nCIERRE DE VENTA, PRIORIDAD ALTA: (1) Cuando confirmes cobertura de la ciudad y el cliente todavía no eligió presentación, en ESE MISMO mensaje listá TODAS las presentaciones del catálogo con su precio exacto (una por línea, ej: '1️⃣ 1 caja (4 unidades): Gs. 98.000') y destacá el ahorro del combo si existe; nunca preguntes '¿cuál presentación querés?' sin mostrar las opciones. (2) Apenas el cliente elija presentación y la ciudad esté verificada, mostrá el resumen del pedido y en ESE MISMO mensaje pedí directamente los datos que falten para cerrar según el entrenamiento (nombre y apellido, dirección o ubicación GPS, referencia). PROHIBIDO preguntar '¿me confirmás para proceder?', '¿querés avanzar?' o pedir otra confirmación: elegir la presentación YA es la confirmación de compra. (3) Si el cliente ya dio algún dato, pedí solo lo que falta.`
-    } : answerContext;
+      systemInstruction: answerContext.systemInstruction + officialPolicyInstruction + `\nMODO IA + ENTRENAMIENTO BOT SKY, PRIORIDAD ALTA: Las respuestas comerciales las generás vos usando únicamente catálogo y entrenamiento de esta tienda. CONVERSÁ VOS con el comprador de forma natural: resolvé una sola pregunta por vez y no repitas catálogo/precios completos ni datos ya recibidos. Cantidad y variante se capturan mediante código y deben respetarse. No confirmes pedidos sin número real generado por Supabase. El cliente puede comprar varias veces. DATOS VERIFICADOS DEL CICLO ACTUAL (no mezclar con pedidos previos): ${JSON.stringify({productId:verifiedSaleState.productId,optionId:verifiedSaleState.optionId,quantity:verifiedSaleState.quantity,city:verifiedSaleState.city,department:verifiedSaleState.department,cityVerified:verifiedSaleState.cityVerified===true,coverageStatus:verifiedSaleState.coverageStatus,customerName:verifiedSaleState.customerName,hasAddress:Boolean(verifiedSaleState.street),gpsReceived:Boolean(verifiedSaleState.locationUrl),paymentMethod:verifiedSaleState.paymentMethod,awaiting:verifiedSaleState.awaiting})}. COBERTURA: si cityVerified no es true, NUNCA digas que tenemos cobertura; consultá la ciudad si falta. GPS no prueba por sí mismo ninguna ciudad. Si recibiste GPS no vuelvas a solicitarlo. El GPS es dirección suficiente si la configuración de la ciudad admite dirección por ubicación. Respetá el orden de preguntas definido en el entrenamiento del vendedor; nunca repitas hechos conocidos. Si no tenés precio/variante sin ambigüedad pedí aclaración. Si está completo, el código registrará el pedido; no inventes un número de orden ni digas que está confirmado.
+Respetá el flujo de venta específico del entrenamiento; ninguna pregunta, secuencia o promoción comercial se determina en código.`
+    };
     // El motor nunca puede borrar hechos ya verificados al procesar una dirección.
     if (ruleStep && previousSale.cityVerified && previousSale.city && previousSale.department &&
         !ruleStep.state.cityVerified && !/\b(?:soy de|vivo en|para)\b/i.test(body)) {
@@ -1788,72 +1788,19 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       ruleStep.state.receiptReview = previousSale.receiptReview;
       if (previousSale.receiptPath && !ruleStep.state.receiptPath) ruleStep.state.receiptPath = previousSale.receiptPath;
     }
-    let saveStep = ruleStep;
-    // En híbrido: reglas administran producto/ciudad/importe y siempre registran el
-    // pedido si está completo. Tras la ciudad, la IA puede continuar la charla;
-    // no se la invoca para una respuesta determinista inicial ni para el registro.
-    // Con híbrido, la IA responde desde la primera interacción tras el catálogo.
-    // Las reglas siguen interpretando, verificando y guardando los datos en paralelo;
-    // solo toman el mensaje de cierre si la compra está completa.
-    const ruleMustAnswer = hybridMode === "rules_only";
-    let safeDecision = ruleStep && !ruleStep.needsAi && ruleMustAnswer
-      ? {reply:ruleStep.reply, productId:ruleStep.productId, reason:"venta_reglas"}
-      : hybridMode === "hybrid" ? null
-      : (intent === "order_status" || intent === "complex" || intent === "price") && hybridMode !== "rules_only"
-        ? null
-        : decideHybridReply({ctx, text: body, mode: hybridMode});
+    const saveStep=ruleStep;
     let result: Awaited<ReturnType<typeof generateAiReply>>;
-    let responseOrigin = "ai";
-    // En modo híbrido la IA redacta la respuesta al GPS con hechos verificados.
-    // La respuesta determinista queda como respaldo y nunca se autoriza un pedido por este evento.
-    if (isGpsMessage && hybridMode !== "rules_only" && ruleStep && !ruleStep.needsAi) {
-      safeDecision = null;
-    }
-    if (locationReminder && bypassSale && previousSale.locationUrl && hybridMode === "rules_only") {
-      const missing = !previousSale.cityVerified ? "Solo falta confirmar tu ciudad para verificar la cobertura." : !previousSale.customerName ? "Solo me falta tu nombre y apellido para completar el pedido." : "Ya tengo la ubicación guardada para tu compra. Voy a revisar que el pedido tenga todos sus datos.";
-      safeDecision = {reply:`Tenés razón, disculpame. 🙏📍 *Tu ubicación ya está guardada*, no hace falta que la vuelvas a enviar. ${missing}`,productId:previousSale.productId??conversation.product_id,reason:"gps_ya_guardado"};
-    }
-    if (isGpsMessage) {
-      // GPS no debe forzar una respuesta de código en modo híbrido:
-      // la IA solicita el ÚNICO dato pendiente, o el código confirma tras el INSERT.
-      // La ciudad nunca se infiere de las coordenadas.
-      if (hybridMode === "rules_only") {
-        const missingName = Boolean(previousSale.cityVerified && !ruleStep?.state.customerName);
-        const msg = !previousSale.cityVerified
-          ? "📍 ¡Recibí tu ubicación! ¿En qué ciudad estás para verificar la cobertura?"
-          : missingName
-            ? "📍 ¡Recibí tu ubicación! 😊 Solo me falta tu nombre y apellido para registrar el pedido."
-            : "📍 ¡Recibí y guardé tu ubicación! Seguimos con tu pedido.";
-        safeDecision = {reply:msg,productId:previousSale.productId??conversation.product_id,reason:"ubicacion_reglas"};
-      } else {
-        safeDecision = null;
-      }
-      saveStep = ruleStep;
-    }
-    if (safeDecision) {
-      result = {reply: safeDecision.reply, product_id: safeDecision.productId, sale_closed: false, order: null};
-      responseOrigin = `code:${safeDecision.reason}`;
-    } else if (hybridMode === "rules_only") {
-      const fallback = decideHybridReply({ctx, text: body, mode: hybridMode, fallback: true});
-      result = {reply: fallback?.reply ?? "Un asesor necesita revisar tu consulta. 😊", product_id: fallback?.productId ?? conversation.product_id, sale_closed:false, order:null};
-      responseOrigin = "code:rules_only";
-    } else {
-      try {
-        result = await generateAiReplyWithRetry(aiAnswerContext);
-      } catch (aiError) {
-        // Mensaje entrante ya almacenado; dejar pendiente antes que inventar una respuesta de código.
-        console.error("[BOT SKY IA] Sin respuesta del proveedor; mensaje pendiente", {
-          workspaceId, conversationId:conversation.id,
-          error: aiError instanceof Error ? aiError.message : String(aiError),
-        });
-        await supabaseAdmin.from("integration_logs").insert({
-          workspace_id:workspaceId,user_id:ownerId,integration:"ai",level:"error",
-          message:`IA sin respuesta; conversación ${conversation.id}; mensaje ${message.id}`,
-        });
-        await sendSilenceFallback({conn,workspaceId,ownerId,conversationId:conversation.id,adId:attributedAdId,phone,wamid:message.id,
-          reason:`IA sin respuesta: ${aiError instanceof Error ? aiError.message : String(aiError)}`});
-        return;
-      }
+    const responseOrigin="ai";
+    try {
+      result=await generateAiReplyWithRetry(aiAnswerContext);
+    } catch (aiError) {
+      console.error("[BOT SKY IA] Mensaje pendiente, proveedor sin respuesta",{
+        workspaceId,conversationId:conversation.id,error:aiError instanceof Error?aiError.message:String(aiError)});
+      await supabaseAdmin.from("integration_logs").insert({workspace_id:workspaceId,user_id:ownerId,
+        integration:"ai",level:"error",message:`IA sin respuesta en conversación ${conversation.id}; mensaje ${message.id}`});
+      await sendSilenceFallback({conn,workspaceId,ownerId,conversationId:conversation.id,adId:attributedAdId,
+        phone,wamid:message.id,reason:`IA sin respuesta: ${aiError instanceof Error?aiError.message:String(aiError)}`});
+      return;
     }
     // GARANTÍA DE ORDEN COMERCIAL: la IA redacta, pero no puede saltarse ciudad.
     // Si propone pedir datos personales o una dirección sin ciudad verificada,
@@ -1876,18 +1823,14 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         if (/(?:\b(?:nombre|apellido|direcci[oó]n|domicilio|ubicaci[oó]n|google maps|transferencia|pago anticipado|m[eé]todo de pago)\b)/i.test(retried.reply) &&
             /[¿?]|(?:pas[aá]me|indic[aá]me|confirm[aá]me|envi[aá]me|compart[ií]me|necesito|falta)/i.test(retried.reply)) {
           console.error("[BOT SKY CITY GUARD] IA reiteró datos posteriores sin ciudad", conversation.id);
-          result = {...result, reply: CITY_QUESTION_FALLBACK};
+          throw new Error("La IA insistió en una solicitud incompatible con la ciudad pendiente");
         } else {
           result = {...result, reply: retried.reply};
         }
       } catch (error) {
         console.error("[BOT SKY CITY GUARD] No se pudo revalidar respuesta", error);
-        result = {...result, reply: CITY_QUESTION_FALLBACK};
+        throw new Error("No fue posible validar el diálogo de ciudad con la IA");
       }
-    }
-    // Consultar precio/garantía/seguimiento no debe completar ni crear pedidos.
-    if (hybridMode === "rules_only" && isGpsMessage && ruleStep && !ruleStep.needsAi && /(?:sin cobertura|no tenemos cobertura|pago anticipado|datos bancarios)/i.test(result.reply) && previousSale.coverageStatus !== "uncovered") {
-      result = {...result,reply:ruleStep.reply};
     }
     if (bypassSale && !result.order) result = {...result, sale_closed:false, order:null};
     if (saveStep) {
@@ -1896,16 +1839,15 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
           state:saveStep.state,updated_at:new Date().toISOString()},
           {onConflict:"workspace_id,conversation_id"});
       if(saveStateError) throw saveStateError;
-      if(saveStep.complete && !conversation.sale_closed && !bypassSale && (hybridMode === "rules_only" || !result.order)) {
+      if(saveStep.complete && !conversation.sale_closed && !bypassSale && !result.order) {
         const st=saveStep.state;
-        result = {reply:hybridMode === "rules_only" ? saveStep.reply : result.reply,product_id:saveStep.productId,sale_closed:true,
+        result = {reply:result.reply,product_id:saveStep.productId,sale_closed:true,
           order:{customer_name:st.customerName!,city:st.city!,departamento:st.department!,
             street:isValidDeliveryAddress(st.street) ? st.street : (isValidDeliveryAddress(result.order?.street) ? result.order?.street : undefined),quantity:(result.order?.promo_quantity ?? 1) > 1 ? result.order?.quantity : st.quantity!,
             promo_quantity:result.order?.promo_quantity,
             product_price_id:(result.order?.promo_quantity ?? 1) > 1 ? result.order?.product_price_id : st.optionId??undefined,
             recipient_ci:isValidRecipientCi(st.recipientCi) ? st.recipientCi!.replace(/\D/g,"") : undefined,
             payment_method:st.paymentMethod!,phone}};
-        responseOrigin=hybridMode === "rules_only" ? "code:venta_completa" : "ai";
       }
     }
     console.info("[BOT SKY híbrido] respuesta", {workspaceId, conversationId:conversation.id, origin:responseOrigin});
@@ -1943,7 +1885,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       /(?:env[ií]os?|entregas?|cobertura|encomienda|interior|anticipad[oa])/i.test(result.reply);
     const askingAboutNationalShipping = /(?:encomienda|env[ií]o|entrega|interior|capit[aá]n bado|pedro juan|pago|transferencia|cobertura)/i.test(body) ||
       verifiedSaleState.coverageStatus === "uncovered";
-    if (nationalSellerPolicy && falseNationalDenial && askingAboutNationalShipping && !officialDelivery?.active && hybridMode !== "rules_only") {
+    if (nationalSellerPolicy && falseNationalDenial && askingAboutNationalShipping && !officialDelivery?.active) {
       try {
         const revised = await generateAiReply({...aiAnswerContext,
           systemInstruction:aiAnswerContext.systemInstruction +
@@ -1962,7 +1904,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         return;
       }
     }
-    const safeReply = bypassSale && hybridMode !== "rules_only" ? result.reply : buildSafeAiReply({
+    const safeReply = bypassSale ? result.reply : buildSafeAiReply({
       reply: result.reply,
       history: chatHistory,
       products: ctx.products,
@@ -2004,9 +1946,28 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       verifiedSaleState.department && !deliveryCoverage?.active && sellerAllowsNationwideAdvance(ctx.training));
     // Barrera de salida: impedir una promesa de contraentrega no autorizada.
     // No reemplazar todo el mensaje salvo que realmente prometa pago al recibir.
-    const finalReply = needsNationalAdvance && /(?:pago\s+al\s+recibir|pag[aá]s?\s+al\s+recibir|contra\s*entrega|pag[aá]s?\s+cuando\s+recib)/i.test(safeReply)
-      ? `📦 A ${verifiedSaleState.city} trabajamos por encomienda con pago anticipado, sujeto a disponibilidad logística. 😊 ¿Cuál presentación querés llevar?`
-      : safeReply;
+    let finalReply = safeReply;
+    if (needsNationalAdvance && /(?:pago\s+al\s+recibir|pag[aá]s?\s+al\s+recibir|contra\s*entrega|pag[aá]s?\s+cuando\s+recib)/i.test(safeReply)) {
+      const revised = await generateAiReplyWithRetry({...aiAnswerContext,
+        systemInstruction:aiAnswerContext.systemInstruction +
+          `\nLa modalidad verificada para ${verifiedSaleState.city} es encomienda anticipada (sujeta a disponibilidad y costo). Tu borrador decía contraentrega. Reformulalo sin inventar modalidad, preguntas o precios.`});
+      if (/(?:pago\s+al\s+recibir|contra\s*entrega)/i.test(revised.reply))
+        throw new Error("La IA mantuvo una modalidad de pago incorrecta");
+      finalReply=revised.reply;
+    }
+    // Una ciudad declarada por el comprador nunca se sustituye por una ciudad
+    // distinta tomada de respuestas anteriores o ejemplos del entrenamiento.
+    const cityDeclared = verifiedSaleState.city;
+    if (cityDeclared && /(?:\bpara\s+asunci[oó]n\b|\ben\s+asunci[oó]n\b|\ba\s+asunci[oó]n\b)/i.test(finalReply) &&
+        !/asunci[oó]n/i.test(cityDeclared) &&
+        /(?:env[ií]o|entrega|contra\s*entrega|pago\s+al\s+recibir)/i.test(finalReply)) {
+      const rewritten=await generateAiReplyWithRetry({...aiAnswerContext,
+        systemInstruction:aiAnswerContext.systemInstruction +
+          `\nEl cliente indicó como destino ${cityDeclared}. Tu respuesta anterior sustituyó esa ciudad por Asunción sin autorización. Redactá de nuevo usando SOLO el destino realmente proporcionado. Si falta departamento o verificación logística, no los inventes.`});
+      if (/(?:\bpara\s+asunci[oó]n\b|\ben\s+asunci[oó]n\b)/i.test(rewritten.reply))
+        throw new Error("La IA continuó sustituyendo el destino del cliente");
+      finalReply=rewritten.reply;
+    }
     // No prometer que el pedido quedó registrado ANTES del INSERT.
     // No permitir confirmaciones comerciales falsas, incluso si la IA no entrega
     // result.order o sale_closed. Sólo el bloque posterior al INSERT confirmado
@@ -2052,7 +2013,9 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     }
     const orderReady = financiallyReady && isOrderReady(result.order, detectedProduct) &&
       (Boolean(saveStep?.state.cartLines?.length) || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory)) &&
-      (!isAdvance || hasReceiptForOrder);
+      (!isAdvance || hasReceiptForOrder) &&
+      (!result.order || !isEncomiendaAdvanceOrder(ctx.training,result.order.city,result.order.departamento,result.order.payment_method) ||
+        !sellerRequiresEncomiendaCi(ctx.training) || isValidRecipientCi(result.order.recipient_ci));
 
     /*
      * No dependemos solamente de sale_closed.
@@ -2233,44 +2196,31 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     if (!orderWasCreated && !deferGpsReply) {
       const claimsClosed = /(?:ya\s+(?:qued[oó]|est[aá])\s+(?:registrad[oa]|confirmad[oa])|(?:pedido|compra)\s+(?:ya\s+)?(?:qued[oó]|est[aá])\s+(?:registrad[oa]|confirmad[oa])|gracias\s+por\s+tu\s+compra|(?:tu|su)\s+pedido[\s\S]{0,35}(?:registrad[oa]|confirmad[oa])|te\s+llegar[aá]\s+en\s+breve)/i.test(safeBeforeInsert);
       // La IA controla TODAS las preguntas; el servidor solo bloquea confirmaciones falsas.
-      const receiptPendingReply = isAdvance && paymentSaleState.receiptReview
-        ? paymentSaleState.receiptReview === "cuenta_destino_distinta"
-          ? "📎 Recibí tu comprobante, pero la cuenta de destino visible no coincide con nuestra cuenta autorizada. No hagas otra transferencia todavía; un asesor debe revisar el caso."
-          : "📎 Recibí el archivo, pero no pude comprobar con claridad la cuenta y el monto. ¿Me enviás un comprobante más legible, por favor?"
-        : isAdvance && expectedTotal !== null && receivedTotal > 0 && receivedTotal < expectedTotal
-          ? `📎 Recibí tu comprobante por Gs. ${receivedTotal.toLocaleString("es-PY")}. El total de tu pedido es Gs. ${expectedTotal.toLocaleString("es-PY")}; faltan Gs. ${(expectedTotal-receivedTotal).toLocaleString("es-PY")}. ¿Me enviás el comprobante de la diferencia?`
-          : isAdvance && expectedTotal !== null && receivedTotal > expectedTotal
-          ? `📎 Recibí tu comprobante por Gs. ${receivedTotal.toLocaleString("es-PY")}, pero el total de tu pedido es Gs. ${expectedTotal.toLocaleString("es-PY")}. Hay Gs. ${(receivedTotal-expectedTotal).toLocaleString("es-PY")} a tu favor. La diferencia queda pendiente de verificación y no necesitás enviar otro comprobante. 😊 Para continuar, ¿me pasás el nombre y apellido completos de quien va a recibir el pedido?`
-          : null;
-      // La IA formula preguntas según el entrenamiento, no este archivo. Las
-      // discrepancias documentales verificadas sí bloquean el registro; no
-      // deben confundirse con un comprobante pagado/acreditado.
-      // Si el cliente pagó IGUAL o DE MÁS, nunca pedir "complemento" ni "comprobante de la diferencia".
-      const paidEnoughOrMore = isAdvance && expectedTotal !== null && receivedTotal > 0 && receivedTotal >= expectedTotal;
-      const asksForComplement = /(complemento|comprobante\s+de\s+la\s+diferencia|faltan?\s+gs)/i.test(safeBeforeInsert);
-      const overpaidReply = `📎 Recibí tu comprobante por Gs. ${receivedTotal.toLocaleString("es-PY")}. El total de tu pedido es Gs. ${(expectedTotal ?? 0).toLocaleString("es-PY")}, así que hay Gs. ${(receivedTotal-(expectedTotal ?? 0)).toLocaleString("es-PY")} a tu favor. La diferencia queda pendiente de verificación y no necesitás enviar otro comprobante. 😊 Para continuar, ¿me pasás el nombre y apellido completos de quien va a recibir el pedido?`;
-      // Cuando el modelo anuncia un cierre sin INSERT, explicar el dato faltante
-      // del estado verificado, en vez de ocultarlo detrás de "un asesor revisará".
-      // Nunca inventar confirmación ni marcar acreditación bancaria.
-      const actionableMissing = nextVerifiedSaleQuestion(ctx, verifiedSaleState);
-      if (claimsClosed || result.sale_closed) {
-        console.warn("[BOT_SKY_CLOSE_BLOCKED]", JSON.stringify({
-          conversationId: conversation.id,
-          hasOrderPayload: Boolean(result.order),
-          structurallyReady: Boolean(result.order && isOrderReady(result.order, detectedProduct)),
-          financiallyReady, hasReceiptForOrder, expectedTotal, receivedTotal,
-          cityVerified: verifiedSaleState.cityVerified,
-          coverageStatus: verifiedSaleState.coverageStatus,
-          hasProduct: Boolean(detectedProduct),
-          hasName: Boolean(verifiedSaleState.customerName),
-          hasNextVerifiedQuestion: Boolean(actionableMissing),
-        }));
+      // Los estados documentales son técnicos; su explicación al cliente
+      // pertenece a la IA con entrenamiento. Nunca imponer preguntas aquí.
+      let outgoingProposal = safeBeforeInsert;
+      const paidEnoughOrMore=isAdvance && expectedTotal!==null && receivedTotal>=expectedTotal && receivedTotal>0;
+      const asksForComplement=/(complemento|comprobante\s+de\s+la\s+diferencia|faltan?\s+gs)/i.test(outgoingProposal);
+      const wrongReceiptMessage=Boolean(
+        (paidEnoughOrMore && asksForComplement) ||
+        (isAdvance && paymentSaleState.receiptReview &&
+          /(?:pedido\s+confirmado|pago\s+acreditado|transferencia\s+verificada)/i.test(outgoingProposal)));
+      if (wrongReceiptMessage) {
+        const corrected=await generateAiReplyWithRetry({...aiAnswerContext,
+          systemInstruction:aiAnswerContext.systemInstruction+`\nHECHOS DOCUMENTALES DEL SERVIDOR: revisión ${paymentSaleState.receiptReview??"ninguna"}; total oficial ${expectedTotal??"no verificado"}; montos documentados únicos ${receivedTotal}. Nunca pidas diferencia si alcanza el total ni afirmes acreditación. Contestá al comprador con el entrenamiento de la tienda, sin inventar una confirmación.`});
+        outgoingProposal=corrected.reply;
+        if ((paidEnoughOrMore && /(complemento|comprobante\s+de\s+la\s+diferencia|faltan?\s+gs)/i.test(outgoingProposal)) ||
+            (paymentSaleState.receiptReview && /(?:pago\s+acreditado|transferencia\s+verificada)/i.test(outgoingProposal)))
+          throw new Error("La IA repitió información documental no válida");
       }
-      const outgoingProposal = receiptPendingReply ?? (paidEnoughOrMore && asksForComplement
-        ? overpaidReply
-        : claimsClosed || result.sale_closed
-        ? (actionableMissing ?? "📋 Recibí tus datos, pero todavía no pude registrar el pedido. Voy a revisar la información pendiente sin darlo por confirmado. 🙏")
-        : safeBeforeInsert);
+      if (claimsClosed || result.sale_closed) {
+        console.warn("[BOT_SKY_CLOSE_BLOCKED]",JSON.stringify({conversationId:conversation.id,
+          financiallyReady,hasReceiptForOrder,cityVerified:verifiedSaleState.cityVerified,
+          hasProduct:Boolean(detectedProduct)}));
+        // El registro técnico está bloqueado. Evitar la confirmación falsa; no
+        // fabricar una pregunta sobre ciudad, cantidad o pago desde el código.
+        if (!orderWasCreated) outgoingProposal="Tu pedido todavía no pudo registrarse. Un asesor debe verificar los datos pendientes.";
+      }
       // Segunda verificación determinista DESPUÉS de generar/corregir el texto
       // y ANTES de WhatsApp: una IA que insiste no vuelve a imponer encomienda
       // sobre una ciudad cubierta por contraentrega (ni el caso inverso).
@@ -2282,12 +2232,20 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       if (outgoingChecked.corrected) console.warn("[BOT_SKY_COVERAGE_OUTPUT_GUARD]", JSON.stringify({
         conversationId:conversation.id, paymentMethod:outgoingChecked.paymentMethod, channel:"whatsapp"
       }));
-      const outgoingText = outgoingChecked.reply;
+      let outgoingText = outgoingChecked.reply;
+      if (outgoingChecked.corrected) {
+        const revised=await generateAiReplyWithRetry({...aiAnswerContext,
+          systemInstruction:aiAnswerContext.systemInstruction +
+            `\nReformulá tu respuesta anterior porque contradice la modalidad del vendedor. Ciudad: ${verifiedSaleState.city??"no confirmada"}; método autorizado: ${outgoingChecked.paymentMethod??"pendiente de verificar"}. Usá el entrenamiento activo sin preguntas programadas.`});
+        const second=enforceVerifiedPaymentReply({...{reply:revised.reply,city:verifiedSaleState.city,department:verifiedSaleState.department,cityVerified:verifiedSaleState.cityVerified,training:ctx.training},saleState:verifiedSaleState});
+        if (second.corrected) throw new Error("La IA no corrigió la política de pago");
+        outgoingText=second.reply;
+      }
       const outgoingWamid = await sendWhatsAppText(conn, phone, outgoingText);
       await supabaseAdmin.from("messages").insert({
         workspace_id: workspaceId, user_id: ownerId, conversation_id: conversation.id,
         ad_id: attributedAdId, direction: "outbound", sender: "ai",
-        response_origin: responseOrigin.startsWith("code:") ? "code" : "ai",
+        response_origin: "ai",
         body: outgoingText, wamid: outgoingWamid, status: "sent",
       } as any);
       await supabaseAdmin.from("conversations").update({
@@ -2405,43 +2363,6 @@ export function isUnambiguousPriceSelection(
   if (!product) return false;
   const options = product.product_prices ?? [];
   return options.length === 0 || matchSelectedOption(order, options, history) !== null;
-}
-
-function buildVariantSelectionQuestion(product: AiContextProducts[number]): string {
-  const options = [...(product.product_prices ?? [])].sort((a, b) => a.sort_order - b.sort_order);
-  return `😊 Tenemos estas opciones de *${product.name}*:\n\n${options.map((o) => `• *${o.label}* — ${formatGs(o.price)}`).join("\n")}\n\n¿Cuál preferís?`;
-}
-
-/** Solicita un dato concreto según la configuración de ESTE workspace; nunca confirma sin INSERT. */
-export function missingOrderQuestion(args: {
-  order: Awaited<ReturnType<typeof generateAiReply>>["order"];
-  productId: string | null;
-  training: AiContext["training"];
-  optionConfirmed: boolean;
-  hasReceipt?: boolean;
-}): string | null {
-  const { order, productId, optionConfirmed } = args;
-  if (!productId) return "🛒 ¿Qué producto te gustaría pedir?";
-  if (!order) return null; // Sin datos estructurados no inventar un cierre.
-  const isEncomienda=isEncomiendaAdvanceOrder(args.training,order.city,order.departamento,order.payment_method);
-  if (isEncomienda && !args.hasReceipt) return "📎 ¿Me enviás el comprobante de la transferencia por favor?";
-  if (!isValidCustomerName(order.customer_name)) return "😊 ¿Me indicás tu nombre y apellido para el pedido?";
-  if (!String(order.city ?? "").trim()) return "📍 ¿De qué ciudad sos para verificar la entrega?";
-  const coverage = parseCoverage(args.training);
-  const place = verifiedCoverage(String(order.city), String(order.departamento ?? ""), coverage);
-  const national = sellerAllowsNationwideAdvance(args.training) && /anticip|transfer|deposit|giro/i.test(String(order.payment_method??""));
-  if (!place && !national) {
-    const cityMatches = coverage.filter(p => [p.city, ...p.aliases].some(n => n.toLocaleLowerCase() === String(order.city).toLocaleLowerCase()));
-    if (cityMatches.length === 1) return `📍 ¿Me confirmás que tu ciudad es ${cityMatches[0].city}, departamento de ${cityMatches[0].department}?`;
-    return "📍 ¿Me confirmás tu ciudad y departamento para verificar la modalidad de envío?";
-  }
-  if (place && !place.active && !/ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(place.method) && !national) return "📦 No tenemos entrega habilitada para esa ciudad. ¿Querés consultar otra localidad?";
-  if (!Number.isFinite(Number(order.quantity)) || Number(order.quantity) < 1) return "📦 ¿Cuántas unidades querés llevar?";
-  if (!optionConfirmed) return "📦 ¿Qué tamaño o promoción elegís del producto?";
-  if (place?.addressRequired && !isEncomienda && !national && !isValidDeliveryAddress(order.street)) return "🏠 ¿Me pasás tu dirección o ubicación para completar el pedido?";
-  if (!String(order.payment_method ?? "").trim()) return "💳 ¿Preferís pagar al recibir o mediante transferencia?";
-  if (/anticip|transfer|deposit|giro/i.test(String(order.payment_method ?? "")) && !args.hasReceipt) return "💳 Para seguir con el pago anticipado, enviame el comprobante de transferencia, por favor.";
-  return null;
 }
 
 export function isOrderReady(
@@ -3121,74 +3042,6 @@ type AiContextProducts = Awaited<
   ReturnType<typeof buildWorkspaceAiContext>
 >["products"];
 
-function buildShortProductOffer(args: {
-  products: AiContextProducts;
-  productId: string | null;
-  lastCustomerMessage: string;
-}) {
-  const product =
-    args.products.find((candidate) => candidate.id === args.productId) ?? null;
-
-  if (!product) {
-    return "¡Claro! 😊 ¿Para qué ciudad sería el envío? 📍";
-  }
-
-  const options = [...(product.product_prices ?? [])]
-    .map((option) => ({
-      label: String(option.label ?? "").trim(),
-      quantity: Math.max(1, Math.floor(Number(option.quantity) || 1)),
-      price: Number(option.price),
-      sortOrder: Number(option.sort_order) || 0,
-    }))
-    .filter(
-      (option) =>
-        Number.isFinite(option.quantity) &&
-        option.quantity > 0 &&
-        Number.isFinite(option.price) &&
-        option.price > 0,
-    )
-    .sort((a, b) => a.sortOrder - b.sortOrder)
-    .slice(0, 5);
-
-  let priceText = "";
-
-  if (options.length === 1) {
-    priceText = `a solo ${formatGs(options[0].price)}`;
-  } else if (options.length > 1) {
-    priceText = `! 🔥\n\n${options
-      .map(
-        (option) =>
-          `${option.label || `${option.quantity} unidades`} — ${formatGs(option.price)}`,
-      )
-      .join("\n")}`;
-  } else {
-    const promoPrice = Number(product.promo_price);
-    const regularPrice = Number(product.price);
-    const effectivePrice =
-      Number.isFinite(promoPrice) && promoPrice > 0 ? promoPrice : regularPrice;
-
-    if (Number.isFinite(effectivePrice) && effectivePrice > 0) {
-      priceText = `a solo ${formatGs(effectivePrice)}`;
-    }
-  }
-
-  const question = options.length > 1
-    ? "¿Cuál de estas opciones preferís? 😊"
-    : isGreetingOrInitialInquiry(args.lastCustomerMessage)
-      ? "¿Para qué ciudad sería el envío? 📍"
-      : "¿Querés que avancemos con tu pedido? 📦";
-
-  if (options.length > 1) {
-    return `¡El ${product.name} está en súper oferta${priceText}\n\n${question}`;
-  }
-
-  if (priceText) {
-    return `¡El ${product.name} está en súper oferta ${priceText}! 🔥\n\n${question}`;
-  }
-
-  return `¡El ${product.name} está en súper oferta! 🔥\n\n${question}`;
-}
-
 function buildSafeAiReply(args: {
   reply: string;
   history: { role: "user" | "assistant"; content: string }[];
@@ -3487,38 +3340,9 @@ ${match.products.description ?? ""}`.trim();
     }
   }
 
-  // Después del copy + imagen, mandar SIEMPRE un mensaje aparte con precios
-  // para que el cliente elija sin tener que preguntar.
-  let lastMessage = copy;
-  if ((copySent || sentMediaCount > 0) && options.length > 0) {
-    const priceMsg = options.length === 1
-      ? `💰 *Precio:* ${options[0].label} — ${formatGs(Number(options[0].price))}\n\n¿Te lo reservamos? Pasame tu ciudad y te confirmo la entrega 😊`
-      : `💰 *Precios disponibles:*\n${options.map((o) => `• *${o.label}* — ${formatGs(Number(o.price))}`).join("\n")}\n\n¿Cuál te reservamos? Pasame también tu ciudad 😊`;
-    // WhatsApp entrega las fotos/videos más lento que el texto: esperar
-    // para que los precios lleguen DESPUÉS del copy y la imagen.
-    await new Promise((r) => setTimeout(r, sentMediaCount > 0 ? 6000 : 2500));
-    try {
-      const wamid = await sendWhatsAppText(args.conn, args.phone, priceMsg);
-      lastMessage = priceMsg;
-      await supabaseAdmin.from("messages").insert({
-        workspace_id: args.workspaceId,
-        user_id: args.ownerId,
-        conversation_id: args.conversationId,
-        ad_id: args.adId,
-        direction: "outbound",
-        sender: "ai",
-        response_origin: "code",
-        body: priceMsg,
-        status: "sent",
-        wamid,
-      });
-    } catch (error) {
-      console.error("[Catálogo] Error enviando precios", {
-        productId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
+  // La única salida comercial por código es la ficha/copy + sus imágenes.
+  // Los turnos siguientes (precios, dudas y preguntas) corresponden a la IA.
+  const lastMessage = copy;
 
   await supabaseAdmin
     .from("conversations")
@@ -3537,7 +3361,6 @@ ${match.products.description ?? ""}`.trim();
 /* NUNCA QUEDARSE CALLADO                                              */
 /* ------------------------------------------------------------------ */
 export const SILENCE_FALLBACK_REPLY = "¡Gracias por tu mensaje! 😊 Un asesor te responde en breve.";
-export const CITY_QUESTION_FALLBACK = "¡Perfecto! 😊 ¿En qué ciudad te gustaría recibir tu pedido?";
 
 /** Reintenta una vez más (tras 2 s) si todos los proveedores de IA fallaron. */
 async function generateAiReplyWithRetry(ctx: Parameters<typeof generateAiReply>[0]) {
