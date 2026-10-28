@@ -190,6 +190,39 @@ export function nationwideDestinationFromText(text: string): {city:string;depart
     {city:"Pedro Juan Caballero",department:"Amambay",aliases:["pedro juan caballero","pedro juan","pjc"]},
     // Geografía, NO cobertura ni transportista: permite conservar el destino explícito.
     {city:"Curuguaty",department:"Canindeyú",aliases:["curuguaty"]},
+    {city:"Encarnación",department:"Itapúa",aliases:["encarnacion"]},
+    {city:"Ciudad del Este",department:"Alto Paraná",aliases:["ciudad del este","cde"]},
+    {city:"Hernandarias",department:"Alto Paraná",aliases:["hernandarias"]},
+    {city:"Presidente Franco",department:"Alto Paraná",aliases:["presidente franco","pdte franco"]},
+    {city:"Minga Guazú",department:"Alto Paraná",aliases:["minga guazu"]},
+    {city:"Santa Rita",department:"Alto Paraná",aliases:["santa rita"]},
+    {city:"Coronel Oviedo",department:"Caaguazú",aliases:["coronel oviedo","cnel oviedo"]},
+    {city:"Caaguazú",department:"Caaguazú",aliases:["caaguazu"]},
+    {city:"Villarrica",department:"Guairá",aliases:["villarrica"]},
+    {city:"Concepción",department:"Concepción",aliases:["concepcion"]},
+    {city:"Horqueta",department:"Concepción",aliases:["horqueta"]},
+    {city:"San Pedro del Ycuamandiyú",department:"San Pedro",aliases:["san pedro del ycuamandiyu"]},
+    {city:"Santa Rosa del Aguaray",department:"San Pedro",aliases:["santa rosa del aguaray"]},
+    {city:"San Estanislao",department:"San Pedro",aliases:["san estanislao","santani"]},
+    {city:"Pilar",department:"Ñeembucú",aliases:["pilar"]},
+    {city:"Caazapá",department:"Caazapá",aliases:["caazapa"]},
+    {city:"San Juan Bautista",department:"Misiones",aliases:["san juan bautista"]},
+    {city:"San Ignacio",department:"Misiones",aliases:["san ignacio"]},
+    {city:"Ayolas",department:"Misiones",aliases:["ayolas"]},
+    {city:"Paraguarí",department:"Paraguarí",aliases:["paraguari"]},
+    {city:"Carapeguá",department:"Paraguarí",aliases:["carapegua"]},
+    {city:"Caacupé",department:"Cordillera",aliases:["caacupe"]},
+    {city:"Salto del Guairá",department:"Canindeyú",aliases:["salto del guaira"]},
+    {city:"Hohenau",department:"Itapúa",aliases:["hohenau"]},
+    {city:"Obligado",department:"Itapúa",aliases:["obligado"]},
+    {city:"Bella Vista",department:"Itapúa",aliases:["bella vista"]},
+    {city:"Cambyretá",department:"Itapúa",aliases:["cambyreta"]},
+    {city:"María Auxiliadora",department:"Itapúa",aliases:["maria auxiliadora"]},
+    {city:"Coronel Bogado",department:"Itapúa",aliases:["coronel bogado"]},
+    {city:"Filadelfia",department:"Boquerón",aliases:["filadelfia"]},
+    {city:"Loma Plata",department:"Boquerón",aliases:["loma plata"]},
+    {city:"Villa Hayes",department:"Presidente Hayes",aliases:["villa hayes"]},
+    {city:"Fuerte Olimpo",department:"Alto Paraguay",aliases:["fuerte olimpo"]},
   ];
   const matches = paraguayanCities.filter(place => place.aliases.some(alias =>
     (` ${normalized} `).includes(` ${alias} `)));
@@ -393,6 +426,24 @@ export function sellerUsesFirstOffer(ctx: Pick<AiContext, "training">): boolean 
 }
 
 export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={}, mediaPath?:string|null, sharedLocationUrl?:string|null):SaleStep|null {
+  // Audios: la transcripción suele confundir «litros» con «libros».
+  if (/\blibros?\b/i.test(text) && ctx.products.some(p=>/litro/i.test(JSON.stringify(p)))) {
+    text = text.replace(/\blibro(s?)\b/gi, "litro$1");
+  }
+  // Un mensaje (sobre todo un audio) puede traer ciudad + dirección Y además una
+  // pregunta («¿Cuándo me traen?»). Guardar los datos de la parte afirmativa;
+  // la IA igual responde la pregunta con el mensaje completo.
+  if (/[¿?]/.test(text) && !/https?:\/\//i.test(text)) {
+    const declarative = text
+      .replace(/¿[^?]*\?/g, " ")
+      .split(/(?<=[.!\n])/)
+      .filter(part => !/\?\s*$/.test(part.trim()))
+      .join(" ")
+      .replace(/\s+/g, " ").trim();
+    if (declarative.length >= 3 && !/[¿?]/.test(declarative)) {
+      return advanceRuleSale(ctx, declarative, existing, mediaPath, sharedLocationUrl);
+    }
+  }
   const n=norm(text);
   const isNudge = /^[\s¿?!.¡]+$/.test(text) || /^(?:me responden|me respondes|siguen ahi|seguimos|y entonces)$/i.test(n);
   if ((!n && !isNudge) || /^\[?(?:audio|video|sticker)/.test(n))return null;
@@ -484,7 +535,12 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   const hasAddressWords=/\b(?:calle|esquina|casi|barrio|referencia|avenida|avda|av|cuadras?|direccion)\b/.test(n);
   // Mensaje completo: «Estoy en la ciudad de X … Mi dirección es …». Tomar
   // ciudad Y dirección del mismo mensaje en lugar de quedarse sin responder.
-  const explicitCity=/\b(?:ciudad de|vivo en|soy de|estoy (?:en|n) (?:la ciudad de )?|departamento|depto)\b/.test(n) || s.awaiting==="city";
+  // «En Fernando de la Mora, zona sur, … esquina …»: la ciudad viene al inicio,
+  // antes de la primera coma/punto, aunque después haya palabras de dirección.
+  const leadSegment = text.split(/[,.;\n]/)[0] ?? "";
+  const leadCity = match ? cityIn(leadSegment, coverage) : null;
+  const explicitCity=/\b(?:ciudad de|vivo en|soy de|estoy (?:en|n) (?:la ciudad de )?|departamento|depto)\b/.test(n) || s.awaiting==="city" ||
+    Boolean(leadCity && match && norm(leadCity.city)===norm(match.city)) || Boolean(match && !s.cityVerified && s.productId);
   if(match && !gpsUrl && (!hasAddressWords || explicitCity)){
     s.city=match.city;s.department=match.department;s.cityVerified=true;s.coverageStatus=match.active?"covered":"uncovered";
     if(hasAddressWords && (!s.street || s.street===s.locationUrl)){
