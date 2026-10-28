@@ -1775,6 +1775,45 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       systemInstruction: answerContext.systemInstruction + officialPolicyInstruction + `\nMODO IA + ENTRENAMIENTO BOT SKY, PRIORIDAD ALTA: Las respuestas comerciales las generás vos usando únicamente catálogo y entrenamiento de esta tienda. CONVERSÁ VOS con el comprador de forma natural: resolvé una sola pregunta por vez y no repitas catálogo/precios completos ni datos ya recibidos. Cantidad y variante se capturan mediante código y deben respetarse. No confirmes pedidos sin número real generado por Supabase. El cliente puede comprar varias veces. DATOS VERIFICADOS DEL CICLO ACTUAL (no mezclar con pedidos previos): ${JSON.stringify({productId:verifiedSaleState.productId,optionId:verifiedSaleState.optionId,quantity:verifiedSaleState.quantity,city:verifiedSaleState.city,department:verifiedSaleState.department,cityVerified:verifiedSaleState.cityVerified===true,coverageStatus:verifiedSaleState.coverageStatus,customerName:verifiedSaleState.customerName,hasAddress:Boolean(verifiedSaleState.street),gpsReceived:Boolean(verifiedSaleState.locationUrl),paymentMethod:verifiedSaleState.paymentMethod,awaiting:verifiedSaleState.awaiting})}. COBERTURA: si cityVerified no es true, NUNCA digas que tenemos cobertura; consultá la ciudad si falta. GPS no prueba por sí mismo ninguna ciudad. Si recibiste GPS no vuelvas a solicitarlo. El GPS es dirección suficiente si la configuración de la ciudad admite dirección por ubicación. Respetá el orden de preguntas definido en el entrenamiento del vendedor; nunca repitas hechos conocidos. Si no tenés precio/variante sin ambigüedad pedí aclaración. Si está completo, el código registrará el pedido; no inventes un número de orden ni digas que está confirmado.
 Respetá el flujo de venta específico del entrenamiento; ninguna pregunta, secuencia o promoción comercial se determina en código.`
     };
+    // Comprobantes: pasar a la IA el RESULTADO DOCUMENTAL del backend, no
+    // solamente la transcripción visual. El backend valida, la IA conversa.
+    // Este contexto nunca implica acreditación del dinero por el banco.
+    const currentReceipt = mediaPath && media &&
+      (media.type === "image" || media.type === "document")
+      ? parseReceiptFields(transcript) : null;
+    const receiptInCurrentOrder = Boolean(currentReceipt && mediaPath &&
+      verifiedSaleState.receiptDocuments?.some(document => document.path === mediaPath) &&
+      !verifiedSaleState.receiptReview);
+    if (currentReceipt && !conversation.sale_closed) {
+      const productForReceipt = ctx.products.find(p => p.id === verifiedSaleState.productId);
+      const chosenOption = productForReceipt?.product_prices?.find(
+        o => o.id === verifiedSaleState.optionId);
+      const expectedReceiptTotal = chosenOption ? Number(chosenOption.price) : null;
+      const documentedReceiptTotal = (verifiedSaleState.receiptDocuments ?? [])
+        .reduce((sum, document) => sum + document.amountGs, 0);
+      const isEncomiendaReceipt = isEncomiendaAdvanceOrder(ctx.training,
+        verifiedSaleState.city, verifiedSaleState.department, verifiedSaleState.paymentMethod);
+      const requiresCiAfterReceipt = isEncomiendaReceipt && sellerRequiresEncomiendaCi(ctx.training);
+      aiAnswerContext.systemInstruction += `
+RESULTADO TÉCNICO DE LA IMAGEN DE COMPROBANTE RECIBIDA AHORA (NO EQUIVALE A ACREDITACIÓN BANCARIA):
+- Archivo almacenado: ${Boolean(mediaPath)}.
+- Comprobante de ESTE turno compatible y guardado para este pedido: ${receiptInCurrentOrder}.
+- Revisión documental: ${verifiedSaleState.receiptReview ?? (receiptInCurrentOrder ? "sin discrepancias detectadas" : "no validada")}.
+- Cantidad de comprobantes de esta compra: ${verifiedSaleState.receiptDocuments?.length ?? 0}.
+- Importe total documentado compatible: ${documentedReceiptTotal} Gs.
+- Total de la variante seleccionada según catálogo: ${expectedReceiptTotal ?? "pendiente de identificación inequívoca"} Gs.
+- Ciudad de destino conservada: ${verifiedSaleState.cityVerified ? verifiedSaleState.city : "aún no verificada"}.
+- Nombre y apellido del destinatario: ${verifiedSaleState.customerName ? "recibidos" : "faltantes"}.
+- Cédula de destinatario requerida por ESTA tienda y modalidad: ${requiresCiAfterReceipt}; recibida del CLIENTE: ${isValidRecipientCi(verifiedSaleState.recipientCi)}.
+INSTRUCCIÓN PARA ESTA ÚNICA RESPUESTA: la verificación DOCUMENTAL que puede hacer el backend YA SE EJECUTÓ; NO digas 'ahora voy a verificar', 'un momento', 'te aviso después' ni prometas que se ejecutará otra tarea. Respondé ahora al cliente con la IA y el entrenamiento ACTIVO del vendedor, según los hechos anteriores. Si el comprobante quedó en revisión o es ilegible, explicá que requiere revisión y NO pidas otra transferencia. Si quedó documentado como compatible y el monto es insuficiente frente al total OFICIAL, informá la diferencia exacta; si el total oficial aún no es comprobable, pedí únicamente el dato de producto/variante que falta. Si es suficiente y es encomienda, pedí solo el siguiente dato faltante DESPUÉS del comprobante (nombre y apellido, y luego cédula del destinatario), sin dirección, barrio, GPS ni calle. Si ya está todo, no inventes número de pedido: el backend hace el INSERT y envía la confirmación. No confundas la cédula del beneficiario bancario con la del destinatario ni creas que una imagen acredita el dinero.`;
+      console.info("[BOT_SKY_RECEIPT_TURN_STATUS]", JSON.stringify({
+        conversationId: conversation.id, receiptInCurrentOrder,
+        receiptReview: verifiedSaleState.receiptReview ?? null,
+        documentedReceiptTotal, expectedReceiptTotal,
+        hasRecipientName: Boolean(verifiedSaleState.customerName),
+        hasRecipientCi: isValidRecipientCi(verifiedSaleState.recipientCi),
+      }));
+    }
     // El motor nunca puede borrar hechos ya verificados al procesar una dirección.
     if (ruleStep && previousSale.cityVerified && previousSale.city && previousSale.department &&
         !ruleStep.state.cityVerified && !/\b(?:soy de|vivo en|para)\b/i.test(body)) {
@@ -1801,6 +1840,30 @@ Respetá el flujo de venta específico del entrenamiento; ninguna pregunta, secu
       await sendSilenceFallback({conn,workspaceId,ownerId,conversationId:conversation.id,adId:attributedAdId,
         phone,wamid:message.id,reason:`IA sin respuesta: ${aiError instanceof Error?aiError.message:String(aiError)}`});
       return;
+    }
+    // Una respuesta de espera no realiza trabajo futuro en Vercel. Si llegó un
+    // comprobante legible, pedir a la IA una respuesta de acción en ESTE turno.
+    // NO se construyen preguntas comerciales desde el código.
+    if (currentReceipt && !conversation.sale_closed &&
+        /\b(?:un momento|aguard[aá]|esper[aá] (?:un|unos)|proceder[eé]? a verificar|voy a verificar|verificaremos (?:los|tus|el)|te aviso|le avisaremos|cuando termine de revisar|ahora (?:revisar[eé]|revisaremos))\b/i.test(result.reply) &&
+        !/[?¿]/.test(result.reply)) {
+      const revised = await generateAiReplyWithRetry({
+        ...aiAnswerContext,
+        systemInstruction: aiAnswerContext.systemInstruction +
+          "\nTU BORRADOR ES INCORRECTO: promete verificar después y deja al cliente esperando. " +
+          "En esta solicitud YA tenés el estado documental arriba. Contestá en presente, " +
+          "con la acción o el siguiente dato permitido por el entrenamiento. " +
+          "No afirmes acreditación bancaria ni pedido confirmado sin registro real."
+      });
+      if (/\b(?:un momento|aguard[aá]|proceder[eé]? a verificar|voy a verificar|te aviso|le avisaremos)\b/i.test(revised.reply) &&
+          !/[?¿]/.test(revised.reply)) {
+        console.error("[BOT_SKY_RECEIPT_NO_PROGRESS] La IA insistió en una respuesta de espera", conversation.id);
+        await sendSilenceFallback({conn,workspaceId,ownerId,conversationId:conversation.id,
+          adId:attributedAdId,phone,wamid:message.id,
+          reason:"La IA reiteró una espera sin avanzar el comprobante"});
+        return;
+      }
+      result = {...result, reply: revised.reply};
     }
     // GARANTÍA DE ORDEN COMERCIAL: la IA redacta, pero no puede saltarse ciudad.
     // Si propone pedir datos personales o una dirección sin ciudad verificada,
