@@ -19,6 +19,8 @@ export function isValidCustomerName(value: unknown): boolean {
   if (name.length < 5 || name.length > 160 || !/^[\p{L}]+(?:[ '\-]+[\p{L}]+){1,5}$/u.test(name)) return false;
   if (/\b(?:estoy|en|aeropuerto|trabajo|oficina|salgo|almorzar|almuerzo|horas?|hasta|desde|avisa|traigas|aca|aqui|cada|unidades?|cajas?)\b/.test(n)) return false;
   if (/\b(?:barrio|ciudad|calle|avenida|avda|ruta|esquina|zona|centro|obrero|direccion|ubicacion|departamento|pedido|entrega|lunes|martes|miercoles|jueves|viernes|sabado|domingo|mañana|manana|hoy|precio|quiero|gracias|okey|perfecto|confirmo|asuncion|central|paraguay)\b/.test(n)) return false;
+  if (/\b(?:pago|pagos|pagar|pago al recibir|recibir|recibo|transferencia|transferir|efectivo|contado|contra|contraentrega|deposito|giro|comprobante|tarjeta|cuota|cuotas|envio|delivery|direccion|dirección|avenida|avda|calle|si|no|ok|dale|listo|gracias|hola|buenas|precio|costo|cuanto|foto|disponible|unidad|und|quiero|tenes|tienen)\b/.test(n)) return false;
+  if (/\d/.test(name)) return false;
   return true;
 }
 
