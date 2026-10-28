@@ -34,6 +34,9 @@ export function isValidDeliveryAddress(value: unknown): boolean {
   if (/^(?:barrio|zona|ciudad|de )\s+[\p{L} '\-]+$/u.test(n)) return false;
   // Calle, avenida, número o referencia inequívoca. Un barrio aislado no basta.
   if (/\b(?:\d{1,2}\s*[:.]\s*\d{2}|\d{1,2}\s*(?:hs|horas?)|de\s+\d{1,2}\s+a\s+\d{1,2}|almorzar|almuerzo|salgo|horario|hasta las)\b/.test(n) && !/\b(?:calle|avenida|ruta|casa|aeropuerto|trabajo|oficina|frente|esquina)\b/.test(n)) return false;
+  // Frases vagas sin calle ni referencia ("voy a estar en mi casa", "en casa", "mi domicilio").
+  const hasConcreteRef = /(?:\b(?:calle|avenida|avda|av\.|ruta|nro|numero|manzana|lote|pasaje|esquina|casi|frente|al lado|detras|entre|barrio|maps)\b|\d{1,5})/.test(n);
+  if (!hasConcreteRef && /\b(?:mi casa|en casa|mi domicilio|mi hogar|donde vivo|voy a estar|estoy en|ahi en|aca en|lo de siempre)\b/.test(n)) return false;
   if (/\b(?:aeropuerto|trabajo|oficina|empresa|shopping|colegio|escuela|universidad|hospital|sanatorio|terminal|supermercado|estacion|iglesia|plaza)\b/.test(n)) return true;
   return /(?:\b(?:calle|avenida|avda|av\.|ruta|numero|nro|casa|manzana|lote|pasaje|esquina|casi|frente|al lado|detras|detrás|entre)\b|\d{1,5}|\b(?:maps|ubicacion exacta)\b)/i.test(n);
 }
