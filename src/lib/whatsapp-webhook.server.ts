@@ -8,7 +8,7 @@ import { handlePostSaleRecipientCi, shouldAskPostSaleCi } from "./recipient-ci.s
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { formatGs } from "@/lib/format";
 import { parseReceiptFields } from "@/lib/media-ai.server";
-import { reconcileOrderWithSaleState, recoverSaleStateFromHistory, isValidCustomerName, isValidDeliveryAddress } from "@/lib/sale-reconciliation.server";
+import { reconcileOrderWithSaleState, recoverSaleStateFromHistory, nextVerifiedSaleQuestion, isValidCustomerName, isValidDeliveryAddress } from "@/lib/sale-reconciliation.server";
 import { buildRegisteredOrderConfirmation } from "@/lib/order-confirmation.server";
 import { buildWorkspaceAiContext } from "@/lib/ai-context.server";
 import { generateAiReply, type AiContext } from "@/lib/ai.server";
@@ -2249,10 +2249,27 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       const paidEnoughOrMore = isAdvance && expectedTotal !== null && receivedTotal > 0 && receivedTotal >= expectedTotal;
       const asksForComplement = /(complemento|comprobante\s+de\s+la\s+diferencia|faltan?\s+gs)/i.test(safeBeforeInsert);
       const overpaidReply = `📎 Recibí tu comprobante por Gs. ${receivedTotal.toLocaleString("es-PY")}. El total de tu pedido es Gs. ${(expectedTotal ?? 0).toLocaleString("es-PY")}, así que hay Gs. ${(receivedTotal-(expectedTotal ?? 0)).toLocaleString("es-PY")} a tu favor. La diferencia queda pendiente de verificación y no necesitás enviar otro comprobante. 😊 Para continuar, ¿me pasás el nombre y apellido completos de quien va a recibir el pedido?`;
+      // Cuando el modelo anuncia un cierre sin INSERT, explicar el dato faltante
+      // del estado verificado, en vez de ocultarlo detrás de "un asesor revisará".
+      // Nunca inventar confirmación ni marcar acreditación bancaria.
+      const actionableMissing = nextVerifiedSaleQuestion(ctx, verifiedSaleState);
+      if (claimsClosed || result.sale_closed) {
+        console.warn("[BOT_SKY_CLOSE_BLOCKED]", JSON.stringify({
+          conversationId: conversation.id,
+          hasOrderPayload: Boolean(result.order),
+          structurallyReady: Boolean(result.order && isOrderReady(result.order, detectedProduct)),
+          financiallyReady, hasReceiptForOrder, expectedTotal, receivedTotal,
+          cityVerified: verifiedSaleState.cityVerified,
+          coverageStatus: verifiedSaleState.coverageStatus,
+          hasProduct: Boolean(detectedProduct),
+          hasName: Boolean(verifiedSaleState.customerName),
+          hasNextVerifiedQuestion: Boolean(actionableMissing),
+        }));
+      }
       const outgoingProposal = receiptPendingReply ?? (paidEnoughOrMore && asksForComplement
         ? overpaidReply
         : claimsClosed || result.sale_closed
-        ? "Recibí tus datos. El pedido aún no fue registrado; un asesor revisará lo pendiente. 🙏"
+        ? (actionableMissing ?? "📋 Recibí tus datos, pero todavía no pude registrar el pedido. Voy a revisar la información pendiente sin darlo por confirmado. 🙏")
         : safeBeforeInsert);
       // Segunda verificación determinista DESPUÉS de generar/corregir el texto
       // y ANTES de WhatsApp: una IA que insiste no vuelve a imponer encomienda
