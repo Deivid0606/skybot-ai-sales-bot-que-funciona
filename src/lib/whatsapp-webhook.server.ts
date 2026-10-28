@@ -360,7 +360,7 @@ async function ingestMedia(args: {
       const base64 = args.allowAiInterpretation === false ? null : toBase64(bytes);
 
       if (base64 && args.type === "audio") {
-        const result = await transcribeAudio(base64, mime);
+        const result = await transcribeAudio(base64, mime, args.workspaceId);
         transcript = result?.trim() || null;
 
         if (!transcript) {
