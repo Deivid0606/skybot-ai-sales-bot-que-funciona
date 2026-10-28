@@ -1150,14 +1150,14 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         type: media.type,
       });
     } else {
-      const {data: mediaMode} = await supabaseAdmin.from("ai_settings")
-        .select("hybrid_mode").eq("workspace_id",workspaceId).maybeSingle();
+      // El audio se debe transcribir siempre: la configuración del modo de
+      // conversación no puede impedir que la IA escuche al comprador.
       const ingested = await ingestMedia({
         workspaceId,
         accessToken: conn.access_token,
         mediaId: media.part.id!,
         type: media.type,
-        allowAiInterpretation: media.type === "image" || media.type === "document" ? true : mediaMode?.hybrid_mode !== "rules_only",
+        allowAiInterpretation: true,
       });
 
       mediaPath = ingested.storagePath;
@@ -2577,9 +2577,6 @@ export async function createOrderFromAi(args: {
       .update({
         conversation_id: args.conversationId,
         ad_id: existingOrder.ad_id ?? args.adId,
-        // El cliente corrigió su nombre después de confirmar: actualizar la ficha del pedido.
-        ...(isValidCustomerName(args.order.customer_name, [args.order.city, args.order.departamento])
-          ? { customer_name: cleanOrderText(args.order.customer_name) } : {}),
       })
       .eq("id", existingOrder.id)
       .eq("workspace_id", args.workspaceId);
