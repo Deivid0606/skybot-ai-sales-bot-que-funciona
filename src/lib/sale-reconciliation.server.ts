@@ -65,25 +65,10 @@ export function recoverSaleStateFromHistory(ctx: AiContext, previous: SaleState,
   if (state.customerName && !isValidCustomerName(state.customerName)) state.customerName = undefined;
   if (state.street && !isValidDeliveryAddress(state.street)) state.street = undefined;
   const coverage = parseCoverage(ctx.training);
-  // Una ciudad del estado persistido no constituye prueba de destino: debe
-  // aparecer en un mensaje del comprador del ciclo/historial actual.
-  // Si no hay evidencia en los mensajes visibles, pedir la ciudad en vez de
-  // comunicar una cobertura posiblemente heredada de otra operación.
-  const groundedCity = history.some((item, index) => {
-    if (item.role !== "user") return false;
-    const raw = String(item.content ?? "").trim();
-    const lastAssistant = [...history.slice(0, index)].reverse().find(x => x.role === "assistant");
-    if (!isCityReply(raw, normal(lastAssistant?.content ?? ""))) return false;
-    return coverage.some(c => [c.city, ...c.aliases].some(a => exactToken(raw, a))) ||
-      Boolean(sellerAllowsNationwideAdvance(ctx.training) && nationwideDestinationFromText(raw));
-  });
-  if (state.cityVerified && !groundedCity && history.some(item => item.role === "user")) {
-    state.city = undefined;
-    state.department = undefined;
-    state.cityVerified = false;
-    state.coverageStatus = "unknown";
-    state.paymentMethod = undefined;
-  }
+  // El estado fue guardado para la compra actual en bot_sale_states. Nunca
+  // borrar una ciudad verificada solo porque el historial consultado conserva
+  // únicamente los últimos 24 mensajes y la declaración original ya no aparece.
+  // Un cambio explícito de destino se procesará más adelante en este ciclo.
   if (!coverage.length) console.warn("[BOT_SKY_COVERAGE] No hay ciudades parseables en el entrenamiento activo del workspace");
   const product = ctx.products.find(p => p.id === state.productId || p.id === ctx.activeProductId);
   if (product) state.productId = product.id;
@@ -214,68 +199,3 @@ export function reconcileOrderWithSaleState(order: AiOrder | null, state: SaleSt
 }
 
 
-/** Próximo dato faltante, usando el estado VERIFICADO del pedido y el catálogo real.
- * No confirma ventas ni infiere cobertura; solo se utiliza durante checkout activo.
- */
-export function nextVerifiedSaleQuestion(ctx: AiContext, state: SaleState): string | null {
-  const product = ctx.products.find(p => p.id === state.productId || p.id === ctx.activeProductId);
-  if (!product) return null;
-  const coverage = parseCoverage(ctx.training);
-  const place = state.city && state.department
-    ? verifiedCoverage(state.city, state.department, coverage) : null;
-  const options = [...(product.product_prices ?? [])].filter(o => o.price > 0)
-    .sort((a,b) => a.sort_order - b.sort_order);
-  // Una variante de capacidad es una elección obligatoria. No escoger por defecto.
-  const selected = options.find(o => o.id === state.optionId);
-  if (options.length > 1 && !selected && !state.cartLines?.length) {
-    return `😊 ¿Cuál tamaño de *${product.name}* preferís? ${options.map(o => `${o.label} (${Math.round(o.price).toLocaleString("es-PY")} Gs.)`).join(" · ")}`;
-  }
-  const isEncomienda=isEncomiendaAdvanceOrder(ctx.training,state.city,state.department,state.paymentMethod);
-  if(isEncomienda && (!state.receiptPath || state.receiptReview))return "📎 ¿Me enviás el comprobante de transferencia para continuar con tu encomienda?";
-  if (!isValidCustomerName(state.customerName)) return "😊 ¿Me indicás tu nombre y apellido para el pedido?";
-  const national = sellerAllowsNationwideAdvance(ctx.training) && state.cityVerified &&
-    Boolean(state.city && state.department) && state.coverageStatus === "uncovered";
-  if ((!place && !national) || !state.cityVerified) return state.city && !state.department
-    ? `📍 ¿De qué departamento es ${state.city}?`
-    : "📍 ¿En qué ciudad querés recibir tu pedido?";
-  if (place && !place.active && !/ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(place.method) && !national) {
-    return "📦 No tenemos entrega habilitada para esa ciudad. ¿Querés consultar otra localidad?";
-  }
-  if (!state.quantity || state.quantity < 1) {
-    if (selected && /\b\d+\s*(?:litros?|l|lts?)\b/i.test(selected.label)) {
-      return "📦 ¿Cuántas unidades de esa presentación querés llevar?";
-    }
-    return "📦 ¿Cuántas unidades querés llevar?";
-  }
-  if (place?.addressRequired && !isEncomienda && !national && !isValidDeliveryAddress(state.street) && !isValidDeliveryAddress(state.locationUrl))
-    return "🏠 ¿Me pasás tu dirección o ubicación para la entrega?";
-  if (!state.paymentMethod?.trim()) {
-    if (place?.active && /CONTRA ENTREGA/i.test(place.method))
-      return "💵 ¿Confirmás que vas a pagar al recibir?";
-    return "💳 ¿Qué modalidad de pago habilitada preferís?";
-  }
-  if (/anticip|transfer|deposit|giro/i.test(state.paymentMethod) && !state.receiptPath && !state.receiptDocuments?.length)
-    return "📎 ¿Me enviás el comprobante de la transferencia, por favor?";
-  return null;
-}
-
-/** Solo corregir preguntas repetidas del modelo; no interrumpir consultas libres. */
-export function fixRepeatedCheckoutQuestion(reply: string, ctx: AiContext, state: SaleState): string {
-  const n = normal(reply);
-  const asksCity = /(?:ciudad|departamento|de donde sos|donde vivis|de que zona)/.test(n);
-  const asksName = /(?:nombre y apellido|nombre completo|como te llamas)/.test(n);
-  const asksAddress = /(?:direccion|domicilio|ubicacion|referencia)/.test(n);
-  const isEncomienda=isEncomiendaAdvanceOrder(ctx.training,state.city,state.department,state.paymentMethod);
-  const asksVariant = /(?:cual (?:tamano|tamaño|capacidad)|(?:2|3|5) litros|presentacion)/.test(n);
-  const knownCity = state.cityVerified && Boolean(state.city && state.department &&
-    verifiedCoverage(state.city!,state.department!,parseCoverage(ctx.training)));
-  const knownAddress = isValidDeliveryAddress(state.street) || isValidDeliveryAddress(state.locationUrl);
-  const knownVariant = Boolean(state.optionId || state.cartLines?.length);
-  const product = ctx.products.find(p => p.id === state.productId || p.id === ctx.activeProductId);
-  const needsVariant = Boolean(product && (product.product_prices?.length ?? 0) > 1 && !knownVariant);
-  if ((asksCity && knownCity) || (asksName && (isValidCustomerName(state.customerName) || needsVariant)) ||
-      (asksAddress && (knownAddress || isEncomienda)) || (asksVariant && knownVariant)) {
-    return nextVerifiedSaleQuestion(ctx,state) ?? "¡Gracias! 😊 Ya tengo esos datos. Estoy verificando tu pedido.";
-  }
-  return reply;
-}
