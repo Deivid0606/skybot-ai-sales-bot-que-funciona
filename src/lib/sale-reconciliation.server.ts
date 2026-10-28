@@ -44,8 +44,14 @@ const validName = (raw: string): string | null => {
 };
 const isCityReply = (value: string, lastQuestion: string) => {
   const n = normal(value);
-  return /(?:ciudad|de donde sos|donde estas|donde vivis|cobertura|departamento)/.test(lastQuestion) ||
-    /^(?:soy de|de|para|ciudad(?: de)?|vivo en)\b/.test(n) || n.split(" ").length <= 3;
+  if (!n || /[?¿]/.test(value) || n.length > 70) return false;
+  // Una frase comercial, una respuesta afirmativa o un producto NO son ciudades,
+  // aunque la última pregunta del asistente haya mencionado la ciudad.
+  if (/\b(?:quiero|comprar|precio|cuanto|cuesta|cepillo|alisado|alizado|producto|unidad|unidades|caja|cajas|pedido|pagar|pago|comprobante|transferencia|problema|gracias|correcto|envio|llegaria|llega|recibir|si es asi|no hay problema)\b/.test(n)) return false;
+  const directed = /^(?:soy de|vivo en|para|enviame a|mandar a|ciudad(?: de)?)\s+/.test(n);
+  const prompted = /(?:en que ciudad|que ciudad|cual ciudad|ciudad.*(?:entrega|recibir)|donde.*(?:recibir|enviamos)|de donde sos|donde vivis)/.test(lastQuestion);
+  // La respuesta a una pregunta de ciudad debe ser breve y nominal.
+  return directed || (prompted && n.split(" ").length <= 5) || n.split(" ").length <= 3;
 };
 
 /** Recupera hechos expresos sin reemplazar datos con respuestas vacías de la IA.
@@ -132,7 +138,8 @@ export function recoverSaleStateFromHistory(ctx: AiContext, previous: SaleState,
                  /^[\p{L} .'-]{3,40}$/u.test(bare)) {
         state.department = bare; state.cityVerified = true;
         state.coverageStatus = "uncovered";
-      } else if (asksCity && !state.cityVerified && /^[\p{L} .'-]{3,55}$/u.test(bare)) {
+      } else if (asksCity && isCityReply(raw, lastQuestion) && !state.cityVerified &&
+                 bare.split(/\s+/).length <= 5 && /^[\p{L} .'-]{3,55}$/u.test(bare)) {
         state.city = bare; state.department = null;
         state.cityVerified = false; state.coverageStatus = "unknown";
       }
