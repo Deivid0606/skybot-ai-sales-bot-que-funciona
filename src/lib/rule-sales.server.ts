@@ -243,13 +243,30 @@ function declaredDestination(text:string): {city:string;department:string}|null 
   return {city,department};
 }
 
-function cityIn(text:string, coverage:Coverage[]): Coverage | null {
+export function cityIn(text:string, coverage:Coverage[]): Coverage | null {
   const normalized=norm(text);
   // Preguntas sobre pago no son declaraciones de una ciudad.
   if (!normalized || /^(?:se paga|puedo pagar|pago al recibir|es contra entrega|envio gratis|cuanto cuesta)/.test(normalized)) return null;
-  const hits=coverage.filter(c=>[c.city,...c.aliases].some(alias=>{
+  const exact=coverage.filter(c=>[c.city,...c.aliases].some(alias=>{
     const n=norm(alias);
     return n.length>=3 && (` ${normalized} `.includes(` ${n} `));
+  }));
+  // Tolerar errores de tipeo (ej. "Ñmby" -> Ñemby): 1 letra de diferencia en
+  // nombres de 4+ letras, comparando palabra por palabra o grupos de palabras.
+  const words=normalized.split(" ");
+  const near=(a:string,b:string)=>{
+    if(Math.abs(a.length-b.length)>1)return false;
+    const d:number[][]=Array.from({length:a.length+1},(_,i)=>[i,...Array(b.length).fill(0)]);
+    for(let j=1;j<=b.length;j++)d[0][j]=j;
+    for(let i=1;i<=a.length;i++)for(let j=1;j<=b.length;j++)
+      d[i][j]=Math.min(d[i-1][j]+1,d[i][j-1]+1,d[i-1][j-1]+(a[i-1]===b[j-1]?0:1));
+    return d[a.length][b.length]<=1;
+  };
+  const hits=exact.length?exact:coverage.filter(c=>[c.city,...c.aliases].some(alias=>{
+    const n=norm(alias); if(n.length<4)return false;
+    const size=n.split(" ").length;
+    for(let i=0;i+size<=words.length;i++){ if(near(words.slice(i,i+size).join(" "),n))return true; }
+    return false;
   }));
   // Una ciudad registrada varias veces (por ejemplo, alias y sección) es una
   // coincidencia única SOLO cuando el departamento también coincide.
