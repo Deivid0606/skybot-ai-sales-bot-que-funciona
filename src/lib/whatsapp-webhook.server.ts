@@ -2090,9 +2090,41 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
     const selectedCatalogProduct = ctx.products.find(p=>p.id===detectedProduct);
     const paymentSaleState = saveStep?.state ?? previousSale;
     const selectedCatalogOption = selectedCatalogProduct?.product_prices?.find(o=>o.id===result.order?.product_price_id);
+    // Total OFICIAL calculado desde la selección guardada en el estado de venta
+    // (opción + cantidad), no desde el JSON de la IA. La IA a veces devuelve
+    // promo_quantity=4 para "1 caja (4 unidades)" y el total se multiplicaba x4,
+    // por eso un pago correcto o de más nunca alcanzaba y el pedido no se registraba.
+    const stateOptions = selectedCatalogProduct?.product_prices ?? [];
+    let stateExpectedTotal: number | null = null;
+    if (paymentSaleState.cartLines?.length) {
+      let sum = 0; let ok = true;
+      for (const line of paymentSaleState.cartLines) {
+        const opt = stateOptions.find(o => o.id === line.optionId);
+        if (!opt || !(Number(opt.price) > 0) || !(line.quantity > 0)) { ok = false; break; }
+        sum += Number(opt.price) * line.quantity;
+      }
+      if (ok && sum > 0) stateExpectedTotal = sum;
+    } else if (paymentSaleState.optionId) {
+      const opt = stateOptions.find(o => o.id === paymentSaleState.optionId);
+      const q = Number(paymentSaleState.quantity ?? opt?.quantity ?? 1);
+      if (opt && Number(opt.price) > 0) {
+        const optQty = Number(opt.quantity ?? 1);
+        if (q === optQty || !q) stateExpectedTotal = Number(opt.price);
+        else if (optQty === 1 && q > 0) stateExpectedTotal = Number(opt.price) * q;
+        else if (optQty > 1 && q % optQty === 0) stateExpectedTotal = Number(opt.price) * (q / optQty);
+      }
+      // Alinear el pedido con la selección real para que el total guardado coincida.
+      if (opt && result.order && stateExpectedTotal !== null) {
+        const optQty = Number(opt.quantity ?? 1);
+        result.order.product_price_id = opt.id;
+        result.order.quantity = q || optQty;
+        result.order.promo_quantity = optQty > 1 && q > optQty ? q / optQty : 1;
+      }
+    }
     const explicitPromos = Number(result.order?.promo_quantity ?? 1);
-    const expectedTotal = selectedCatalogOption && Number.isSafeInteger(explicitPromos) && explicitPromos>0
+    const aiExpectedTotal = selectedCatalogOption && Number.isSafeInteger(explicitPromos) && explicitPromos>0
       ? Number(selectedCatalogOption.price)*explicitPromos : null;
+    const expectedTotal = stateExpectedTotal ?? aiExpectedTotal;
     const receivedTotal = (paymentSaleState.receiptDocuments ?? []).reduce((n,r)=>n+r.amountGs,0);
     const financiallyReady = !isAdvance || Boolean(paymentSaleState.receiptPath &&
       !paymentSaleState.receiptReview && expectedTotal !== null && Number.isFinite(expectedTotal) &&
@@ -2101,7 +2133,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       console.info("[BOT_SKY_RECEIPT_SHORTFALL]",JSON.stringify({conversationId:conversation.id,expectedTotal,receivedTotal,missing:expectedTotal-receivedTotal}));
     }
     const orderReady = financiallyReady && isOrderReady(result.order, detectedProduct) &&
-      (Boolean(saveStep?.state.cartLines?.length) || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory)) &&
+      (Boolean(saveStep?.state.cartLines?.length) || stateExpectedTotal !== null || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory)) &&
       (!isAdvance || hasReceiptForOrder) &&
       (!result.order || !isEncomiendaAdvanceOrder(ctx.training,result.order.city,result.order.departamento,result.order.payment_method) ||
         !sellerRequiresEncomiendaCi(ctx.training) || isValidRecipientCi(result.order.recipient_ci));
@@ -2130,6 +2162,18 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         normalizeIntentText(String(result.order.departamento??"")) === normalizeIntentText(verifiedSaleState.department)) &&
       !verifiedOrderCoverage?.active;
     let orderWasCreated = false;
+    if (saveStep?.complete && !conversation.sale_closed && !orderReady) {
+      console.warn("[BOT_SKY_ORDER_NOT_READY]", JSON.stringify({
+        conversationId: conversation.id,
+        financiallyReady, isAdvance, hasReceiptForOrder,
+        structurallyReady: isOrderReady(result.order, detectedProduct),
+        expectedTotal, stateExpectedTotal, aiExpectedTotal, receivedTotal,
+        receiptReview: paymentSaleState.receiptReview ?? null,
+        hasName: Boolean(result.order?.customer_name),
+        paymentMethod: result.order?.payment_method ?? null,
+        city: result.order?.city ?? null,
+      }));
+    }
     if (!conversation.sale_closed && result.order && orderReady && (verifiedOrderCoverage?.active || (isAdvance && /ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(verifiedOrderCoverage?.method ?? "")) || nationwideAdvanceApproved) &&
       // La dirección de domicilio se exige solo a entregas domiciliarias con esa obligación.
       // Encomienda anticipada nacional autorizada: ciudad y departamento bastan como destino.
@@ -2236,7 +2280,10 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
     } else if (deferGpsReply) {
       // Si la validación final impidió guardar, no dejar el GPS sin respuesta.
       // No formular preguntas fijas cuando el INSERT no procedió. La IA es la autora de la conversación.
-      const pendingProposal = safeBeforeInsert || "Recibí tus datos. Tu pedido sigue pendiente de verificación.";
+      // No decir "estoy registrando tu pedido" si el registro NO se hizo.
+      const pendingProposal = (!safeBeforeInsert || /registrand|registrar[eé]?\s+tu\s+pedido|confirmand/i.test(safeBeforeInsert))
+        ? "Recibí tus datos 😊 Un asesor está verificando tu pedido y te confirma en breve."
+        : safeBeforeInsert;
       const pendingChecked = enforceVerifiedPaymentReply({
         reply: pendingProposal, city:verifiedSaleState.city, department:verifiedSaleState.department,
         cityVerified:verifiedSaleState.cityVerified, training:ctx.training,
@@ -2293,7 +2340,9 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       // Dudas sobre un pago MAYOR al total ("¿realizaste un pago adicional o hay algún error?").
       const overpayDoubtRe=/(pago\s+adicional|alg[uú]n\s+error|hay\s+un\s+error|un\s+error|no\s+coincide|diferencia|monto\s+(?:distinto|diferente|mayor)|pero\s+el\s+comprobante\s+muestra|verificar\s+(?:los\s+datos\s+y\s+)?el\s+monto|confirm(?:ar|á|ame|arme|es)[\s\S]{0,60}(?:monto|pago|transferencia|error))/i;
       const overpaid=paidEnoughOrMore && expectedTotal!==null && receivedTotal>expectedTotal;
-      if (overpaid && (resendRe.test(outgoingProposal) || overpayDoubtRe.test(outgoingProposal))) {
+      const overpayWordsRe=/(excedente|sobrante|provisional|verificaci[oó]n\s+bancaria|pagaste\s+(?:de\s+)?m[aá]s|monto\s+transferido)/i;
+      if (overpaid && (!paymentSaleState.customerName || resendRe.test(outgoingProposal) ||
+          overpayDoubtRe.test(outgoingProposal) || overpayWordsRe.test(outgoingProposal))) {
         // Respuesta fija: comprobante aceptado + saldo a favor + pedir nombre y apellido.
         const fav=receivedTotal-(expectedTotal as number);
         outgoingProposal=`¡Gracias! 😊 Recibimos tu comprobante. Tenés un saldo a favor de Gs. ${fav.toLocaleString("es-PY")}.`+
