@@ -127,12 +127,27 @@ export function enforceVerifiedPaymentReply(args: {
   products?: AiContext["products"];
 }): { reply: string; corrected: boolean; paymentMethod: "contraentrega" | "anticipado" | null } {
   const original = String(args.reply ?? "").trim();
-  if (!args.cityVerified || !args.city || !args.department || !original) {
-    return { reply: original, corrected: false, paymentMethod: null };
-  }
-  const policy = deliveryPolicyForCity(args.city, args.department, args.training);
-  if (!policy?.active || !policy.paymentMethod) {
-    return { reply: original, corrected: false, paymentMethod: null };
+  if (!original) return { reply: original, corrected: false, paymentMethod: null };
+  // Una promesa afirmativa de contraentrega necesita una ficha activa y válida.
+  // Antes se devolvía la respuesta de la IA sin control precisamente cuando la
+  // ciudad NO figuraba en cobertura (por ejemplo: Carayaó).
+  const explicitCodPromise = /\b(?:tenemos|contamos|disponemos|ofrecemos|hay|podes|podes|podras|paga|pagas|pagas|pagar|se paga)\b.{0,95}\b(?:contra entrega|contraentrega|pago al recibir|al recibir|cuando recibas|cuando llegue|al delivery)\b|\b(?:pago al recibir|contra entrega|contraentrega)\b.{0,80}\b(?:disponible|habilitado|para (?:tu|esa|esta) (?:zona|ciudad))\b/i.test(norm(original));
+  const policy = args.cityVerified && args.city && args.department
+    ? deliveryPolicyForCity(args.city, args.department, args.training) : null;
+  if (!policy?.active || policy.paymentMethod !== "contraentrega") {
+    if (explicitCodPromise && args.city) {
+      if (!args.cityVerified || !args.department) {
+        return {reply:"📍 Para confirmar la forma de pago, ¿me indicás tu ciudad de entrega y departamento? 😊",corrected:true,paymentMethod:null};
+      }
+      const advanceAllowed = sellerAllowsNationwideAdvance(args.training) || policy?.paymentMethod === "anticipado";
+      const nextQuestion = !args.saleState?.quantity ? "¿Cuántas unidades querés llevar?" :
+        !args.saleState?.optionId && !args.saleState?.cartLines?.length ? "¿Qué presentación querés llevar?" : null;
+      const reply = advanceAllowed
+        ? `🚚 Para ${args.city} no tenemos pago al recibir. Podemos gestionar envío por encomienda con pago anticipado, sujeto a confirmar disponibilidad y costo de transporte. 😊${nextQuestion ? `\n\n${nextQuestion}` : ""}`
+        : `📍 Para ${args.city} no hay contraentrega autorizada. Voy a consultar las opciones de envío disponibles antes de confirmar una modalidad. 😊`;
+      return {reply,corrected:true,paymentMethod:advanceAllowed ? "anticipado" : null};
+    }
+    return { reply: original, corrected: false, paymentMethod: policy?.paymentMethod ?? null };
   }
   // Detectamos contradicciones del método oficial, no simples referencias
   // generales a otras ciudades en el historial.
