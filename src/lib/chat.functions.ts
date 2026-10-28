@@ -431,8 +431,8 @@ export const aiReplyNow = createServerFn({ method: "POST" })
         const corrected = await generateAiReply(cityContext);
         if (/\b(?:nombre|apellido|direcci[oó]n|domicilio|ubicaci[oó]n|google maps|transferencia|pago anticipado|m[eé]todo de pago)\b/i.test(corrected.reply) &&
             (/[¿?]/.test(corrected.reply) || /pas[aá]me|indic[aá]me|confirm[aá]me|envi[aá]me|necesito|falta/i.test(corrected.reply)))
-          return {skipped:true,reason:"IA intentó avanzar sin ciudad verificada"};
-        result={...result,reply:corrected.reply};
+          result={...result,reply:"¡Gracias! 😊 Para confirmarte la entrega, ¿me indicás en qué ciudad te lo enviamos?"};
+        else result={...result,reply:corrected.reply};
       } catch(error){console.error("[Inbox City Guard]",error);return {skipped:true,reason:"IA no disponible"};}
     }
     // En híbrido, no sobrescribir la respuesta de la IA con el mensaje genérico de GPS.
