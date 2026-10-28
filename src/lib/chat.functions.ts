@@ -216,7 +216,6 @@ export const aiReplyNow = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     const { buildWorkspaceAiContext } = await import("@/lib/ai-context.server");
     const { generateAiReply } = await import("@/lib/ai.server");
-    const { decideHybridReply } = await import("@/lib/hybrid-rules.server");
     const { advanceRuleSale } = await import("@/lib/rule-sales.server");
     const { classifyCustomerIntent, addVerifiedOrderContext, addPendingSaleContext } = await import("@/lib/hybrid-intent.server");
     const { createOrderFromAi, isOrderReady, isUnambiguousPriceSelection, applySellerFirstOffer,
@@ -250,7 +249,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     if (!aiSettings?.ai_enabled) return { skipped: true, reply: "", reason: "La IA está apagada en Configuraciones" };
     const ctx = await buildWorkspaceAiContext(supabase, conversation.workspace_id,
       chatHistory, conversation.product_id, conversation.contacts?.phone ?? null, conversation.id);
-    const mode: "hybrid" = "hybrid"; // IA redacta siempre; reglas solo extraen/validan datos técnicos.
+    // La respuesta comercial se genera siempre por IA + entrenamiento.
     const text = String(newest.body ?? "");
     const {coordinatesFromText}=await import("@/lib/hybrid-intent.server");
     const {parseCoverage,verifiedCoverage}=await import("@/lib/rule-sales.server");
@@ -320,7 +319,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     const reminderText=text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
     const locationReminder=!isGpsMessage && /\b(?:ya (?:te|le|les) (?:pase|envie|mande)|ya (?:comparti|envie)|ahi ya (?:te|le) pase)\b/.test(reminderText) && /\b(?:ubicacion|gps|maps|localizacion)\b/.test(reminderText);
     let bypassSale = intent !== "checkout";
-    const orderContext = intent === "order_status" && mode !== "rules_only"
+    const orderContext = intent === "order_status"
       ? await addVerifiedOrderContext(supabase,ctx,conversation.workspace_id,conversation.contacts?.phone)
       : ctx;
     const {data: saved, error: stateError} = await supabase.from("bot_sale_states")
@@ -373,54 +372,33 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     orderContext.saleState = previous;
     const answerContext = isGpsMessage ? {...orderContext,systemInstruction:orderContext.systemInstruction+
       `\nUBICACIÓN RECIBIDA. GPS guardado: ${Boolean(previous.locationUrl)}. Ciudad verificada: ${previous.cityVerified?previous.city:"NO VERIFICADA"}. Cobertura: ${previous.coverageStatus??"unknown"}. No inventes ciudad ni cobertura. Sin verificación pedí ciudad, sin ofrecer pago anticipado. No crees pedidos por una ubicación.`}
-      : bypassSale && mode !== "rules_only"
+      : bypassSale
       ? addPendingSaleContext(orderContext, previous) : orderContext;
     const saleText=isGpsMessage ? `📍 Ubicación compartida${previous.locationUrl?`\n${previous.locationUrl}`:""}` : savedSaleReadyForFinalization ? "Confirmo mis datos para registrar el pedido" : text;
-    let step=mode!=="ai_first"&&!bypassSale?advanceRuleSale(ctx,saleText,previous, (newest.media_type === "image" || newest.media_type === "document") ? newest.media_url : null,previous.locationUrl):null;
-    const ruleMustAnswer=mode==="rules_only";
-    const decision=(!isGpsMessage||mode==="rules_only")&&step&&!step.needsAi&&ruleMustAnswer
-      ?{reply:step.reply,productId:step.productId}
-      :(mode==="hybrid"?null:((intent==="complex"||intent==="order_status"||intent==="price")&&mode!=="rules_only"
-        ?null:decideHybridReply({ctx,text,mode})));
+    let step=!bypassSale?advanceRuleSale(ctx,saleText,previous, (newest.media_type === "image" || newest.media_type === "document") ? newest.media_url : null,previous.locationUrl):null;
     let result: Awaited<ReturnType<typeof generateAiReply>>;
-    let fromRules=Boolean(step&&!step.needsAi&&decision);
-    const gpsReply = previous.cityVerified && previous.city
-      ? `📍 ¡Recibí y guardé tu ubicación! 😊 Ciudad confirmada: *${previous.city}*. Seguimos con tu pedido. 💚`
-      : "📍 ¡Recibí y guardé tu ubicación! 😊🚚 Para confirmar nuestra cobertura, ¿me indicás *en qué ciudad* estás?";
-    if (isGpsMessage && mode === "rules_only") result={reply:gpsReply,product_id:previous.productId??conversation.product_id,sale_closed:false,order:null};
-    else if (locationReminder && bypassSale && previous.locationUrl && mode === "rules_only") {
-      const missing=!previous.cityVerified?"Solo falta confirmar tu ciudad para verificar la cobertura.":!previous.customerName?"Solo me falta tu nombre y apellido para completar el pedido.":"Ya tengo la ubicación guardada para tu compra; voy a revisar los demás datos.";
-      result={reply:`Tenés razón, disculpame. 🙏📍 *Tu ubicación ya está guardada*, no hace falta reenviarla. ${missing}`,product_id:previous.productId??conversation.product_id,sale_closed:false,order:null};
-    }
-    else if (decision) result={reply:decision.reply,product_id:decision.productId,sale_closed:false,order:null};
-    else if (mode === "rules_only") {
-      const back=decideHybridReply({ctx,text,mode,fallback:true});
-      result={reply:back?.reply??"Un asesor debe revisar tu consulta.",product_id:back?.productId??conversation.product_id,sale_closed:false,order:null};
-    } else {
-      const verifiedSale=step?.state??previous;
-      const aiContext=mode==="hybrid"?{...answerContext,systemInstruction:answerContext.systemInstruction+
-        `\nIA + ENTRENAMIENTO: Redactá la respuesta SOLO a partir del entrenamiento activo y el catálogo de este vendedor; los cálculos técnicos no sustituyen el diálogo. No repitas ofertas ni preguntas ya contestadas. Datos de la venta actual verificados por código: ${JSON.stringify({productId:verifiedSale.productId,optionId:verifiedSale.optionId,quantity:verifiedSale.quantity,city:verifiedSale.city,department:verifiedSale.department,cityVerified:verifiedSale.cityVerified===true,coverageStatus:verifiedSale.coverageStatus,customerName:verifiedSale.customerName,gpsReceived:Boolean(verifiedSale.locationUrl),addressReceived:Boolean(verifiedSale.street)})}. No inventes cobertura, datos ni pedido registrado. El código validará y guardará pedidos. Respetá el orden de preguntas del entrenamiento del vendedor y no repitas datos ya conocidos. No exijas dirección escrita cuando ya hay GPS válido. Preguntá solo lo pendiente.`}:answerContext;
-      const {deliveryPolicyForCity}=await import("@/lib/rule-sales.server");
-      const policy=verifiedSale.cityVerified ? deliveryPolicyForCity(verifiedSale.city,verifiedSale.department,ctx.training):null;
-      if(policy?.paymentMethod)verifiedSale.paymentMethod=policy.paymentMethod;
-      const {sellerAllowsNationwideAdvance}=await import("@/lib/rule-sales.server");
-      aiContext.systemInstruction += sellerAllowsNationwideAdvance(ctx.training)
-        ? "\nENCOMIENDA NACIONAL DEL VENDEDOR AUTORIZADA: ciudades de Paraguay fuera de la lista de CONTRAENTREGA pueden solicitar encomienda con pago anticipado. No rechaces todo envío por ausencia de contraentrega; la disponibilidad del transportista y el costo deben comprobarse antes de cobrar. "
-        : "\nESTE VENDEDOR NO TIENE ENCOMIENDA NACIONAL EXPLÍCITAMENTE AUTORIZADA. ";
-      aiContext.systemInstruction += policy?.paymentMethod
-        ? `\nPOLÍTICA DE COBERTURA AUTORIZADA DEL VENDEDOR: ciudad ${policy.city}; departamento ${policy.department}; modalidad ${policy.method}; pago ${policy.paymentMethod}. No pedir ni afirmar pago anticipado para una ciudad cuya modalidad es contraentrega.`
-        : `\nLa CIUDAD DE ENTREGA se verifica ANTES de pedir nombre, dirección, GPS o forma de pago. No decidas pago anticipado hasta consultar la política de cobertura del vendedor. Si el cliente hace una consulta intermedia, respondela y conservá la selección ya realizada. No tomes barrio o GPS como prueba de ciudad.`;
-      aiContext.saleState = verifiedSale;
-      try {result=await generateAiReply(aiContext);}
-      catch (err) {
-        console.error("[BOT SKY Inbox IA] Proveedor no disponible; mensaje sigue pendiente",err);
-        return {skipped:true,reason:"IA no disponible; no se envió respuesta automática de código"};
-      }
-    }
+    const verifiedSale=step?.state??previous;
+    const aiContext={...answerContext,saleState:verifiedSale,
+      systemInstruction:answerContext.systemInstruction+
+        `\nDATOS TÉCNICOS DEL PEDIDO ACTUAL: ${JSON.stringify({productId:verifiedSale.productId,
+        optionId:verifiedSale.optionId,quantity:verifiedSale.quantity,city:verifiedSale.city,
+        department:verifiedSale.department,cityVerified:verifiedSale.cityVerified===true,
+        coverageStatus:verifiedSale.coverageStatus,customerName:verifiedSale.customerName,
+        receiptStored:Boolean(verifiedSale.receiptPath),receiptReview:verifiedSale.receiptReview,
+        recipientCiPresent:Boolean(verifiedSale.recipientCi)})}. La conversación y las preguntas comerciales provienen solo de IA + entrenamiento; no pidas datos ya suministrados. No confirmes sin registro en Supabase.`};
+    const {deliveryPolicyForCity,sellerAllowsNationwideAdvance}=await import("@/lib/rule-sales.server");
+    const policy=verifiedSale.cityVerified?deliveryPolicyForCity(verifiedSale.city,verifiedSale.department,ctx.training):null;
+    if(policy?.paymentMethod)verifiedSale.paymentMethod=policy.paymentMethod;
+    aiContext.systemInstruction+=sellerAllowsNationwideAdvance(ctx.training)
+      ? "\nEl vendedor autoriza encomienda nacional anticipada fuera de contraentrega, sujeta a confirmar costo y transporte. No la niegues por ausencia de contraentrega."
+      : "\nNo existe autorización para encomienda nacional en el entrenamiento disponible.";
+    if(policy?.paymentMethod)aiContext.systemInstruction+=
+      `\nModalidad VERIFICADA para ${policy.city}: ${policy.method}; pago ${policy.paymentMethod}.`;
+    try {result=await generateAiReply(aiContext);}
+    catch(error){console.error("[BOT SKY Inbox] IA no disponible",error);return {skipped:true,reason:"IA no disponible; respuesta pendiente"};}
     // Corregir rechazos comerciales que contradicen la encomienda nacional
     // autorizada por este vendedor; el texto lo redacta la IA.
-    if (mode !== "rules_only") {
-      const {sellerAllowsNationwideAdvance}=await import("@/lib/rule-sales.server");
+    {
       const known = (step?.state??previous);
       const listed=known.cityVerified ? verifiedCoverage(String(known.city??""),String(known.department??""),parseCoverage(ctx.training)) : null;
       if(sellerAllowsNationwideAdvance(ctx.training) && !listed?.active &&
@@ -468,12 +446,14 @@ export const aiReplyNow = createServerFn({ method: "POST" })
         state:step.state,updated_at:new Date().toISOString()
       },{onConflict:"workspace_id,conversation_id"});
       if(stateSaveError)throw stateSaveError;
-      if(step.complete && mode === "rules_only"){const st=step.state;
-        fromRules=mode === "rules_only";
-        result={reply:mode === "rules_only" ? step.reply : result.reply,product_id:step.productId,sale_closed:true,
+      if(step.complete && !result.order){
+        const st=step.state;
+        // Construcción técnica desde estado verificado: NO redacta diálogo comercial.
+        result={reply:result.reply,product_id:step.productId,sale_closed:true,
           order:{customer_name:st.customerName!,city:st.city!,departamento:st.department!,
-            street:isValidDeliveryAddress(st.street) ? st.street : (isValidDeliveryAddress(result.order?.street) ? result.order?.street : undefined),quantity:(result.order?.promo_quantity ?? 1) > 1 ? result.order?.quantity : st.quantity!,
-             promo_quantity:result.order?.promo_quantity,product_price_id:(result.order?.promo_quantity ?? 1) > 1 ? result.order?.product_price_id : st.optionId??undefined,
+            street:isValidDeliveryAddress(st.street)?st.street:undefined,
+            quantity:st.quantity!,product_price_id:st.optionId??undefined,
+            recipient_ci:isValidRecipientCi(st.recipientCi)?st.recipientCi!.replace(/\D/g,""):undefined,
             payment_method:st.paymentMethod!,phone:conversation.contacts?.phone??""}};
       }
     }
@@ -510,7 +490,6 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     const expectedAmount = selectedPrice && Number.isSafeInteger(promoCount) && promoCount>0 ? Number(selectedPrice.price)*promoCount : null;
     const receiptVerifiedAsFile = Boolean(paymentState.receiptPath && !paymentState.receiptReview &&
       expectedAmount !== null && Number.isFinite(expectedAmount) && receiptTotal >= expectedAmount);
-    const {sellerAllowsNationwideAdvance}=await import("@/lib/rule-sales.server");
     const nationalState=step?.state??previous;
     const nationwideAdvanceApproved = isAdvanceInbox && Boolean(nationalState.cityVerified && nationalState.city && nationalState.department) &&
       sellerAllowsNationwideAdvance(ctx.training);
@@ -518,6 +497,8 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       (isEncomiendaAdvanceOrder(ctx.training,result.order?.city,result.order?.departamento,result.order?.payment_method) ||
        !orderCoverage?.addressRequired || Boolean(isValidDeliveryAddress(result.order?.street) || isValidDeliveryAddress(step?.state.locationUrl) || isValidDeliveryAddress(previous.locationUrl))) && Boolean(result.order) &&
       isOrderReady(result.order, detectedProduct) &&
+      (!isEncomiendaAdvanceOrder(ctx.training,result.order?.city,result.order?.departamento,result.order?.payment_method) ||
+        !sellerRequiresEncomiendaCi(ctx.training) || isValidRecipientCi(result.order?.recipient_ci)) &&
       (Boolean(step?.state.cartLines?.length) || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory));
     if (valid && result.order && detectedProduct) {
       createdOrder = await createOrderFromAi({
@@ -598,12 +579,22 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     if (checkedInboxReply.corrected) console.warn("[BOT_SKY_COVERAGE_OUTPUT_GUARD]",JSON.stringify({
       conversationId:conversation.id,paymentMethod:checkedInboxReply.paymentMethod,channel:"inbox"
     }));
-    const reply = checkedInboxReply.reply;
+    let reply = checkedInboxReply.reply;
+    if(checkedInboxReply.corrected && !createdOrder) {
+      const known=step?.state??previous;
+      const corrected=await generateAiReply({...answerContext,saleState:known,
+        systemInstruction:answerContext.systemInstruction+
+          `\nLa respuesta anterior contradecía la modalidad de pago del vendedor. Destino declarado: ${known.city??"sin confirmar"}. Modalidad verificada: ${checkedInboxReply.paymentMethod??"pendiente"}. Redactá otra respuesta desde el entrenamiento sin textos comerciales programados.`});
+      const second=enforceVerifiedPaymentReply({reply:corrected.reply,city:known.city,department:known.department,
+        cityVerified:known.cityVerified,training:ctx.training,saleState:known});
+      if(second.corrected)return {skipped:true,reason:"La IA no corrigió la modalidad de pago"};
+      reply=second.reply;
+    }
     const wamid = await sendWhatsAppText(conn, phone, reply);
     const { error: insertError } = await supabase.from("messages").insert({
       workspace_id: conversation.workspace_id, user_id: conversation.user_id,
       conversation_id: conversation.id, direction: "outbound", sender: "ai",
-      response_origin: mode === "rules_only" ? "code" : "ai",
+      response_origin: "ai",
       body: reply, wamid, status: "sent",
     } as any);
     if (insertError) throw insertError;
@@ -615,136 +606,13 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     return { reply, orderId: createdOrder?.id ?? null };
   });
 
-/** Recupera un mensaje comercial usando SOLO reglas: nunca invoca generateAiReply. */
+/** Endpoint antiguo conservado por compatibilidad. Prohibido enviar preguntas
+ * o respuestas de venta desde reglas. La bandeja usa aiReplyNow para reintentos.
+ */
 export const recoverPendingWithRules = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((input: unknown) => AiNowInput.parse(input))
-  .handler(async ({ data, context }) => {
-    const { supabase } = context;
-    const { buildWorkspaceAiContext } = await import("@/lib/ai-context.server");
-    const { decideHybridReply } = await import("@/lib/hybrid-rules.server");
-    const { advanceRuleSale, parseCoverage, verifiedCoverage } = await import("@/lib/rule-sales.server");
-    const { classifyCustomerIntent, coordinatesFromText } = await import("@/lib/hybrid-intent.server");
-    const { createOrderFromAi, isOrderReady, isUnambiguousPriceSelection, applySellerFirstOffer, recoverRecentPaymentReceiptForOrder } = await import("@/lib/whatsapp-webhook.server");
-    const { data: convo, error: conversationError } = await supabase.from("conversations")
-      .select("id,workspace_id,user_id,contact_id,product_id,ad_id,ai_paused,is_closed,sale_closed,contacts(phone)")
-      .eq("id", data.conversationId).single();
-    if(conversationError || !convo) throw new Error("Conversación no encontrada");
-    if(convo.ai_paused || convo.is_closed) return { skipped:true, reason:"Chat pausado o cerrado" };
-    const {data: history, error: messagesError} = await supabase.from("messages")
-      .select("id,wamid,sender,direction,body,media_url,media_type,latitude,longitude,created_at")
-      .eq("workspace_id",convo.workspace_id).eq("conversation_id",convo.id)
-      .order("created_at",{ascending:false}).limit(30);
-    if(messagesError) throw messagesError;
-    const newest=history?.[0];
-    if(!newest || newest.direction!=="inbound" || newest.sender!=="customer")return {skipped:true,reason:"Ya respondido"};
-    if(!convo.contacts?.phone)throw new Error("Contacto sin teléfono");
-    const chatHistory=[...(history??[])].reverse().filter(m=>Boolean(m.body)).map(m=>({
-      role:m.sender==="customer"?("user" as const):("assistant" as const), content:String(m.body)
-    }));
-    const ctx=await buildWorkspaceAiContext(supabase,convo.workspace_id,chatHistory,convo.product_id,convo.contacts.phone,convo.id);
-    const {data:saved,error:stateError}=await supabase.from("bot_sale_states")
-      .select("state").eq("workspace_id",convo.workspace_id).eq("conversation_id",convo.id).maybeSingle();
-    if(stateError)throw stateError;
-    const previous=(saved?.state??{}) as import("@/lib/rule-sales.server").SaleState;
-    const text=String(newest.body??"");
-    const coords=(newest.latitude!=null && newest.longitude!=null)
-      ? {latitude:Number(newest.latitude),longitude:Number(newest.longitude)} : coordinatesFromText(text);
-    const gpsUrl=coords && Number.isFinite(coords.latitude) && Number.isFinite(coords.longitude)
-      ? `https://www.google.com/maps/search/?api=1&query=${coords.latitude},${coords.longitude}`
-      : text.match(/https?:\/\/(?:maps\.app\.goo\.gl|goo\.gl\/maps|(?:www\.)?google\.[^\s/]+\/maps)\S*/i)?.[0]??null;
-    const isGpsMessage=Boolean(gpsUrl);
-    // No reabrir pedidos cerrados por un recuperador comercial.
-    if(convo.sale_closed)return {skipped:true,reason:"Postventa: requiere verificación"};
-    const normalized=text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
-    const reminder=/\b(?:ya (?:te|le|les) (?:pase|envie|mande)|ahi ya (?:te|le) pase)\b/.test(normalized)&&/\b(?:ubicacion|gps|maps)\b/.test(normalized);
-    if(gpsUrl)previous.locationUrl=gpsUrl;
-    const intent=isGpsMessage?"checkout":classifyCustomerIntent(text);
-    const canFinalizeReminder=reminder&&previous.locationUrl&&previous.productId&&previous.quantity&&previous.cityVerified&&previous.customerName;
-    const isSale=intent==="checkout" || canFinalizeReminder;
-    const step=isSale?advanceRuleSale(ctx,canFinalizeReminder?"Confirmo mis datos para registrar el pedido":isGpsMessage?`📍 Ubicación compartida ${gpsUrl}`:text,
-      previous, ["image","document"].includes(String(newest.media_type))?newest.media_url:null,previous.locationUrl):null;
-    const decision=!step || step.needsAi ? decideHybridReply({ctx,text,mode:"rules_only",fallback:false}) : null;
-    let reply=step&&!step.needsAi?step.reply:decision?.reply??null;
-    if(isGpsMessage){
-      reply=previous.cityVerified&&previous.city
-        ? `📍 ¡Recibí tu ubicación! 😊 Ciudad confirmada: *${previous.city}*. Seguimos con tu pedido.`
-        : "📍 ¡Recibí tu ubicación! 😊 Para verificar la entrega, ¿en qué ciudad estás?";
-    }
-    if(reminder && previous.locationUrl && !reply){
-      reply=previous.cityVerified ? "📍 Ya tengo tu ubicación guardada. Si falta algún dato para finalizar el pedido, te lo solicitaré." : "📍 Ya tengo tu ubicación guardada. Solo falta confirmar tu ciudad.";
-    }
-    // Si exige razonamiento no inventar: permanecer pendiente para agente humano.
-    if(!reply)return {skipped:true,reason:"Requiere atención humana o IA"};
-    if(step && !isGpsMessage){
-      const {error:saveError}=await supabase.from("bot_sale_states").upsert({
-        workspace_id:convo.workspace_id,conversation_id:convo.id,state:step.state,updated_at:new Date().toISOString()
-      },{onConflict:"workspace_id,conversation_id"});
-      if(saveError)throw saveError;
-    }else if(isGpsMessage){
-      const {error:saveError}=await supabase.from("bot_sale_states").upsert({
-        workspace_id:convo.workspace_id,conversation_id:convo.id,state:previous,updated_at:new Date().toISOString()
-      },{onConflict:"workspace_id,conversation_id"});
-      if(saveError)throw saveError;
-    }
-    // Verificar nuevamente después del cálculo: si otra respuesta salió, no duplicar.
-    const {data:latest,error:latestError}=await supabase.from("messages").select("id,direction")
-      .eq("workspace_id",convo.workspace_id).eq("conversation_id",convo.id)
-      .order("created_at",{ascending:false}).limit(1).maybeSingle();
-    if(latestError)throw latestError;
-    if(latest?.id!==newest.id||latest.direction!=="inbound")return {skipped:true,reason:"Otro proceso ya respondió"};
-    let createdOrder: {id:string;order_number:string}|null=null;
-    if(step?.complete){
-      const st=step.state;
-      const order={customer_name:st.customerName!,city:st.city!,departamento:st.department!,
-        street:isEncomiendaAdvanceOrder(ctx.training,st.city,st.department,st.paymentMethod) ? undefined : st.street??undefined,
-        recipient_ci:isValidRecipientCi(st.recipientCi) ? st.recipientCi!.replace(/\D/g, "") : undefined,
-        quantity:st.quantity!,product_price_id:st.optionId??undefined,payment_method:st.paymentMethod!,phone:convo.contacts.phone};
-      const productId=step.productId??st.productId??convo.product_id;
-      const verified=verifiedCoverage(String(order.city),String(order.departamento),parseCoverage(ctx.training));
-      // Ruta secundaria: nunca registrar un pago anticipado sin validación documental.
-      // La autorización nacional viene SOLO del entrenamiento de este workspace.
-      const {sellerAllowsNationwideAdvance}=await import("@/lib/rule-sales.server");
-      const advance = /anticip|transfer|deposit|giro/i.test(String(order.payment_method??""));
-      const nationwide = advance && st.cityVerified===true && Boolean(st.department) &&
-        sellerAllowsNationwideAdvance(ctx.training);
-      const documented = !advance || Boolean(st.receiptPath && !st.receiptReview && (st.receiptDocuments??[]).length);
-      const canCreate=Boolean(documented &&
-        (verified?.active || nationwide) &&
-        (isEncomiendaAdvanceOrder(ctx.training,order.city,order.departamento,order.payment_method) || !verified?.addressRequired || isValidDeliveryAddress(order.street) || isValidDeliveryAddress(st.locationUrl)) && productId && isOrderReady(order,productId) &&
-        (Boolean(st.cartLines?.length)||isUnambiguousPriceSelection(order,productId,ctx.products,chatHistory)));
-      if(!canCreate)return {skipped:true,reason:"Pedido requiere revisión de cobertura o variante"};
-      createdOrder=await createOrderFromAi({workspaceId:convo.workspace_id,ownerId:convo.user_id,conversationId:convo.id,
-        contactId:convo.contact_id,phone:convo.contacts.phone,adId:convo.ad_id??null,productId:productId!,
-        sourceMessageId:newest.wamid||newest.id,order,products:ctx.products,cartLines:st.cartLines,training:ctx.training});
-      await recoverRecentPaymentReceiptForOrder({workspaceId:convo.workspace_id,ownerId:convo.user_id,
-        conversationId:convo.id,orderId:createdOrder.id});
-      const {data:savedOrder,error:readError}=await supabase.from("orders")
-        .select("id,order_number,customer_name,phone,total,quantity,street,payment_method,payment_status,observations")
-        .eq("workspace_id",convo.workspace_id).eq("id",createdOrder.id).single();
-      if(readError||!savedOrder)throw readError||new Error("No se encontró el pedido creado");
-      const selectedProduct=ctx.products.find(p=>p.id===productId);
-      const selectedOption=selectedProduct?.product_prices?.find(o=>o.id===order.product_price_id);
-      reply=buildRegisteredOrderConfirmation({created:savedOrder,requestRecipientCi:shouldAskPostSaleCi(ctx.training,order,savedOrder.observations),order:{...order,payment_method:savedOrder.payment_method},
-        productName:selectedProduct?.name??"Producto del pedido",productOption:selectedOption?.label,
-        savedQuantity:Number(savedOrder.quantity),address:savedOrder.street,paymentStatus:savedOrder.payment_status,
-        deliveryMethod:isEncomiendaAdvanceOrder(ctx.training,order.city,order.departamento,order.payment_method)
-          ? "Encomienda con pago anticipado" : verified?.method});
-    }
-    const {data:conn}=await supabase.from("whatsapp_connections").select("phone_number_id,access_token")
-      .eq("workspace_id",convo.workspace_id).maybeSingle();
-    if(!conn?.phone_number_id||!conn.access_token)throw new Error("WhatsApp no conectado");
-    const wamid=await sendWhatsAppText(conn,convo.contacts.phone,reply);
-    const {error:insertError}=await supabase.from("messages").insert({workspace_id:convo.workspace_id,
-      user_id:convo.user_id,conversation_id:convo.id,direction:"outbound",sender:"ai",response_origin:"code",
-      body:reply,wamid,status:"sent"} as any);
-    if(insertError)throw insertError;
-    await supabase.from("conversations").update({last_message:reply,last_message_at:new Date().toISOString(),
-      unread_count:0,product_id:step?.productId??decision?.productId??convo.product_id,
-      ...(createdOrder?{sale_closed:true}:{})}).eq("id",convo.id).eq("workspace_id",convo.workspace_id);
-    if(createdOrder)await supabase.from("bot_sale_states").delete().eq("workspace_id",convo.workspace_id).eq("conversation_id",convo.id);
-    return {skipped:false,reply,orderId:createdOrder?.id??null};
-  });
+  .handler(async () => ({skipped:true,reason:"Recuperación por código deshabilitada; utilizar reintento con IA + entrenamiento"}));
 
 const DeleteInput = z.object({ ids: z.array(z.string().uuid()).min(1).max(200) });
 
