@@ -1771,7 +1771,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       : `\n${sellerAllowsNationwideAdvance(ctx.training) ? "ENCOMIENDA NACIONAL AUTORIZADA: fuera de contraentrega se puede ofrecer pago anticipado sujeto a verificar logística; NO negar todo envío por ausencia en la lista. " : ""}COBERTURA PENDIENTE: la CIUDAD DE ENTREGA es el primer dato logístico obligatorio; NO solicites nombre, dirección, GPS, método de pago ni transferencia antes de verificarla. La ciudad debe estar en la cobertura activa de este vendedor o resolverse según su política de encomienda. No deduzcas municipio desde GPS ni barrio. Si el cliente hace otra consulta, respondela primero sin repetir automáticamente la pregunta de ciudad y conservá la venta.`;
     const aiAnswerContext = {
       ...answerContext,
-      systemInstruction: answerContext.systemInstruction + officialPolicyInstruction + `\nMODO IA + ENTRENAMIENTO BOT SKY, PRIORIDAD ALTA: Las respuestas comerciales las generás vos usando únicamente catálogo y entrenamiento de esta tienda. CONVERSÁ VOS con el comprador de forma natural: resolvé una sola pregunta por vez y no repitas catálogo/precios completos ni datos ya recibidos. Cantidad y variante se capturan mediante código y deben respetarse. No confirmes pedidos sin número real generado por Supabase. El cliente puede comprar varias veces. DATOS VERIFICADOS DEL CICLO ACTUAL (no mezclar con pedidos previos): ${JSON.stringify({productId:verifiedSaleState.productId,optionId:verifiedSaleState.optionId,quantity:verifiedSaleState.quantity,city:verifiedSaleState.city,department:verifiedSaleState.department,cityVerified:verifiedSaleState.cityVerified===true,coverageStatus:verifiedSaleState.coverageStatus,customerName:verifiedSaleState.customerName,hasAddress:Boolean(verifiedSaleState.street),gpsReceived:Boolean(verifiedSaleState.locationUrl),paymentMethod:verifiedSaleState.paymentMethod,awaiting:verifiedSaleState.awaiting})}. COBERTURA: si cityVerified no es true, NUNCA digas que tenemos cobertura; consultá la ciudad si falta. GPS no prueba por sí mismo ninguna ciudad. Si recibiste GPS no vuelvas a solicitarlo. El GPS es dirección suficiente si la configuración de la ciudad admite dirección por ubicación. Respetá el orden de preguntas definido en el entrenamiento del vendedor; nunca repitas hechos conocidos. Si no tenés precio/variante sin ambigüedad pedí aclaración. Si está completo, el código registrará el pedido; no inventes un número de orden ni digas que está confirmado.
+      systemInstruction: answerContext.systemInstruction + officialPolicyInstruction + `\nMODO IA + ENTRENAMIENTO BOT SKY, PRIORIDAD ALTA: Las respuestas comerciales las generás vos usando únicamente catálogo y entrenamiento de esta tienda. CONVERSÁ VOS con el comprador de forma natural: resolvé una sola pregunta por vez y no repitas catálogo/precios completos ni datos ya recibidos. Cantidad y variante se capturan mediante código y deben respetarse. No confirmes pedidos sin número real generado por Supabase. El cliente puede comprar varias veces. DATOS VERIFICADOS DEL CICLO ACTUAL (no mezclar con pedidos previos): ${JSON.stringify({productId:verifiedSaleState.productId,optionId:verifiedSaleState.optionId,quantity:verifiedSaleState.quantity,city:verifiedSaleState.city,department:verifiedSaleState.department,cityVerified:verifiedSaleState.cityVerified===true,coverageStatus:verifiedSaleState.coverageStatus,customerName:verifiedSaleState.customerName,hasAddress:Boolean(verifiedSaleState.street),gpsReceived:Boolean(verifiedSaleState.locationUrl),paymentMethod:verifiedSaleState.paymentMethod,awaiting:verifiedSaleState.awaiting})}. COBERTURA: si cityVerified no es true, NUNCA digas que tenemos cobertura; cuando nombres la ciudad escribila SIEMPRE exactamente como figura en el campo city de los datos verificados (bien escrita, con tildes y ñ), nunca copies cómo la escribió el cliente; consultá la ciudad si falta. GPS no prueba por sí mismo ninguna ciudad. Si recibiste GPS no vuelvas a solicitarlo. El GPS es dirección suficiente si la configuración de la ciudad admite dirección por ubicación. Respetá el orden de preguntas definido en el entrenamiento del vendedor; nunca repitas hechos conocidos. Si no tenés precio/variante sin ambigüedad pedí aclaración. Si está completo, el código registrará el pedido; no inventes un número de orden ni digas que está confirmado.
 Respetá el flujo de venta específico del entrenamiento; ninguna pregunta, secuencia o promoción comercial se determina en código.`
     };
     // Comprobantes: pasar a la IA el RESULTADO DOCUMENTAL del backend, no
@@ -1869,7 +1869,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         console.error("[BOT_SKY_RECEIPT_NO_PROGRESS] La IA insistió en una respuesta de espera", conversation.id);
         await sendSilenceFallback({conn,workspaceId,ownerId,conversationId:conversation.id,
           adId:attributedAdId,phone,wamid:message.id,
-          reason:"La IA reiteró una espera sin avanzar el comprobante"});
+          reason:"La IA reiteró una espera sin avanzar el comprobante", reply:"¡Gracias! 😊 Recibimos tu comprobante. ¿Me pasás el nombre y apellido de quien va a recibir el pedido?"});
         return;
       }
       result = {...result, reply: revised.reply};
@@ -1895,13 +1895,14 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         if (/(?:\b(?:nombre|apellido|direcci[oó]n|domicilio|ubicaci[oó]n|google maps|transferencia|pago anticipado|m[eé]todo de pago)\b)/i.test(retried.reply) &&
             /[¿?]|(?:pas[aá]me|indic[aá]me|confirm[aá]me|envi[aá]me|compart[ií]me|necesito|falta)/i.test(retried.reply)) {
           console.error("[BOT SKY CITY GUARD] IA reiteró datos posteriores sin ciudad", conversation.id);
-          throw new Error("La IA insistió en una solicitud incompatible con la ciudad pendiente");
+          // Nunca dejar al cliente sin respuesta: pedir solo la ciudad.
+          result = {...result, reply:"¡Gracias! 😊 Para confirmarte la entrega, ¿me indicás en qué ciudad te lo enviamos?"};
         } else {
           result = {...result, reply: retried.reply};
         }
       } catch (error) {
         console.error("[BOT SKY CITY GUARD] No se pudo revalidar respuesta", error);
-        throw new Error("No fue posible validar el diálogo de ciudad con la IA");
+        result = {...result, reply:"¡Gracias! 😊 Para confirmarte la entrega, ¿me indicás en qué ciudad te lo enviamos?"};
       }
     }
     if (bypassSale && !result.order) result = {...result, sale_closed:false, order:null};
@@ -1966,13 +1967,13 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         else {
           console.error("[BOT SKY encomienda] La IA reiteró rechazo contrario al entrenamiento");
           await sendSilenceFallback({conn,workspaceId,ownerId,conversationId:conversation.id,adId:attributedAdId,phone,wamid:message.id,
-            reason:"La IA negó la encomienda contra el entrenamiento"});
+            reason:"La IA negó la encomienda contra el entrenamiento", reply:"¡Sí! 😊 Hacemos envíos por encomienda a todo el país, con pago anticipado. ¿Me confirmás en qué ciudad lo querés recibir? 📍"});
           return;
         }
       } catch(error) {
         console.error("[BOT SKY encomienda] No se pudo corregir rechazo",error);
         await sendSilenceFallback({conn,workspaceId,ownerId,conversationId:conversation.id,adId:attributedAdId,phone,wamid:message.id,
-          reason:"La IA no pudo corregir una respuesta de encomienda"});
+          reason:"La IA no pudo corregir una respuesta de encomienda", reply:"¡Sí! 😊 Hacemos envíos por encomienda a todo el país, con pago anticipado. ¿Me confirmás en qué ciudad lo querés recibir? 📍"});
         return;
       }
     }
@@ -2023,9 +2024,10 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       const revised = await generateAiReplyWithRetry({...aiAnswerContext,
         systemInstruction:aiAnswerContext.systemInstruction +
           `\nLa modalidad verificada para ${verifiedSaleState.city} es encomienda anticipada (sujeta a disponibilidad y costo). Tu borrador decía contraentrega. Reformulalo sin inventar modalidad, preguntas o precios.`});
-      if (/(?:pago\s+al\s+recibir|contra\s*entrega)/i.test(revised.reply))
-        throw new Error("La IA mantuvo una modalidad de pago incorrecta");
-      finalReply=revised.reply;
+      // Nunca quedar en silencio: si la IA insiste, usar un texto fijo correcto.
+      finalReply = /(?:pago\s+al\s+recibir|contra\s*entrega)/i.test(revised.reply)
+        ? `📦 Para ${verifiedSaleState.city} el envío es por encomienda, con pago anticipado (el costo del envío depende de la transportadora). ¿Querés que te pase los datos para coordinarlo? 😊`
+        : revised.reply;
     }
     // Una ciudad declarada por el comprador nunca se sustituye por una ciudad
     // distinta tomada de respuestas anteriores o ejemplos del entrenamiento.
@@ -2036,9 +2038,9 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       const rewritten=await generateAiReplyWithRetry({...aiAnswerContext,
         systemInstruction:aiAnswerContext.systemInstruction +
           `\nEl cliente indicó como destino ${cityDeclared}. Tu respuesta anterior sustituyó esa ciudad por Asunción sin autorización. Redactá de nuevo usando SOLO el destino realmente proporcionado. Si falta departamento o verificación logística, no los inventes.`});
-      if (/(?:\bpara\s+asunci[oó]n\b|\ben\s+asunci[oó]n\b)/i.test(rewritten.reply))
-        throw new Error("La IA continuó sustituyendo el destino del cliente");
-      finalReply=rewritten.reply;
+      finalReply = /(?:\bpara\s+asunci[oó]n\b|\ben\s+asunci[oó]n\b)/i.test(rewritten.reply)
+        ? `😊 Anotado, el envío es para ${cityDeclared}. ¿Seguimos con tu pedido?`
+        : rewritten.reply;
     }
     // Ciudad con pago al recibir: nunca enviar datos bancarios ni pedir comprobante.
     const codPolicy = verifiedSaleState.cityVerified
@@ -2281,7 +2283,13 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       // Si la validación final impidió guardar, no dejar el GPS sin respuesta.
       // No formular preguntas fijas cuando el INSERT no procedió. La IA es la autora de la conversación.
       // No decir "estoy registrando tu pedido" si el registro NO se hizo.
-      const pendingProposal = (!safeBeforeInsert || /registrand|registrar[eé]?\s+tu\s+pedido|confirmand/i.test(safeBeforeInsert))
+      // Contra entrega sin calle válida: pedir la dirección en vez de "un asesor verifica".
+      const pendingIsEncomienda = Boolean(result.order && isEncomiendaAdvanceOrder(ctx.training, result.order.city, result.order.departamento, result.order.payment_method));
+      const pendingHasAddress = Boolean(isValidDeliveryAddress(result.order?.street) || isValidDeliveryAddress(verifiedSaleState.street) || saveStep?.state.locationUrl || previousSale.locationUrl || verifiedSaleState.locationUrl);
+      const pendingFirstName = String(verifiedSaleState.customerName || result.order?.customer_name || "").trim().split(/\s+/)[0] || "";
+      const pendingProposal = (!pendingIsEncomienda && !pendingHasAddress)
+        ? `😊 ¡Gracias${pendingFirstName ? ", " + pendingFirstName : ""}! Para que el repartidor llegue bien, ¿me pasás tu dirección (calle y una referencia) o tu ubicación por Google Maps? 📍`
+        : (!safeBeforeInsert || /registrand|registrar[eé]?\s+tu\s+pedido|confirmand/i.test(safeBeforeInsert))
         ? "Recibí tus datos 😊 Un asesor está verificando tu pedido y te confirma en breve."
         : safeBeforeInsert;
       const pendingChecked = enforceVerifiedPaymentReply({
@@ -2392,8 +2400,8 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
           systemInstruction:aiAnswerContext.systemInstruction +
             `\nReformulá tu respuesta anterior porque contradice la modalidad del vendedor. Ciudad: ${verifiedSaleState.city??"no confirmada"}; método autorizado: ${outgoingChecked.paymentMethod??"pendiente de verificar"}. Usá el entrenamiento activo sin preguntas programadas.`});
         const second=enforceVerifiedPaymentReply({...{reply:revised.reply,city:verifiedSaleState.city,department:verifiedSaleState.department,cityVerified:verifiedSaleState.cityVerified,training:ctx.training},saleState:verifiedSaleState});
-        if (second.corrected) throw new Error("La IA no corrigió la política de pago");
-        outgoingText=second.reply;
+        // Si la IA no corrige, usar la versión ya corregida por código en vez de callar.
+        outgoingText = second.corrected ? outgoingChecked.reply : second.reply;
       }
       const outgoingWamid = await sendWhatsAppText(conn, phone, outgoingText);
       await supabaseAdmin.from("messages").insert({
@@ -3347,7 +3355,7 @@ ${match.products.description ?? ""}`.trim();
   // Los precios se envían aparte, 5 segundos después del copy + imagen.
   const copy = baseCopy;
   const pricesMessage = options.length
-    ? `💰 *Precios disponibles:*\n${options.map((o) => `• *${o.label}* — ${formatGs(Number(o.price))}`).join("\n")}\n\n¿Cuál te interesa? 😊`
+    ? `💰 *Precios disponibles:*\n${options.map((o) => `• *${o.label}* — Gs. ${Math.round(Number(o.price)).toLocaleString("es-PY")}`).join("\n")}\n\n¿Cuál te interesa? 😊`
     : null;
 
   const { sendWhatsAppMedia } = await import("@/lib/whatsapp.server");
@@ -3569,10 +3577,54 @@ async function sendSilenceFallback(args: {
       updated_at: new Date().toISOString(),
     }, { onConflict: "workspace_id,wamid" });
   }
+  // NUNCA dejar al cliente sin respuesta: enviar un mensaje corto y seguro
+  // (sin precios, cobertura ni datos bancarios inventados), salvo que el bot
+  // ya haya respondido a esta conversación en los últimos 45 segundos.
+  try {
+    const since = new Date(Date.now() - 45_000).toISOString();
+    const { data: recent } = await supabaseAdmin.from("messages").select("id")
+      .eq("workspace_id", args.workspaceId).eq("conversation_id", args.conversationId)
+      .eq("direction", "outbound").gte("created_at", since).limit(1);
+    if (!recent?.length) {
+      const text = args.reply?.trim() || await nextMissingQuestion(args.workspaceId, args.conversationId);
+      const wamid = await sendWhatsAppText(args.conn, args.phone, text);
+      await supabaseAdmin.from("messages").insert({
+        workspace_id: args.workspaceId, user_id: args.ownerId, conversation_id: args.conversationId,
+        ad_id: args.adId ?? null, direction: "outbound", sender: "ai", response_origin: "code",
+        body: text, wamid, status: "sent",
+      } as any);
+      await supabaseAdmin.from("conversations").update({
+        last_message: text, last_message_at: new Date().toISOString(),
+      }).eq("workspace_id", args.workspaceId).eq("id", args.conversationId);
+    }
+  } catch (sendError) {
+    console.error("[BOT SKY] No se pudo enviar respuesta de respaldo", sendError);
+  }
   await supabaseAdmin.from("notifications").insert({
     workspace_id: args.workspaceId, user_id: args.ownerId, type: "ia",
     title: `La IA no pudo responder · ${args.phone}`,
     body: args.reason.slice(0, 240),
     link: "/inbox", audience: "user",
   });
+}
+
+
+/** Respaldo: en vez de callar, preguntar al cliente el próximo dato que falta. */
+async function nextMissingQuestion(workspaceId: string, conversationId: string): Promise<string> {
+  let st: any = {};
+  try {
+    const { data } = await supabaseAdmin.from("bot_sale_states").select("state")
+      .eq("workspace_id", workspaceId).eq("conversation_id", conversationId).maybeSingle();
+    st = (data?.state ?? {}) as any;
+  } catch { /* sin estado: preguntar desde el inicio */ }
+  const name = String(st.customerName ?? "").trim().split(/\s+/)[0];
+  const hi = name ? `¡Gracias, ${name}! 😊` : "¡Gracias por tu mensaje! 😊";
+  if (!st.productId) return `${hi} ¿Qué producto te interesa? Así te paso el precio 📦`;
+  if (!st.optionId && !st.cartLines?.length) return `${hi} ¿Qué opción o cantidad te gustaría llevar?`;
+  if (!st.city || st.cityVerified !== true) return `${hi} ¿En qué ciudad querés recibir tu pedido? 📍`;
+  if (!st.customerName) return `${hi} ¿Me pasás el nombre y apellido de quien va a recibir el pedido?`;
+  if (st.paymentMethod !== "anticipado" && !st.street && !st.locationUrl)
+    return `${hi} ¿Me pasás tu dirección (calle y una referencia) o tu ubicación por Google Maps? 📍`;
+  if (st.paymentMethod === "anticipado") return `${hi} Cuando hagas la transferencia, enviame el comprobante por acá 🧾`;
+  return `${hi} ¿Hay algo más que quieras consultar sobre tu pedido?`;
 }
