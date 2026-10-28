@@ -44,8 +44,8 @@ export function orderStateLabel(state: string) {
 export const ECOMMERCE_BASE_URL =
   "https://www.el-ecommercedcanpgroup.com/";
 
+// Asunción se registra dentro de Central; ya no aparece como departamento propio.
 export const DEPARTAMENTOS_PY = [
-  "Asunción",
   "Concepción",
   "San Pedro",
   "Cordillera",
@@ -66,9 +66,11 @@ export const DEPARTAMENTOS_PY = [
 ] as const;
 
 const DEPT_ALIASES: Record<string, string> = {
-  asu: "Asunción",
-  asuncion: "Asunción",
-  capital: "Asunción",
+  asu: "Central",
+  asuncion: "Central",
+  capital: "Central",
+  "distrito capital": "Central",
+  "capital federal": "Central",
 
   cde: "Alto Paraná",
   "ciudad del este": "Alto Paraná",
@@ -100,7 +102,7 @@ const DEPT_ALIASES: Record<string, string> = {
 };
 
 const CITY_TO_DEPT: Record<string, string> = {
-  asuncion: "Asunción",
+  asuncion: "Central",
 
   luque: "Central",
   "san lorenzo": "Central",
@@ -224,7 +226,13 @@ function departamentoForEcommerce(
     city,
   );
 
-  if (norm(resolved) === "asuncion") {
+  // Ecommerce sigue recibiendo "Capital" para los pedidos de Asunción,
+  // aunque internamente el departamento guardado sea Central.
+  const cityKey = norm(city ?? "");
+  if (
+    ["asuncion", "asu", "distrito capital", "capital"].includes(cityKey) ||
+    norm(resolved) === "asuncion"
+  ) {
     return "Capital";
   }
 
