@@ -2079,7 +2079,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
     const isAdvance = /anticip|transfer|deposit|giro/i.test(result.order?.payment_method ?? "");
     // El archivo debe pertenecer al pago pendiente del ciclo actual.
     // Nunca tomar una imagen antigua de producto como comprobante.
-    const hasReceiptForOrder = Boolean((saveStep?.state.receiptDocuments?.length ?? previousSale.receiptDocuments?.length ?? 0)>0);
+    const hasReceiptForOrder = Boolean((saveStep?.state.receiptDocuments?.length ?? 0)>0 || (previousSale.receiptDocuments?.length ?? 0)>0);
     if (result.order && isEncomiendaAdvanceOrder(ctx.training,result.order.city,result.order.departamento,result.order.payment_method)) {
       // El destino de encomienda es la ciudad; no heredar GPS o dirección de otros turnos.
       delete result.order.street;
@@ -2979,7 +2979,7 @@ export async function createOrderFromAi(args: {
         `Detalles: ${error.details ?? "-"}. ` +
         `Sugerencia: ${error.hint ?? "-"}. ` +
         `Código: ${error.code ?? "-"}. ` +
-        `Payload: ${JSON.stringify(orderPayload)}`,
+        `Pedido: ${orderNumber}; workspace: ${args.workspaceId}; conversación: ${args.conversationId}`,
     });
 
     throw error;
