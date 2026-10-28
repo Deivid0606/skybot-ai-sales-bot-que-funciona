@@ -5,9 +5,8 @@
 export type PyCity = { city: string; department: string };
 
 const RAW: Record<string, string[]> = {
-  "Asunción": ["Asunción"],
   "Central": [
-    "Areguá", "Capiatá", "Fernando de la Mora", "Guarambaré", "Itá", "Itauguá", "J. Augusto Saldívar",
+    "Asunción", "Areguá", "Capiatá", "Fernando de la Mora", "Guarambaré", "Itá", "Itauguá", "J. Augusto Saldívar",
     "Lambaré", "Limpio", "Luque", "Mariano Roque Alonso", "Nueva Italia", "Ñemby", "San Antonio",
     "San Lorenzo", "Villa Elisa", "Villeta", "Ypacaraí", "Ypané",
   ],
