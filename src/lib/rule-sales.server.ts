@@ -131,7 +131,7 @@ export function enforceVerifiedPaymentReply(args: {
   const normalized=norm(reply);
   const promisesCod=/\b(?:tenemos|contamos|disponemos|ofrecemos|hay|podes|podras|paga|pagas|pagar|se paga)\b.{0,95}\b(?:contra entrega|contraentrega|pago al recibir|al recibir|cuando recibas|cuando llegue|al delivery)\b|\b(?:pago al recibir|contra entrega|contraentrega)\b.{0,80}\b(?:disponible|habilitado|para (?:tu|esa|esta) (?:zona|ciudad))\b/.test(normalized);
   const wrongCod=policy?.paymentMethod==="contraentrega" &&
-    /\b(?:encomienda|pago anticipado|pagar por transferencia|transferencia obligatoria|datos bancarios|cuenta bancaria|no tenemos contra entrega|no hay contra entrega|comprobante de transferencia|comprobante de pago)\b/.test(normalized);
+    /\b(?:encomienda|pago anticipado|pagar por transferencia|transferencia obligatoria|datos bancarios|cuenta bancaria|no tenemos contra entrega|no hay contra entrega|comprobante de transferencia|comprobante de pago|comprobante|banco|titular|alias eko|cuenta desde|nro de cuenta|realices el pago)\b/.test(normalized);
   const wrongAdvance=policy?.paymentMethod==="anticipado" && promisesCod;
   return {reply,corrected:Boolean((promisesCod && policy?.paymentMethod!=="contraentrega")||wrongCod||wrongAdvance),paymentMethod:policy?.paymentMethod??null};
 }
@@ -334,6 +334,7 @@ function humanName(text:string, expecting:boolean):string|null {
   if(NOT_A_NAME.test(norm(cleaned)))return null;
   if(!expecting&&!/^(?:me llamo|mi nombre es)\s+/i.test(text))return null;
   if(!/^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+(?:[\s'-]+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+){1,5}$/.test(cleaned))return null;
+  if(/\b(?:pago|pagos|pagar|pago al recibir|recibir|recibo|transferencia|transferir|efectivo|contado|contra|contraentrega|deposito|giro|comprobante|tarjeta|cuota|cuotas|envio|delivery|direccion|dirección|avenida|avda|calle|si|no|ok|dale|listo|gracias|hola|buenas|precio|costo|cuanto|foto|disponible|unidad|und|quiero|tenes|tienen)\b/i.test(norm(cleaned)))return null;
   if(/\b(?:quiero|litros|gracias|buenas|cuanto|cuando|llegaria|llega|entrega|pedido|precio|ciudad|calle|preguntando|garantia|tarda|demora|necesito|saber|como|donde|favor|dale|ok|esta|bien|si|no|perfecto|listo|ubicacion|maps|numero|direccion)\b/i.test(cleaned))return null;
   return cleaned;
 }
@@ -597,4 +598,17 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   const complete=Boolean(s.awaiting===null && s.cityVerified &&
     (location?.active || national || Boolean(location && /encomienda|anticipado|transferencia/i.test(norm(location.method)))));
   return {reply:"",state:s,productId:p.id,complete,needsAi:true};
+}
+
+
+/** Detecta marcadores de plantilla que la IA nunca debe enviar al cliente. */
+export function hasTemplatePlaceholder(reply: string): boolean {
+  return /\[(?:PRECIO|URL|NOMBRE|TOTAL|MONTO|CIUDAD|PRODUCTO)[^\]]*\]|URL_DE_LA_IMAGEN|\(URL[^)]*\)/i.test(reply);
+}
+
+/** Respaldo determinista: en ciudades con pago al recibir, quitar datos bancarios y pedido de comprobante. */
+export function stripBankDetailsForCod(reply: string): string {
+  return reply.split("\n")
+    .filter(l => !/(?:banco|titular|c[eé]dula|cuenta desde|alias|eko|comprobante|realices el pago|transferencia)/i.test(l))
+    .join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
