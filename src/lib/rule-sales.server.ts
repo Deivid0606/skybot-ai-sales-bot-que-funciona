@@ -582,7 +582,7 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   // Nunca usar un comprobante simplemente adjunto como validación del importe.
   const receiptVerified=Boolean(s.receiptPath && !s.receiptReview && s.receiptDocuments?.length);
   const encomienda=isEncomiendaAdvanceOrder(ctx.training,s.city,s.department,s.paymentMethod);
-  const needsRecipientCi=encomienda && sellerRequiresEncomiendaCi(ctx.training);
+  void encomienda; // la cédula de encomienda se pide después de confirmar el pedido
   const needsAddress=s.paymentMethod==="contraentrega" && location?.addressRequired!==false;
   const validPrice=Boolean(s.cartLines?.length || (selected && priceFor(p,selected,s.quantity??0)) ||
     (variants.length===0 && s.quantity && priceFor(p,null,s.quantity)));
@@ -592,7 +592,6 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   else if (!s.paymentMethod) s.awaiting="payment";
   else if (s.paymentMethod==="anticipado" && !receiptVerified) s.awaiting="receipt";
   else if (!s.customerName) s.awaiting="name";
-  else if (needsRecipientCi && !isValidRecipientCi(s.recipientCi)) s.awaiting="recipient_ci";
   else if (needsAddress && !s.street && !s.locationUrl) s.awaiting="address";
   else s.awaiting=null;
   const complete=Boolean(s.awaiting===null && s.cityVerified &&
