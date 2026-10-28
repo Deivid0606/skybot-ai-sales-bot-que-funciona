@@ -1,6 +1,6 @@
 import type { AiContext, AiOrder } from "@/lib/ai.server";
 import type { SaleState } from "@/lib/rule-sales.server";
-import { verifiedCoverage, parseCoverage, sellerAllowsNationwideAdvance, nationwideDestinationFromText, extractRecipientCiFromCustomerText, isValidRecipientCi, isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi, isDeferredAddress, hasRealNameWords, stripPlaceFromName, titleCaseName } from "@/lib/rule-sales.server";
+import { verifiedCoverage, parseCoverage, sellerAllowsNationwideAdvance, nationwideDestinationFromText, extractRecipientCiFromCustomerText, isValidRecipientCi, isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi } from "@/lib/rule-sales.server";
 
 type ChatLine = { role: "user" | "assistant"; content: string };
 const normal = (s: string) => String(s ?? "").toLowerCase().normalize("NFD")
@@ -12,11 +12,9 @@ const exactToken = (s: string, token: string) => {
 };
 
 /** Validaciones semánticas compartidas por WhatsApp, Inbox y recuperación manual. */
-export function isValidCustomerName(value: unknown, places: (string | null | undefined)[] = []): boolean {
+export function isValidCustomerName(value: unknown): boolean {
   if (typeof value !== "string") return false;
   const name = value.replace(/^(?:soy|me llamo|mi nombre es|nombre(?: y apellido)?:)\s*/i, "").trim();
-  // «dd Limpio», «Juan Asunción»: la ciudad no es apellido; «dd» no es un nombre.
-  if (stripPlaceFromName(name, places) !== name || !hasRealNameWords(name)) return false;
   const n = normal(name);
   if (name.length < 5 || name.length > 160 || !/^[\p{L}]+(?:[ '\-]+[\p{L}]+){1,5}$/u.test(name)) return false;
   if (/\b(?:estoy|en|aeropuerto|trabajo|oficina|salgo|almorzar|almuerzo|horas?|hasta|desde|avisa|traigas|aca|aqui|cada|unidades?|cajas?)\b/.test(n)) return false;
@@ -29,8 +27,6 @@ export function isValidDeliveryAddress(value: unknown): boolean {
   const address = value.trim();
   const n = normal(address);
   if (!address || address.length > 600) return false;
-  // «Ahora no estoy en casa», «mañana te paso mi ubicación»: no es una dirección.
-  if (isDeferredAddress(address)) return false;
   if (/^https:\/\/(?:www\.)?(?:google\.[^\s/]+\/maps|maps\.app\.goo\.gl\/|goo\.gl\/maps\/)/i.test(address)) return true;
   if (address.length < 7 || /^(?:ok|okey|dale|si|no|para el |el |este |proximo |mañana|manana|hoy|lunes|martes|miercoles|jueves|viernes|sabado|domingo)/.test(n)) return false;
   if (/^(?:barrio|zona|ciudad|de )\s+[\p{L} '\-]+$/u.test(n)) return false;
@@ -40,11 +36,11 @@ export function isValidDeliveryAddress(value: unknown): boolean {
   return /(?:\b(?:calle|avenida|avda|av\.|ruta|numero|nro|casa|manzana|lote|pasaje|esquina|casi|frente|al lado|detras|detrás|entre)\b|\d{1,5}|\b(?:maps|ubicacion exacta)\b)/i.test(n);
 }
 
-const validName = (raw: string, places: (string | null | undefined)[] = []): string | null => {
-  const name = stripPlaceFromName(raw.replace(/^(?:soy|me llamo|mi nombre es|nombre(?: y apellido)?\s*:)\s*/i, "").replace(/[.!]+$/, "").trim(), places);
+const validName = (raw: string): string | null => {
+  const name = raw.replace(/^(?:soy|me llamo|mi nombre es|nombre(?: y apellido)?\s*:)\s*/i, "").trim();
   if (!/^[\p{L}]+(?:[ '-]+[\p{L}]+){1,5}$/u.test(name)) return null;
   if (/\b(?:quiero|pedido|ciudad|central|gracias|entrega|litros|ubicacion|precio|hola|de|para|cerca|calle)\b/.test(normal(name))) return null;
-  return isValidCustomerName(name, places) ? titleCaseName(name) : null;
+  return isValidCustomerName(name) ? name : null;
 };
 const isCityReply = (value: string, lastQuestion: string) => {
   const n = normal(value);
@@ -60,9 +56,28 @@ export function recoverSaleStateFromHistory(ctx: AiContext, previous: SaleState,
   // Conservar el archivo y las observaciones de pago sin reconstruirlas desde una respuesta de IA.
   if (previous.receiptDocuments) state.receiptDocuments = [...previous.receiptDocuments];
   if (previous.receiptAnalysisAttemptedPaths) state.receiptAnalysisAttemptedPaths = [...previous.receiptAnalysisAttemptedPaths];
-  if (state.customerName && !isValidCustomerName(state.customerName, [state.city, state.department])) state.customerName = undefined;
+  if (state.customerName && !isValidCustomerName(state.customerName)) state.customerName = undefined;
   if (state.street && !isValidDeliveryAddress(state.street)) state.street = undefined;
   const coverage = parseCoverage(ctx.training);
+  // Una ciudad del estado persistido no constituye prueba de destino: debe
+  // aparecer en un mensaje del comprador del ciclo/historial actual.
+  // Si no hay evidencia en los mensajes visibles, pedir la ciudad en vez de
+  // comunicar una cobertura posiblemente heredada de otra operación.
+  const groundedCity = history.some((item, index) => {
+    if (item.role !== "user") return false;
+    const raw = String(item.content ?? "").trim();
+    const lastAssistant = [...history.slice(0, index)].reverse().find(x => x.role === "assistant");
+    if (!isCityReply(raw, normal(lastAssistant?.content ?? ""))) return false;
+    return coverage.some(c => [c.city, ...c.aliases].some(a => exactToken(raw, a))) ||
+      Boolean(sellerAllowsNationwideAdvance(ctx.training) && nationwideDestinationFromText(raw));
+  });
+  if (state.cityVerified && !groundedCity && history.some(item => item.role === "user")) {
+    state.city = undefined;
+    state.department = undefined;
+    state.cityVerified = false;
+    state.coverageStatus = "unknown";
+    state.paymentMethod = undefined;
+  }
   if (!coverage.length) console.warn("[BOT_SKY_COVERAGE] No hay ciudades parseables en el entrenamiento activo del workspace");
   const product = ctx.products.find(p => p.id === state.productId || p.id === ctx.activeProductId);
   if (product) state.productId = product.id;
@@ -131,14 +146,13 @@ export function recoverSaleStateFromHistory(ctx: AiContext, previous: SaleState,
       });
       if (matches.length === 1) state.optionId = matches[0].id;
     }
-    // Si el bot pidió el nombre, la respuesta del cliente corrige el nombre anterior.
-    if ((!state.customerName || /(?:nombre|apellido|como te llamas)/.test(lastQuestion)) && (/(?:nombre|apellido|como te llamas)/.test(lastQuestion) || /^(?:me llamo|mi nombre es)\s+/i.test(raw))) {
-      const candidate = validName(raw, [state.city, state.department]);
+    if (!state.customerName && (/(?:nombre|apellido|como te llamas)/.test(lastQuestion) || /^(?:me llamo|mi nombre es)\s+/i.test(raw))) {
+      const candidate = validName(raw);
       if (candidate) state.customerName = candidate;
     }
     if (!state.street && /(?:direccion|ubicacion|domicilio|referencia|numero de casa)/.test(lastQuestion)
       && isValidDeliveryAddress(raw) && uniqueHits.length === 0) state.street = raw;
-    if (/\b(?:pago al recibir|contra entrega|contraentrega|pagare al recibir)\b/.test(n)) state.paymentMethod = "contraentrega";
+    if (!/[?¿]/.test(raw) && /\b(?:quiero pagar al recibir|pagare al recibir|prefiero contra entrega|elijo contra entrega)\b/.test(n)) state.paymentMethod = "contraentrega";
     else if (/\b(?:pago anticipado|voy a transferir|pago por transferencia)\b/.test(n)) state.paymentMethod = "anticipado";
   }
   if (state.city && state.department) {
@@ -146,7 +160,7 @@ export function recoverSaleStateFromHistory(ctx: AiContext, previous: SaleState,
     if (location) {
       state.city = location.city; state.department = location.department;
       state.cityVerified = true; state.coverageStatus = location.active ? "covered" : "uncovered";
-      if (!state.paymentMethod && location.active && /CONTRA ENTREGA/i.test(location.method))
+      if (location.active && /CONTRA ENTREGA/i.test(location.method))
         state.paymentMethod = "contraentrega";
       if (!location.active && /ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(location.method))
         state.paymentMethod = "anticipado";
