@@ -1,4 +1,3 @@
-
 function isAiQuotaFailure(error: unknown): boolean {
   const e = error as {status?:number;code?:string;message?:string};
   const msg = String(e?.message ?? error ?? "").toLowerCase();
@@ -497,8 +496,6 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       (isEncomiendaAdvanceOrder(ctx.training,result.order?.city,result.order?.departamento,result.order?.payment_method) ||
        !orderCoverage?.addressRequired || Boolean(isValidDeliveryAddress(result.order?.street) || isValidDeliveryAddress(step?.state.locationUrl) || isValidDeliveryAddress(previous.locationUrl))) && Boolean(result.order) &&
       isOrderReady(result.order, detectedProduct) &&
-      (!isEncomiendaAdvanceOrder(ctx.training,result.order?.city,result.order?.departamento,result.order?.payment_method) ||
-        !sellerRequiresEncomiendaCi(ctx.training) || isValidRecipientCi(result.order?.recipient_ci)) &&
       (Boolean(step?.state.cartLines?.length) || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory));
     if (valid && result.order && detectedProduct) {
       createdOrder = await createOrderFromAi({
