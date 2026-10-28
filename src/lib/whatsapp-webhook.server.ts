@@ -15,6 +15,7 @@ import { advanceRuleSale, sellerUsesFirstOffer, isEncomiendaAdvanceOrder, seller
 import { classifyCustomerIntent, addVerifiedOrderContext, addPendingSaleContext } from "@/lib/hybrid-intent.server";
 import { coordinatesFromText, validCoords } from "@/lib/hybrid-intent.server";
 import { parseCoverage, verifiedCoverage, sellerAllowsNationwideAdvance, deliveryPolicyForCity, hasTemplatePlaceholder, stripBankDetailsForCod, enforceVerifiedPaymentReply, isNonCityPhrase } from "@/lib/rule-sales.server";
+import { resolveDepartamento } from "@/lib/orders";
 import { sendWhatsAppText } from "@/lib/whatsapp.server";
 import { detectComplaint, COMPLAINT_REASON_LABELS } from "@/lib/complaints";
 
@@ -2898,7 +2899,11 @@ export async function createOrderFromAi(args: {
   const customerName = cleanOrderText(args.order.customer_name) || "Cliente";
 
   const city = cleanOrderText(args.order.city);
-  const departamento = cleanOrderText(args.order.departamento) || null;
+  // Asunción (y sus variantes de la planilla) se guarda como departamento Central.
+  const departamento = resolveDepartamento(
+    cleanOrderText(args.order.departamento),
+    cleanOrderText(args.order.city),
+  ) || null;
   const district = cleanOrderText(args.order.district) || null;
   const street = orderIsEncomienda ? "" : cleanOrderText(args.order.street);
   const baseObservations =
