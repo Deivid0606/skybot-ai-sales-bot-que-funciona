@@ -393,7 +393,7 @@ const SMART_TABS: {id:SmartTab;label:string;icon:string}[] = [
   {id:"advance",label:"Pago anticipado",icon:"💳"},
   {id:"closed",label:"Ventas cerradas",icon:"✅"},
   {id:"closed_ai",label:"Cierre IA",icon:"🧠"},
-  {id:"closed_code",label:"Cierre código",icon:"⚡"},
+  {id:"closed_code",label:"Cierre automático",icon:"⚡"},
   {id:"review",label:"Por revisar",icon:"❔"},
 ];
 const normalizeSmartText = (value:unknown) => String(value ?? "").toLowerCase()
@@ -1378,7 +1378,7 @@ function InboxPage() {
         toast.info("No se encontraron chats cuyo último mensaje sea del cliente");
       } else {
         toast.success(
-          `Recuperadas por código: ${result.responded} conversación${result.responded === 1 ? "" : "es"}`,
+          `Recuperadas con IA: ${result.responded} conversación${result.responded === 1 ? "" : "es"}`,
         );
       }
 
@@ -1386,7 +1386,7 @@ function InboxPage() {
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
     },
     onError: (error: Error) => {
-      toast.error(`No se pudieron recuperar los chats por código: ${error.message}`);
+      toast.error(`No se pudieron recuperar los chats con IA: ${error.message}`);
     },
   });
 
@@ -1699,13 +1699,13 @@ function InboxPage() {
             disabled={isCheckingPending || codeReplyAll.isPending || aiReplyAll.isPending || pendingCandidates.length === 0}
             onClick={() => {
               if (!pendingCandidates.length) { toast.info("No hay respuestas pendientes"); return; }
-              if (window.confirm(`Se intentará recuperar ${pendingCandidates.length} conversación(es) SOLO mediante código, sin utilizar la API de IA. Las consultas que no puedan resolverse con reglas quedarán pendientes. ¿Continuar?`)) {
+              if (window.confirm(`Se intentará recuperar ${pendingCandidates.length} conversación(es) usando IA + entrenamiento. Esta opción consume créditos de IA. ¿Continuar?`)) {
                 codeReplyAll.mutate();
               }
             }}
           >
             {isCheckingPending || codeReplyAll.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Zap className="mr-2 h-4 w-4" />}
-            {codeReplyAll.isPending ? "Recuperando por código..." : `⚡ RECUPERAR VENTAS Y CHATS POR CÓDIGO (${pendingCandidates.length})`}
+            {codeReplyAll.isPending ? "Recuperando con IA..." : `⚡ REINTENTAR VENTAS Y CHATS CON IA (${pendingCandidates.length})`}
           </Button>
 
             </div>
