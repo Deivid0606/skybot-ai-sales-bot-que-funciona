@@ -1828,6 +1828,15 @@ INSTRUCCIÓN PARA ESTA ÚNICA RESPUESTA: la verificación DOCUMENTAL que puede h
       if (previousSale.receiptPath && !ruleStep.state.receiptPath) ruleStep.state.receiptPath = previousSale.receiptPath;
     }
     const saveStep=ruleStep;
+    // Persistir ANTES de pedir una respuesta al proveedor. Si Gemini/OpenAI
+    // falla, no perdemos ciudad ni presentación («2 para Capiatá»).
+    if (saveStep && !conversation.sale_closed && !bypassSale) {
+      const {error: pendingStateError}=await supabaseAdmin.from("bot_sale_states")
+        .upsert({workspace_id:workspaceId,conversation_id:conversation.id,
+          state:saveStep.state,updated_at:new Date().toISOString()},
+          {onConflict:"workspace_id,conversation_id"});
+      if (pendingStateError) throw pendingStateError;
+    }
     let result: Awaited<ReturnType<typeof generateAiReply>>;
     const responseOrigin="ai";
     try {
@@ -3423,7 +3432,8 @@ ${match.products.description ?? ""}`.trim();
 /* ------------------------------------------------------------------ */
 /* NUNCA QUEDARSE CALLADO                                              */
 /* ------------------------------------------------------------------ */
-export const SILENCE_FALLBACK_REPLY = "¡Gracias por tu mensaje! 😊 Un asesor te responde en breve.";
+// Conservada solo por compatibilidad de importación; NO se envía al cliente.
+export const SILENCE_FALLBACK_REPLY = "";
 
 /** Reintenta una vez más (tras 2 s) si todos los proveedores de IA fallaron. */
 async function generateAiReplyWithRetry(ctx: Parameters<typeof generateAiReply>[0]) {
@@ -3446,22 +3456,9 @@ async function sendSilenceFallback(args: {
   adId: string | null | undefined; phone: string; wamid: string; reason: string;
   reply?: string; queue?: boolean;
 }) {
-  const reply = args.reply ?? SILENCE_FALLBACK_REPLY;
-  const { data: last } = await supabaseAdmin.from("messages").select("direction, body")
-    .eq("workspace_id", args.workspaceId).eq("conversation_id", args.conversationId)
-    .eq("direction", "outbound").order("created_at", { ascending: false }).limit(1).maybeSingle();
-  const alreadySent = last?.body?.trim() === reply;
-  if (!alreadySent) {
-    const outWamid = await sendWhatsAppText(args.conn, args.phone, reply);
-    await supabaseAdmin.from("messages").insert({
-      workspace_id: args.workspaceId, user_id: args.ownerId, conversation_id: args.conversationId,
-      ad_id: args.adId ?? null, direction: "outbound", sender: "ai", response_origin: "code",
-      body: reply, wamid: outWamid, status: "sent",
-    } as any);
-    await supabaseAdmin.from("conversations").update({
-      last_message: reply, last_message_at: new Date().toISOString(),
-    }).eq("workspace_id", args.workspaceId).eq("id", args.conversationId);
-  }
+  // Si falla la IA, NO mandar «un asesor te responde» ni ningún guion
+  // comercial programado. Mantener el último mensaje del comprador visible
+  // en Inbox, registrar la falla y alertar al vendedor.
   if (args.queue !== false) {
     await supabaseAdmin.from("ai_failed_messages").upsert({
       workspace_id: args.workspaceId, user_id: args.ownerId, conversation_id: args.conversationId,
@@ -3471,7 +3468,7 @@ async function sendSilenceFallback(args: {
   }
   await supabaseAdmin.from("notifications").insert({
     workspace_id: args.workspaceId, user_id: args.ownerId, type: "ia",
-    title: `El bot necesita que respondas · ${args.phone}`,
+    title: `La IA no pudo responder · ${args.phone}`,
     body: args.reason.slice(0, 240),
     link: "/inbox", audience: "user",
   });
