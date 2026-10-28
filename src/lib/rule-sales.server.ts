@@ -282,7 +282,9 @@ export function cityIn(text:string, coverage:Coverage[]): Coverage | null {
 /** Solo usar para ciudad/departamento devueltos por geocodificación confiable. */
 export function verifiedCoverage(city:string, department:string, coverage:Coverage[]):Coverage|null {
   const ci=norm(city), dep=norm(department);
-  const depEquivalent=(a:string,b:string)=>a===b || (ci==="asuncion" && ["asuncion","distrito capital","capital"].includes(a) && ["asuncion","distrito capital","capital"].includes(b));
+  // Asunción figura en la planilla como "Distrito Capital", pero se guarda como Central.
+  const capitalDeps=["asuncion","distrito capital","capital","central"];
+  const depEquivalent=(a:string,b:string)=>a===b || (ci==="asuncion" && capitalDeps.includes(a) && capitalDeps.includes(b));
   const matches=coverage.filter(c => [c.city,...c.aliases].some(a=>norm(a)===ci) && depEquivalent(norm(c.department),dep));
   return matches.length===1 ? matches[0] : null;
 }
