@@ -262,12 +262,12 @@ async function transcribeAudioSmart({
   mime: string;
 }): Promise<{ text: string; reason: string }> {
   try {
-    const geminiText = await transcribeAudioWithGemini({
+    const geminiText = apiKey ? await transcribeAudioWithGemini({
       apiKey,
       model,
       audioBase64,
       mime,
-    });
+    }) : "";
 
     if (
       geminiText &&
@@ -326,7 +326,10 @@ export async function transcribeAudio(
   }
 
   const normalizedMime = normalizeMime(mime) || "audio/ogg";
-  const apiKey = requireGeminiKey();
+  const apiKey = clean(process.env.GEMINI_API_KEY || "");
+  if (!apiKey && !clean(process.env.OPENAI_API_KEY || "")) {
+    throw new Error("No hay un proveedor de transcripción configurado: GEMINI_API_KEY u OPENAI_API_KEY");
+  }
 
   console.log("[Media AI] Transcribiendo audio", {
     model: GEMINI_MODEL,
