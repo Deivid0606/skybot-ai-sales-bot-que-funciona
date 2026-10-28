@@ -2290,6 +2290,16 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       let outgoingProposal = safeBeforeInsert;
       const paidEnoughOrMore=isAdvance && expectedTotal!==null && receivedTotal>=expectedTotal && receivedTotal>0;
       const resendRe=/(complemento|comprobante\s+de\s+la\s+diferencia|faltan?\s+gs|nuevamente|reenvi|monto\s+sea\s+el\s+correcto|otro\s+comprobante)/i;
+      // Dudas sobre un pago MAYOR al total ("¿realizaste un pago adicional o hay algún error?").
+      const overpayDoubtRe=/(pago\s+adicional|alg[uú]n\s+error|hay\s+un\s+error|un\s+error|no\s+coincide|diferencia|monto\s+(?:distinto|diferente|mayor)|pero\s+el\s+comprobante\s+muestra|verificar\s+(?:los\s+datos\s+y\s+)?el\s+monto|confirm(?:ar|á|ame|arme|es)[\s\S]{0,60}(?:monto|pago|transferencia|error))/i;
+      const overpaid=paidEnoughOrMore && expectedTotal!==null && receivedTotal>expectedTotal;
+      if (overpaid && (resendRe.test(outgoingProposal) || overpayDoubtRe.test(outgoingProposal))) {
+        // Respuesta fija: comprobante aceptado + saldo a favor + pedir nombre y apellido.
+        const fav=receivedTotal-(expectedTotal as number);
+        outgoingProposal=`¡Gracias! 😊 Recibimos tu comprobante. Tenés un saldo a favor de Gs. ${fav.toLocaleString("es-PY")}.`+
+          (paymentSaleState.customerName?"":" ¿Me pasás el nombre y apellido de quien va a recibir el pedido?");
+        console.warn("[BOT_SKY_OVERPAY_GUARD]",JSON.stringify({conversationId:conversation.id,expectedTotal,receivedTotal,fav}));
+      }
       const asksForComplement=resendRe.test(outgoingProposal);
       const wrongReceiptMessage=Boolean(
         (paidEnoughOrMore && asksForComplement) ||
