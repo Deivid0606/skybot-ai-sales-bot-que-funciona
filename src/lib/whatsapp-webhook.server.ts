@@ -14,7 +14,7 @@ import { generateAiReply, type AiContext } from "@/lib/ai.server";
 import { advanceRuleSale, sellerUsesFirstOffer, isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi, isValidRecipientCi, type SaleState } from "@/lib/rule-sales.server";
 import { classifyCustomerIntent, addVerifiedOrderContext, addPendingSaleContext } from "@/lib/hybrid-intent.server";
 import { coordinatesFromText, validCoords } from "@/lib/hybrid-intent.server";
-import { parseCoverage, verifiedCoverage, sellerAllowsNationwideAdvance, deliveryPolicyForCity, hasTemplatePlaceholder, stripBankDetailsForCod, enforceVerifiedPaymentReply } from "@/lib/rule-sales.server";
+import { parseCoverage, verifiedCoverage, sellerAllowsNationwideAdvance, deliveryPolicyForCity, hasTemplatePlaceholder, stripBankDetailsForCod, enforceVerifiedPaymentReply, isNonCityPhrase } from "@/lib/rule-sales.server";
 import { sendWhatsAppText } from "@/lib/whatsapp.server";
 import { detectComplaint, COMPLAINT_REASON_LABELS } from "@/lib/complaints";
 
@@ -2020,7 +2020,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
     // Barrera de salida: impedir una promesa de contraentrega no autorizada.
     // No reemplazar todo el mensaje salvo que realmente prometa pago al recibir.
     let finalReply = safeReply;
-    if (needsNationalAdvance && /(?:pago\s+al\s+recibir|pag[aá]s?\s+al\s+recibir|contra\s*entrega|pag[aá]s?\s+cuando\s+recib)/i.test(safeReply)) {
+    if (needsNationalAdvance && !isNonCityPhrase(verifiedSaleState.city ?? "") && /(?:pago\s+al\s+recibir|pag[aá]s?\s+al\s+recibir|contra\s*entrega|pag[aá]s?\s+cuando\s+recib)/i.test(safeReply)) {
       const revised = await generateAiReplyWithRetry({...aiAnswerContext,
         systemInstruction:aiAnswerContext.systemInstruction +
           `\nLa modalidad verificada para ${verifiedSaleState.city} es encomienda anticipada (sujeta a disponibilidad y costo). Tu borrador decía contraentrega. Reformulalo sin inventar modalidad, preguntas o precios.`});
