@@ -192,11 +192,12 @@ async function transcribeAudioWithGemini({
 async function transcribeAudioWithOpenAI({
   audioBase64,
   mime,
+  apiKey,
 }: {
   audioBase64: string;
   mime: string;
+  apiKey: string;
 }): Promise<string> {
-  const apiKey = clean(process.env.OPENAI_API_KEY || "");
   if (!apiKey) return "";
 
   try {
@@ -250,105 +251,47 @@ async function transcribeAudioWithOpenAI({
   }
 }
 
-async function transcribeAudioSmart({
-  apiKey,
-  model,
-  audioBase64,
-  mime,
-}: {
-  apiKey: string;
-  model: string;
-  audioBase64: string;
-  mime: string;
-}): Promise<{ text: string; reason: string }> {
-  try {
-    const geminiText = apiKey ? await transcribeAudioWithGemini({
-      apiKey,
-      model,
-      audioBase64,
-      mime,
-    }) : "";
-
-    if (
-      geminiText &&
-      geminiText !== "__GEMINI_QUOTA_EXCEEDED__" &&
-      geminiText.toUpperCase() !== "AUDIO_INCOMPRENSIBLE"
-    ) {
-      return {
-        text: clean(geminiText.replace(/^["']|["']$/g, "")),
-        reason: "gemini",
-      };
-    }
-
-    if (geminiText === "__GEMINI_QUOTA_EXCEEDED__") {
-      const openAiText = await transcribeAudioWithOpenAI({
-        audioBase64,
-        mime,
-      });
-
-      if (openAiText) {
-        return {
-          text: clean(openAiText),
-          reason: "openai_whisper",
-        };
-      }
-
-      return { text: "", reason: "gemini_quota" };
-    }
-  } catch (error) {
-    console.error("[Media AI] Gemini transcription exception:", error);
-  }
-
-  const openAiText = await transcribeAudioWithOpenAI({
-    audioBase64,
-    mime,
-  });
-
-  if (openAiText) {
-    return {
-      text: clean(openAiText),
-      reason: "openai_whisper",
-    };
-  }
-
-  return { text: "", reason: "transcription_failed" };
-}
-
 /**
  * Transcribe una nota de voz o audio recibido desde WhatsApp.
  */
 export async function transcribeAudio(
   base64: string,
   mime: string,
+  workspaceId?: string,
 ): Promise<string> {
-  if (!base64?.trim()) {
-    throw new Error("El audio no contiene datos");
-  }
-
+  if (!base64?.trim()) throw new Error("El audio no contiene datos");
   const normalizedMime = normalizeMime(mime) || "audio/ogg";
-  const apiKey = clean(process.env.GEMINI_API_KEY || "");
-  if (!apiKey && !clean(process.env.OPENAI_API_KEY || "")) {
-    throw new Error("No hay un proveedor de transcripción configurado: GEMINI_API_KEY u OPENAI_API_KEY");
+  // Consultar credenciales del propietario del WhatsApp, no de otra tienda.
+  const providers = await visionProviders(workspaceId);
+  const openAiKeys = providers.filter(p => p.kind === "openai");
+  const geminiKeys = providers.filter(p => p.kind === "gemini");
+  if (!providers.length && process.env.OPENAI_API_KEY?.trim() && !workspaceId) {
+    openAiKeys.push({ kind: "openai", key: process.env.OPENAI_API_KEY.trim(), model: "whisper-1", label: "openai_global" });
   }
-
-  console.log("[Media AI] Transcribiendo audio", {
-    model: GEMINI_MODEL,
-    mime: normalizedMime,
-    base64Length: base64.length,
-  });
-
-  const result = await transcribeAudioSmart({
-    apiKey,
-    model: GEMINI_MODEL,
-    audioBase64: base64,
-    mime: normalizedMime,
-  });
-
-  if (!result.text) {
-    throw new Error(`No se pudo transcribir el audio (${result.reason})`);
+  if (!geminiKeys.length && !openAiKeys.length) {
+    throw new Error("Este vendedor no tiene una API compatible para transcribir audios");
   }
-
-  return clean(result.text);
+  for (const provider of geminiKeys) {
+    // Modelo multimedia de transcripción; el modelo de chat no siempre admite audio.
+    const candidates = [...new Set([provider.model, GEMINI_MODEL].filter(Boolean))];
+    for (const model of candidates) {
+      try {
+        const transcript = await transcribeAudioWithGemini({ apiKey: provider.key, model, audioBase64: base64, mime: normalizedMime });
+        const cleaned = clean(transcript);
+        if (cleaned && cleaned !== "__GEMINI_QUOTA_EXCEEDED__" && cleaned.toUpperCase() !== "AUDIO_INCOMPRENSIBLE") {
+          return cleaned.replace(/^["']|["']$/g, "");
+        }
+        if (cleaned === "AUDIO_INCOMPRENSIBLE") break;
+      } catch (error) {
+        console.warn("[Media AI] Falló proveedor Gemini del vendedor", { label: provider.label, model, error: String(error).slice(0, 180) });
+      }
+    }
+  }
+  for (const provider of openAiKeys) {
+    const result = await transcribeAudioWithOpenAI({ audioBase64: base64, mime: normalizedMime, apiKey: provider.key });
+    if (result) return result;
+  }
+  throw new Error("Ningún proveedor configurado pudo transcribir este audio; revisar logs de Media AI");
 }
 
 /**
@@ -376,7 +319,7 @@ async function visionProviders(workspaceId?: string): Promise<VisionProvider[]> 
   }
   // Retrocompatibilidad para otras funciones sin workspace configurado.
   // Nunca dar prioridad a una clave global inválida sobre las claves del vendedor.
-  if (!providers.length && process.env.GEMINI_API_KEY?.trim()) providers.push({kind:"gemini",key:process.env.GEMINI_API_KEY.trim(),model:GEMINI_MODEL,label:"gemini_global"});
+  if (!workspaceId && !providers.length && process.env.GEMINI_API_KEY?.trim()) providers.push({kind:"gemini",key:process.env.GEMINI_API_KEY.trim(),model:GEMINI_MODEL,label:"gemini_global"});
   return providers;
 }
 
