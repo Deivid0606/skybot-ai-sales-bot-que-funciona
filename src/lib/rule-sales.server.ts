@@ -1,6 +1,4 @@
-/** BOT SKY: flujo determinista por conversación. No usa APIs de IA.
- * No confirma pagos: un comprobante requiere revisión humana.
- */
+/** BOT SKY: extractor/validador de estado. No redacta preguntas comerciales. */
 import type { AiContext } from "@/lib/ai.server";
 
 type Product = AiContext["products"][number];
@@ -121,89 +119,24 @@ export function enforceVerifiedPaymentReply(args: {
   department: string | null | undefined;
   cityVerified: boolean | null | undefined;
   training: AiContext["training"];
-  /** Datos del checkout; solo para recuperar la siguiente pregunta sin inventar variantes. */
   saleState?: SaleState | null;
   productId?: string | null;
   products?: AiContext["products"];
-}): { reply: string; corrected: boolean; paymentMethod: "contraentrega" | "anticipado" | null } {
-  const original = String(args.reply ?? "").trim();
-  if (!original) return { reply: original, corrected: false, paymentMethod: null };
-  // Una promesa afirmativa de contraentrega necesita una ficha activa y válida.
-  // Antes se devolvía la respuesta de la IA sin control precisamente cuando la
-  // ciudad NO figuraba en cobertura (por ejemplo: Carayaó).
-  const explicitCodPromise = /\b(?:tenemos|contamos|disponemos|ofrecemos|hay|podes|podes|podras|paga|pagas|pagas|pagar|se paga)\b.{0,95}\b(?:contra entrega|contraentrega|pago al recibir|al recibir|cuando recibas|cuando llegue|al delivery)\b|\b(?:pago al recibir|contra entrega|contraentrega)\b.{0,80}\b(?:disponible|habilitado|para (?:tu|esa|esta) (?:zona|ciudad))\b/i.test(norm(original));
-  const policy = args.cityVerified && args.city && args.department
-    ? deliveryPolicyForCity(args.city, args.department, args.training) : null;
-  if (!policy?.active || policy.paymentMethod !== "contraentrega") {
-    if (explicitCodPromise && args.city) {
-      if (!args.cityVerified || !args.department) {
-        return {reply:"📍 Para confirmar la forma de pago, ¿me indicás tu ciudad de entrega y departamento? 😊",corrected:true,paymentMethod:null};
-      }
-      const advanceAllowed = sellerAllowsNationwideAdvance(args.training) || policy?.paymentMethod === "anticipado";
-      const nextQuestion = !args.saleState?.quantity ? "¿Cuántas unidades querés llevar?" :
-        !args.saleState?.optionId && !args.saleState?.cartLines?.length ? "¿Qué presentación querés llevar?" : null;
-      const reply = advanceAllowed
-        ? `🚚 Para ${args.city} no tenemos pago al recibir. Podemos gestionar envío por encomienda con pago anticipado, sujeto a confirmar disponibilidad y costo de transporte. 😊${nextQuestion ? `\n\n${nextQuestion}` : ""}`
-        : `📍 Para ${args.city} no hay contraentrega autorizada. Voy a consultar las opciones de envío disponibles antes de confirmar una modalidad. 😊`;
-      return {reply,corrected:true,paymentMethod:advanceAllowed ? "anticipado" : null};
-    }
-    return { reply: original, corrected: false, paymentMethod: policy?.paymentMethod ?? null };
-  }
-  // Detectamos contradicciones del método oficial, no simples referencias
-  // generales a otras ciudades en el historial.
-  const normalized = norm(original);
-  // En contraentrega no se solicita ningún comprobante. Cubrir incluso respuestas
-  // que ya dijeron correctamente "pagás al recibir", pero añaden una pregunta
-  // de comprobante. Esto pasó con Santa Rita pese a cobertura=covered.
-  // Preferimos eliminar toda referencia ambigua al comprobante del mensaje
-  // automático: no es un requisito de esta modalidad.
-  const hasReceiptInstruction = /\b(?:comprobantes?|constancia(?:s)? de (?:pago|transferencia)|recibos? de (?:pago|transferencia)|capturas? de (?:pago|transferencia)|ticket(?:s)? de (?:pago|transferencia))\b/.test(normalized);
-  const wrongForCod = policy.paymentMethod === "contraentrega" && (
-    /\b(?:encomienda|pago anticipado|pagar por transferencia|transferencia|transferir|datos bancarios|cuenta bancaria|alias eko|pago por adelantado|pagas antes|antes de transferir|deposito previo|pago previo|no tenemos contra entrega|no hay contra entrega|no hacemos contra entrega|no hacemos pago al recibir|no hay pago al recibir)\b/.test(normalized) ||
-    hasReceiptInstruction
-  );
-  const wrongForAdvance = policy.paymentMethod === "anticipado" &&
-    /\b(?:contra entrega|contraentrega|pago al recibir|pagas al recibir|pagar al recibir|pagas cuando recibas|pagas cuando recibis|pagas cuando recibes)\b/.test(normalized);
-  if (!wrongForCod && !wrongForAdvance) {
-    return { reply: original, corrected: false, paymentMethod: policy.paymentMethod };
-  }
-  // Conservamos SOLO una pregunta independiente sobre el producto/cantidad;
-  // nunca arrastramos instrucciones bancarias o logísticas de la respuesta errónea.
-  const followUp = (original.match(/¿[^¿?\n]{5,180}\?/g) ?? []).find(question =>
-    !/\b(?:encomienda|transferencia|anticipado|pag[oa]|comprobantes?|recibos?|capturas?|constancias?|ticket|adjuntar|cobertura|env[ií]o|entrega|banco|cuenta|domicilio|direcci[oó]n|ciudad|ubicaci[oó]n|gps)\b/i.test(question));
-  // Si la pregunta original era por comprobante, elegir exclusivamente el
-  // próximo dato del pedido. No inventar variantes/precios ni pedir los datos
-  // de nuevo si ya están en el estado.
-  const st = args.saleState;
-  let pendingCodQuestion: string | null = null;
-  if (policy.paymentMethod === "contraentrega" && st) {
-    const product = args.products?.find(p => p.id === (st.productId ?? args.productId));
-    const options = (product?.product_prices ?? []).filter(o => Number(o.price) > 0);
-    const hasChosenOption = Boolean(st.optionId || st.cartLines?.length);
-    if (options.length > 1 && !hasChosenOption) {
-      const list = options
-        .map(o => `• *${o.label}* — Gs. ${Number(o.price).toLocaleString("es-PY")}`)
-        .join("\n");
-      pendingCodQuestion = `Tenemos estas opciones:\n\n${list}\n\n¿Cuál te reservamos? 😊`;
-    }
-    else if (!st.quantity && product) pendingCodQuestion = "¿Cuántas unidades querés llevar?";
-    else if (!st.customerName && product) pendingCodQuestion = "¿Me pasás tu nombre y apellido para el pedido?";
-    else if (policy.addressRequired && !st.street?.trim() && !st.locationUrl?.trim())
-      pendingCodQuestion = "¿Me pasás tu dirección con referencia o preferís enviar tu ubicación?";
-  }
-  const officialMethod = policy.method.trim().toLowerCase();
-  const verifiedText = policy.paymentMethod === "contraentrega"
-    ? `🚚 Para ${policy.city}, ${policy.department}, tenemos ${officialMethod}. 💵 Pagás al recibir tu pedido. 😊`
-    : `🚚 Para ${policy.city}, ${policy.department}, trabajamos con ${officialMethod}. El pago es anticipado, según las condiciones confirmadas de la tienda. 😊`;
-  return {
-    reply: followUp ? `${verifiedText}\n\n${followUp}` :
-      pendingCodQuestion ? `${verifiedText}\n\n${pendingCodQuestion}` : verifiedText,
-    corrected: true,
-    paymentMethod: policy.paymentMethod,
-  };
+}): {reply:string;corrected:boolean;paymentMethod:"contraentrega"|"anticipado"|null} {
+  // Validador sin respuestas comerciales: ante contradicción el llamador
+  // debe pedir UNA nueva redacción a la IA, nunca fabricar preguntas aquí.
+  const reply=String(args.reply??"").trim();
+  const policy=args.cityVerified && args.city && args.department
+    ? deliveryPolicyForCity(args.city,args.department,args.training):null;
+  const normalized=norm(reply);
+  const promisesCod=/\b(?:tenemos|contamos|disponemos|ofrecemos|hay|podes|podras|paga|pagas|pagar|se paga)\b.{0,95}\b(?:contra entrega|contraentrega|pago al recibir|al recibir|cuando recibas|cuando llegue|al delivery)\b|\b(?:pago al recibir|contra entrega|contraentrega)\b.{0,80}\b(?:disponible|habilitado|para (?:tu|esa|esta) (?:zona|ciudad))\b/.test(normalized);
+  const wrongCod=policy?.paymentMethod==="contraentrega" &&
+    /\b(?:encomienda|pago anticipado|pagar por transferencia|transferencia obligatoria|datos bancarios|cuenta bancaria|no tenemos contra entrega|no hay contra entrega|comprobante de transferencia|comprobante de pago)\b/.test(normalized);
+  const wrongAdvance=policy?.paymentMethod==="anticipado" && promisesCod;
+  return {reply,corrected:Boolean((promisesCod && policy?.paymentMethod!=="contraentrega")||wrongCod||wrongAdvance),paymentMethod:policy?.paymentMethod??null};
 }
 
-/** Política de solicitud POSTERIOR al registro, nunca requisito para crearlo. */
+/** Requisito configurado por entrenamiento para encomienda; se recoge DESPUÉS del comprobante y ANTES del INSERT. */
 export function sellerRequiresEncomiendaCi(training: AiContext["training"]): boolean {
   return training.some(entry => /encomienda/i.test(entry.content) &&
     /(?:n[uú]mero de c[eé]dula del destinatario|c[eé]dula de identidad del destinatario|c[eé]dula del destinatario)/i.test(entry.content) &&
@@ -255,6 +188,8 @@ export function nationwideDestinationFromText(text: string): {city:string;depart
   const paraguayanCities = [
     {city:"Capitán Bado",department:"Amambay",aliases:["capitan bado"]},
     {city:"Pedro Juan Caballero",department:"Amambay",aliases:["pedro juan caballero","pedro juan","pjc"]},
+    // Geografía, NO cobertura ni transportista: permite conservar el destino explícito.
+    {city:"Curuguaty",department:"Canindeyú",aliases:["curuguaty"]},
   ];
   const matches = paraguayanCities.filter(place => place.aliases.some(alias =>
     (` ${normalized} `).includes(` ${alias} `)));
@@ -485,22 +420,6 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   // No registrar pedidos ni elegir una variante por inferencia.
   if (isNudge && !s.quantity && !s.optionId && !s.cartLines?.length && variants.length > 1) {
     s.awaiting="variant";
-    return {reply:`😊 ¡Estoy acá! Para *${p.name}* tenemos:\n${variants.map(v=>`• ${v.label} — ${money(v.price)}`).join("\n")}\n\n¿Cuál preferís?`,state:s,productId:p.id,complete:false,needsAi:false};
-  }
-  // Cuando se esperaba una variante y el cliente escribió un precio inexistente,
-  // aclarar la diferencia sin volver a enviar el mismo listado completo.
-  // Solo tratar como precio cifras de al menos 4 dígitos (nunca "quiero 1").
-  if (s.awaiting === "variant" && variants.length > 1) {
-    const amounts = (text.match(/\d[\d.,]*/g) ?? [])
-      .map(raw => Number(raw.replace(/[^0-9]/g, "")))
-      .filter(value => Number.isFinite(value) && value >= 1000);
-    if (amounts.length === 1 && !variants.some(o => Math.round(o.price) === amounts[0])) {
-      const nearest = [...variants].sort((a,b) => Math.abs(a.price-amounts[0])-Math.abs(b.price-amounts[0]))[0];
-      if (nearest && Math.abs(nearest.price - amounts[0]) <= Math.max(1000,nearest.price * 0.02)) {
-        s.awaiting="variant";
-        return {reply:`😊 ¿Te referís a *${nearest.label}* por *${money(nearest.price)}*? 💰 Confirmame esa opción y seguimos con tu pedido. 🙌`, state:s, productId:p.id, complete:false, needsAi:false};
-      }
-    }
   }
   // Variantes de UN MISMO producto: carrito en estado persistido, sin IA.
   // «ambos» acepta todas las presentaciones únicamente cuando hay exactamente dos.
@@ -518,10 +437,10 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
         const q=m ? (words[m[1]]??Number(m[1])) : 1;
         return {optionId:v.id,quantity:q};
       });
-      if(cart.some(c=>!Number.isSafeInteger(c.quantity)||c.quantity<1||c.quantity>25))return {
-        reply:'📦 Confirmame la cantidad de cada presentación para preparar tu pedido.',
-        state:s,productId:p.id,complete:false,needsAi:false
-      };
+      if(cart.some(c=>!Number.isSafeInteger(c.quantity)||c.quantity<1||c.quantity>25)) {
+        s.awaiting="variant";
+        return {reply:"",state:s,productId:p.id,complete:false,needsAi:true};
+      }
       s.cartLines=cart;s.optionId=cart[0].optionId;
       s.quantity=cart.reduce((sum,c)=>sum+c.quantity,0);
     }
@@ -537,7 +456,11 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   const expectingQuantity=s.awaiting==="quantity";
   if(!units(n)) {
     const q=countOf(text,expectingQuantity);
-    if(q && !s.cartLines?.length)s.quantity=q;
+    // «2 cajas (8 unidades)» selecciona el paquete que INCLUYE 8 unidades.
+    // El «2» es el número de cajas, no una cantidad adicional para recalcular
+    // el precio oficial del paquete. No pisar quantity de product_prices.
+    const chosePackage = Boolean(chosen && /\b(?:caja(?:s)?|pack(?:s)?|combo(?:s)?)\b/.test(norm(chosen.label)) && chosen.quantity > 1);
+    if(q && !s.cartLines?.length && !chosePackage)s.quantity=q;
   } else {
     // "uno de 5 litros" sí comunica cantidad 1 explícita.
     const match=n.match(/\b(un|uno|una|dos|tres|\d+)\s+de\s+\d+\s*(?:litros?|l|lts?)\b/);
@@ -636,97 +559,32 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     s.optionId=first.id;
     s.quantity=first.quantity;
   }
+  // BOT SKY: el código únicamente extrae y conserva datos. El TEXTO de cada
+  // consulta y pregunta de venta lo genera la IA usando el entrenamiento.
+  if (variants.length === 1 && !s.optionId) s.optionId=variants[0].id;
   const selected=variants.find(o=>o.id===s.optionId)??null;
-  const answer=(reply:string,awaitKey:string|null,complete=false,needsAi=false):SaleStep=>{
-    s.awaiting=awaitKey;return {reply,state:s,productId:p.id,complete,needsAi};
-  };
-  // El cliente pide tiempo para decidir: conservar la ciudad sin insistir con ofertas.
-  if (/\b(?:lo hablo|voy a hablar|consulto y te confirmo|te confirmo despues|te aviso|voy a consultar|lo consulto|lo pienso)\b/.test(n)
-      && !/\b(?:quiero|llevo|compro|pedir)\s+(?:\d+|un|una|dos|tres)\b/.test(n)) {
-    return answer("¡Claro! 😊 Tomate tu tiempo. Ya guardé los datos que me pasaste; cuando decidas, me escribís y continuamos. 💚", "variant");
-  }
-  // En híbrido, si la presentación ya pidió ciudad y el cliente la confirmó,
-  // priorizar la cobertura. Las variantes se solicitan después, sin suponer precio.
-  if (existing.awaiting === "city" && s.cityVerified && s.city &&
-      variants.length > 1 && !selected && !s.cartLines?.length) {
-    const cityCoverage = verifiedCoverage(s.city, s.department ?? "", coverage);
-    if ((!cityCoverage && !sellerAllowsNationwideAdvance(ctx.training)) ||
-        (cityCoverage && !cityCoverage.active && !/ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(cityCoverage.method) && !sellerAllowsNationwideAdvance(ctx.training))) {
-      return answer("📍 Para esa ciudad no tengo una modalidad habilitada de entrega confirmada. Un asesor revisará las opciones.", null, false, true);
-    }
-    return answer(`📍 ¡Gracias! Ciudad registrada: *${s.city}*. 🚚\n\n📦 Para continuar, elegí la presentación de *${p.name}*:\n${variants.map(v=>`• ${v.label} — ${money(v.price)}`).join("\n")}\n\n¿Cuál preferís?`, "variant");
-  }
-  if(variants.length>1&&!selected&&!s.cartLines?.length)return answer(`📦✨ *${p.name}*\n\n${variants.map(o=>`• *${o.label}* — ${money(o.price)} 💰`).join("\n")}\n\n😍 ¡Elegí la opción que más te guste! ¿Cuál preferís?`,"variant");
-  if(variants.length===1)s.optionId=variants[0].id;
-  if(!s.city || !s.cityVerified || !s.department){
-    if(s.awaiting==="city" && !isNudge && !gpsUrl && !/^\s*📍/.test(text)) {
-      return answer("📍 Todavía no pude confirmar tu ciudad con nuestra lista de cobertura. 😊 Un asesor puede verificarla; no te pediré pago anticipado sin confirmación.",null,false,true);
-    }
-    return answer(s.city && !s.department ? `📍 ¡Gracias! ¿De qué departamento es ${s.city}? 😊` :
-      (s.locationUrl ? "📍 ¡Ya tengo tu ubicación guardada! 😊 ¿En qué *ciudad* querés recibir el pedido? 🚚" : "🚚 ¡Genial! 😊 ¿En qué ciudad querés recibir tu pedido?"),"city");
-  }
-  const location=coverage.find(c=>norm(c.city)===norm(s.city)&&norm(c.department)===norm(s.department));
-  const nationwide = sellerAllowsNationwideAdvance(ctx.training);
-  if(!location && !nationwide) return answer("📍 Necesito verificar tu ciudad y departamento antes de informar cobertura o formas de pago. ¿Podés confirmar tu ciudad? 😊", "city");
-  if(location && !location.active && !/ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(location.method) && !nationwide) return answer("📍 Tu ciudad está identificada, pero actualmente no figura en las zonas habilitadas. Un asesor puede revisar opciones disponibles. 😊",null,false,true);
-  if(!location && !s.city)return answer("📍 ¿Me confirmás tu ciudad para verificar si llegamos hasta vos? 😊","city");
-  const bank=ctx.training.find(t=>norm(t.title)==="datos bancarios")?.content?.trim()??"";
-  // Recalcular en cada turno: corrige estados antiguos que asignaban anticipado
-  // a ciudades con ENVÍO GRATIS CONTRA ENTREGA, sin afectar otros vendedores.
-  const officialPayment = deliveryPolicyForCity(s.city,s.department,ctx.training)?.paymentMethod;
-  if (officialPayment) s.paymentMethod = officialPayment;
-  if(!s.paymentMethod){
-    if(location?.active && /CONTRA ENTREGA/i.test(location.method))s.paymentMethod="contraentrega";
-    // Encomienda autorizada por la política nacional para un destino con departamento conocido.
-    else if((location && /ENCOMIENDA|ANTICIPADO|TRANSFERENCIA/i.test(location.method)) || (!location?.active && nationwide))s.paymentMethod="anticipado";
-    else return answer("📍 ¡Gracias por pasarme tu ciudad! 😊 Un asesor necesita revisar la modalidad de entrega para darte una información correcta. 🙌",null,false,true);
-  }
-  if(s.paymentMethod==="contraentrega" && (!location || !location.active)) {
-    if(nationwide) s.paymentMethod="anticipado";
-    else return answer("🚚 Esa ciudad no figura en las zonas autorizadas para pagar al recibir. Un asesor puede revisar otras opciones de envío. 😊",null,false,true);
-  }
-  if(!s.quantity)return answer(`📦 ¡Buenísimo! 😍 ¿Cuántas unidades querés llevar${selected?` de *${selected.label}*`:""}?`,"quantity");
-  const total=s.cartLines?.length ? s.cartLines.reduce((sum,line)=>{const v=variants.find(o=>o.id===line.optionId);return sum+(v?Number(v.price)*line.quantity:NaN);},0) : priceFor(p,selected,s.quantity);
-  if(!total)return answer("💰 Para esa cantidad todavía no tengo un precio confirmado. 😊 Un asesor puede revisarlo para evitar cobrarte de más.",null,false,true);
-  const summaryLabel=s.cartLines?.length ? s.cartLines.map(line=>{const v=variants.find(o=>o.id===line.optionId);return `${line.quantity} x ${v?.label??"variante"}`;}).join(" + ") : selected?.label??"presentación estándar";
-  if(s.paymentMethod==="anticipado"){
-    if(!bank)return answer("💳 Todavía no tengo los datos bancarios confirmados. 😊 Un asesor te ayudará a continuar de forma segura.",null,false,true);
-    if(!s.receiptPath)return answer(`💳✨ *¡Ya casi está tu pedido!*\n\n📦 *Producto:* ${p.name}${s.cartLines?.length?` (${summaryLabel})`:selected?` (${selected.label})`:""}\n🔢 *Cantidad:* ${s.quantity}\n💰 *Total:* ${money(total)}\n\n🏦 *Datos para el pago:*\n${bank.slice(0,1600)}\n\n📸 Cuando hagas la transferencia, enviame el comprobante para adjuntarlo. 😊 El vendedor revisará la acreditación antes de confirmarla.`,"receipt");
-    if(!s.customerName)return answer("📸 ¡Recibí tu comprobante! 😊 Quedará pendiente de verificación. ¿Me indicás tu nombre y apellido para completar el pedido?","name");
-    return answer(`✅📸 ¡Gracias! Tu comprobante quedó adjunto para revisión. 📦 *${p.name}* (${summaryLabel}), total *${money(total)}*. El vendedor verificará el pago. 😊`,null,true);
-  }
-  // Un solo mensaje de requisitos una vez elegidos producto, precio, cantidad y ciudad.
-  // El contacto alternativo NO bloquea el cierre. La ciudad ya debe haberse verificado.
-  const needsAddress=s.paymentMethod!=="anticipado" && location?.addressRequired !== false;
-  // La ubicación GPS sirve como referencia de domicilio; no identifica ciudad sin geocodificación verificada.
-  if (s.locationUrl && !s.street) s.street=s.locationUrl;
-  else if(s.locationUrl && s.street && !s.street.includes(s.locationUrl)) s.street += ` | GPS: ${s.locationUrl}`;
-  if(s.deliveryNotes && s.street && !s.street.includes(s.deliveryNotes)) s.street += ` | Horario: ${s.deliveryNotes}`;
-  if(!s.customerName || (needsAddress && !s.street)) {
-    if (!match && sellerAllowsNationwideAdvance(ctx.training) && !gpsUrl &&
-      (s.awaiting === "city" || (s.city && !s.cityVerified))) {
-    const destination=declaredDestination(text);
-    if(destination) {
-      const listed=verifiedCoverage(destination.city,destination.department,coverage);
-      s.city=listed?.city ?? destination.city;
-      s.department=listed?.department ?? destination.department;
-      s.cityVerified=true; // Ciudad/departamento declarados por el cliente; no equivale a verificación logística.
-      s.coverageStatus=listed?.active ? "covered" : "uncovered";
-    } else if(s.city && !s.cityVerified && /^[\p{L} .'-]{3,45}$/u.test(text.trim()) &&
-             !/\b(?:quiero|litros|gracias|costo|pedido|precio|envio)\b/i.test(text)) {
-      const candidate=verifiedCoverage(s.city,text.trim(),coverage);
-      s.department=candidate?.department ?? text.trim();
-      s.cityVerified=true; // Declarado expresamente, pendiente de confirmación logística real.
-      s.coverageStatus=candidate?.active ? "covered" : "uncovered";
-    }
-  }
-  if(s.awaiting==="details" || s.awaiting==="address" || s.awaiting==="name") {
-      if(!s.customerName && s.street)return answer("¡Recibí tu dirección! 🏠💚 Solo me falta tu *nombre y apellido* para registrar el pedido. 😊","details");
-      if(s.customerName && needsAddress && !s.street)return answer(`¡Gracias, ${s.customerName}! 😍 Solo me falta tu *dirección completa* o ubicación de Google Maps. 📍 Si tenés, agregá una referencia cercana.`,"details");
-    }
-    if (!needsAddress) return answer("😊 ¿Me compartís tu nombre y apellido para registrar el pedido?", "name");
-    if (!s.customerName) return answer(`¡Oikoite! 😍🚚 Tenemos cobertura en *${s.city}*. ¿Me pasás tu nombre y apellido?`, "name");
-    return answer("🏠 ¿Me pasás tu dirección o ubicación para completar el pedido?", "address");
-  }
-  return answer(`📦✨ *¡Ya tengo los datos de tu pedido!*\n🛍️ ${p.name}${s.cartLines?.length?` (${summaryLabel})`:selected?` (${selected.label})`:""}\n🔢 Cantidad: ${s.quantity}\n💰 Total: *${money(total)}*\n✅ Voy a registrarlo ahora. 😊`,null,true);
+  const location=s.city && s.department ? verifiedCoverage(s.city,s.department,coverage):null;
+  const national=s.cityVerified && Boolean(s.city && s.department) &&
+    sellerAllowsNationwideAdvance(ctx.training) && !location?.active;
+  if(location?.active && /contra entrega|contraentrega/i.test(norm(location.method)))s.paymentMethod="contraentrega";
+  else if(s.cityVerified && (national || (location && /encomienda|anticipado|transferencia/i.test(norm(location.method)))))s.paymentMethod="anticipado";
+  // Nunca usar un comprobante simplemente adjunto como validación del importe.
+  const receiptVerified=Boolean(s.receiptPath && !s.receiptReview && s.receiptDocuments?.length);
+  const encomienda=isEncomiendaAdvanceOrder(ctx.training,s.city,s.department,s.paymentMethod);
+  const needsRecipientCi=encomienda && sellerRequiresEncomiendaCi(ctx.training);
+  const needsAddress=s.paymentMethod==="contraentrega" && location?.addressRequired!==false;
+  const validPrice=Boolean(s.cartLines?.length || (selected && priceFor(p,selected,s.quantity??0)) ||
+    (variants.length===0 && s.quantity && priceFor(p,null,s.quantity)));
+  if (variants.length>1 && !selected && !s.cartLines?.length) s.awaiting="variant";
+  else if (!s.city || !s.cityVerified || !s.department) s.awaiting="city";
+  else if (!s.quantity || s.quantity<1 || !validPrice) s.awaiting="quantity";
+  else if (!s.paymentMethod) s.awaiting="payment";
+  else if (s.paymentMethod==="anticipado" && !receiptVerified) s.awaiting="receipt";
+  else if (!s.customerName) s.awaiting="name";
+  else if (needsRecipientCi && !isValidRecipientCi(s.recipientCi)) s.awaiting="recipient_ci";
+  else if (needsAddress && !s.street && !s.locationUrl) s.awaiting="address";
+  else s.awaiting=null;
+  const complete=Boolean(s.awaiting===null && s.cityVerified &&
+    (location?.active || national || Boolean(location && /encomienda|anticipado|transferencia/i.test(norm(location.method)))));
+  return {reply:"",state:s,productId:p.id,complete,needsAi:true};
 }
