@@ -9,6 +9,7 @@ import { formatGs } from "@/lib/format";
 import { parseReceiptFields } from "@/lib/media-ai.server";
 import { reconcileOrderWithSaleState, recoverSaleStateFromHistory, isValidCustomerName, isValidDeliveryAddress } from "@/lib/sale-reconciliation.server";
 import { buildRegisteredOrderConfirmation } from "@/lib/order-confirmation.server";
+import { ensureCheckoutProgressReply, requiredCheckoutPrompt } from "@/lib/checkout-progress.server";
 import { buildWorkspaceAiContext } from "@/lib/ai-context.server";
 import { generateAiReply, type AiContext } from "@/lib/ai.server";
 import { advanceRuleSale, sellerUsesFirstOffer, isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi, isValidRecipientCi, type SaleState } from "@/lib/rule-sales.server";
@@ -1773,7 +1774,8 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     const aiAnswerContext = {
       ...answerContext,
       systemInstruction: answerContext.systemInstruction + officialPolicyInstruction + `\nMODO IA + ENTRENAMIENTO BOT SKY, PRIORIDAD ALTA: Las respuestas comerciales las generás vos usando únicamente catálogo y entrenamiento de esta tienda. CONVERSÁ VOS con el comprador de forma natural: resolvé una sola pregunta por vez y no repitas catálogo/precios completos ni datos ya recibidos. Cantidad y variante se capturan mediante código y deben respetarse. No confirmes pedidos sin número real generado por Supabase. El cliente puede comprar varias veces. DATOS VERIFICADOS DEL CICLO ACTUAL (no mezclar con pedidos previos): ${JSON.stringify({productId:verifiedSaleState.productId,optionId:verifiedSaleState.optionId,quantity:verifiedSaleState.quantity,city:verifiedSaleState.city,department:verifiedSaleState.department,cityVerified:verifiedSaleState.cityVerified===true,coverageStatus:verifiedSaleState.coverageStatus,customerName:verifiedSaleState.customerName,hasAddress:Boolean(verifiedSaleState.street),gpsReceived:Boolean(verifiedSaleState.locationUrl),paymentMethod:verifiedSaleState.paymentMethod,awaiting:verifiedSaleState.awaiting})}. COBERTURA: si cityVerified no es true, NUNCA digas que tenemos cobertura; cuando nombres la ciudad escribila SIEMPRE exactamente como figura en el campo city de los datos verificados (bien escrita, con tildes y ñ), nunca copies cómo la escribió el cliente; consultá la ciudad si falta. GPS no prueba por sí mismo ninguna ciudad. Si recibiste GPS no vuelvas a solicitarlo. El GPS es dirección suficiente si la configuración de la ciudad admite dirección por ubicación. Respetá el orden de preguntas definido en el entrenamiento del vendedor; nunca repitas hechos conocidos. Si no tenés precio/variante sin ambigüedad pedí aclaración. Si está completo, el código registrará el pedido; no inventes un número de orden ni digas que está confirmado.
-Respetá el flujo de venta específico del entrenamiento; ninguna pregunta, secuencia o promoción comercial se determina en código.`
+AVANCE DEL CIERRE, OBLIGATORIO EN EL MISMO TURNO: si ya identificaste producto, variante, cantidad y ciudad, NO termines una respuesta mostrando solo el detalle o preguntando «¿seguimos?», «¿está bien?» o «¿confirmás?»; pedí inmediatamente el SIGUIENTE dato faltante del estado técnico. Si awaiting="name", solicitá nombre Y apellido en ese mismo mensaje, aun cuando acabes de explicar el pago al recibir y el total. Cuando te respondan el nombre, si awaiting="address", pedí dirección o ubicación. Si awaiting="receipt" para encomienda, explicá las instrucciones de pago SOLO desde los datos bancarios reales de este vendedor y decí que envíe el comprobante; no pidas dirección ni GPS. Si el cliente hace una consulta concreta, respondela y retomá el dato pendiente sin repetición. Nunca digas «pedido confirmado» antes de que el servidor lo registre.
+Respetá el estilo, productos y condiciones del entrenamiento particular del vendedor; el backend solamente asegura que la venta NO se estanque sin pedir el siguiente dato obligatorio.`
     };
     // Comprobantes: pasar a la IA el RESULTADO DOCUMENTAL del backend, no
     // solamente la transcripción visual. El backend valida, la IA conversa.
@@ -2393,9 +2395,17 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         console.warn("[BOT_SKY_CLOSE_BLOCKED]",JSON.stringify({conversationId:conversation.id,
           financiallyReady,hasReceiptForOrder,cityVerified:verifiedSaleState.cityVerified,
           hasProduct:Boolean(detectedProduct)}));
-        // El registro técnico está bloqueado. Evitar la confirmación falsa; no
-        // fabricar una pregunta sobre ciudad, cantidad o pago desde el código.
-        if (!orderWasCreated) outgoingProposal="Tu pedido todavía no pudo registrarse. Un asesor debe verificar los datos pendientes.";
+        // Si la IA intentó cerrar ANTES de recoger datos obligatorios,
+        // continuar el checkout (sin afirmar una venta registrada). La espera
+        // de un asesor se reserva para bloqueos no recuperables por el cliente.
+        if (!orderWasCreated) {
+          const nextRequired = !bypassSale
+            ? requiredCheckoutPrompt(verifiedSaleState, isValidCustomerName(verifiedSaleState.customerName))
+            : null;
+          outgoingProposal = nextRequired
+            ? `¡Gracias! 😊 Todavía nos falta un dato para registrar tu pedido.\n\n${nextRequired.question}`
+            : "Tu pedido todavía no pudo registrarse. Un asesor debe verificar los datos pendientes.";
+        }
       }
       // Segunda verificación determinista DESPUÉS de generar/corregir el texto
       // y ANTES de WhatsApp: una IA que insiste no vuelve a imponer encomienda
@@ -2417,6 +2427,16 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         // Si la IA no corrige, usar la versión ya corregida por código en vez de callar.
         outgoingText = second.corrected ? outgoingChecked.reply : second.reply;
       }
+      // Garantía de continuidad: no esperar a que el comprador escriba
+      // «Excelente» luego del resumen de producto, precio y cobertura.
+      // Las preguntas técnicas son universales; los textos comerciales y las
+      // políticas de cada vendedor siguen viniendo de su entrenamiento + IA.
+      outgoingText = ensureCheckoutProgressReply({
+        reply: outgoingText,
+        state: verifiedSaleState,
+        customerNameValid: isValidCustomerName(verifiedSaleState.customerName),
+        checkoutActive: !bypassSale && !conversation.sale_closed,
+      });
       const outgoingWamid = await sendWhatsAppText(conn, phone, outgoingText);
       await supabaseAdmin.from("messages").insert({
         workspace_id: workspaceId, user_id: ownerId, conversation_id: conversation.id,
