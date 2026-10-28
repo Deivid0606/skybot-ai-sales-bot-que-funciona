@@ -243,6 +243,12 @@ function declaredDestination(text:string): {city:string;department:string}|null 
   return {city,department};
 }
 
+/** Frases que NO son nombres de ciudad (pago, saludos, preguntas, pedidos). */
+export function isNonCityPhrase(text:string):boolean{
+  const n=norm(text);
+  return !n || /\b(?:paga|pago|pagar|pagas|recibir|contra ?entrega|anticipado|transferencia|efectivo|envio|gratis|delivery|precio|costo|cuanto|quiero|gracias|hola|buenas|buen dia|si|no|ok|dale|listo|perfecto|litros?|caja|cajas|unidad|unidades|pedido|confirmo|cuando|como|donde|tienen|hacen|llega|casa|domicilio)\b/.test(n);
+}
+
 export function cityIn(text:string, coverage:Coverage[]): Coverage | null {
   const normalized=norm(text);
   // Preguntas sobre pago no son declaraciones de una ciudad.
@@ -581,7 +587,7 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     const lineCoverage=lineHit ? cityIn(lineHit,coverage) : null;
     if(lineCoverage) {
       s.city=lineCoverage.city;s.department=lineCoverage.department;s.cityVerified=true;s.coverageStatus=lineCoverage.active?"covered":"uncovered";
-    } else if(n.length>=3 && n.length<=55 && /^[a-z ]+$/.test(n)) {
+    } else if(n.length>=3 && n.length<=55 && /^[a-z ]+$/.test(n) && !isNonCityPhrase(text)) {
       // La ciudad sola no determina el departamento. Solicitar aclaración, sin inventar.
       s.city = text.trim();
       s.department = null;
@@ -599,7 +605,7 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
       s.department=listed?.department ?? destination.department;
       s.cityVerified=true; // Ciudad/departamento declarados por el cliente; no equivale a verificación logística.
       s.coverageStatus=listed?.active ? "covered" : "uncovered";
-    } else if(s.city && !s.cityVerified && /^[\p{L} .'-]{3,45}$/u.test(text.trim()) &&
+    } else if(s.city && !s.cityVerified && !isNonCityPhrase(s.city) && !isNonCityPhrase(text) && /^[\p{L} .'-]{3,45}$/u.test(text.trim()) &&
              !/\b(?:quiero|litros|gracias|costo|pedido|precio|envio)\b/i.test(text)) {
       const candidate=verifiedCoverage(s.city,text.trim(),coverage);
       s.department=candidate?.department ?? text.trim();
