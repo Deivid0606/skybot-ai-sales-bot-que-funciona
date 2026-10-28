@@ -44,38 +44,6 @@ const money = (n: number) => `Gs. ${Math.round(n).toLocaleString("es-PY")}`;
 const opts = (p: Product) => [...(p.product_prices ?? [])].filter(o => o.price > 0).sort((a,b) => a.sort_order-b.sort_order);
 const units = (s: string) => s.match(/\b\d+(?:[.,]\d+)?\s*(?:litros?|lts?|l|ml|kg|kilos?|cm|mm)\b/);
 
-/**
- * El cliente avisa que pasará la dirección/ubicación después o que no está en casa.
- * Eso NUNCA es una dirección: el pedido queda pendiente y responde la IA.
- */
-export function isDeferredAddress(value: unknown): boolean {
-  if (typeof value !== "string") return false;
-  const n = value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
-  return /\b(?:no\s+estoy\s+en\s+(?:casa|mi\s+casa|la\s+casa)|no\s+estoy\s+ahora|ahora\s+no\s+(?:estoy|puedo)|no\s+puedo\s+ahora|cuando\s+(?:llegue|este|vuelva|tenga)|(?:te|le)\s+(?:paso|mando|envio|comparto|digo)\s+(?:mas\s+tarde|despues|luego|manana|ahorita|en\s+un\s+rato)|(?:te|le)\s+puedo\s+(?:pasar|mandar|enviar)|mas\s+tarde\s+(?:te|le)|despues\s+(?:te|le)|manana\s+(?:te|le)|todavia\s+no|aun\s+no|en\s+un\s+rato|ahora\s+no)\b/.test(n);
-}
-
-const NAME_PARTICLES=new Set(["de","del","la","las","los","y","da","do","dos","van","von"]);
-const normName=(v:string)=>v.normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().trim();
-/**
- * Quita del nombre la ciudad/departamento que el cliente escribió junto
- * («Soy dd Limpio» → «dd»). Nunca guarda la ciudad como apellido.
- */
-export function stripPlaceFromName(name:string, places:(string|null|undefined)[]):string {
-  const placeWords=new Set(places.filter(Boolean).flatMap(p=>normName(p!).split(/\s+/)).filter(w=>w.length>=3));
-  if(!placeWords.size) return name.trim();
-  return name.trim().split(/\s+/).filter(w=>!placeWords.has(normName(w))).join(" ");
-}
-/** Nombre real: al menos 2 palabras de 3+ letras sin letras repetidas tipo «dd» o «aaa». */
-export function hasRealNameWords(name:string):boolean {
-  const words=name.trim().split(/\s+/).filter(w=>!NAME_PARTICLES.has(normName(w)));
-  if(words.length<2) return false;
-  return words.every(w=>{const n=normName(w).replace(/['-]/g,""); return n.length>=3 && !/^(.)\1+$/.test(n);});
-}
-/** Pone cada palabra con mayúscula inicial: «lidia ysabel alegre» → «Lidia Ysabel Alegre». */
-export function titleCaseName(name:string):string {
-  return name.trim().split(/\s+/).map(w=>NAME_PARTICLES.has(normName(w))?w.toLowerCase():w.charAt(0).toUpperCase()+w.slice(1).toLowerCase()).join(" ");
-}
-
 export type Coverage = { city:string; department:string; aliases:string[]; active:boolean; method:string; addressRequired:boolean };
 /** Extrae SOLAMENTE bloques explícitos de la sección de cobertura activa del workspace. */
 export function parseCoverage(training: AiContext["training"]): Coverage[] {
@@ -294,6 +262,8 @@ function declaredDestination(text:string): {city:string;department:string}|null 
 
 function cityIn(text:string, coverage:Coverage[]): Coverage | null {
   const normalized=norm(text);
+  // Preguntas sobre pago no son declaraciones de una ciudad.
+  if (!normalized || /^(?:se paga|puedo pagar|pago al recibir|es contra entrega|envio gratis|cuanto cuesta)/.test(normalized)) return null;
   const hits=coverage.filter(c=>[c.city,...c.aliases].some(alias=>{
     const n=norm(alias);
     return n.length>=3 && (` ${normalized} `.includes(` ${n} `));
@@ -409,14 +379,13 @@ export function isScheduleOnly(text:string):boolean {
   return SCHEDULE_REF.test(n) && !PLACE_REF.test(n) && !/\b(?:calle|avenida|av|ruta|barrio|casa|nro|numero)\b/.test(n) && !/https?:\/\//.test(text);
 }
 export function isPlaceReference(text:string):boolean { return PLACE_REF.test(norm(text)); }
-function humanName(text:string, expecting:boolean, places:(string|null|undefined)[]=[]):string|null {
-  const cleaned=stripPlaceFromName(text.trim().replace(/^(?:me llamo|mi nombre es|soy)\s+/i, "").replace(/\s+soy\s*$/i, "").replace(/[.!]+$/,"").trim(), places);
-  if(!hasRealNameWords(cleaned))return null;
+function humanName(text:string, expecting:boolean):string|null {
+  const cleaned=text.trim().replace(/^(?:me llamo|mi nombre es|soy)\s+/i, "").replace(/\s+soy\s*$/i, "").trim();
   if(NOT_A_NAME.test(norm(cleaned)))return null;
   if(!expecting&&!/^(?:me llamo|mi nombre es)\s+/i.test(text))return null;
   if(!/^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+(?:[\s'-]+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+){1,5}$/.test(cleaned))return null;
   if(/\b(?:quiero|litros|gracias|buenas|cuanto|cuando|llegaria|llega|entrega|pedido|precio|ciudad|calle|preguntando|garantia|tarda|demora|necesito|saber|como|donde|favor|dale|ok|esta|bien|si|no|perfecto|listo|ubicacion|maps|numero|direccion)\b/i.test(cleaned))return null;
-  return titleCaseName(cleaned);
+  return cleaned;
 }
 /** Extrae solo información reconocible, sin adivinar nombres o domicilios. */
 function extractCheckoutDetails(raw:string, expecting:boolean, city?:string|null):{name?:string;street?:string;alternatePhone?:string} {
@@ -438,8 +407,7 @@ function extractCheckoutDetails(raw:string, expecting:boolean, city?:string|null
   const parts=cleaned.split(/[,;\n]+|\.\s+(?=[A-Za-zÁÉÍÓÚÜÑáéíóúüñ])/).map(t=>t.trim()).filter(Boolean);
   const first=parts[0]?.replace(/^(?:mi\s+nombre\s+es|nombre\s*[:=-]|soy)\s*/i, "");
   const rawName=nameLabel?.[1] || (first && humanName(first,true) ? first : null);
-  const goodName=rawName ? humanName(rawName,true,[city]) : null;
-  if(goodName) output.name=goodName;
+  if(rawName && humanName(rawName,true) && !(city && norm(rawName)===norm(city))) output.name=rawName.trim();
   let addr=cleaned.match(/(?:direcci[oó]n\s*[:=-]\s*|vivo\s+en\s+)(.+)$/i)?.[1]?.trim();
   if(!addr && parts.length>1 && output.name) {
     // Nunca tomar la cédula, un teléfono suelto ni la propia ciudad como dirección.
@@ -619,12 +587,12 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   }
   if(s.cityVerified && (s.awaiting==="details" || s.awaiting==="address" || s.awaiting==="name" || s.awaiting==="city")) {
     const details=extractCheckoutDetails(text,true,s.city);
-    if(details.name && (!s.customerName || s.awaiting==="name" || !hasRealNameWords(s.customerName)))s.customerName=details.name;
+    if(details.name && !s.customerName)s.customerName=details.name;
     if(details.street && (!s.street || s.street === s.locationUrl))s.street=details.street;
     if(details.alternatePhone && !s.alternatePhone)s.alternatePhone=details.alternatePhone;
   }
   if(s.cityVerified && (s.awaiting==="name" || /^\s*(?:me llamo|mi nombre es)\b/i.test(text))) {
-    const name=humanName(text,s.awaiting==="name",[s.city,s.department]);if(name)s.customerName=name;
+    const name=humanName(text,s.awaiting==="name");if(name)s.customerName=name;
   }
   // Horario de entrega: se guarda aparte y nunca reemplaza la dirección.
   if(s.cityVerified && SCHEDULE_REF.test(n)) {
@@ -635,7 +603,7 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   if(s.cityVerified && !gpsUrl && isPlaceReference(text) && !/[¿?]/.test(text) && (!s.street || s.street===s.locationUrl)) {
     s.street=text.trim().replace(/[,;.]?\s*(?:me\s+avis\w*|avisame|avisas)\b.*$/i,"").replace(/^(?:y\s+)?(?:estoy\s+en|quiero\s+que\s+me\s+traigas\s+(?:en|a))\s+/i,"").trim() || text.trim();
   }
-  if(s.cityVerified && s.awaiting==="address" && !isDeferredAddress(text) && !isScheduleOnly(text) && !match && !gpsUrl && n.length>=6 && !/^(?:si|no|hola|gracias|si por favor|dale|ok)$/.test(n) && !/\b(?:ubicacion|maps|pedido|precio|llega|ya te|ya le|pase|comparti|envie|mand[eé])\b/.test(n))s.street=text.trim();
+  if(s.cityVerified && s.awaiting==="address" && !isScheduleOnly(text) && !match && !gpsUrl && n.length>=6 && !/^(?:si|no|hola|gracias|si por favor|dale|ok)$/.test(n) && !/\b(?:ubicacion|maps|pedido|precio|llega|ya te|ya le|pase|comparti|envie|mand[eé])\b/.test(n))s.street=text.trim();
   if(/\b(?:transferencia|transferir|anticipado|deposito|giro)\b/.test(n))s.paymentMethod="anticipado";
   // El mensaje del cliente no puede cambiar la política logística de la ciudad.
   // Mantener la modalidad oficial incluso si el estado previo traía un dato incorrecto.
