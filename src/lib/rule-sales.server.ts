@@ -446,7 +446,19 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     }
     // Nunca cambiar el carrito por una respuesta suelta «Ok» o por repetir «ambos».
   }
-  const chosen=s.cartLines?.length ? null : selectOption(text,variants,s.awaiting==="variant");
+  // Dato técnico: una sola respuesta puede incluir presentación y ciudad,
+  // p.ej. «2 para Capiatá». Separarlas ANTES de reconocer la variante evita
+  // perder la elección y NO genera preguntas ni mensajes comerciales.
+  const coverage=parseCoverage(ctx.training);
+  const match=cityIn(text,coverage);
+  const destinationAlias = match
+    ? [match.city,...match.aliases].map(alias=>norm(alias)).filter(alias=>alias.length>=3)
+        .sort((a,b)=>b.length-a.length).find(alias=>n.endsWith(` para ${alias}`))
+    : null;
+  const selectionText=destinationAlias
+    ? n.slice(0,-(` para ${destinationAlias}`).length).trim()
+    : text;
+  const chosen=s.cartLines?.length ? null : selectOption(selectionText,variants,s.awaiting==="variant");
   if(chosen) {
     s.optionId=chosen.id;
     // Una opción etiquetada «N unidades» es un paquete, distinto de «N litros».
@@ -455,7 +467,7 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   // NO interpretar "5 litros" como cantidad cinco.
   const expectingQuantity=s.awaiting==="quantity";
   if(!units(n)) {
-    const q=countOf(text,expectingQuantity);
+    const q=countOf(selectionText,expectingQuantity);
     // «2 cajas (8 unidades)» selecciona el paquete que INCLUYE 8 unidades.
     // El «2» es el número de cajas, no una cantidad adicional para recalcular
     // el precio oficial del paquete. No pisar quantity de product_prices.
@@ -466,8 +478,6 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     const match=n.match(/\b(un|uno|una|dos|tres|\d+)\s+de\s+\d+\s*(?:litros?|l|lts?)\b/);
     if(match&&!s.cartLines?.length)s.quantity=({un:1,uno:1,una:1,dos:2,tres:3}[match[1]]??Number(match[1]));
   }
-  const coverage=parseCoverage(ctx.training);
-  const match=cityIn(text,coverage);
   const nationalDestination = sellerAllowsNationwideAdvance(ctx.training) && !gpsUrl
     ? nationwideDestinationFromText(text) : null;
   const hasAddressWords=/\b(?:calle|esquina|casi|barrio|referencia|avenida|avda|av|cuadras?|direccion)\b/.test(n);
