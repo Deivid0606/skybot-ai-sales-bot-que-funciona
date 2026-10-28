@@ -3284,7 +3284,12 @@ ${match.products.description ?? ""}`.trim();
   const variantLines = options.length > 1 && missingNames.length > 0
     ? `\n\n💥 *Opciones disponibles:*\n${options.map((o) => `• *${o.label}* — ${formatGs(Number(o.price))}`).join("\n")}`
     : "";
-  const copy = baseCopy + variantLines;
+  void variantLines;
+  // Los precios se envían aparte, 5 segundos después del copy + imagen.
+  const copy = baseCopy;
+  const pricesMessage = options.length
+    ? `💰 *Precios disponibles:*\n${options.map((o) => `• *${o.label}* — ${formatGs(Number(o.price))}`).join("\n")}\n\n¿Cuál te interesa? 😊`
+    : null;
 
   const { sendWhatsAppMedia } = await import("@/lib/whatsapp.server");
 
@@ -3435,9 +3440,25 @@ ${match.products.description ?? ""}`.trim();
     }
   }
 
-  // La única salida comercial por código es la ficha/copy + sus imágenes.
-  // Los turnos siguientes (precios, dudas y preguntas) corresponden a la IA.
-  const lastMessage = copy;
+  let lastMessage = copy;
+  if (pricesMessage && (copySent || sentMediaCount > 0)) {
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    try {
+      const wamid = await sendWhatsAppText(args.conn, args.phone, pricesMessage);
+      lastMessage = pricesMessage;
+      const { error: pricesError } = await supabaseAdmin.from("messages").insert({
+        workspace_id: args.workspaceId, user_id: args.ownerId,
+        conversation_id: args.conversationId, ad_id: args.adId,
+        direction: "outbound", sender: "ai", response_origin: "code",
+        body: pricesMessage, status: "sent", wamid,
+      });
+      if (pricesError) console.error("[Catálogo] Error guardando precios", { productId, error: pricesError.message });
+    } catch (error) {
+      console.error("[Catálogo] Error enviando precios", {
+        productId, error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
 
   await supabaseAdmin
     .from("conversations")
