@@ -2108,6 +2108,14 @@ Respetá el estilo, productos y condiciones del entrenamiento particular del ven
     const receiptInCurrentOrder = Boolean(currentReceipt && mediaPath &&
       verifiedSaleState.receiptDocuments?.some(document => document.path === mediaPath) &&
       !verifiedSaleState.receiptReview);
+    // Imagen/archivo durante un pago anticipado que NO se pudo leer como
+    // comprobante: la IA recibe ese resultado en lugar de prometer «verificar».
+    const advanceCheckoutMedia = Boolean(!conversation.sale_closed && mediaPath && media &&
+      (media.type === "image" || media.type === "document") && verifiedSaleState.productId &&
+      /anticip|transfer|deposit|giro/i.test(String(verifiedSaleState.paymentMethod ?? "")));
+    if (advanceCheckoutMedia && !currentReceipt) {
+      aiAnswerContext.systemInstruction += `\nIMAGEN RECIBIDA DURANTE EL PAGO ANTICIPADO (resultado del sistema, YA revisada): no se pudo leer un comprobante de transferencia en ese archivo (ilegible, recortado o no es un comprobante). NO digas «voy a verificar» ni «un momento». Pedí amablemente una captura o foto completa y nítida del comprobante donde se vean el monto, la cuenta o alias de destino y el titular. Si el cliente pregunta otra cosa, respondela también.`;
+    }
     if (currentReceipt && !conversation.sale_closed) {
       const productForReceipt = ctx.products.find(p => p.id === verifiedSaleState.productId);
       const chosenOption = productForReceipt?.product_prices?.find(
@@ -2203,7 +2211,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
     // Una respuesta de espera no realiza trabajo futuro en Vercel. Si llegó un
     // comprobante legible, pedir a la IA una respuesta de acción en ESTE turno.
     // NO se construyen preguntas comerciales desde el código.
-    if (currentReceipt && !conversation.sale_closed &&
+    if ((currentReceipt || advanceCheckoutMedia) && !conversation.sale_closed &&
         /\b(?:un momento|aguard[aá]|esper[aá] (?:un|unos)|proceder[eé]? a verificar|voy a verificar|verificaremos (?:los|tus|el)|te aviso|le avisaremos|cuando termine de revisar|ahora (?:revisar[eé]|revisaremos))\b/i.test(result.reply) &&
         !/[?¿]/.test(result.reply)) {
       const revised = await generateAiReplyWithRetry({
@@ -2219,10 +2227,24 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         console.error("[BOT_SKY_RECEIPT_NO_PROGRESS] La IA insistió en una respuesta de espera", conversation.id);
         await sendSilenceFallback({conn,workspaceId,ownerId,conversationId:conversation.id,
           adId:attributedAdId,phone,wamid:message.id,
-          reason:"La IA reiteró una espera sin avanzar el comprobante", reply:"El comprobante ya fue recibido y revisado por el sistema. Agradecé y pedí el siguiente dato faltante del pedido (nombre y apellido de quien recibe, si falta)."});
+          reason:"La IA reiteró una espera sin avanzar el comprobante", reply: currentReceipt
+            ? "El comprobante ya fue recibido y revisado por el sistema. Agradecé y pedí el siguiente dato faltante del pedido (nombre y apellido de quien recibe, si falta)."
+            : "No se pudo leer un comprobante en la imagen enviada. Pedí una captura completa y nítida del comprobante (monto, cuenta o alias de destino y titular)."});
         return;
       }
       result = {...result, reply: revised.reply};
+    }
+    // Paquete mínimo ya elegido por el sistema: la IA no debe volver a preguntar la opción.
+    if (!bypassSale && saveStep?.state.packAdjustedFrom && !previousSale.packAdjustedFrom && saveStep.state.optionId &&
+        /(?:cu[aá]l|qu[eé])[^?]{0,120}(?:prefer|opci[oó]n|promo|eleg|te interesa)[^?]*\?/i.test(result.reply)) {
+      const packOpt = ctx.products.find(p => p.id === saveStep.state.productId)?.product_prices?.find(o => o.id === saveStep.state.optionId);
+      if (packOpt) {
+        const nextStep = saveStep.state.awaiting === "receipt"
+          ? "Mostrá el total y los datos bancarios del entrenamiento y pedí el comprobante."
+          : `Pedí el siguiente dato pendiente (${saveStep.state.awaiting ?? "ninguno"}).`;
+        const adjusted = await aiCompose(aiAnswerContext, `El cliente pidió ${saveStep.state.packAdjustedFrom}, pero la opción mínima es «${packOpt.label}» por ${formatGs(Number(packOpt.price))} y YA quedó seleccionada. NO preguntes qué opción prefiere: explicalo en una frase y continuá. ${nextStep}`);
+        if (adjusted) result = {...result, reply: adjusted};
+      }
     }
     // DATOS QUE LA IA ENTENDIÓ DEL CLIENTE: el cliente puede escribir su nombre o
     // dirección de cualquier forma («david alcaraz me llamo», «a nombre de…»).
