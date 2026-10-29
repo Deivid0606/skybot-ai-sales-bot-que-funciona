@@ -10,7 +10,7 @@ import { parseReceiptFields } from "@/lib/media-ai.server";
 import { reconcileOrderWithSaleState, recoverSaleStateFromHistory, isValidCustomerName, isValidDeliveryAddress } from "@/lib/sale-reconciliation.server";
 import { buildRegisteredOrderConfirmation } from "@/lib/order-confirmation.server";
 import { buildWorkspaceAiContext } from "@/lib/ai-context.server";
-import { generateAiReply, applyDynamicSellerTrainingReply, type AiContext } from "@/lib/ai.server";
+import { generateAiReply, type AiContext } from "@/lib/ai.server";
 import { advanceRuleSale, sellerUsesFirstOffer, isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi, isValidRecipientCi, type SaleState } from "@/lib/rule-sales.server";
 import { classifyCustomerIntent, addVerifiedOrderContext, addPendingSaleContext } from "@/lib/hybrid-intent.server";
 import { coordinatesFromText, validCoords } from "@/lib/hybrid-intent.server";
@@ -48,8 +48,8 @@ function requiredCheckoutPrompt(
   // El nombre es obligatorio tanto en contraentrega como en encomienda.
   // Para encomienda el extractor deja awaiting='receipt' hasta que el
   // comprobante documentalmente compatible esté disponible.
-  if ((state.awaiting === "name" || state.awaiting === "address" || state.awaiting === null) &&
-      state.cityVerified && state.city && state.department && (state.quantity ?? 0) > 0 &&
+  if (state.awaiting === "name" && state.cityVerified &&
+      state.city && state.department && (state.quantity ?? 0) > 0 &&
       !customerNameValid) {
     return {
       stage: "name",
@@ -86,36 +86,6 @@ function ensureCheckoutProgressReply(args: {
   ).trim();
 
   return `${withoutGenericEnding}\n\n${pending.question}`;
-}
-
-/**
- * Un comprobante puede mostrar un monto mayor al de la compra aunque la
- * validación documental de destinatario todavía esté pendiente. La IA jamás
- * puede describir esa diferencia como dinero faltante.
- * Esta función NO valida ni acredita la transferencia.
- */
-export function correctReceiptAmountReply(args: {
-  reply: string;
-  expectedTotal: number | null;
-  parsedAmount: number | null;
-  documentAccepted: boolean;
-  customerNameValid: boolean;
-}): string {
-  const {reply,expectedTotal,parsedAmount,documentAccepted,customerNameValid}=args;
-  if (expectedTotal===null || !Number.isSafeInteger(expectedTotal) || expectedTotal<=0 ||
-      parsedAmount===null || !Number.isSafeInteger(parsedAmount) || parsedAmount<expectedTotal) return reply;
-  // Solo intervenir cuando la IA comete un error aritmético o exige un pago adicional.
-  if (!/(?:\b(?:te\s+)?falt(?:a|an|aria|arian)\b|\b(?:complemento|diferencia\s+por\s+transferir|pago\s+adicional|otro\s+comprobante|comprobante\s+del\s+complemento)\b)/i.test(
-    reply.normalize("NFD").replace(/[\u0300-\u036f]/g,""))) return reply;
-  const gs=(value:number)=>`Gs. ${value.toLocaleString("es-PY")}`;
-  const intro = parsedAmount === expectedTotal
-    ? `El importe leído en tu comprobante es ${gs(parsedAmount)}, igual al total de ${gs(expectedTotal)}.`
-    : `El importe leído en tu comprobante es ${gs(parsedAmount)}, ${gs(parsedAmount-expectedTotal)} más que el total de ${gs(expectedTotal)}.`;
-  const status = documentAccepted
-    ? "El comprobante coincide documentalmente con los datos configurados, pendiente de acreditación bancaria."
-    : "El importe alcanza, pero todavía debemos comprobar que el comprobante corresponda a la cuenta destinataria correcta.";
-  return `😊 ${intro} No te falta dinero. ${status}` +
-    (!customerNameValid ? "\n\n¿Me pasás el nombre y apellido de quien recibirá el pedido?" : "");
 }
 
 type MediaPart = { id?: string; mime_type?: string; caption?: string; voice?: boolean };
@@ -1819,15 +1789,8 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     // El resto de mensajes complejos sigue yendo a la IA.
     const savedSaleReadyForFinalization = Boolean(locationReminder && previousSale.locationUrl && previousSale.cityVerified && previousSale.customerName && previousSale.productId && previousSale.quantity);
     const saleInput = isGpsMessage ? `📍 Ubicación compartida${gpsUrl?`\n${gpsUrl}`:""}` : savedSaleReadyForFinalization ? "Confirmo mis datos para registrar el pedido" : body;
-    // Una compra pendiente con comprobante debe seguir en el flujo de checkout
-    // incluso si el comprador escribe «y de paso» o pregunta por la demora.
-    // Nunca confundirla con una compra ya cerrada ni confirmar sin INSERT.
-    const hasPendingDocumentedCheckout = Boolean(!conversation.sale_closed &&
-      previousSale.productId && previousSale.cityVerified &&
-      ((previousSale.receiptDocuments?.length ?? 0) > 0 || previousSale.receiptPath));
     const awaitingCheckoutDetail = Boolean(previousSale.productId &&
-      (["name", "details", "address", "quantity", "variant", "city"].includes(String(previousSale.awaiting ?? "")) ||
-        hasPendingDocumentedCheckout) &&
+      ["name", "details", "address", "quantity", "variant", "city"].includes(String(previousSale.awaiting ?? "")) &&
       !/\b(?:gracias|chau|adios|no quiero|cancelar|reclamo|mi pedido|donde esta)\b/i.test(normalizeIntentText(body)));
     // Los archivos de pago forman parte del checkout activo aunque el clasificador
     // de intención no reconozca texto de una imagen. No tratar imágenes aisladas
@@ -2252,8 +2215,6 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       console.info("[BOT_SKY_RECEIPT_SHORTFALL]",JSON.stringify({conversationId:conversation.id,expectedTotal,receivedTotal,missing:expectedTotal-receivedTotal}));
     }
     const orderReady = financiallyReady && isOrderReady(result.order, detectedProduct) &&
-      // Nombre verificado desde el mensaje del cliente, no solamente del JSON de IA.
-      isValidCustomerName(verifiedSaleState.customerName) &&
       (Boolean(saveStep?.state.cartLines?.length) || stateExpectedTotal !== null || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory)) &&
       (!isAdvance || hasReceiptForOrder);
     // La cédula del destinatario de encomienda se pide DESPUÉS de confirmar
@@ -2509,59 +2470,11 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
           const nextRequired = !bypassSale
             ? requiredCheckoutPrompt(verifiedSaleState, isValidCustomerName(verifiedSaleState.customerName))
             : null;
-          // Cuando no falta una respuesta del comprador, no decir vagamente
-          // «faltan datos» ni prometer que el pedido se registrará solo.
-          const receiptNeedsReview = Boolean(paymentSaleState.receiptReview);
-          const coverageReady = Boolean(verifiedSaleState.cityVerified &&
-            (deliveryPolicyForCity(verifiedSaleState.city, verifiedSaleState.department, ctx.training)?.paymentMethod ||
-             (sellerAllowsNationwideAdvance(ctx.training) && verifiedSaleState.coverageStatus === "uncovered")));
-          const technicalReason = receiptNeedsReview
-            ? "El comprobante necesita revisión de cuenta o titular destinatario; no hace falta transferir de nuevo por ahora."
-            : isAdvance && !hasReceiptForOrder
-              ? "Todavía no hay un comprobante compatible registrado para este pedido. Si ya lo enviaste, un asesor debe revisar el archivo."
-              : isAdvance && expectedTotal === null
-                ? "No pude verificar el importe oficial de la presentación seleccionada."
-                : isAdvance && expectedTotal !== null && receivedTotal < expectedTotal
-                  ? `El importe documentado es inferior al total oficial. Falta revisar la diferencia de Gs. ${(expectedTotal-receivedTotal).toLocaleString("es-PY")}.`
-                  : !coverageReady
-                    ? "La modalidad de entrega de esa ciudad necesita revisión en la cobertura de esta tienda."
-                    : "Ya tengo los datos que compartiste, pero el pedido no aparece registrado. Necesitamos revisión del sistema antes de confirmarlo.";
           outgoingProposal = nextRequired
             ? `¡Gracias! 😊 Todavía nos falta un dato para registrar tu pedido.\n\n${nextRequired.question}`
-            : `Tu pedido todavía no está confirmado. ${technicalReason}`;
+            : "Tu pedido todavía no pudo registrarse. Un asesor debe verificar los datos pendientes.";
         }
       }
-      // Si pregunta «¿A la cuenta de quién transfiero?» en una zona verificada
-      // como contraentrega, la respuesta debe despejar ESA duda, no repetir el total.
-      // La modalidad proviene exclusivamente de la cobertura de este vendedor.
-      const paymentQuestionPolicy = verifiedSaleState.cityVerified
-        ? deliveryPolicyForCity(verifiedSaleState.city, verifiedSaleState.department, ctx.training) : null;
-      if (!conversation.sale_closed && verifiedSaleState.productId && paymentQuestionPolicy?.paymentMethod === "contraentrega" &&
-          /(?:\b(?:cuenta|cta|alias|titular|transferencia|transferir|depositar)\b)/i.test(body) &&
-          /(?:\?|\b(?:quien|quién|donde|dónde|cual|cuál|pas[aá]me|a la|a qu[eé])\b)/i.test(body)) {
-        const next = requiredCheckoutPrompt(verifiedSaleState, isValidCustomerName(verifiedSaleState.customerName));
-        const missingName = !isValidCustomerName(verifiedSaleState.customerName) && verifiedSaleState.quantity;
-        const followQuestion = next?.question ?? (missingName
-          ? "😊 Para completar tu pedido, ¿me pasás tu nombre y apellido?"
-          : !isValidDeliveryAddress(verifiedSaleState.street) && !isValidDeliveryAddress(verifiedSaleState.locationUrl)
-            ? "📍 ¿Me pasás tu dirección o ubicación para coordinar la entrega?"
-            : "");
-        outgoingProposal = `🚚 Para ${paymentQuestionPolicy.city} pagás al recibir tu pedido; no necesitás hacer transferencia.${followQuestion ? `\n\n${followQuestion}` : ""}`;
-      }
-      // Comparación aritmética independiente de la verificación documental:
-      // un comprobante con 130.000 Gs nunca significa que falten 100 Gs
-      // frente a un pedido de 129.900 Gs. No equivale a pago acreditado.
-      const parsedCurrentReceipt = mediaPath && media &&
-        (media.type === "image" || media.type === "document")
-          ? parseReceiptFields(transcript) : null;
-      outgoingProposal = correctReceiptAmountReply({
-        reply: outgoingProposal,
-        expectedTotal,
-        parsedAmount: parsedCurrentReceipt?.amountGs ?? null,
-        documentAccepted: Boolean(!paymentSaleState.receiptReview &&
-          paymentSaleState.receiptDocuments?.some(doc => doc.path === mediaPath)),
-        customerNameValid: isValidCustomerName(verifiedSaleState.customerName),
-      });
       // Segunda verificación determinista DESPUÉS de generar/corregir el texto
       // y ANTES de WhatsApp: una IA que insiste no vuelve a imponer encomienda
       // sobre una ciudad cubierta por contraentrega (ni el caso inverso).
@@ -2579,17 +2492,8 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
           systemInstruction:aiAnswerContext.systemInstruction +
             `\nReformulá tu respuesta anterior porque contradice la modalidad del vendedor. Ciudad: ${verifiedSaleState.city??"no confirmada"}; método autorizado: ${outgoingChecked.paymentMethod??"pendiente de verificar"}. Usá el entrenamiento activo sin preguntas programadas.`});
         const second=enforceVerifiedPaymentReply({...{reply:revised.reply,city:verifiedSaleState.city,department:verifiedSaleState.department,cityVerified:verifiedSaleState.cityVerified,training:ctx.training},saleState:verifiedSaleState});
-        // Si la IA vuelve a imponer una modalidad prohibida, NO enviar el
-        // borrador original (que contenía «Total a transferir» en contraentrega).
-        if (second.corrected) {
-          const next = requiredCheckoutPrompt(verifiedSaleState, isValidCustomerName(verifiedSaleState.customerName));
-          const mode = outgoingChecked.paymentMethod === "contraentrega"
-            ? `🚚 Para ${verifiedSaleState.city}, el pago es al recibir tu pedido.`
-            : outgoingChecked.paymentMethod === "anticipado"
-              ? `📦 Para ${verifiedSaleState.city}, la modalidad es pago anticipado, según el entrenamiento de la tienda.`
-              : "Necesito confirmar la modalidad de entrega para tu ciudad.";
-          outgoingText = `${mode}${next ? `\n\n${next.question}` : ""}`;
-        } else outgoingText = second.reply;
+        // Si la IA no corrige, usar la versión ya corregida por código en vez de callar.
+        outgoingText = second.corrected ? outgoingChecked.reply : second.reply;
       }
       // Garantía de continuidad: no esperar a que el comprador escriba
       // «Excelente» luego del resumen de producto, precio y cobertura.
@@ -2601,37 +2505,6 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         customerNameValid: isValidCustomerName(verifiedSaleState.customerName),
         checkoutActive: !bypassSale && !conversation.sale_closed,
       });
-      // Regla declarativa del vendedor: si entrenó explícitamente un catálogo
-      // para saludos sin producto, respetar la URL del entrenamiento aun cuando
-      // el modelo la haya omitido. NO intervenir en checkout ni postventa.
-      outgoingText = applyDynamicSellerTrainingReply({
-        reply: outgoingText,
-        customerText: body,
-        history: chatHistory,
-        training: ctx.training,
-        products: ctx.products,
-        activeProductId: verifiedSaleState.productId ?? conversation.product_id,
-        checkoutActive: Boolean(verifiedSaleState.productId &&
-          (verifiedSaleState.quantity || verifiedSaleState.customerName || verifiedSaleState.cityVerified)),
-      });
-      // ÚLTIMA barrera de precio, luego de todos los ajustes de IA y
-      // entrenamiento. El catálogo sigue siendo la fuente de importes reales.
-      outgoingText = enforceVerifiedCatalogPriceReply({
-        reply: outgoingText,
-        customerText: body,
-        productId: detectedProduct,
-        products: ctx.products,
-        selectedOptionId: verifiedSaleState.optionId,
-      });
-      // Un mismo total no se repite dos veces en el resumen automático.
-      // Aplica solo a líneas de total idénticas; no borra otros detalles.
-      const sentTotalLines = new Set<string>();
-      outgoingText = outgoingText.split("\n").filter(line => {
-        const normalizedLine = line.toLowerCase().replace(/[*_]/g, "").replace(/\s+/g, " ").trim();
-        if (!/(?:total a transferir|total a pagar|total del pedido)\s*:/i.test(normalizedLine)) return true;
-        if (sentTotalLines.has(normalizedLine)) return false;
-        sentTotalLines.add(normalizedLine); return true;
-      }).join("\n").replace(/\n{3,}/g,"\n\n").trim();
       const outgoingWamid = await sendWhatsAppText(conn, phone, outgoingText);
       await supabaseAdmin.from("messages").insert({
         workspace_id: workspaceId, user_id: ownerId, conversation_id: conversation.id,
@@ -3466,72 +3339,6 @@ function buildSafeAiReply(args: {
 }
 
 /**
- * Contrato de precios: una consulta de precio se responde con las opciones
- * verificadas de product_prices, aunque el modelo o el entrenamiento mencionen
- * un importe distinto. Solo afecta el texto de respuestas comerciales; NO
- * modifica el carrito, la modalidad de pago ni el proceso de registro del pedido.
- *
- * Es una validación de salida: también actúa cuando una consulta informativa
- * omite la conciliación del checkout (`bypassSale`).
- */
-function enforceVerifiedCatalogPriceReply(args: {
-  reply: string;
-  customerText: string;
-  productId: string | null;
-  products: AiContextProducts;
-  selectedOptionId?: string | null;
-}): string {
-  const question = normalizeIntentText(args.customerText);
-  if (!/\b(?:precio|precios|cuanto cuesta|cuanto sale|cuanto vale|cuanto me sale|a cuanto|valor|costo)\b/.test(question)) {
-    return args.reply;
-  }
-
-  const product = args.products.find(p => p.id === args.productId);
-  if (!product) return args.reply;
-  const options = [...(product.product_prices ?? [])]
-    .filter(option => Number.isFinite(Number(option.price)) && Number(option.price) > 0)
-    .sort((a, b) => a.sort_order - b.sort_order);
-  // No crear precios para productos sin una presentación confirmada.
-  if (!options.length) return args.reply;
-
-  const officialPrices = new Set(options.map(option => Math.round(Number(option.price))));
-  const amounts = new Set<number>();
-  // Montos con moneda antes o después, con y sin separador de miles.
-  const currencyBefore = /(?:₲|Gs\.?|guaran[ií]es?)\s*([0-9][0-9., ]{3,})/gi;
-  const currencyAfter = /\b([0-9][0-9., ]{3,})\s*(?:Gs\.?|guaran[ií]es?)\b/gi;
-  const numericPrice = /\b(?:precio|cuesta|sale|vale)\s*(?:de|es|a|:)?\s*([0-9]{1,3}(?:[.,][0-9]{3})+|[0-9]{5,7})\b/gi;
-  for (const expression of [currencyBefore, currencyAfter, numericPrice]) {
-    for (const match of args.reply.matchAll(expression)) {
-      const amount = Number(match[1].replace(/\D/g, ""));
-      if (Number.isSafeInteger(amount) && amount > 0) amounts.add(amount);
-    }
-  }
-
-  // Si el cliente pidió precios y el modelo omitió los importes o inventó
-  // uno ajeno al producto, reemplazar por los datos actuales del catálogo.
-  // Nunca "adivinar" cuál opción eligió el comprador.
-  const wrongAmount = [...amounts].some(amount => !officialPrices.has(amount));
-  if (!wrongAmount && amounts.size > 0) return args.reply;
-
-  const priceLines = options.map(option =>
-    `• *${option.label}* — Gs. ${Math.round(Number(option.price)).toLocaleString("es-PY")}`,
-  ).join("\n");
-  const chosen = options.find(option => option.id === args.selectedOptionId);
-  // Mantener la siguiente pregunta comercial de la IA cuando la presentación
-  // ya esté seleccionada; si hay variantes sin elegir, pedir esa elección.
-  const questionFromAi = [...args.reply.matchAll(/¿[^?\n]{3,180}\?/g)]
-    .map(match => match[0]).at(-1);
-  const nextQuestion = options.length > 1 && !chosen
-    ? "¿Cuál opción te interesa? 😊"
-    : questionFromAi ?? "¿Querés que sigamos con tu pedido? 😊";
-  console.warn("[BOT_SKY_PRICE_OUTPUT_GUARD] Respuesta ajustada al precio verificado", {
-    productId: product.id,
-    reason: wrongAmount ? "incorrect_amount" : "missing_price",
-  });
-  return `💰 *Precios disponibles: *\n${priceLines}\n\n${nextQuestion}`;
-}
-
-/**
  * Detecta palabras clave del catálogo en el mensaje del cliente y envía
  * la plantilla del producto (multimedia + copy) una sola vez por conversación.
  * Devuelve el producto detectado e indica si se envió en este turno.
@@ -3916,13 +3723,12 @@ async function nextMissingQuestion(workspaceId: string, conversationId: string):
       .eq("workspace_id", workspaceId).eq("conversation_id", conversationId).maybeSingle();
     st = (data?.state ?? {}) as any;
   } catch { /* sin estado: preguntar desde el inicio */ }
-  const name = isValidCustomerName(st.customerName)
-    ? String(st.customerName).trim().split(/\s+/)[0] : "";
+  const name = String(st.customerName ?? "").trim().split(/\s+/)[0];
   const hi = name ? `¡Gracias, ${name}! 😊` : "¡Gracias por tu mensaje! 😊";
   if (!st.productId) return `${hi} ¿Qué producto te interesa? Así te paso el precio 📦`;
   if (!st.optionId && !st.cartLines?.length) return `${hi} ¿Qué opción o cantidad te gustaría llevar?`;
   if (!st.city || st.cityVerified !== true) return `${hi} ¿En qué ciudad querés recibir tu pedido? 📍`;
-  if (!isValidCustomerName(st.customerName)) return `${hi} ¿Me pasás el nombre y apellido de quien va a recibir el pedido?`;
+  if (!st.customerName) return `${hi} ¿Me pasás el nombre y apellido de quien va a recibir el pedido?`;
   if (st.paymentMethod !== "anticipado" && !st.street && !st.locationUrl)
     return `${hi} ¿Me pasás tu dirección (calle y una referencia) o tu ubicación por Google Maps? 📍`;
   if (st.paymentMethod === "anticipado") return `${hi} Cuando hagas la transferencia, enviame el comprobante por acá 🧾`;
