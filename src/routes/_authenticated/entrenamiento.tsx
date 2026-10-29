@@ -297,7 +297,7 @@ function TrainingPage() {
     if (transferring) return;
     setTransferring(true);
     try {
-      if (!file.name.toLowerCase().endsWith(".txt")) throw new Error("Seleccioná un archivo TXT exportado desde BOT SKY");
+      if (!/\.(?:txt|md)$/i.test(file.name)) throw new Error("Seleccioná un entrenamiento TXT o Markdown (.md)");
       if (file.size > 10 * 1024 * 1024) throw new Error("El archivo supera los 10 MB");
       if (!workspaceId || !user) throw new Error("Sesión no válida");
       const raw = (await file.text()).replace(/^\uFEFF/, "");
@@ -313,7 +313,29 @@ function TrainingPage() {
       try {
         parsed = JSON.parse(jsonText);
       } catch {
-        throw new Error("TXT inválido: no se encontró un bloque JSON compatible con BOT SKY");
+        // Un entrenamiento TXT escrito por un vendedor también es válido:
+        // no necesita exportarse desde BOT SKY ni tener estructura JSON.
+        if (start >= 0 || end >= 0) throw new Error("El bloque JSON de BOT SKY está incompleto o dañado");
+        const content = raw.trim();
+        if (!content) throw new Error("El entrenamiento TXT está vacío");
+        if (content.length > 85000) throw new Error("El TXT es demasiado largo para una sola regla (máximo 85.000 caracteres)");
+        const fromHeading = content.match(/^\s*#{0,6}\s*(?:\d+[.)]\s*)?([^\n]{4,140})/);
+        const title = (fromHeading?.[1]?.trim() || file.name.replace(/\.(?:txt|md)$/i, "")).slice(0,140);
+        const existing = (await fetchAllTraining()).find(entry =>
+          entry.scope === "global" && normalized(entry.title) === normalized(title));
+        const payload = {
+          workspace_id: workspaceId, user_id: user.id, created_by: user.id,
+          title, content, category: "general", scope: "global",
+          product_id: null, keywords: [], priority: 0, is_active: true,
+        };
+        const query = existing
+          ? supabase.from("training_entries").update(payload).eq("workspace_id", workspaceId).eq("id", existing.id)
+          : supabase.from("training_entries").insert(payload);
+        const {error} = await query;
+        if (error) throw error;
+        await queryClient.invalidateQueries({queryKey:["training",workspaceId]});
+        toast.success(existing ? "Entrenamiento TXT actualizado y activo" : "Entrenamiento TXT cargado y activo");
+        return;
       }
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Formato de entrenamiento inválido");
       const transfer = parsed as Partial<TrainingTransfer>;
@@ -432,7 +454,7 @@ function TrainingPage() {
             <input
               ref={fileInputRef}
               type="file"
-              accept=".txt,text/plain"
+              accept=".txt,.md,text/plain,text/markdown"
               className="hidden"
               aria-label="Seleccionar entrenamiento TXT"
               onChange={(event) => {
