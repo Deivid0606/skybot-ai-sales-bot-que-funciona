@@ -2614,8 +2614,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
     const violatesVerifiedFacts = (text: string) => {
       const policy = verifiedSaleState.cityVerified
         ? deliveryPolicyForCity(verifiedSaleState.city, verifiedSaleState.department, ctx.training) : null;
-      // Datos bancarios solo con opción elegida y ciudad confirmada (fuera de la cobertura).
-      const prematureBank = (verifiedSaleState.awaiting === "variant" || !verifiedSaleState.cityVerified) && BANK_RE.test(text);
+      const prematureBank = verifiedSaleState.awaiting === "variant" && BANK_RE.test(text);
       return enforceVerifiedPaymentReply({reply:text, city:verifiedSaleState.city, department:verifiedSaleState.department,
           cityVerified:verifiedSaleState.cityVerified, training:ctx.training}).corrected ||
         (policy?.paymentMethod === "contraentrega" && (BANK_RE.test(text) || /\bencomienda\b|pago anticipado|total a transferir/i.test(text))) ||
@@ -2638,7 +2637,6 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
           : policy?.paymentMethod === "anticipado"
             ? `Para ${verifiedSaleState.city} la modalidad VERIFICADA es pago anticipado; no prometas pago al recibir.` : "",
         verifiedSaleState.awaiting === "variant" ? "El cliente todavía no eligió una opción válida: mostrá las opciones reales con sus precios y preguntá cuál prefiere; no pidas pago." : "",
-        !verifiedSaleState.cityVerified && verifiedSaleState.productId ? "Todavía NO se sabe la ciudad de entrega: no menciones encomienda, pago anticipado ni datos bancarios; preguntá en qué ciudad quiere recibir el pedido." : "",
         "Nunca uses marcadores como [PRECIO] o [TOTAL]: usá los precios reales del catálogo.",
         WAITING_REPLY_RE.test(text) ? "No digas «un momento», «voy a verificar» ni «te aviso»: el sistema ya revisó todo en este turno; respondé con el resultado y el siguiente paso." : "",
         claimsRegisteredOrder(text) ? "El pedido TODAVÍA NO está registrado en el sistema: no digas que está confirmado, no muestres número de pedido ni agradezcas la compra; pedí el dato que falte." : "",
@@ -2648,19 +2646,11 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       // Último recurso SIN texto fijo: depurar el borrador de la IA quitando
       // solo las líneas que contradicen los hechos verificados.
       let cleaned = again ?? text;
-      if (policy?.paymentMethod === "contraentrega" || verifiedSaleState.awaiting === "variant" || !verifiedSaleState.cityVerified)
+      if (policy?.paymentMethod === "contraentrega" || verifiedSaleState.awaiting === "variant")
         cleaned = stripBankDetailsForCod(cleaned).split("\n")
           .filter(line => !/encomienda|pago anticipado|transferir|transferencia|cuenta|alias|c[eé]dula/i.test(line)).join("\n");
       cleaned = stripWaitingSentences(cleaned);
-      cleaned = cleaned.split("\n").filter(line => !hasTemplatePlaceholder(line) && !claimsRegisteredOrder(line) &&
-        // Campos vacíos («📍 Ciudad:») no se envían.
-        !/^[^\p{L}]*[\p{L} ]{2,30}:\s*\**\s*$/u.test(line.trim())).join("\n").replace(/\n{3,}/g, "\n\n").trim();
-      // Si la limpieza dejó la respuesta sin el siguiente paso, la IA lo completa.
-      const pendingStep = !bypassSale && !conversation.sale_closed ? verifiedSaleState.awaiting : null;
-      if (pendingStep && !/[?¿]/.test(cleaned)) {
-        const nextAsk = await aiCompose(aiAnswerContext, `${facts} Respondé lo que el cliente dijo en su último mensaje y pedí el siguiente dato pendiente (${pendingStep}). No muestres un detalle incompleto.`);
-        if (nextAsk && !violatesVerifiedFacts(nextAsk)) return nextAsk;
-      }
+      cleaned = cleaned.split("\n").filter(line => !hasTemplatePlaceholder(line) && !claimsRegisteredOrder(line)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
       return cleaned;
     };
     if (codPolicy?.paymentMethod === "contraentrega" && BANK_RE.test(finalReply)) {
@@ -4528,26 +4518,10 @@ async function generateAiReplyWithRetry(ctx: Parameters<typeof generateAiReply>[
   try {
     return await generateAiReply(ctx);
   } catch (firstError) {
-    console.warn("[BOT SKY IA] Primer intento falló; reintentando con contexto liviano", firstError instanceof Error ? firstError.message : firstError);
-    await new Promise((r) => setTimeout(r, 1500));
-    // Un entrenamiento muy largo hace fallar a los modelos chicos: el reintento
-    // usa el mismo entrenamiento recortado y el historial reciente, para que el
-    // cliente siempre reciba una respuesta de la IA.
-    return await generateAiReply(lightAiContext(ctx));
+    console.warn("[BOT SKY IA] Primer intento falló; reintentando", firstError instanceof Error ? firstError.message : firstError);
+    await new Promise((r) => setTimeout(r, 2000));
+    return await generateAiReply(ctx);
   }
-}
-
-/** Contexto reducido para reintentos: reglas recortadas e historial corto. */
-function lightAiContext(ctx: Parameters<typeof generateAiReply>[0]): Parameters<typeof generateAiReply>[0] {
-  const sorted = [...ctx.training].sort((a, b) => (Number(b.priority) || 0) - (Number(a.priority) || 0));
-  let budget = 30_000;
-  const training = sorted.map(entry => {
-    const content = String(entry.content ?? "");
-    const slice = content.slice(0, Math.max(0, Math.min(6_000, budget)));
-    budget -= slice.length;
-    return { ...entry, content: slice };
-  }).filter(entry => entry.content.trim());
-  return { ...ctx, training, history: ctx.history.slice(-10) };
 }
 
 /**
