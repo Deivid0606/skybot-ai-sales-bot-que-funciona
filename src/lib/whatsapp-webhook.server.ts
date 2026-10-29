@@ -2084,6 +2084,12 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
 AVANCE DEL CIERRE, OBLIGATORIO EN EL MISMO TURNO: si ya identificaste producto, variante, cantidad y ciudad, NO termines una respuesta mostrando solo el detalle o preguntando «¿seguimos?», «¿está bien?» o «¿confirmás?»; pedí inmediatamente el SIGUIENTE dato faltante del estado técnico. Si awaiting="name", solicitá nombre Y apellido en ese mismo mensaje, aun cuando acabes de explicar el pago al recibir y el total. Cuando te respondan el nombre, si awaiting="address", pedí dirección o ubicación. Si awaiting="receipt" para encomienda, explicá las instrucciones de pago SOLO desde los datos bancarios reales de este vendedor y decí que envíe el comprobante; no pidas dirección ni GPS. Si el cliente hace una consulta concreta, respondela y retomá el dato pendiente sin repetición. Nunca digas «pedido confirmado» antes de que el servidor lo registre.
 Respetá el estilo, productos y condiciones del entrenamiento particular del vendedor; el backend solamente asegura que la venta NO se estanque sin pedir el siguiente dato obligatorio.`
     };
+    // Pidió menos que el paquete mínimo: el sistema tomó la opción mínima.
+    if (!bypassSale && verifiedSaleState.packAdjustedFrom && !previousSale.packAdjustedFrom && verifiedSaleState.optionId) {
+      const packProduct = ctx.products.find(p => p.id === verifiedSaleState.productId);
+      const packOption = packProduct?.product_prices?.find(o => o.id === verifiedSaleState.optionId);
+      if (packOption) aiAnswerContext.systemInstruction += `\nAJUSTE DE CANTIDAD (dato del sistema): el cliente pidió ${verifiedSaleState.packAdjustedFrom}, pero la opción mínima disponible es «${packOption.label}» por ${formatGs(Number(packOption.price))}, y quedó seleccionada. Explicáselo amablemente en una frase (mencionando también las demás opciones si existen) y seguí con el siguiente dato del pedido.`;
+    }
     // Cantidad/variante pendiente: dar a la IA las opciones REALES del catálogo
     // para que no invente precios ([PRECIO]) ni acepte cantidades inexistentes.
     if (!bypassSale && verifiedSaleState.awaiting === "variant" && verifiedSaleState.productId) {

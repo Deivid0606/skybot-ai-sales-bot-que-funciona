@@ -29,6 +29,8 @@ export type SaleState = {
   receiptReview?: string | null;
   /** Horario o indicaciones de entrega dichas por el cliente (no es dirección). */
   deliveryNotes?: string | null;
+  /** Cantidad que pidió el cliente cuando era menor que el paquete mínimo (se tomó el mínimo). */
+  packAdjustedFrom?: number | null;
 };
 export type SaleStep = {
   reply: string;
@@ -604,6 +606,19 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     // "uno de 5 litros" sí comunica cantidad 1 explícita.
     const match=n.match(/\b(un|uno|una|dos|tres|\d+)\s+de\s+\d+\s*(?:litros?|l|lts?)\b/);
     if(match&&!s.cartLines?.length)s.quantity=({un:1,uno:1,una:1,dos:2,tres:3}[match[1]]??Number(match[1]));
+  }
+  // «Quiero uno» cuando solo hay paquetes de 2 y 3: no existe otra opción menor,
+  // así que se toma el paquete MÍNIMO (la IA le explica al cliente el cambio).
+  const packOptions = variants.length > 0 && variants.every(v => /\b(?:unidad(?:es)?|piezas?)\b/.test(norm(v.label)) && v.quantity >= 1);
+  if (packOptions && !s.optionId && !s.cartLines?.length && s.quantity && s.quantity > 0) {
+    const smallest = [...variants].sort((a,b) => a.quantity - b.quantity)[0];
+    const exactPack = variants.filter(v => v.quantity === s.quantity);
+    if (exactPack.length === 1) s.optionId = exactPack[0].id; // «quiero 3» = paquete de 3 unidades
+    else if (s.quantity < smallest.quantity && variants.filter(v => v.quantity === smallest.quantity).length === 1) {
+      s.packAdjustedFrom = s.quantity;
+      s.optionId = smallest.id;
+      s.quantity = smallest.quantity;
+    }
   }
   const nationalDestination = sellerAllowsNationwideAdvance(ctx.training) && !gpsUrl
     ? nationwideDestinationFromText(text) : null;
