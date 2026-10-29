@@ -1047,17 +1047,107 @@ export async function handleWhatsAppWebhook(payload: WebhookPayload) {
       const messages = value?.messages ?? [];
       if (!phoneNumberId || messages.length === 0) continue;
 
-      const { data: conn } = await supabaseAdmin
+      const { data: conn, error: connectionError } = await supabaseAdmin
         .from("whatsapp_connections")
         .select("workspace_id, user_id, phone_number_id, access_token")
         .eq("phone_number_id", phoneNumberId)
         .maybeSingle();
-      if (!conn) continue;
+      if (connectionError) {
+        console.error("[BOT_SKY_WEBHOOK_CONNECTION_QUERY_FAILED]", {
+          phoneNumberId, error: connectionError.message,
+        });
+        throw connectionError; // 503: Meta podrá reintentar, en vez de perder el evento.
+      }
+      if (!conn) {
+        console.error("[BOT_SKY_WEBHOOK_CONNECTION_MISSING] WhatsApp sin conexión activa", {
+          phoneNumberId, messages: messages.length,
+        });
+        continue;
+      }
 
+      // Aislar cada mensaje: un error de un contacto no debe impedir el
+      // procesamiento de otros mensajes del mismo evento de Meta.
       for (const message of messages) {
-        await processMessage(conn, value?.contacts?.[0]?.profile?.name ?? null, message);
+        try {
+          await processMessage(conn, value?.contacts?.[0]?.profile?.name ?? null, message);
+        } catch (error) {
+          // Algunos fallos (contacto, conversación, permisos y deduplicación)
+          // ocurren ANTES del try/catch de processMessage. Antes se perdían:
+          // la ruta HTTP devolvía 200 y no quedaba respuesta al cliente.
+          console.error("[BOT_SKY_WEBHOOK_EARLY_FAILURE]", {
+            workspaceId: conn.workspace_id,
+            wamid: message.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          await recoverFailedInboundMessage(conn, message, error);
+        }
       }
     }
+  }
+}
+
+/**
+ * Rescate de errores que suceden antes de la lógica de IA. No inventa precios,
+ * pagos, cobertura ni confirma pedidos; informa y deja trazabilidad al vendedor.
+ * La comprobación de salida reciente evita enviar otra respuesta si el envío
+ * llegó a WhatsApp pero falló el guardado posterior.
+ */
+async function recoverFailedInboundMessage(
+  conn: Conn,
+  message: IncomingMessage,
+  originalError: unknown,
+): Promise<void> {
+  const phone = String(message.from ?? "").replace(/\D/g, "");
+  if (!phone) return;
+  try {
+    const { data: inbound } = await supabaseAdmin.from("messages")
+      .select("conversation_id,created_at")
+      .eq("workspace_id", conn.workspace_id)
+      .eq("wamid", message.id)
+      .maybeSingle();
+    let conversationId: string | null = inbound?.conversation_id ?? null;
+    if (!conversationId) {
+      const { data: contact } = await supabaseAdmin.from("contacts")
+        .select("id").eq("workspace_id", conn.workspace_id)
+        .eq("phone", phone).maybeSingle();
+      if (contact) {
+        const { data: conversation } = await supabaseAdmin.from("conversations")
+          .select("id").eq("workspace_id", conn.workspace_id)
+          .eq("contact_id", contact.id).order("created_at", { ascending: true })
+          .limit(1).maybeSingle();
+        conversationId = conversation?.id ?? null;
+      }
+    }
+    if (conversationId) {
+      const { error: queueError } = await supabaseAdmin.from("ai_failed_messages").upsert({
+        workspace_id: conn.workspace_id,
+        user_id: conn.user_id,
+        conversation_id: conversationId,
+        wamid: message.id,
+        error_message: `Webhook antes de IA: ${String(originalError instanceof Error ? originalError.message : originalError).slice(0,1300)}`,
+        status: "pending",
+        updated_at: new Date().toISOString(),
+      }, { onConflict: "workspace_id,wamid" });
+      if (queueError) console.error("[BOT_SKY_EARLY_FAILURE_QUEUE_ERROR]", queueError.message);
+      await sendSilenceFallback({
+        conn, workspaceId: conn.workspace_id, ownerId: conn.user_id,
+        conversationId, adId: null, phone, wamid: message.id,
+        reason: "No se pudo completar el procesamiento del mensaje; revisar los logs del webhook.",
+        reply: "Recibimos tu mensaje, pero tuvimos un inconveniente técnico. Un asesor podrá revisar tu consulta. 🙏",
+        queue: false,
+      });
+    } else {
+      // Si todavía no fue posible crear la conversación, no existe un pedido
+      // para confirmar. Dar acuse de recibo sin inventar una respuesta comercial.
+      await sendWhatsAppText(conn, phone,
+        "Recibimos tu mensaje, pero tuvimos un inconveniente técnico. Un asesor podrá revisar tu consulta. 🙏");
+    }
+  } catch (recoveryError) {
+    console.error("[BOT_SKY_WEBHOOK_RECOVERY_FAILED]", {
+      workspaceId: conn.workspace_id,
+      wamid: message.id,
+      error: recoveryError instanceof Error ? recoveryError.message : String(recoveryError),
+    });
   }
 }
 
@@ -1413,6 +1503,10 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
 
   if (isNewConversation) {
     if (!balance || balance.available <= 0) {
+      console.warn("[BOT_SKY_REPLY_SKIPPED_BALANCE]", {
+        workspaceId, conversationId: conversation.id,
+        hasBalance: Boolean(balance), available: balance?.available ?? null,
+      });
       await supabaseAdmin.from("notifications").insert({
         workspace_id: workspaceId,
         user_id: ownerId,
@@ -1437,6 +1531,10 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       wamid: message.id,
     });
   } else if (!balance || balance.available <= 0) {
+    console.warn("[BOT_SKY_REPLY_SKIPPED_BALANCE]", {
+      workspaceId, conversationId: conversation.id,
+      hasBalance: Boolean(balance), available: balance?.available ?? null,
+    });
     const since = new Date(Date.now() - 60 * 60 * 1000).toISOString();
     const { data: recentSaldo } = await supabaseAdmin.from("notifications").select("id")
       .eq("workspace_id", workspaceId).eq("type", "saldo").gte("created_at", since).limit(1);
@@ -1457,7 +1555,16 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     .eq("workspace_id", workspaceId)
     .maybeSingle();
 
-  if (!aiSettings?.ai_enabled || conversation.ai_paused || conversation.is_closed) return;
+  if (!aiSettings?.ai_enabled || conversation.ai_paused || conversation.is_closed) {
+    console.warn("[BOT_SKY_REPLY_SKIPPED_SETTINGS]", {
+      workspaceId, conversationId: conversation.id,
+      missingAiSettings: !aiSettings,
+      aiEnabled: aiSettings?.ai_enabled ?? null,
+      aiPaused: Boolean(conversation.ai_paused),
+      isClosed: Boolean(conversation.is_closed),
+    });
+    return;
+  }
 
   if (conversation.sale_closed) {
     let ciResult: Awaited<ReturnType<typeof handlePostSaleRecipientCi>> = null;
@@ -3997,11 +4104,14 @@ async function sendSilenceFallback(args: {
       updated_at: new Date().toISOString(),
     }, { onConflict: "workspace_id,wamid" });
   }
-  // NUNCA dejar al cliente sin respuesta: enviar un mensaje corto y seguro
-  // (sin precios, cobertura ni datos bancarios inventados), salvo que el bot
-  // ya haya respondido a esta conversación en los últimos 45 segundos.
+  // No considerar como respuesta del mensaje ACTUAL un catálogo o promoción
+  // que salió ANTES de que el cliente escribiera. Antes se usaban 45 s sin
+  // mirar el mensaje entrante, por eso podía suprimir el único respaldo.
   try {
-    const since = new Date(Date.now() - 45_000).toISOString();
+    const { data: inbound } = await supabaseAdmin.from("messages")
+      .select("created_at").eq("workspace_id", args.workspaceId)
+      .eq("wamid", args.wamid).maybeSingle();
+    const since = inbound?.created_at ?? new Date(Date.now() - 45_000).toISOString();
     const { data: recent } = await supabaseAdmin.from("messages").select("id")
       .eq("workspace_id", args.workspaceId).eq("conversation_id", args.conversationId)
       .eq("direction", "outbound").gte("created_at", since).limit(1);
