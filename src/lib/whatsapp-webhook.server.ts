@@ -4526,10 +4526,26 @@ async function generateAiReplyWithRetry(ctx: Parameters<typeof generateAiReply>[
   try {
     return await generateAiReply(ctx);
   } catch (firstError) {
-    console.warn("[BOT SKY IA] Primer intento falló; reintentando", firstError instanceof Error ? firstError.message : firstError);
-    await new Promise((r) => setTimeout(r, 2000));
-    return await generateAiReply(ctx);
+    console.warn("[BOT SKY IA] Primer intento falló; reintentando con contexto liviano", firstError instanceof Error ? firstError.message : firstError);
+    await new Promise((r) => setTimeout(r, 1500));
+    // Un entrenamiento muy largo hace fallar a los modelos chicos: el reintento
+    // usa el mismo entrenamiento recortado y el historial reciente, para que el
+    // cliente siempre reciba una respuesta de la IA.
+    return await generateAiReply(lightAiContext(ctx));
   }
+}
+
+/** Contexto reducido para reintentos: reglas recortadas e historial corto. */
+function lightAiContext(ctx: Parameters<typeof generateAiReply>[0]): Parameters<typeof generateAiReply>[0] {
+  const sorted = [...ctx.training].sort((a, b) => (Number(b.priority) || 0) - (Number(a.priority) || 0));
+  let budget = 30_000;
+  const training = sorted.map(entry => {
+    const content = String(entry.content ?? "");
+    const slice = content.slice(0, Math.max(0, Math.min(6_000, budget)));
+    budget -= slice.length;
+    return { ...entry, content: slice };
+  }).filter(entry => entry.content.trim());
+  return { ...ctx, training, history: ctx.history.slice(-10) };
 }
 
 /**
