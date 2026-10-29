@@ -518,6 +518,17 @@ function priceFor(p:Product,option:Option|null,quantity:number):number|null {
   }
   const n=Number(p.promo_price??p.price);return n>0?n*quantity:null;
 }
+/** Nombres de pila frecuentes en Paraguay: distinguen «David Alcaraz» de una localidad. */
+const COMMON_FIRST_NAMES = new Set(("juan jose maria ana luis carlos jorge miguel pedro pablo david daniel diego marcos mario " +
+  "fernando francisco javier sergio victor hugo oscar ramon ruben raul ricardo roberto rodrigo gustavo gabriel german " +
+  "eduardo enrique emilio ernesto hector ivan jesus julio lucas manuel martin mateo nicolas osvaldo pastor alberto alejandro " +
+  "andres antonio arnaldo blas cesar cristian derlis edgar elias fabian felix gerardo gilberto gonzalo ignacio isaac " +
+  "matias mauricio nelson nestor norberto orlando richard samuel sebastian silvio teodoro tomas valentin walter " +
+  "adriana alicia andrea angela beatriz blanca carmen carolina celeste claudia cristina diana elena elizabeth estela " +
+  "fatima gabriela gladys graciela isabel jessica johana josefina julia laura leticia liliana lorena lourdes lucia luz " +
+  "marcela margarita mariana marta melina mirian miriam monica nancy natalia nelly noelia norma olga pamela patricia paola " +
+  "raquel rocio rosa rosana ruth sandra sara silvia sofia sonia susana teresa valeria veronica viviana yolanda zulma").split(" "));
+
 /** Política configurable por workspace: nunca aplica globalmente a otras tiendas. */
 export function sellerUsesFirstOffer(ctx: Pick<AiContext, "training">): boolean {
   return ctx.training.some(entry => /(?:usar|utilizar|aplicar|seleccionar|tomar|asumir)\s+(?:autom[aá]ticamente\s+)?(?:la\s+)?primera\s+(?:promoci[oó]n|opci[oó]n|oferta)/i.test(entry.content));
@@ -601,6 +612,11 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   // perder la elección y NO genera preguntas ni mensajes comerciales.
   const coverage=parseCoverage(ctx.training);
   const match=cityIn(text,coverage);
+  // «David Alcaraz» cuando se esperaba la ciudad es un NOMBRE, no una localidad.
+  const personName = !match && !gpsUrl && /^[\p{L}]+(?:\s+[\p{L}]+){1,3}$/u.test(text.trim()) &&
+    COMMON_FIRST_NAMES.has(norm(text).split(" ")[0]) && isValidCustomerName(text.trim()) &&
+    !nationwideDestinationFromText(text) && !nationwideDestinationFromText(`para ${text}`);
+  if (personName && !s.customerName) s.customerName = text.trim();
   const destinationAlias = match
     ? [match.city,...match.aliases].map(alias=>norm(alias)).filter(alias=>alias.length>=3)
         .sort((a,b)=>b.length-a.length).find(alias=>n.endsWith(` para ${alias}`))
@@ -660,12 +676,12 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
       if(addr)s.street=addr.trim().replace(/[.\s]+$/,"");
     }
   }
-  else if(nationalDestination && !/\b(?:calle|esquina|casi|barrio|referencia)\b/.test(n)) {
+  else if(nationalDestination && !personName && !/\b(?:calle|esquina|casi|barrio|referencia)\b/.test(n)) {
     // Municipio/departamento de referencia, no disponibilidad de transporte.
     s.city=nationalDestination.city;s.department=nationalDestination.department;
     s.cityVerified=true;s.coverageStatus="uncovered";s.paymentMethod="anticipado";
   }
-  else if(s.awaiting==="city" && !gpsUrl && !s.cityVerified) {
+  else if(s.awaiting==="city" && !gpsUrl && !s.cityVerified && !personName) {
     // Mensaje multilínea (nombre, cédula, teléfono y ciudad juntos): la ciudad
     // es la línea que coincide con la lista de cobertura.
     const lineHit=text.split(/[\n;]+/).map(t=>t.trim()).find(line=>{
@@ -677,14 +693,14 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
       s.city=lineCoverage.city;s.department=lineCoverage.department;s.cityVerified=true;s.coverageStatus=lineCoverage.active?"covered":"uncovered";
     } else if(n.length>=3 && n.length<=55 && /^[a-z ]+$/.test(n) && !isNonCityPhrase(text)) {
       // La ciudad sola no determina el departamento. Solicitar aclaración, sin inventar.
-      s.city = text.trim();
+      s.city = text.trim().replace(/^(?:para|soy de|vivo en|enviar a|mandar a|a)\s+/i, "");
       s.department = null;
       s.cityVerified = false;
       s.coverageStatus="unknown";
     }
   }
 
-  if (!match && sellerAllowsNationwideAdvance(ctx.training) && !gpsUrl &&
+  if (!match && !personName && sellerAllowsNationwideAdvance(ctx.training) && !gpsUrl &&
       (s.awaiting === "city" || (s.city && !s.cityVerified))) {
     const destination=declaredDestination(text);
     if(destination) {
@@ -704,7 +720,7 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   }
   // Regla del vendedor: una ciudad que NO figura en su cobertura de contraentrega
   // es pago anticipado (encomienda), aunque no sepamos su departamento.
-  if (!s.cityVerified && !match && !gpsUrl && sellerAllowsNationwideAdvance(ctx.training)) {
+  if (!s.cityVerified && !match && !gpsUrl && !personName && sellerAllowsNationwideAdvance(ctx.training)) {
     const trimmed = text.trim();
     const directed = trimmed.match(/^(?:para|soy de|vivo en|enviar a|enviame a|envialo a|mandar a|mandalo a|a)\s+(.+)$/i)?.[1]
       ?? trimmed.match(/\b(?:quiero|llevo|dame|pido|necesito)\b.*?\bpara\s+(.{3,40})$/i)?.[1];
@@ -722,12 +738,13 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   const expectingRecipientName = s.awaiting==="name" || (s.awaiting==="receipt" && receiptDocumented);
   if(s.cityVerified && (s.awaiting==="details" || s.awaiting==="address" || expectingRecipientName || s.awaiting==="city")) {
     const details=extractCheckoutDetails(text,true,s.city);
-    if(details.name && !s.customerName && isValidCustomerName(details.name))s.customerName=details.name;
+    // El texto que se usó como ciudad («fdo de la mora») nunca es el nombre.
+    if(details.name && !s.customerName && isValidCustomerName(details.name) && !match && !cityIn(details.name,coverage))s.customerName=details.name;
     if(details.street && (!s.street || s.street === s.locationUrl) && isValidDeliveryAddress(details.street))s.street=details.street;
     if(details.alternatePhone && !s.alternatePhone)s.alternatePhone=details.alternatePhone;
   }
   if(s.cityVerified && (expectingRecipientName || /^\s*(?:me llamo|mi nombre es)\b/i.test(text))) {
-    const name=humanName(text,expectingRecipientName);if(name && isValidCustomerName(name))s.customerName=name;
+    const name=humanName(text,expectingRecipientName);if(name && isValidCustomerName(name) && !cityIn(name,coverage))s.customerName=name;
   }
   // «quiero uno para San Lorenzo, me llamo David Alcaraz»: el nombre declarado
   // en medio de la frase también vale, en cualquier etapa de la compra.
