@@ -171,28 +171,23 @@ export const Route = createFileRoute("/api/public/whatsapp/webhook")({
           try {
             await handleWhatsAppWebhook(payload);
           } catch (error) {
-            /*
-             * Registramos el error, pero devolvemos 200.
-             * Si devolvemos 500, Meta puede reenviar el mismo webhook.
-             */
+            // Si falla infraestructura o la importación del módulo, el mensaje
+            // NO fue procesado completamente. Un 200 hace que Meta lo pierda.
+            // Un 503 permite el reintento; el webhook es idempotente por wamid.
             console.error(
-              "[WhatsApp webhook] Error procesando el evento:",
+              "[BOT_SKY_WEBHOOK_UNAVAILABLE] Error procesando el evento:",
               error,
             );
+            return textResponse("Temporary webhook error", 503, { "Retry-After": "15" });
           }
 
           return textResponse("ok", 200);
         } catch (error) {
           console.error(
-            "[WhatsApp webhook] Error inesperado en POST:",
+            "[BOT_SKY_WEBHOOK_UNAVAILABLE] Error inesperado en POST:",
             error,
           );
-
-          /*
-           * Se devuelve 200 para evitar que Meta reintente indefinidamente
-           * el mismo evento.
-           */
-          return textResponse("ok", 200);
+          return textResponse("Temporary webhook error", 503, { "Retry-After": "15" });
         }
       },
     },
