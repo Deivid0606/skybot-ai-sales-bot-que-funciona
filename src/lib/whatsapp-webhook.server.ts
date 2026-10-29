@@ -2094,9 +2094,13 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     const aiAnswerContext = {
       ...answerContext,
       systemInstruction: answerContext.systemInstruction + officialPolicyInstruction + `\nMODO IA + ENTRENAMIENTO BOT SKY, PRIORIDAD ALTA: Las respuestas comerciales las generás vos usando únicamente catálogo y entrenamiento de esta tienda. CONVERSÁ VOS con el comprador de forma natural: resolvé una sola pregunta por vez y no repitas catálogo/precios completos ni datos ya recibidos. Cantidad y variante se capturan mediante código y deben respetarse. No confirmes pedidos sin número real generado por Supabase. El cliente puede comprar varias veces. DATOS VERIFICADOS DEL CICLO ACTUAL (no mezclar con pedidos previos): ${JSON.stringify({productId:verifiedSaleState.productId,optionId:verifiedSaleState.optionId,quantity:verifiedSaleState.quantity,city:verifiedSaleState.city,department:verifiedSaleState.department,cityVerified:verifiedSaleState.cityVerified===true,coverageStatus:verifiedSaleState.coverageStatus,customerName:verifiedSaleState.customerName,hasAddress:Boolean(verifiedSaleState.street),gpsReceived:Boolean(verifiedSaleState.locationUrl),paymentMethod:verifiedSaleState.paymentMethod,awaiting:verifiedSaleState.awaiting})}. COBERTURA: si cityVerified no es true, NUNCA digas que tenemos cobertura; cuando nombres la ciudad escribila SIEMPRE exactamente como figura en el campo city de los datos verificados (bien escrita, con tildes y ñ), nunca copies cómo la escribió el cliente; consultá la ciudad si falta. GPS no prueba por sí mismo ninguna ciudad. Si recibiste GPS no vuelvas a solicitarlo. El GPS es dirección suficiente si la configuración de la ciudad admite dirección por ubicación. Respetá el orden de preguntas definido en el entrenamiento del vendedor; nunca repitas hechos conocidos. Si no tenés precio/variante sin ambigüedad pedí aclaración. Si está completo, el código registrará el pedido; no inventes un número de orden ni digas que está confirmado.
-AVANCE DEL CIERRE, OBLIGATORIO EN EL MISMO TURNO: si ya identificaste producto, variante, cantidad y ciudad, NO termines una respuesta mostrando solo el detalle o preguntando «¿seguimos?», «¿está bien?» o «¿confirmás?»; pedí inmediatamente el SIGUIENTE dato faltante del estado técnico. Si awaiting="name", solicitá nombre Y apellido en ese mismo mensaje, aun cuando acabes de explicar el pago al recibir y el total. Cuando te respondan el nombre, si awaiting="address", pedí dirección o ubicación. Si awaiting="receipt" para encomienda, explicá las instrucciones de pago SOLO desde los datos bancarios reales de este vendedor y decí que envíe el comprobante; no pidas dirección ni GPS. Si el cliente hace una consulta concreta, respondela y retomá el dato pendiente sin repetición. Nunca digas «pedido confirmado» antes de que el servidor lo registre.
+AVANCE DEL CIERRE, OBLIGATORIO EN EL MISMO TURNO: si ya identificaste producto, variante, cantidad y ciudad, NO termines una respuesta mostrando solo el detalle o preguntando «¿seguimos?», «¿está bien?» o «¿confirmás?»; pedí inmediatamente el SIGUIENTE dato faltante del estado técnico. Si awaiting="name", solicitá nombre Y apellido en ese mismo mensaje, aun cuando acabes de explicar el pago al recibir y el total. Cuando te respondan el nombre, si awaiting="address", pedí dirección o ubicación. Si awaiting="receipt" para encomienda, explicá las instrucciones de pago SOLO desde los datos bancarios reales de este vendedor y decí que envíe el comprobante; no pidas dirección ni GPS. ORDEN DE CADA RESPUESTA: PRIMERO respondé lo que el cliente preguntó o comentó en su último mensaje (dudas del producto, precio, objeciones como «es caro», envío, garantía, uso) usando el catálogo y el entrenamiento; RECIÉN DESPUÉS, en el mismo mensaje, pedí el dato pendiente sin repetir lo ya dicho. Nunca ignores una consulta para pedir datos. Nunca digas «pedido confirmado» antes de que el servidor lo registre.
 Respetá el estilo, productos y condiciones del entrenamiento particular del vendedor; el backend solamente asegura que la venta NO se estanque sin pedir el siguiente dato obligatorio.`
     };
+    // Consulta u objeción del cliente en medio de la compra: se responde PRIMERO.
+    if (intent !== "checkout" && !isGpsMessage) {
+      aiAnswerContext.systemInstruction += `\nEL ÚLTIMO MENSAJE DEL CLIENTE ES UNA CONSULTA U OBJECIÓN («${body.slice(0, 200)}»): respondela primero de forma concreta con el catálogo y el entrenamiento (si es sobre el precio, destacá el valor, la promo y las condiciones reales del vendedor, sin inventar descuentos). Después, en el mismo mensaje y brevemente, invitá a continuar pidiendo el dato pendiente.`;
+    }
     // Pidió menos que el paquete mínimo: el sistema tomó la opción mínima.
     if (!bypassSale && verifiedSaleState.packAdjustedFrom && !previousSale.packAdjustedFrom && verifiedSaleState.optionId) {
       const packProduct = ctx.products.find(p => p.id === verifiedSaleState.productId);
@@ -2384,13 +2388,13 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
             /[¿?]|(?:pas[aá]me|indic[aá]me|confirm[aá]me|envi[aá]me|compart[ií]me|necesito|falta)/i.test(retried.reply)) {
           console.error("[BOT SKY CITY GUARD] IA reiteró datos posteriores sin ciudad", conversation.id);
           // Nunca dejar al cliente sin respuesta: pedir solo la ciudad.
-          result = {...result, reply:(await aiCompose(aiAnswerContext, "La ciudad de entrega todavía no está verificada: pedí ÚNICAMENTE la ciudad donde quiere recibir el pedido, sin pedir nombre, dirección ni pago.")) ?? ""};
+          result = {...result, reply:(await aiCompose(aiAnswerContext, "La ciudad de entrega todavía no está verificada: de los datos del pedido, pedí SOLO la ciudad donde quiere recibirlo (no nombre, dirección ni pago).")) ?? ""};
         } else {
           result = {...result, reply: retried.reply};
         }
       } catch (error) {
         console.error("[BOT SKY CITY GUARD] No se pudo revalidar respuesta", error);
-        result = {...result, reply:(await aiCompose(aiAnswerContext, "La ciudad de entrega todavía no está verificada: pedí ÚNICAMENTE la ciudad donde quiere recibir el pedido.")) ?? ""};
+        result = {...result, reply:(await aiCompose(aiAnswerContext, "La ciudad de entrega todavía no está verificada: de los datos del pedido, pedí SOLO la ciudad donde quiere recibirlo.")) ?? ""};
       }
     }
     // El cliente todavía NO indicó nombre completo: nunca saltar directo a GPS/dirección.
@@ -2890,6 +2894,10 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
           reason:"La IA no pudo redactar la respuesta del cierre pendiente", queue:false});
         return;
       }
+      if (await newerInboundExists(workspaceId, conversation.id, message.id)) {
+        console.info("[BOT_SKY_BURST_SKIP]", JSON.stringify({conversationId:conversation.id, wamid:message.id}));
+        return;
+      }
       const pendingWamid = await sendWhatsAppText(conn, phone, pendingText);
       await supabaseAdmin.from("messages").insert({workspace_id:workspaceId,user_id:ownerId,
         conversation_id:conversation.id,ad_id:attributedAdId,direction:"outbound",sender:"ai",
@@ -3107,6 +3115,12 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         sentTotalLines.add(normalizedLine); return true;
       }).join("\n").replace(/\n{3,}/g,"\n\n").trim();
       outgoingText = await finalPolicyGate(outgoingText);
+      // Ráfaga de mensajes: si el cliente ya escribió algo más, ese turno responde
+      // con el historial completo; no mandar respuestas superpuestas.
+      if (await newerInboundExists(workspaceId, conversation.id, message.id)) {
+        console.info("[BOT_SKY_BURST_SKIP]", JSON.stringify({conversationId:conversation.id, wamid:message.id}));
+        return;
+      }
       if (!outgoingText) {
         await sendSilenceFallback({conn,workspaceId,ownerId,conversationId:conversation.id,adId:attributedAdId,phone,wamid:message.id,
           reason:"La IA no pudo redactar la respuesta", queue:false});
@@ -4348,6 +4362,21 @@ ${match.products.description ?? ""}`.trim();
 }
 
 
+/** true si el cliente envió otro mensaje DESPUÉS de este (ráfaga): responde el último. */
+async function newerInboundExists(workspaceId: string, conversationId: string, wamid: string): Promise<boolean> {
+  try {
+    const { data: current } = await supabaseAdmin.from("messages").select("created_at")
+      .eq("workspace_id", workspaceId).eq("wamid", wamid).maybeSingle();
+    if (!current?.created_at) return false;
+    const { data: newer } = await supabaseAdmin.from("messages").select("id")
+      .eq("workspace_id", workspaceId).eq("conversation_id", conversationId)
+      .eq("direction", "inbound").gt("created_at", current.created_at).limit(1);
+    return Boolean(newer?.length);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * TODA respuesta al cliente la redacta la IA con el entrenamiento del vendedor.
  * `goal` describe QUÉ comunicar (hechos verificados por el sistema y el
@@ -4361,7 +4390,7 @@ async function aiCompose(ctx: Parameters<typeof generateAiReply>[0], goal: strin
       ...ctx,
       systemInstruction: ctx.systemInstruction +
         `\nOBJETIVO OBLIGATORIO DE ESTA RESPUESTA (hechos verificados por el sistema): ${goal}\n` +
-        "Redactalo vos con el tono, estilo y reglas del entrenamiento de este vendedor, contestando también el último mensaje del cliente si corresponde. " +
+        "Redactalo vos con el tono, estilo y reglas del entrenamiento de este vendedor. Si el último mensaje del cliente trae una consulta, duda u objeción, RESPONDELA PRIMERO y después cumplí el objetivo. " +
         "No copies este objetivo literal, no agregues datos no verificados, no inventes número de pedido ni confirmes un pedido no registrado.",
     });
     const text = String(reply ?? "").trim();

@@ -24,6 +24,10 @@ export function classifyCustomerIntent(raw: string): CustomerIntent {
   if (/\b(?:sirve para|funciona para|como funciona|como se usa|puedo usar|puede triturar|que diferencia|cual es mejor|recomendas|recomienda|garantia|falla|defecto|devolucion|reembolso|reclamo|quiero cambiar|quiero cancelar|necesito ayuda|tengo una duda|no funciona|es compatible|material|potencia|duracion|caracteristicas|cuando entregan)\b/.test(s)) return "complex";
   // Preguntas genuinas no comerciales; una respuesta como "qué calle" se procesa por código.
   if (/[?¿]/.test(raw) && !/\b(?:quiero|llevo|dame|mandame|uno|una|dos|1|2|litros|unidad|soy de|calle|direc|nombre)\b/.test(s)) return "complex";
+  // Objeciones y consultas SIN signo de pregunta («Es un poco alto», «muy caro»,
+  // «sirve para heladera grande»): se responden primero, no son datos de compra.
+  if (/\b(?:caro|cara|carisimo|alto(?!\s+parana)|elevado|descuento|rebaja|mas barato|garantia|original|calidad|sirve|funciona|aguanta|soporta|resiste|medidas?|tamano|material|colou?r(?:es)?|marca|duracion|devolucion|confiable|estafa|lo pienso|voy a pensar|tal vez|despues te aviso|o no)\b/.test(s) &&
+      !/\b(?:calle|casi|esquina|barrio|ruta|km|nro|me llamo|mi nombre)\b/.test(s)) return "complex";
   return "checkout";
 }
 
