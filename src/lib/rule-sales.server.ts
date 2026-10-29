@@ -274,9 +274,20 @@ export function nationwideDestinationFromText(text: string): {city:string;depart
     {city:"Loma Plata",department:"Boquerón",aliases:["loma plata"]},
     {city:"Villa Hayes",department:"Presidente Hayes",aliases:["villa hayes"]},
     {city:"Fuerte Olimpo",department:"Alto Paraguay",aliases:["fuerte olimpo"]},
+    // Nombres populares de localidades.
+    {city:"Dr. J. Eulogio Estigarribia (Campo 9)",department:"Caaguazú",aliases:["campo 9","campo nueve","campo9","j eulogio estigarribia","juan eulogio estigarribia","eulogio estigarribia"]},
+    {city:"Coronel Oviedo",department:"Caaguazú",aliases:["oviedo"]},
+    {city:"Juan León Mallorquín",department:"Alto Paraná",aliases:["mallorquin","km 41"]},
   ];
-  const matches = paraguayanCities.filter(place => place.aliases.some(alias =>
+  // Resto de la geografía conocida (py-cities): solo identifica municipio y
+  // departamento; NO define cobertura ni modalidad.
+  const known = new Set(paraguayanCities.map(p => `${norm(p.city)}|${norm(p.department)}`));
+  const allPlaces = [...paraguayanCities, ...PY_CITIES
+    .filter(c => norm(c.city).length >= 4 && !known.has(`${norm(c.city)}|${norm(c.department)}`))
+    .map(c => ({city:c.city, department:c.department, aliases:[norm(c.city)]}))];
+  const hits = allPlaces.filter(place => place.aliases.some(alias =>
     (` ${normalized} `).includes(` ${alias} `)));
+  const matches = hits.filter((p,i) => hits.findIndex(x => norm(x.city) === norm(p.city) && norm(x.department) === norm(p.department)) === i);
   if (matches.length !== 1) return null;
   // "¿Y Pedro Juan?" es una consulta, NO un cambio de dirección confirmado.
   const direct = matches[0].aliases.includes(normalized) ||
@@ -685,9 +696,24 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     } else if(s.city && !s.cityVerified && !isNonCityPhrase(s.city) && !isNonCityPhrase(text) && /^[\p{L} .'-]{3,45}$/u.test(text.trim()) &&
              !/\b(?:quiero|litros|gracias|costo|pedido|precio|envio)\b/i.test(text)) {
       const candidate=verifiedCoverage(s.city,text.trim(),coverage);
-      s.department=candidate?.department ?? text.trim();
+      // Si repite la misma ciudad, el departamento queda por confirmar (no es el departamento).
+      s.department=candidate?.department ?? (norm(text)===norm(s.city) ? "A confirmar" : text.trim());
       s.cityVerified=true; // Declarado expresamente, pendiente de confirmación logística real.
       s.coverageStatus=candidate?.active ? "covered" : "uncovered";
+    }
+  }
+  // Regla del vendedor: una ciudad que NO figura en su cobertura de contraentrega
+  // es pago anticipado (encomienda), aunque no sepamos su departamento.
+  if (!s.cityVerified && !match && !gpsUrl && sellerAllowsNationwideAdvance(ctx.training)) {
+    const trimmed = text.trim();
+    const directed = trimmed.match(/^(?:para|soy de|vivo en|enviar a|enviame a|envialo a|mandar a|mandalo a|a)\s+(.+)$/i)?.[1]
+      ?? trimmed.match(/\b(?:quiero|llevo|dame|pido|necesito)\b.*?\bpara\s+(.{3,40})$/i)?.[1];
+    const raw = (directed ?? (s.awaiting === "city" ? trimmed : "")).replace(/[.!¡]+$/,"").trim();
+    if (raw.length >= 3 && raw.length <= 40 && /^[\p{L}0-9 .'-]+$/u.test(raw) && !isNonCityPhrase(raw) &&
+        !/\b(?:calle|barrio|casi|esquina|ruta|direccion|casa|unidad|unidades|caja|cajas)\b/i.test(raw)) {
+      s.city = raw.replace(/\s+/g," ").replace(/(^|\s)(\p{L})/gu, (_m, sp, ch) => sp + ch.toUpperCase());
+      s.department = s.department || "A confirmar";
+      s.cityVerified = true; s.coverageStatus = "uncovered"; s.paymentMethod = "anticipado";
     }
   }
   // Un comprobante aceptado puede dejar el estado anterior en `receipt`.
@@ -741,8 +767,9 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   // consulta y pregunta de venta lo genera la IA usando el entrenamiento.
   if (variants.length === 1 && !s.optionId) s.optionId=variants[0].id;
   // Una sola opción («1 caja») + intención de compra sin número: es esa opción.
+  // Si ya dio la ciudad u otro dato de compra, una sola opción no requiere preguntar cantidad.
   if (variants.length === 1 && !s.quantity && !s.cartLines?.length &&
-      /\b(?:quiero|lo quiero|la quiero|me llevo|lo llevo|la llevo|dale|comprar|pedir|me interesa comprar)\b/.test(n))
+      (/\b(?:quiero|lo quiero|la quiero|me llevo|lo llevo|la llevo|dale|comprar|pedir|me interesa comprar)\b/.test(n) || s.city || s.customerName))
     s.quantity = variants[0].quantity || 1;
   const selected=variants.find(o=>o.id===s.optionId)??null;
   const location=s.city && s.department ? verifiedCoverage(s.city,s.department,coverage):null;

@@ -1794,6 +1794,8 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
             .update({transcript:description}).eq("id",pending.id)
             .eq("conversation_id",conversation.id).eq("workspace_id",workspaceId);
           if (transcriptError) throw transcriptError;
+          // Si el archivo reintentado es el de ESTE mensaje, usar su lectura ahora.
+          if (path === mediaPath) transcript = description;
           // Se utiliza el transcript persistido en el paso de conciliación siguiente.
           delete ledger[path];
         } catch (error) {
@@ -2127,10 +2129,12 @@ Respetá el estilo, productos y condiciones del entrenamiento particular del ven
       !verifiedSaleState.receiptReview);
     // Imagen/archivo durante un pago anticipado que NO se pudo leer como
     // comprobante: la IA recibe ese resultado en lugar de prometer «verificar».
+    // Cualquier imagen/archivo en plena compra cuenta (aunque la modalidad aún
+    // no esté verificada): nunca responder «voy a verificar, un momento».
     const advanceCheckoutMedia = Boolean(!conversation.sale_closed && mediaPath && media &&
-      (media.type === "image" || media.type === "document") && verifiedSaleState.productId &&
-      /anticip|transfer|deposit|giro/i.test(String(verifiedSaleState.paymentMethod ?? "")));
-    if (advanceCheckoutMedia && !currentReceipt) {
+      (media.type === "image" || media.type === "document") && verifiedSaleState.productId);
+    if (advanceCheckoutMedia && !currentReceipt &&
+        /anticip|transfer|deposit|giro/i.test(String(verifiedSaleState.paymentMethod ?? ""))) {
       aiAnswerContext.systemInstruction += `\nIMAGEN RECIBIDA DURANTE EL PAGO ANTICIPADO (resultado del sistema, YA revisada): no se pudo leer un comprobante de transferencia en ese archivo (ilegible, recortado o no es un comprobante). NO digas «voy a verificar» ni «un momento». Pedí amablemente una captura o foto completa y nítida del comprobante donde se vean el monto, la cuenta o alias de destino y el titular. Si el cliente pregunta otra cosa, respondela también.`;
     }
     if (currentReceipt && !conversation.sale_closed) {
