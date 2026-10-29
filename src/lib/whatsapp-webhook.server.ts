@@ -2089,6 +2089,21 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         hasRecipientCi: isValidRecipientCi(verifiedSaleState.recipientCi),
       }));
     }
+    // Comprobante anterior con monto INSUFICIENTE: el extractor sigue esperando
+    // el pago; la IA debe informar la diferencia exacta, no pedir nombre ni cerrar.
+    if (!currentReceipt && !conversation.sale_closed && verifiedSaleState.awaiting === "receipt" &&
+        verifiedSaleState.receiptDocuments?.length && !verifiedSaleState.receiptReview) {
+      const shortfallProduct = ctx.products.find(p => p.id === verifiedSaleState.productId);
+      const shortfallOptions = shortfallProduct?.product_prices ?? [];
+      const officialTotal = verifiedSaleState.cartLines?.length
+        ? verifiedSaleState.cartLines.reduce((sum, line) =>
+            sum + Number(shortfallOptions.find(o => o.id === line.optionId)?.price ?? 0) * line.quantity, 0)
+        : Number(shortfallOptions.find(o => o.id === verifiedSaleState.optionId)?.price ?? 0);
+      const documented = verifiedSaleState.receiptDocuments.reduce((sum, r) => sum + r.amountGs, 0);
+      if (officialTotal > 0 && documented < officialTotal) {
+        aiAnswerContext.systemInstruction += `\nPAGO ANTICIPADO INCOMPLETO (dato del backend): comprobantes documentados ${formatGs(documented)}; total oficial ${formatGs(officialTotal)}; falta ${formatGs(officialTotal - documented)}. Informá amablemente la diferencia exacta y pedí el comprobante del complemento. No confirmes el pedido ni pidas otros datos todavía.`;
+      }
+    }
     // El motor nunca puede borrar hechos ya verificados al procesar una dirección.
     if (ruleStep && previousSale.cityVerified && previousSale.city && previousSale.department &&
         !ruleStep.state.cityVerified && !/\b(?:soy de|vivo en|para)\b/i.test(body)) {
@@ -2612,7 +2627,17 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         : (!pendingIsEncomienda && !pendingHasAddress)
         ? `😊 ¡Gracias${pendingFirstName ? ", " + pendingFirstName : ""}! Para que el repartidor llegue bien, ¿me pasás tu dirección (calle y una referencia) o tu ubicación por Google Maps? 📍`
         : (!safeBeforeInsert || /registrand|registrar[eé]?\s+tu\s+pedido|confirmand/i.test(safeBeforeInsert))
-        ? "Recibí tus datos 😊 Un asesor está verificando tu pedido y te confirma en breve."
+        ? await pendingCheckoutAiReply({
+            ctx: aiAnswerContext,
+            facts: {
+              paymentMethod: result.order?.payment_method ?? null,
+              isAdvance, hasReceiptForOrder, financiallyReady,
+              expectedTotal, receivedTotal,
+              receiptReview: paymentSaleState.receiptReview ?? null,
+              priceSelected: Boolean(saveStep?.state.cartLines?.length) || stateExpectedTotal !== null,
+              coverageMethod: verifiedOrderCoverage?.method ?? null,
+            },
+          })
         : safeBeforeInsert;
       const pendingChecked = enforceVerifiedPaymentReply({
         reply: pendingProposal, city:verifiedSaleState.city, department:verifiedSaleState.department,
@@ -4066,6 +4091,35 @@ ${match.products.description ?? ""}`.trim();
   return { productId, sent: copySent || sentMediaCount > 0 };
 }
 
+
+/**
+ * El extractor dio el cierre por completo pero el INSERT no procedió (monto,
+ * variante o cobertura sin verificar). En lugar de un texto fijo, la IA con el
+ * entrenamiento del vendedor explica al cliente qué falta, usando los hechos
+ * técnicos del backend. Si la IA no responde, se usa el aviso de respaldo.
+ */
+async function pendingCheckoutAiReply(args: {
+  ctx: Parameters<typeof generateAiReply>[0];
+  facts: Record<string, unknown>;
+}): Promise<string> {
+  const fallback = "Recibí tus datos 😊 Un asesor está verificando tu pedido y te confirma en breve.";
+  try {
+    const { reply } = await generateAiReplyWithRetry({
+      ...args.ctx,
+      systemInstruction: args.ctx.systemInstruction +
+        `\nCIERRE PENDIENTE: el backend NO pudo registrar todavía el pedido. Hechos técnicos: ${JSON.stringify(args.facts)}. ` +
+        "Respondé al cliente con el entrenamiento de la tienda explicando SOLO lo que falta: si el pago anticipado no cubre el total, indicá la diferencia exacta y pedí el comprobante del complemento; " +
+        "si falta elegir variante o cantidad, mostrá las opciones con sus precios reales del catálogo y preguntá cuál prefiere; si el comprobante está en revisión, decí que un asesor lo revisa sin pedir otra transferencia. " +
+        "No digas que el pedido está confirmado ni inventes número de pedido.",
+    });
+    const text = String(reply ?? "").trim();
+    if (!text || /pedido\s+(?:confirmado|registrado)/i.test(text)) return fallback;
+    return text;
+  } catch (error) {
+    console.error("[BOT_SKY_PENDING_CHECKOUT_AI]", error instanceof Error ? error.message : String(error));
+    return fallback;
+  }
+}
 
 /* ------------------------------------------------------------------ */
 /* NUNCA QUEDARSE CALLADO                                              */

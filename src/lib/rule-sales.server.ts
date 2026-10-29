@@ -1,5 +1,6 @@
 /** BOT SKY: extractor/validador de estado. No redacta preguntas comerciales. */
 import type { AiContext } from "@/lib/ai.server";
+import { isValidDeliveryAddress } from "@/lib/sale-reconciliation.server";
 
 type Product = AiContext["products"][number];
 type Option = Product["product_prices"][number];
@@ -665,20 +666,32 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     sellerAllowsNationwideAdvance(ctx.training) && !location?.active;
   if(location?.active && /contra entrega|contraentrega/i.test(norm(location.method)))s.paymentMethod="contraentrega";
   else if(s.cityVerified && (national || (location && /encomienda|anticipado|transferencia/i.test(norm(location.method)))))s.paymentMethod="anticipado";
-  // Nunca usar un comprobante simplemente adjunto como validación del importe.
-  const receiptVerified=Boolean(s.receiptPath && !s.receiptReview && s.receiptDocuments?.length);
   const encomienda=isEncomiendaAdvanceOrder(ctx.training,s.city,s.department,s.paymentMethod);
   void encomienda; // la cédula de encomienda se pide después de confirmar el pedido
   const needsAddress=s.paymentMethod==="contraentrega" && location?.addressRequired!==false;
-  const validPrice=Boolean(s.cartLines?.length || (selected && priceFor(p,selected,s.quantity??0)) ||
-    (variants.length===0 && s.quantity && priceFor(p,null,s.quantity)));
+  // La misma validación que exige el INSERT: un barrio suelto no es dirección.
+  const hasValidAddress=isValidDeliveryAddress(s.street) || isValidDeliveryAddress(s.locationUrl);
+  const cartTotal=s.cartLines?.length
+    ? s.cartLines.reduce<number|null>((sum,line)=>{
+        const opt=variants.find(o=>o.id===line.optionId);
+        return sum===null || !opt ? null : sum+opt.price*line.quantity;
+      },0)
+    : null;
+  const expectedTotal=cartTotal ?? (selected ? priceFor(p,selected,s.quantity??0)
+    : variants.length===0 && s.quantity ? priceFor(p,null,s.quantity) : null);
+  const validPrice=Boolean(expectedTotal && expectedTotal>0);
+  // Nunca usar un comprobante simplemente adjunto como validación del importe:
+  // el monto documentado debe cubrir el total oficial, como exige el INSERT.
+  const documentedTotal=(s.receiptDocuments??[]).reduce((sum,r)=>sum+r.amountGs,0);
+  const receiptVerified=Boolean(s.receiptPath && !s.receiptReview && s.receiptDocuments?.length &&
+    expectedTotal && documentedTotal>=expectedTotal);
   if (variants.length>1 && !selected && !s.cartLines?.length) s.awaiting="variant";
   else if (!s.city || !s.cityVerified || !s.department) s.awaiting="city";
   else if (!s.quantity || s.quantity<1 || !validPrice) s.awaiting="quantity";
   else if (!s.paymentMethod) s.awaiting="payment";
   else if (s.paymentMethod==="anticipado" && !receiptVerified) s.awaiting="receipt";
   else if (!s.customerName) s.awaiting="name";
-  else if (needsAddress && !s.street && !s.locationUrl) s.awaiting="address";
+  else if (needsAddress && !hasValidAddress) s.awaiting="address";
   else s.awaiting=null;
   const complete=Boolean(s.awaiting===null && s.cityVerified &&
     (location?.active || national || Boolean(location && /encomienda|anticipado|transferencia/i.test(norm(location.method)))));
