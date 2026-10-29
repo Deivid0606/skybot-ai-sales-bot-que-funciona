@@ -2082,6 +2082,15 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
 AVANCE DEL CIERRE, OBLIGATORIO EN EL MISMO TURNO: si ya identificaste producto, variante, cantidad y ciudad, NO termines una respuesta mostrando solo el detalle o preguntando «¿seguimos?», «¿está bien?» o «¿confirmás?»; pedí inmediatamente el SIGUIENTE dato faltante del estado técnico. Si awaiting="name", solicitá nombre Y apellido en ese mismo mensaje, aun cuando acabes de explicar el pago al recibir y el total. Cuando te respondan el nombre, si awaiting="address", pedí dirección o ubicación. Si awaiting="receipt" para encomienda, explicá las instrucciones de pago SOLO desde los datos bancarios reales de este vendedor y decí que envíe el comprobante; no pidas dirección ni GPS. Si el cliente hace una consulta concreta, respondela y retomá el dato pendiente sin repetición. Nunca digas «pedido confirmado» antes de que el servidor lo registre.
 Respetá el estilo, productos y condiciones del entrenamiento particular del vendedor; el backend solamente asegura que la venta NO se estanque sin pedir el siguiente dato obligatorio.`
     };
+    // Cantidad/variante pendiente: dar a la IA las opciones REALES del catálogo
+    // para que no invente precios ([PRECIO]) ni acepte cantidades inexistentes.
+    if (!bypassSale && verifiedSaleState.awaiting === "variant" && verifiedSaleState.productId) {
+      const variantProduct = ctx.products.find(p => p.id === verifiedSaleState.productId);
+      const variantOptions = (variantProduct?.product_prices ?? []).filter(o => Number(o.price) > 0);
+      if (variantOptions.length) {
+        aiAnswerContext.systemInstruction += `\nVARIANTE PENDIENTE (dato del sistema): el cliente todavía no eligió una opción válida${verifiedSaleState.quantity ? ` (pidió ${verifiedSaleState.quantity}, que no coincide con ninguna opción)` : ""}. Opciones REALES: ${variantOptions.map(o => `${o.label} = ${formatGs(Number(o.price))}`).join("; ")}. Explicá las opciones con esos precios exactos y preguntá cuál prefiere. No armes el detalle del pedido, no pidas pago ni datos bancarios todavía.`;
+      }
+    }
     // Comprobantes: pasar a la IA el RESULTADO DOCUMENTAL del backend, no
     // solamente la transcripción visual. El backend valida, la IA conversa.
     // Este contexto nunca implica acreditación del dinero por el banco.
@@ -2391,6 +2400,45 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
     const codPolicy = verifiedSaleState.cityVerified
       ? deliveryPolicyForCity(verifiedSaleState.city, verifiedSaleState.department, ctx.training) : null;
     const BANK_RE = /(?:\bbanco\b|\btitular\b|cuenta desde|alias\s+eko|comprobante|realices el pago)/i;
+    /**
+     * CONTROL FINAL antes de WhatsApp: se aplica a TODO texto automático,
+     * incluidas las reescrituras de la IA. Ninguna respuesta puede contradecir
+     * la modalidad verificada de la ciudad ni llevar marcadores como [PRECIO].
+     */
+    const violatesVerifiedFacts = (text: string) => {
+      const policy = verifiedSaleState.cityVerified
+        ? deliveryPolicyForCity(verifiedSaleState.city, verifiedSaleState.department, ctx.training) : null;
+      const prematureBank = verifiedSaleState.awaiting === "variant" && BANK_RE.test(text);
+      return enforceVerifiedPaymentReply({reply:text, city:verifiedSaleState.city, department:verifiedSaleState.department,
+          cityVerified:verifiedSaleState.cityVerified, training:ctx.training}).corrected ||
+        (policy?.paymentMethod === "contraentrega" && (BANK_RE.test(text) || /\bencomienda\b|pago anticipado|total a transferir/i.test(text))) ||
+        hasTemplatePlaceholder(text) || prematureBank;
+    };
+    const finalPolicyGate = async (text: string): Promise<string> => {
+      if (!text.trim() || !violatesVerifiedFacts(text)) return text;
+      const policy = verifiedSaleState.cityVerified
+        ? deliveryPolicyForCity(verifiedSaleState.city, verifiedSaleState.department, ctx.training) : null;
+      console.warn("[BOT_SKY_FINAL_POLICY_GATE]", JSON.stringify({conversationId:conversation.id,
+        city:verifiedSaleState.city, paymentMethod:policy?.paymentMethod ?? null, awaiting:verifiedSaleState.awaiting}));
+      const facts = [
+        policy?.paymentMethod === "contraentrega"
+          ? `Para ${verifiedSaleState.city} la modalidad VERIFICADA es CONTRAENTREGA (${policy.method}): el cliente paga al recibir. PROHIBIDO decir encomienda o pago anticipado, mostrar datos bancarios o pedir comprobante.`
+          : policy?.paymentMethod === "anticipado"
+            ? `Para ${verifiedSaleState.city} la modalidad VERIFICADA es pago anticipado; no prometas pago al recibir.` : "",
+        verifiedSaleState.awaiting === "variant" ? "El cliente todavía no eligió una opción válida: mostrá las opciones reales con sus precios y preguntá cuál prefiere; no pidas pago." : "",
+        "Nunca uses marcadores como [PRECIO] o [TOTAL]: usá los precios reales del catálogo.",
+      ].filter(Boolean).join(" ");
+      const again = await aiCompose(aiAnswerContext, `${facts} Tu borrador anterior violaba estas reglas: «${text.slice(0, 1200)}». Reescribí la respuesta correcta.`);
+      if (again && !violatesVerifiedFacts(again)) return again;
+      // Último recurso SIN texto fijo: depurar el borrador de la IA quitando
+      // solo las líneas que contradicen los hechos verificados.
+      let cleaned = again ?? text;
+      if (policy?.paymentMethod === "contraentrega" || verifiedSaleState.awaiting === "variant")
+        cleaned = stripBankDetailsForCod(cleaned).split("\n")
+          .filter(line => !/encomienda|pago anticipado|transferir|transferencia|cuenta|alias|c[eé]dula/i.test(line)).join("\n");
+      cleaned = cleaned.split("\n").filter(line => !hasTemplatePlaceholder(line)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+      return cleaned;
+    };
     if (codPolicy?.paymentMethod === "contraentrega" && BANK_RE.test(finalReply)) {
       const rewritten = await generateAiReplyWithRetry({...aiAnswerContext,
         systemInstruction: aiAnswerContext.systemInstruction +
@@ -2698,7 +2746,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       if (pendingChecked.corrected) console.warn("[BOT_SKY_COVERAGE_OUTPUT_GUARD]", JSON.stringify({
         conversationId:conversation.id, paymentMethod:pendingChecked.paymentMethod, channel:"whatsapp_gps"
       }));
-      const pendingText = pendingChecked.reply;
+      const pendingText = await finalPolicyGate(pendingChecked.reply);
       if (!pendingText.trim()) {
         await sendSilenceFallback({conn,workspaceId,ownerId,conversationId:conversation.id,adId:attributedAdId,phone,wamid:message.id,
           reason:"La IA no pudo redactar la respuesta del cierre pendiente", queue:false});
@@ -2920,6 +2968,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         if (sentTotalLines.has(normalizedLine)) return false;
         sentTotalLines.add(normalizedLine); return true;
       }).join("\n").replace(/\n{3,}/g,"\n\n").trim();
+      outgoingText = await finalPolicyGate(outgoingText);
       if (!outgoingText) {
         await sendSilenceFallback({conn,workspaceId,ownerId,conversationId:conversation.id,adId:attributedAdId,phone,wamid:message.id,
           reason:"La IA no pudo redactar la respuesta", queue:false});
