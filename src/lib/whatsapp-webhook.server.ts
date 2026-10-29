@@ -10,7 +10,7 @@ import { parseReceiptFields } from "@/lib/media-ai.server";
 import { reconcileOrderWithSaleState, recoverSaleStateFromHistory, isValidCustomerName, isValidDeliveryAddress } from "@/lib/sale-reconciliation.server";
 import { buildRegisteredOrderConfirmation } from "@/lib/order-confirmation.server";
 import { buildWorkspaceAiContext } from "@/lib/ai-context.server";
-import { generateAiReply, type AiContext } from "@/lib/ai.server";
+import { generateAiReply, applyDynamicSellerTrainingReply, type AiContext } from "@/lib/ai.server";
 import { advanceRuleSale, sellerUsesFirstOffer, isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi, isValidRecipientCi, type SaleState } from "@/lib/rule-sales.server";
 import { classifyCustomerIntent, addVerifiedOrderContext, addPendingSaleContext } from "@/lib/hybrid-intent.server";
 import { coordinatesFromText, validCoords } from "@/lib/hybrid-intent.server";
@@ -2504,6 +2504,19 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         state: verifiedSaleState,
         customerNameValid: isValidCustomerName(verifiedSaleState.customerName),
         checkoutActive: !bypassSale && !conversation.sale_closed,
+      });
+      // Regla declarativa del vendedor: si entrenó explícitamente un catálogo
+      // para saludos sin producto, respetar la URL del entrenamiento aun cuando
+      // el modelo la haya omitido. NO intervenir en checkout ni postventa.
+      outgoingText = applyDynamicSellerTrainingReply({
+        reply: outgoingText,
+        customerText: body,
+        history: chatHistory,
+        training: ctx.training,
+        products: ctx.products,
+        activeProductId: verifiedSaleState.productId ?? conversation.product_id,
+        checkoutActive: Boolean(verifiedSaleState.productId &&
+          (verifiedSaleState.quantity || verifiedSaleState.customerName || verifiedSaleState.cityVerified)),
       });
       const outgoingWamid = await sendWhatsAppText(conn, phone, outgoingText);
       await supabaseAdmin.from("messages").insert({
