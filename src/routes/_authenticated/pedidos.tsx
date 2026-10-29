@@ -161,7 +161,19 @@ function OrdersPage() {
 
       return data ?? [];
     },
+    // Respaldo si el canal en tiempo real no está disponible.
+    refetchInterval: 30_000,
   });
+
+  // Los pedidos que registra el bot aparecen sin recargar la página.
+  useEffect(() => {
+    if (!workspaceId) return;
+    const channel = supabase.channel(`pedidos-orders-${workspaceId}`)
+      .on("postgres_changes", {event:"*",schema:"public",table:"orders",filter:`workspace_id=eq.${workspaceId}`}, () => {
+        queryClient.invalidateQueries({queryKey:["orders",workspaceId]});
+      }).subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [workspaceId, queryClient]);
 
   useEffect(() => {
     const onMessage = async (event: MessageEvent) => {

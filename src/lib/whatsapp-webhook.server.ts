@@ -2462,8 +2462,12 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       return enforceVerifiedPaymentReply({reply:text, city:verifiedSaleState.city, department:verifiedSaleState.department,
           cityVerified:verifiedSaleState.cityVerified, training:ctx.training}).corrected ||
         (policy?.paymentMethod === "contraentrega" && (BANK_RE.test(text) || /\bencomienda\b|pago anticipado|total a transferir/i.test(text))) ||
-        hasTemplatePlaceholder(text) || prematureBank;
+        hasTemplatePlaceholder(text) || prematureBank || claimsRegisteredOrder(text);
     };
+    // Solo el bloque posterior al INSERT puede confirmar; el resto nunca.
+    function claimsRegisteredOrder(text: string) {
+      return /(?:pedido\s+(?:confirmado|registrado)|pedido\s+n\.?\s*[º°o]|n[uú]mero\s+de\s+pedido|\bBS-[A-F0-9]{6,}|gracias\s+por\s+tu\s+compra|tu\s+pedido\s+(?:ya\s+)?(?:qued[oó]|est[aá])\s+(?:confirmado|registrado|listo))/i.test(text);
+    }
     const finalPolicyGate = async (text: string): Promise<string> => {
       if (!text.trim() || !violatesVerifiedFacts(text)) return text;
       const policy = verifiedSaleState.cityVerified
@@ -2477,6 +2481,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
             ? `Para ${verifiedSaleState.city} la modalidad VERIFICADA es pago anticipado; no prometas pago al recibir.` : "",
         verifiedSaleState.awaiting === "variant" ? "El cliente todavía no eligió una opción válida: mostrá las opciones reales con sus precios y preguntá cuál prefiere; no pidas pago." : "",
         "Nunca uses marcadores como [PRECIO] o [TOTAL]: usá los precios reales del catálogo.",
+        claimsRegisteredOrder(text) ? "El pedido TODAVÍA NO está registrado en el sistema: no digas que está confirmado, no muestres número de pedido ni agradezcas la compra; pedí el dato que falte." : "",
       ].filter(Boolean).join(" ");
       const again = await aiCompose(aiAnswerContext, `${facts} Tu borrador anterior violaba estas reglas: «${text.slice(0, 1200)}». Reescribí la respuesta correcta.`);
       if (again && !violatesVerifiedFacts(again)) return again;
@@ -2486,7 +2491,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       if (policy?.paymentMethod === "contraentrega" || verifiedSaleState.awaiting === "variant")
         cleaned = stripBankDetailsForCod(cleaned).split("\n")
           .filter(line => !/encomienda|pago anticipado|transferir|transferencia|cuenta|alias|c[eé]dula/i.test(line)).join("\n");
-      cleaned = cleaned.split("\n").filter(line => !hasTemplatePlaceholder(line)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+      cleaned = cleaned.split("\n").filter(line => !hasTemplatePlaceholder(line) && !claimsRegisteredOrder(line)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
       return cleaned;
     };
     if (codPolicy?.paymentMethod === "contraentrega" && BANK_RE.test(finalReply)) {
@@ -2728,21 +2733,8 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         deliveryMethod: isEncomiendaAdvanceOrder(ctx.training,completedOrder.city,completedOrder.departamento,completedOrder.payment_method)
           ? "Encomienda con pago anticipado" : verifiedOrderCoverage?.method,
       });
-      // La IA redacta la confirmación con el estilo del vendedor, pero el número
-      // de pedido y el total deben aparecer EXACTOS; si no, se usa el resumen del registro.
-      const aiConfirmation = await aiCompose(aiAnswerContext,
-        `El pedido QUEDÓ REGISTRADO en el sistema. Confirmalo al cliente con el formato de cierre del entrenamiento, ` +
-        `usando EXACTAMENTE estos datos (no cambies número de pedido, total, cantidad ni modalidad):\n${confirmedMessage}`);
-      const compact = (v: string) => v.toUpperCase().replace(/[^A-Z0-9]/g, "");
-      const aiHasTotal = Boolean(aiConfirmation &&
-        aiConfirmation.replace(/\D/g, "").includes(String(Math.round(Number(savedConfirmationOrder.total)))));
-      const aiHasNumber = Boolean(aiConfirmation && compact(aiConfirmation).includes(compact(savedConfirmationOrder.order_number)));
-      // Si la IA omitió solo el número, se agrega la línea real; sin el total exacto se usa el resumen.
-      const confirmationText = aiConfirmation && aiHasTotal
-        ? (aiHasNumber ? aiConfirmation : `${aiConfirmation}\n\n🧾 Pedido N.º: ${savedConfirmationOrder.order_number}`)
-        : confirmedMessage;
-      if (confirmationText === confirmedMessage) console.warn("[BOT_SKY_CONFIRMATION_TEMPLATE]", JSON.stringify({
-        orderId: createdOrder.id, aiReturned: Boolean(aiConfirmation), aiHasTotal, aiHasNumber }));
+      // Formato de cierre oficial (datos tal como quedaron registrados).
+      const confirmationText = confirmedMessage;
       try {
         const confirmationWamid = await sendWhatsAppText(conn, phone, confirmationText);
         await supabaseAdmin.from("messages").insert({
