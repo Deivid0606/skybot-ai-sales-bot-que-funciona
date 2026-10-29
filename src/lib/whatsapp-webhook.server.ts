@@ -1917,7 +1917,9 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         const expected = normalizeHolder(authorizedHolder);
         const actual = normalizeHolder(received);
         if (actual.length < 2) return false;
-        return actual.every(token => expected.includes(token)) &&
+        // Iniciales («PAMELA A. AYALA G.») deben corresponder a algún nombre autorizado.
+        return actual.every(token => expected.includes(token) ||
+            (token.length === 1 && expected.some(word => word.startsWith(token)))) &&
           actual.some(token => token === expected[0]) && actual.some(token => token === expected[expected.length - 1] || token === expected[expected.length - 2]);
       };
       for (const source of receiptSources) {
@@ -1935,21 +1937,32 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         // identificadores autorizados de ESTE vendedor únicamente.
         const destinationChecks = receivedDestinations.map(value => {
           const normalized = normalizeDestination(value);
-          const accountMatch = authorizedAccounts.some(account =>
-            normalizeDestination(String(account)) === normalized && normalized !== "");
+          const visibleDigits = value.replace(/\D/g, "");
+          // Muchos bancos muestran la cuenta destino enmascarada (****8085):
+          // no es una cuenta distinta; se compara con los últimos dígitos.
+          const masked = /[*xX•·]{2,}/.test(value) && visibleDigits.length >= 3;
+          const accountMatch = normalized !== "" && authorizedAccounts.some(account =>
+            normalizeDestination(String(account)) === normalized);
+          const maskedMatch = masked && authorizedAccounts.some(account => String(account).endsWith(visibleDigits));
           const aliasMatch = authorizedAliases.includes(normalized) && normalized !== "";
-          return { accountMatch, aliasMatch };
+          return { accountMatch, aliasMatch, masked, maskedMatch };
         });
-        // No ignorar un identificador explícito que contradiga a otro visible.
-        const accountOk = destinationChecks.length > 0 && destinationChecks.every(
-          check => check.accountMatch || check.aliasMatch);
+        // Un identificador completo que contradice la cuenta autorizada bloquea;
+        // uno enmascarado solo cuenta si sus últimos dígitos coinciden.
+        const holderOkEarly = compatibleHolder(candidate.beneficiary);
+        const accountOk = (destinationChecks.length > 0 &&
+          destinationChecks.some(check => check.accountMatch || check.aliasMatch || check.maskedMatch) &&
+          destinationChecks.every(check => check.accountMatch || check.aliasMatch || check.maskedMatch)) ||
+          // Comprobante que solo identifica al destinatario por su NOMBRE completo autorizado.
+          (destinationChecks.length === 0 && Boolean(authorizedHolder && candidate.beneficiary && holderOkEarly &&
+            normalizeHolder(candidate.beneficiary).filter(t => t.length > 1).length >= 2));
         const wrongAccount = destinationChecks.length > 0 && !accountOk;
         const holderOk = compatibleHolder(candidate.beneficiary);
         const wrongHolder = Boolean(authorizedHolder && candidate.beneficiary && !holderOk);
-        // Si la coincidencia depende de alias, el nombre del beneficiario debe
-        // aparecer y coincidir: de otro modo, enviar a revisión documental.
-        const needsHolderForAlias = destinationChecks.some(c => c.aliasMatch && !c.accountMatch);
-        const missingAliasHolder = Boolean(needsHolderForAlias && authorizedHolder &&
+        // Cuenta enmascarada SIN cuenta/alias completos: exigir titular visible y compatible.
+        // El alias autorizado alcanza por sí solo (si aparece un titular, debe coincidir).
+        const onlyMasked = destinationChecks.some(c => c.maskedMatch) && !destinationChecks.some(c => c.accountMatch || c.aliasMatch);
+        const missingAliasHolder = Boolean(onlyMasked && authorizedHolder &&
           (!candidate.beneficiary || !holderOk));
         const amountOk = candidate.amountGs !== null && Number.isSafeInteger(candidate.amountGs);
         if (!accountOk || !amountOk || wrongHolder || missingAliasHolder) {
