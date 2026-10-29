@@ -2650,7 +2650,15 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         cleaned = stripBankDetailsForCod(cleaned).split("\n")
           .filter(line => !/encomienda|pago anticipado|transferir|transferencia|cuenta|alias|c[eé]dula/i.test(line)).join("\n");
       cleaned = stripWaitingSentences(cleaned);
-      cleaned = cleaned.split("\n").filter(line => !hasTemplatePlaceholder(line) && !claimsRegisteredOrder(line)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+      cleaned = cleaned.split("\n").filter(line => !hasTemplatePlaceholder(line) && !claimsRegisteredOrder(line) &&
+        // Campos vacíos («📍 Ciudad:») no se envían.
+        !/^[^\p{L}]*[\p{L} ]{2,30}:\s*\**\s*$/u.test(line.trim())).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+      // Si la limpieza dejó la respuesta sin el siguiente paso, la IA lo completa.
+      const pendingStep = !bypassSale && !conversation.sale_closed ? verifiedSaleState.awaiting : null;
+      if (pendingStep && !/[?¿]/.test(cleaned)) {
+        const nextAsk = await aiCompose(aiAnswerContext, `${facts} Respondé lo que el cliente dijo en su último mensaje y pedí el siguiente dato pendiente (${pendingStep}). No muestres un detalle incompleto.`);
+        if (nextAsk && !violatesVerifiedFacts(nextAsk)) return nextAsk;
+      }
       return cleaned;
     };
     if (codPolicy?.paymentMethod === "contraentrega" && BANK_RE.test(finalReply)) {
