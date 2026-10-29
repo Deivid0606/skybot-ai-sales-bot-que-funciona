@@ -23,6 +23,9 @@ export function isValidCustomerName(value: unknown): boolean {
   if (/\b(?:itaugua|luque|lambare|cap iata|capiata|aregua|ypane|nemby|limpio|encarnacion|hernandarias|franco|mariano roque alonso|ciudad del este)\b/.test(n)) return false;
 
   if (/\b(?:estoy|en|aeropuerto|trabajo|oficina|salgo|almorzar|almuerzo|horas?|hasta|desde|avisa|traigas|aca|aqui|cada|unidades?|cajas?)\b/.test(n)) return false;
+  // Frases comunes («Es un poco alto», «O no», «Solo eso») no son nombres:
+  // palabras funcionales u opiniones nunca forman parte de un nombre y apellido.
+  if (/\b(?:es|son|un|una|uno|unos|poco|muy|mas|menos|alto|alta|caro|cara|barato|barata|solo|sola|nomas|o|y|que|eso|esto|esta|este|todo|nada|algo|ya|tambien|pero|porque|bueno|buena|mejor|peor|igual|tal|vez|creo|puede|seria|hay|tiene|tengo|quiero|necesito|me|te|se|lo|le|les|mi|tu|su|ahi|asi)\b/.test(n)) return false;
   // Referencias de dirección («Caballero casi Rca. de Colombia») no son nombres.
   if (/\b(?:casi|esq|esquina|entre|frente|detras|cerca|km|ruta|rca|republica|mcal|mariscal|tte|gral|cnel|nro|numero|casa|edificio|piso|depto|manzana|lote|villa|sobre)\b/.test(n)) return false;
   if (/\b(?:barrio|ciudad|calle|avenida|avda|ruta|esquina|zona|centro|obrero|direccion|ubicacion|departamento|pedido|entrega|lunes|martes|miercoles|jueves|viernes|sabado|domingo|mañana|manana|hoy|precio|quiero|gracias|okey|perfecto|confirmo|asuncion|central|paraguay)\b/.test(n)) return false;
@@ -39,6 +42,9 @@ export function isValidDeliveryAddress(value: unknown): boolean {
   if (/^https:\/\/(?:www\.)?(?:google\.[^\s/]+\/maps|maps\.app\.goo\.gl\/|goo\.gl\/maps\/)/i.test(address)) return true;
   if (address.length < 7 || /^(?:ok|okey|dale|si|no|para el |el |este |proximo |mañana|manana|hoy|lunes|martes|miercoles|jueves|viernes|sabado|domingo)/.test(n)) return false;
   if (/^(?:barrio|zona|ciudad|de )\s+[\p{L} '\-]+$/u.test(n)) return false;
+  // Cantidades o pedidos («Solo 1 caja», «quiero 2 unidades») no son direcciones.
+  if (/\b(?:cajas?|unidad(?:es)?|packs?|combos?|promo(?:cion)?|quiero|solo|nomas|precio|gs|guaranies|afilador(?:es)?|bases?)\b/.test(n) &&
+      !/\b(?:calle|avenida|avda|ruta|esquina|casi|barrio|frente|entre|km|nro|numero)\b/.test(n)) return false;
   // Calle, avenida, número o referencia inequívoca. Un barrio aislado no basta.
   if (/\b(?:\d{1,2}\s*[:.]\s*\d{2}|\d{1,2}\s*(?:hs|horas?)|de\s+\d{1,2}\s+a\s+\d{1,2}|almorzar|almuerzo|salgo|horario|hasta las)\b/.test(n) && !/\b(?:calle|avenida|ruta|casa|aeropuerto|trabajo|oficina|frente|esquina)\b/.test(n)) return false;
   // Frases vagas sin calle ni referencia ("voy a estar en mi casa", "en casa", "mi domicilio").

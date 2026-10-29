@@ -1,6 +1,6 @@
 /** BOT SKY: extractor/validador de estado. No redacta preguntas comerciales. */
 import type { AiContext } from "@/lib/ai.server";
-import { isValidDeliveryAddress } from "@/lib/sale-reconciliation.server";
+import { isValidDeliveryAddress, isValidCustomerName } from "@/lib/sale-reconciliation.server";
 import { PY_CITIES } from "@/lib/py-cities";
 
 type Product = AiContext["products"][number];
@@ -297,7 +297,9 @@ function declaredDestination(text:string): {city:string;department:string}|null 
 /** Frases que NO son nombres de ciudad (pago, saludos, preguntas, pedidos). */
 export function isNonCityPhrase(text:string):boolean{
   const n=norm(text);
-  return !n || /\b(?:paga|pago|pagar|pagas|recibir|contra ?entrega|anticipado|transferencia|efectivo|envio|gratis|delivery|precio|costo|cuanto|quiero|gracias|hola|buenas|buen dia|si|no|ok|dale|listo|perfecto|litros?|caja|cajas|unidad|unidades|pedido|confirmo|cuando|como|donde|tienen|hacen|llega|casa|domicilio)\b/.test(n);
+  return !n || /\b(?:paga|pago|pagar|pagas|recibir|contra ?entrega|anticipado|transferencia|efectivo|envio|gratis|delivery|precio|costo|cuanto|quiero|gracias|hola|buenas|buen dia|si|no|ok|dale|listo|perfecto|litros?|caja|cajas|unidad|unidades|pedido|confirmo|cuando|como|donde|tienen|hacen|llega|casa|domicilio)\b/.test(n) ||
+    // Opiniones o frases comunes («Es un poco alto», «O no», «muy caro») no son ciudades.
+    /\b(?:es|son|un|una|poco|muy|mas|menos|alto|alta|caro|cara|barato|solo|nomas|o|que|eso|esto|todo|nada|algo|ya|pero|porque|bueno|mejor|igual|creo|puede|hay|tengo|necesito|me|te|lo|le|mi|tu)\b/.test(n);
 }
 
 export function cityIn(text:string, coverage:Coverage[]): Coverage | null {
@@ -319,10 +321,16 @@ export function cityIn(text:string, coverage:Coverage[]): Coverage | null {
       d[i][j]=Math.min(d[i-1][j]+1,d[i][j-1]+1,d[i-1][j-1]+(a[i-1]===b[j-1]?0:1));
     return d[a.length][b.length]<=1;
   };
+  // Palabras comunes que distan 1 letra de una ciudad («alto» → Altos) no son ciudades.
+  const COMMON=new Set(["alto","alta","altas","caro","cara","limpia","limpie","luego","pila","ita","yaguar","nueva","nuevo","franco","villa","santa","santo"]);
   const hits=exact.length?exact:coverage.filter(c=>[c.city,...c.aliases].some(alias=>{
     const n=norm(alias); if(n.length<4)return false;
     const size=n.split(" ").length;
-    for(let i=0;i+size<=words.length;i++){ if(near(words.slice(i,i+size).join(" "),n))return true; }
+    for(let i=0;i+size<=words.length;i++){
+      const cand=words.slice(i,i+size).join(" ");
+      if(COMMON.has(cand) || (n.endsWith("s") && cand===n.slice(0,-1)) || cand.length<4) continue;
+      if(near(cand,n))return true;
+    }
     return false;
   }));
   // Una ciudad registrada varias veces (por ejemplo, alias y sección) es una
@@ -688,19 +696,19 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   const expectingRecipientName = s.awaiting==="name" || (s.awaiting==="receipt" && receiptDocumented);
   if(s.cityVerified && (s.awaiting==="details" || s.awaiting==="address" || expectingRecipientName || s.awaiting==="city")) {
     const details=extractCheckoutDetails(text,true,s.city);
-    if(details.name && !s.customerName)s.customerName=details.name;
-    if(details.street && (!s.street || s.street === s.locationUrl))s.street=details.street;
+    if(details.name && !s.customerName && isValidCustomerName(details.name))s.customerName=details.name;
+    if(details.street && (!s.street || s.street === s.locationUrl) && isValidDeliveryAddress(details.street))s.street=details.street;
     if(details.alternatePhone && !s.alternatePhone)s.alternatePhone=details.alternatePhone;
   }
   if(s.cityVerified && (expectingRecipientName || /^\s*(?:me llamo|mi nombre es)\b/i.test(text))) {
-    const name=humanName(text,expectingRecipientName);if(name)s.customerName=name;
+    const name=humanName(text,expectingRecipientName);if(name && isValidCustomerName(name))s.customerName=name;
   }
   // «quiero uno para San Lorenzo, me llamo David Alcaraz»: el nombre declarado
   // en medio de la frase también vale, en cualquier etapa de la compra.
   if(!s.customerName) {
     const declared=text.match(/\b(?:me\s+llamo|mi\s+nombre\s+es)\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+(?:[ '-]+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+){1,4})/i)?.[1];
     const name=declared ? humanName(`me llamo ${declared.trim()}`,false) : null;
-    if(name)s.customerName=name;
+    if(name && isValidCustomerName(name))s.customerName=name;
   }
   // Horario de entrega: se guarda aparte y nunca reemplaza la dirección.
   if(s.cityVerified && SCHEDULE_REF.test(n)) {
@@ -711,7 +719,7 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   if(s.cityVerified && !gpsUrl && isPlaceReference(text) && !/[¿?]/.test(text) && (!s.street || s.street===s.locationUrl)) {
     s.street=text.trim().replace(/[,;.]?\s*(?:me\s+avis\w*|avisame|avisas)\b.*$/i,"").replace(/^(?:y\s+)?(?:estoy\s+en|quiero\s+que\s+me\s+traigas\s+(?:en|a))\s+/i,"").trim() || text.trim();
   }
-  if(s.cityVerified && s.awaiting==="address" && !isScheduleOnly(text) && !match && !gpsUrl && n.length>=6 && !/^(?:si|no|hola|gracias|si por favor|dale|ok)$/.test(n) && !/\b(?:ubicacion|maps|pedido|precio|llega|ya te|ya le|pase|comparti|envie|mand[eé])\b/.test(n))s.street=text.trim();
+  if(s.cityVerified && s.awaiting==="address" && !isScheduleOnly(text) && !match && !gpsUrl && n.length>=6 && !/^(?:si|no|hola|gracias|si por favor|dale|ok)$/.test(n) && !/\b(?:ubicacion|maps|pedido|precio|llega|ya te|ya le|pase|comparti|envie|mand[eé])\b/.test(n) && isValidDeliveryAddress(text.trim()))s.street=text.trim();
   if(/\b(?:transferencia|transferir|anticipado|deposito|giro)\b/.test(n))s.paymentMethod="anticipado";
   // El mensaje del cliente no puede cambiar la política logística de la ciudad.
   // Mantener la modalidad oficial incluso si el estado previo traía un dato incorrecto.
@@ -732,6 +740,10 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   // BOT SKY: el código únicamente extrae y conserva datos. El TEXTO de cada
   // consulta y pregunta de venta lo genera la IA usando el entrenamiento.
   if (variants.length === 1 && !s.optionId) s.optionId=variants[0].id;
+  // Una sola opción («1 caja») + intención de compra sin número: es esa opción.
+  if (variants.length === 1 && !s.quantity && !s.cartLines?.length &&
+      /\b(?:quiero|lo quiero|la quiero|me llevo|lo llevo|la llevo|dale|comprar|pedir|me interesa comprar)\b/.test(n))
+    s.quantity = variants[0].quantity || 1;
   const selected=variants.find(o=>o.id===s.optionId)??null;
   const location=s.city && s.department ? verifiedCoverage(s.city,s.department,coverage):null;
   const national=s.cityVerified && Boolean(s.city && s.department) &&
