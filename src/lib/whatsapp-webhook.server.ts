@@ -470,6 +470,16 @@ async function ingestMedia(args: {
       } else if (base64 && args.type === "image") {
         const result = await describeImage(base64, mime, args.workspaceId);
         transcript = result?.trim() || null;
+        // Una captura bancaria clasificada como consulta/imagen: releer SOLO como comprobante.
+        if ((!transcript || !parseReceiptFields(transcript)) &&
+            (!transcript || /comprobante|transferen|transf\.|monto|debitad|destino|beneficiari|origen|eko|banco|gs\.?\b|₲/i.test(transcript))) {
+          const { readReceiptImage } = await import("@/lib/media-ai.server");
+          const receiptText = await readReceiptImage(base64, mime, args.workspaceId);
+          if (receiptText && parseReceiptFields(receiptText)) {
+            console.info("[WhatsApp media] Comprobante leído en segunda lectura", { mediaId: args.mediaId });
+            transcript = receiptText;
+          }
+        }
 
         if (!transcript) {
           console.warn("[WhatsApp media] Imagen sin interpretación", {
@@ -1785,6 +1795,11 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
             } catch (readError) {
               if (attempt === 2) throw readError;
             }
+          }
+          if (!fields) {
+            const {readReceiptImage} = await import("@/lib/media-ai.server");
+            const receiptText = await readReceiptImage(base64,blob.type || "image/jpeg",workspaceId);
+            if (receiptText && parseReceiptFields(receiptText)) { description = receiptText; fields = parseReceiptFields(receiptText); }
           }
           if (!fields) throw new Error("Gemini respondió, pero no identificó un comprobante estructurado: " + description.slice(0, 180));
           console.info("[BOT_SKY_RECEIPT_PARSED]", JSON.stringify({conversationId:conversation.id,
@@ -4402,7 +4417,7 @@ ${match.products.description ?? ""}`.trim();
 
 
 /** Respuestas de espera que el bot nunca cumple (no hay trabajo posterior). */
-const WAITING_REPLY_RE = /\b(?:un momento|un momentito|aguard[aá]|esper[aá] (?:un|unos)|voy a verificar|vamos a verificar|proceder[eé]? a verificar|verificaremos|te aviso|le avisaremos|estoy guardando|estoy verificando|estoy revisando|ahora (?:reviso|verifico|revisar[eé]|verificar[eé]))\b/i;
+const WAITING_REPLY_RE = /\b(?:un momento|un momentito|aguard[aá]|esper[aá] (?:un|unos)|voy a verificar|vamos a verificar|proceder[eé]? a verificar|verificaremos|te aviso|le avisaremos|estoy guardando|estoy verificando|estoy revisando|necesito verificar|debo verificar|tengo que verificar|antes de continuar con tu pedido|ahora (?:reviso|verifico|revisar[eé]|verificar[eé]))\b/i;
 
 function stripWaitingSentences(text: string): string {
   return text.split(/(?<=[.!?\n])\s*/).filter(part => !WAITING_REPLY_RE.test(part)).join(" ")
