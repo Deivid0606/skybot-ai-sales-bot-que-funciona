@@ -92,6 +92,76 @@ export type AiResult = {
   order: AiOrder | null;
 };
 
+/**
+ * El entrenamiento es DATOS del vendedor, no lógica fija del código. Las reglas
+ * activas entran al contexto cada turno; estas utilidades hacen determinista
+ * únicamente el requisito de compartir un enlace comercial expresamente
+ * configurado en una regla global, sin fijar URL, nombre ni copy de tienda.
+ */
+function normalizeSellerText(text: string): string {
+  return text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]+/g, " ").replace(/\s+/g, " ").trim();
+}
+function isGeneralCustomerQuestion(text: string): boolean {
+  const value = normalizeSellerText(text);
+  if (!value || value.length > 140) return false;
+  return /^(?:(?:hola+|holaa+|buenas?|buen dia|buenas tardes|buenas noches|saludos?|mbaeichapa|mbaeteko|que tal)(?:\s+(?:como estas|que tal|buenas|quiero informacion|quiero info|me pasas el catalogo|necesito informacion|me das informacion|por favor))?|(?:info|informacion|quiero informacion|quiero info|necesito informacion|que productos tienen|que venden|que ofertas tienen|que hay disponible|que tienen disponible|quiero ver sus productos|quiero ver el catalogo|pasame el catalogo|me pasas el catalogo|catalogo|productos|ofertas|precio|cuanto cuesta|cuanto sale))$/.test(value);
+}
+function currentCustomerMessage(ctx: AiContext): string {
+  return [...ctx.history].reverse().find(message => message.role === "user")?.content ?? "";
+}
+function productMentioned(message: string, products: AiContext["products"]): boolean {
+  const normalized = normalizeSellerText(message);
+  return products.some(product => [product.name, ...product.keywords].some(candidate => {
+    const needle = normalizeSellerText(candidate);
+    return needle.length > 3 && normalized.includes(needle);
+  }));
+}
+function extractTrainedCatalogUrl(text: string): string | null {
+  if (!/cat[aá]logo/i.test(text) || !/(?:salud|hola|consulta general|informaci[oó]n|cliente inicia)/i.test(text)) return null;
+  const urls = [...text.matchAll(/https?:\/\/[^\s<>\])]+/gi)].map(match => match[0].replace(/[.,;]+$/, ""));
+  if (!urls.length) return null;
+  // Primer enlace de catálogo especificado por el vendedor; jamás fijar dominio.
+  return urls[0];
+}
+function extractExplicitSellerResponse(trainingText: string): string | null {
+  // Solo usar texto literal cuando el vendedor lo tituló como respuesta oficial.
+  const match = trainingText.match(/(?:^|\n)#{1,6}\s*(?:\d+[.)]\s*)?RESPUESTA\s+AUTOM[AÁ]TICA\s+OFICIAL\s*\n([\s\S]*?)(?=\n#{1,6}\s*(?:\d+[.)]\s*)?[A-Za-zÁÉÍÓÚ]|$)/i);
+  if (!match) return null;
+  const response = match[1].trim()
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, "$2")
+    .replace(/\*\*([^*]+)\*\*/g, "*$1")
+    .replace(/\\\n/g, "\n");
+  return response.length > 10 && response.length < 3600 ? response : null;
+}
+
+export function applyDynamicSellerTrainingReply(args: {
+  reply: string;
+  customerText: string;
+  history: AiContext["history"];
+  training: AiContext["training"];
+  products: AiContext["products"];
+  activeProductId: string | null;
+  checkoutActive: boolean;
+}): string {
+  const original = args.reply.trim();
+  if (!isGeneralCustomerQuestion(args.customerText) || args.checkoutActive || args.activeProductId ||
+      productMentioned(args.customerText, args.products)) return original;
+  const matches = args.training.filter(entry => entry.scope !== "producto")
+    .map(entry => ({entry,url:extractTrainedCatalogUrl(entry.content)}))
+    .filter((match): match is {entry:AiContext["training"][number];url:string} => Boolean(match.url))
+    .sort((a,b) => (Number(b.entry.priority)||0)-(Number(a.entry.priority)||0));
+  if (!matches.length) return original;
+  const {entry,url} = matches[0];
+  // No repetir un catálogo ya enviado en esta conversación.
+  if (original.includes(url) || args.history.some(h => h.role === "assistant" && h.content.includes(url))) return original;
+  const explicit = extractExplicitSellerResponse(entry.content);
+  console.info("[BOT_SKY_DYNAMIC_TRAINING] catálogo general aplicado", {category:entry.category,explicitResponse:Boolean(explicit)});
+  return explicit && explicit.includes(url)
+    ? explicit
+    : `${original}\n\n📦 *Catálogo de productos:*\n${url}\n\n¿Cuál te interesa? 😊`.trim();
+}
+
 type UnknownRecord = Record<string, unknown>;
 
 function cleanString(value: unknown): string {
@@ -197,10 +267,34 @@ ${variants || `    - precio_unitario_heredado:${product.promo_price ?? product.p
     .map(formatTraining)
     .join("\n");
 
+  // En cada mensaje se vuelven a evaluar las reglas activas. Las condiciones
+  // comerciales del vendedor tienen prioridad en el turno al que aplican;
+  // esta selección solo afecta el PROMPT y nunca las validaciones de pedidos.
+  const incoming = currentCustomerMessage(ctx);
+  const generalInquiry = isGeneralCustomerQuestion(incoming) &&
+    !productMentioned(incoming, ctx.products) && !(state?.productId ?? ctx.activeProductId);
+  const incomingNormalized = normalizeSellerText(incoming);
+  const focusedTraining = sortedTraining.filter(entry => {
+    const keywords = (entry.keywords ?? []).filter(Boolean);
+    if (keywords.some(keyword => incomingNormalized.includes(normalizeSellerText(keyword)))) return true;
+    if (generalInquiry && extractTrainedCatalogUrl(entry.content)) return true;
+    if (generalInquiry && /salud|hola|consultas? generales?|informaci[oó]n/i.test(entry.title + " " + entry.content.slice(0,1600))) return true;
+    const titleWords = normalizeSellerText(entry.title).split(" ").filter(word => word.length > 4);
+    return titleWords.length > 0 && titleWords.some(word => incomingNormalized.split(" ").includes(word));
+  }).slice(0, 16);
+  const focusInstructions = focusedTraining.map(formatTraining).join("\n\n");
+  const generalInquiryHint = generalInquiry
+    ? "CONSULTA GENERAL SIN PRODUCTO: atendé el saludo o la pregunta actual antes de intentar capturar datos de pedido. Si el vendedor entrenó un envío de catálogo para este caso, incluí el enlace EXACTO de esa regla ahora (si no se envió previamente); no lo inventes ni repitas. No pidas ciudad, nombre ni cantidad hasta que haya intención de compra de un producto."
+    : "PRIORIZÁ las instrucciones del vendedor que se aplican al mensaje actual y respetá el progreso del pedido.";
+
   // BOT SKY: el código define solamente el contrato JSON, hechos verificables
   // y barreras de seguridad. TODA la conversación comercial viene de la IA
   // con las instrucciones de entrenamiento ACTIVO de esta misma tienda.
   const prompt = `${stateContext}
+
+ENTRENAMIENTO APLICABLE EN ESTE TURNO (RESPETAR Y NO OMITIR):
+${generalInquiryHint}
+${focusInstructions || "Sin coincidencias especiales; aplicar el resto de reglas activas."}
 
 Sos la atención comercial de ${ctx.businessName || "la tienda"}, por WhatsApp en español paraguayo.
 Respondé el ÚLTIMO mensaje del cliente de manera natural, consultiva y breve.
