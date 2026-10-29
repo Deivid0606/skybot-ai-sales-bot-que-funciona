@@ -372,7 +372,7 @@ function selectOption(text:string, options:Option[], awaiting=false):Option|null
   if (packages) {
     const wordNumbers: Record<string, number> = {un:1,uno:1,una:1,dos:2,tres:3,cuatro:4,cinco:5};
     const numberPhrase = n.match(/^(?:(?:yo\s+)?(?:quiero|dame|llevo|mandame|necesito|pido|me llevo|quiero llevar)\s+)?(\d{1,3}|un|uno|una|dos|tres|cuatro|cinco)(?:\s+(?:unidad(?:es)?|piezas?|quiero|por ahora|nom[aá]s|nada mas|por favor))?$/)
-      ?? n.match(/^(?:el|la)\s+de\s+(\d{1,3})\s+unidad(?:es)?$/)
+      ?? n.match(/^(?:(?:el|la|los|las)\s+de|el|la)\s+(\d{1,3}|un|uno|una|dos|tres|cuatro|cinco)(?:\s+unidad(?:es)?)?(?:\s+(?:por favor|nomas|nada mas))?$/)
       ?? n.match(/^(\d{1,3}|un|uno|una|dos|tres|cuatro|cinco)\s+(?:quiero|por ahora|nomas|nada mas)$/);
     if (numberPhrase) {
       const count = wordNumbers[numberPhrase[1]] ?? Number(numberPhrase[1]);

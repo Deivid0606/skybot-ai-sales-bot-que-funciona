@@ -2242,6 +2242,28 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
           isValidDeliveryAddress(detectedStreet) && writtenByCustomer(detectedStreet) && !isValidCustomerName(detectedStreet)) {
         prefilled.street = detectedStreet; filled.push(`dirección: ${detectedStreet}`);
       }
+      // Opción elegida en cualquier redacción («el de 2», «la promo de 99 mil»):
+      // debe ser una opción REAL del producto y el cliente tiene que haber
+      // mencionado en sus últimos mensajes su cantidad, su precio o su etiqueta.
+      const detectedOptionId = result.detected.option_id?.trim();
+      const optionProduct = ctx.products.find(p => p.id === saveStep.state.productId);
+      const detectedOption = detectedOptionId ? optionProduct?.product_prices?.find(o => o.id === detectedOptionId) : undefined;
+      if (detectedOption && !saveStep.state.optionId && !saveStep.state.cartLines?.length) {
+        const recent = normalizeIntentText([...chatHistory.filter(h => h.role === "user").slice(-3).map(h => h.content), body].join(" "));
+        const numberWords: Record<number, string> = {1:"un|uno|una",2:"dos",3:"tres",4:"cuatro",5:"cinco",6:"seis"};
+        const qty = Number(detectedOption.quantity);
+        const priceThousands = Math.round(Number(detectedOption.price) / 1000);
+        const labelWords = normalizeIntentText(detectedOption.label).split(/[^a-z0-9ñ]+/).filter(w => w.length >= 4 && !/^(?:unidad|unidades|piezas?)$/.test(w));
+        const evidence = new RegExp(`\\b(?:${qty}${numberWords[qty] ? `|${numberWords[qty]}` : ""})\\b`).test(recent) ||
+          new RegExp(`\\b${priceThousands}(?:[.,]?\\d{3})?\\b`).test(recent) ||
+          (labelWords.length > 0 && labelWords.every(w => recent.includes(w)));
+        if (evidence) {
+          prefilled.optionId = detectedOption.id;
+          if (/\b(?:unidad(?:es)?|piezas?|caja(?:s)?|pack(?:s)?|combo(?:s)?)\b/.test(normalizeIntentText(detectedOption.label)))
+            prefilled.quantity = qty;
+          filled.push(`opción elegida: ${detectedOption.label} (${formatGs(Number(detectedOption.price))})`);
+        }
+      }
       if (filled.length) {
         // Recalcular el estado con el MISMO mensaje y los datos ya reconocidos.
         const rerun = advanceRuleSale(ctx, saleInput, prefilled,
@@ -2249,6 +2271,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         if (rerun) {
           if (prefilled.customerName && !rerun.state.customerName) rerun.state.customerName = prefilled.customerName;
           if (prefilled.street && !rerun.state.street) rerun.state.street = prefilled.street;
+          if (prefilled.optionId && !rerun.state.optionId) { rerun.state.optionId = prefilled.optionId; rerun.state.quantity = prefilled.quantity; }
           if (saveStep.state.cityVerified && !rerun.state.cityVerified) {
             rerun.state.city = saveStep.state.city; rerun.state.department = saveStep.state.department;
             rerun.state.cityVerified = true; rerun.state.coverageStatus = saveStep.state.coverageStatus;
@@ -2262,7 +2285,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         console.info("[BOT_SKY_AI_DETECTED_FIELDS]", JSON.stringify({conversationId:conversation.id,
           fields:filled.map(f=>f.split(":")[0]), awaiting:saveStep.state.awaiting, complete:saveStep.complete}));
         // Si la respuesta todavía pide un dato que ya dio, la IA la rehace con los datos actualizados.
-        if (!saveStep.complete && /\b(?:nombre|apellido|direcci[oó]n|domicilio|calle|referencia)\b/i.test(result.reply)) {
+        if (!saveStep.complete && (prefilled.optionId || /\b(?:nombre|apellido|direcci[oó]n|domicilio|calle|referencia)\b/i.test(result.reply))) {
           const updated = await aiCompose(aiAnswerContext, `El cliente YA dio estos datos y quedaron guardados: ${filled.join("; ")}. NO los pidas de nuevo. Respondé su último mensaje y pedí solo el siguiente dato pendiente (${saveStep.state.awaiting ?? "ninguno"}).`);
           if (updated) result = {...result, reply: updated};
         }
