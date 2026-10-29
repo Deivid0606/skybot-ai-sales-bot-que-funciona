@@ -2212,10 +2212,42 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
     // confirmación se construye únicamente tras registrar la orden real.
     const checkoutCompleteByRules = Boolean(saveStep?.complete && !bypassSale && !conversation.sale_closed);
     const responseOrigin = checkoutCompleteByRules ? "code" : "ai";
+    // TURNO DEL COMPROBANTE: el sistema ya revisó el archivo. La IA redacta, pero
+    // con el RESULTADO decidido como objetivo (nunca «voy a verificar»).
+    const receiptTurnGoal = (() => {
+      if (checkoutCompleteByRules || conversation.sale_closed || !mediaPath || !media ||
+          (media.type !== "image" && media.type !== "document")) return null;
+      const st = saveStep?.state ?? previousSale;
+      if (!st.productId || !/anticip|transfer|deposit|giro/i.test(String(st.paymentMethod ?? ""))) return null;
+      const docs = st.receiptDocuments ?? [];
+      const accepted = docs.some(d => d.path === mediaPath) && !st.receiptReview;
+      if (!accepted && !st.receiptReview && !currentReceipt) return null; // lo cubre la instrucción de imagen ilegible
+      const product = ctx.products.find(p => p.id === st.productId);
+      const opt = product?.product_prices?.find(o => o.id === st.optionId);
+      const qty = Number(st.quantity ?? opt?.quantity ?? 1);
+      const optQty = Number(opt?.quantity ?? 1);
+      const expected = st.cartLines?.length
+        ? st.cartLines.reduce((sum, l) => sum + Number(product?.product_prices?.find(o => o.id === l.optionId)?.price ?? 0) * l.quantity, 0)
+        : opt ? (qty === optQty ? Number(opt.price) : optQty === 1 ? Number(opt.price) * qty : Number(opt.price) * Math.max(1, Math.round(qty / optQty))) : 0;
+      const documented = docs.reduce((sum, d) => sum + d.amountGs, 0);
+      if (st.receiptReview) return st.receiptReview === "cuenta_destino_distinta"
+        ? "El comprobante recibido NO coincide con la cuenta o titular autorizados del vendedor. No pidas otra transferencia todavía: indicá amablemente que un asesor lo revisa, y pedile que confirme a qué cuenta transfirió."
+        : "No se pudieron leer bien los datos del comprobante (monto, cuenta o titular). Pedí una captura completa y nítida del comprobante; no digas que vas a verificar después.";
+      if (!accepted) return "No se pudo leer un comprobante válido en la imagen. Pedí una captura completa y nítida del comprobante (monto, cuenta o alias de destino y titular).";
+      if (expected > 0 && documented < expected)
+        return `Comprobante RECIBIDO y compatible por ${formatGs(documented)}, pero el total del pedido es ${formatGs(expected)}: falta ${formatGs(expected - documented)}. Pedí el comprobante de esa diferencia.`;
+      const extra = expected > 0 && documented > expected ? ` Tiene un saldo a favor de ${formatGs(documented - expected)} (pendiente de acreditación bancaria).` : "";
+      return `Comprobante RECIBIDO y compatible con la cuenta del vendedor (monto ${formatGs(documented)}${expected > 0 ? `, total ${formatGs(expected)}` : ""}).${extra} Agradecé sin decir que el pago está acreditado.` +
+        (isValidCustomerName(st.customerName) ? " Indicá que estamos registrando el pedido." : " Pedí ahora el nombre y apellido de quien va a recibir el pedido.");
+    })();
     try {
       result = checkoutCompleteByRules
         ? { reply:"", sale_closed:false, order:null, product_id:saveStep?.productId ?? null } as Awaited<ReturnType<typeof generateAiReply>>
-        : await generateAiReplyWithRetry(aiAnswerContext);
+        : receiptTurnGoal
+          ? { reply: await composeWithoutWaiting(aiAnswerContext, receiptTurnGoal), sale_closed:false, order:null,
+              product_id: saveStep?.productId ?? previousSale.productId ?? null } as Awaited<ReturnType<typeof generateAiReply>>
+          : await generateAiReplyWithRetry(aiAnswerContext);
+      if (receiptTurnGoal) console.info("[BOT_SKY_RECEIPT_TURN_GOAL]", JSON.stringify({conversationId:conversation.id, goal:receiptTurnGoal.slice(0,120)}));
       if (checkoutCompleteByRules) console.info("[BOT_SKY_CHECKOUT_READY_WITHOUT_AI]", JSON.stringify({
         conversationId:conversation.id,hasName:isValidCustomerName(saveStep?.state.customerName),
         hasDocument:Boolean(saveStep?.state.receiptDocuments?.length),paymentMethod:saveStep?.state.paymentMethod,
@@ -2566,7 +2598,8 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       return enforceVerifiedPaymentReply({reply:text, city:verifiedSaleState.city, department:verifiedSaleState.department,
           cityVerified:verifiedSaleState.cityVerified, training:ctx.training}).corrected ||
         (policy?.paymentMethod === "contraentrega" && (BANK_RE.test(text) || /\bencomienda\b|pago anticipado|total a transferir/i.test(text))) ||
-        hasTemplatePlaceholder(text) || prematureBank || claimsRegisteredOrder(text);
+        hasTemplatePlaceholder(text) || prematureBank || claimsRegisteredOrder(text) ||
+        (WAITING_REPLY_RE.test(text) && !/[?¿]/.test(text));
     };
     // Solo el bloque posterior al INSERT puede confirmar; el resto nunca.
     function claimsRegisteredOrder(text: string) {
@@ -2585,6 +2618,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
             ? `Para ${verifiedSaleState.city} la modalidad VERIFICADA es pago anticipado; no prometas pago al recibir.` : "",
         verifiedSaleState.awaiting === "variant" ? "El cliente todavía no eligió una opción válida: mostrá las opciones reales con sus precios y preguntá cuál prefiere; no pidas pago." : "",
         "Nunca uses marcadores como [PRECIO] o [TOTAL]: usá los precios reales del catálogo.",
+        WAITING_REPLY_RE.test(text) ? "No digas «un momento», «voy a verificar» ni «te aviso»: el sistema ya revisó todo en este turno; respondé con el resultado y el siguiente paso." : "",
         claimsRegisteredOrder(text) ? "El pedido TODAVÍA NO está registrado en el sistema: no digas que está confirmado, no muestres número de pedido ni agradezcas la compra; pedí el dato que falte." : "",
       ].filter(Boolean).join(" ");
       const again = await aiCompose(aiAnswerContext, `${facts} Tu borrador anterior violaba estas reglas: «${text.slice(0, 1200)}». Reescribí la respuesta correcta.`);
@@ -2595,6 +2629,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       if (policy?.paymentMethod === "contraentrega" || verifiedSaleState.awaiting === "variant")
         cleaned = stripBankDetailsForCod(cleaned).split("\n")
           .filter(line => !/encomienda|pago anticipado|transferir|transferencia|cuenta|alias|c[eé]dula/i.test(line)).join("\n");
+      cleaned = stripWaitingSentences(cleaned);
       cleaned = cleaned.split("\n").filter(line => !hasTemplatePlaceholder(line) && !claimsRegisteredOrder(line)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
       return cleaned;
     };
@@ -4366,6 +4401,23 @@ ${match.products.description ?? ""}`.trim();
 }
 
 
+/** Respuestas de espera que el bot nunca cumple (no hay trabajo posterior). */
+const WAITING_REPLY_RE = /\b(?:un momento|un momentito|aguard[aá]|esper[aá] (?:un|unos)|voy a verificar|vamos a verificar|proceder[eé]? a verificar|verificaremos|te aviso|le avisaremos|estoy guardando|estoy verificando|estoy revisando|ahora (?:reviso|verifico|revisar[eé]|verificar[eé]))\b/i;
+
+function stripWaitingSentences(text: string): string {
+  return text.split(/(?<=[.!?\n])\s*/).filter(part => !WAITING_REPLY_RE.test(part)).join(" ")
+    .replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+/** aiCompose que jamás deja una respuesta de espera: reintenta y, si insiste, la depura. */
+async function composeWithoutWaiting(ctx: Parameters<typeof generateAiReply>[0], goal: string): Promise<string> {
+  let text = await aiCompose(ctx, goal);
+  if (text && WAITING_REPLY_RE.test(text) && !/[?¿]/.test(text))
+    text = await aiCompose(ctx, `${goal} PROHIBIDO escribir «un momento», «voy a verificar» o «te aviso»: la revisión YA se hizo; respondé con el resultado y el siguiente paso.`) ?? text;
+  if (text && WAITING_REPLY_RE.test(text)) text = stripWaitingSentences(text);
+  return text ?? "";
+}
+
 /** true si el cliente envió otro mensaje DESPUÉS de este (ráfaga): responde el último. */
 async function newerInboundExists(workspaceId: string, conversationId: string, wamid: string): Promise<boolean> {
   try {
@@ -4516,6 +4568,7 @@ async function sendSilenceFallback(args: {
       if (text && policyMethod && enforceVerifiedPaymentReply({reply:text, city:policyCity, department:policyDep,
           cityVerified:true, training:fallbackCtx.training}).corrected) text = cleanReplyForPolicy(text, policyMethod);
       if (text && policyMethod === "contraentrega") text = cleanReplyForPolicy(text, "contraentrega");
+      if (text && WAITING_REPLY_RE.test(text)) text = stripWaitingSentences(text);
       if (!text) throw new Error("IA sin respuesta válida para el mensaje de respaldo");
       const wamid = await sendWhatsAppText(args.conn, args.phone, text);
       await supabaseAdmin.from("messages").insert({
