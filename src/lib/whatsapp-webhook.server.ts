@@ -2518,6 +2518,15 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         checkoutActive: Boolean(verifiedSaleState.productId &&
           (verifiedSaleState.quantity || verifiedSaleState.customerName || verifiedSaleState.cityVerified)),
       });
+      // ÚLTIMA barrera de precio, luego de todos los ajustes de IA y
+      // entrenamiento. El catálogo sigue siendo la fuente de importes reales.
+      outgoingText = enforceVerifiedCatalogPriceReply({
+        reply: outgoingText,
+        customerText: body,
+        productId: detectedProduct,
+        products: ctx.products,
+        selectedOptionId: verifiedSaleState.optionId,
+      });
       const outgoingWamid = await sendWhatsAppText(conn, phone, outgoingText);
       await supabaseAdmin.from("messages").insert({
         workspace_id: workspaceId, user_id: ownerId, conversation_id: conversation.id,
@@ -3349,6 +3358,72 @@ function buildSafeAiReply(args: {
   // Nunca reemplazar la respuesta de la IA por ofertas/preguntas programadas.
   // La corrección mínima de un guaraní de diferencia conserva el precio del catálogo.
   return correctedReply;
+}
+
+/**
+ * Contrato de precios: una consulta de precio se responde con las opciones
+ * verificadas de product_prices, aunque el modelo o el entrenamiento mencionen
+ * un importe distinto. Solo afecta el texto de respuestas comerciales; NO
+ * modifica el carrito, la modalidad de pago ni el proceso de registro del pedido.
+ *
+ * Es una validación de salida: también actúa cuando una consulta informativa
+ * omite la conciliación del checkout (`bypassSale`).
+ */
+function enforceVerifiedCatalogPriceReply(args: {
+  reply: string;
+  customerText: string;
+  productId: string | null;
+  products: AiContextProducts;
+  selectedOptionId?: string | null;
+}): string {
+  const question = normalizeIntentText(args.customerText);
+  if (!/\b(?:precio|precios|cuanto cuesta|cuanto sale|cuanto vale|cuanto me sale|a cuanto|valor|costo)\b/.test(question)) {
+    return args.reply;
+  }
+
+  const product = args.products.find(p => p.id === args.productId);
+  if (!product) return args.reply;
+  const options = [...(product.product_prices ?? [])]
+    .filter(option => Number.isFinite(Number(option.price)) && Number(option.price) > 0)
+    .sort((a, b) => a.sort_order - b.sort_order);
+  // No crear precios para productos sin una presentación confirmada.
+  if (!options.length) return args.reply;
+
+  const officialPrices = new Set(options.map(option => Math.round(Number(option.price))));
+  const amounts = new Set<number>();
+  // Montos con moneda antes o después, con y sin separador de miles.
+  const currencyBefore = /(?:₲|Gs\.?|guaran[ií]es?)\s*([0-9][0-9., ]{3,})/gi;
+  const currencyAfter = /\b([0-9][0-9., ]{3,})\s*(?:Gs\.?|guaran[ií]es?)\b/gi;
+  const numericPrice = /\b(?:precio|cuesta|sale|vale)\s*(?:de|es|a|:)?\s*([0-9]{1,3}(?:[.,][0-9]{3})+|[0-9]{5,7})\b/gi;
+  for (const expression of [currencyBefore, currencyAfter, numericPrice]) {
+    for (const match of args.reply.matchAll(expression)) {
+      const amount = Number(match[1].replace(/\D/g, ""));
+      if (Number.isSafeInteger(amount) && amount > 0) amounts.add(amount);
+    }
+  }
+
+  // Si el cliente pidió precios y el modelo omitió los importes o inventó
+  // uno ajeno al producto, reemplazar por los datos actuales del catálogo.
+  // Nunca "adivinar" cuál opción eligió el comprador.
+  const wrongAmount = [...amounts].some(amount => !officialPrices.has(amount));
+  if (!wrongAmount && amounts.size > 0) return args.reply;
+
+  const priceLines = options.map(option =>
+    `• *${option.label}* — Gs. ${Math.round(Number(option.price)).toLocaleString("es-PY")}`,
+  ).join("\n");
+  const chosen = options.find(option => option.id === args.selectedOptionId);
+  // Mantener la siguiente pregunta comercial de la IA cuando la presentación
+  // ya esté seleccionada; si hay variantes sin elegir, pedir esa elección.
+  const questionFromAi = [...args.reply.matchAll(/¿[^?\n]{3,180}\?/g)]
+    .map(match => match[0]).at(-1);
+  const nextQuestion = options.length > 1 && !chosen
+    ? "¿Cuál opción te interesa? 😊"
+    : questionFromAi ?? "¿Querés que sigamos con tu pedido? 😊";
+  console.warn("[BOT_SKY_PRICE_OUTPUT_GUARD] Respuesta ajustada al precio verificado", {
+    productId: product.id,
+    reason: wrongAmount ? "incorrect_amount" : "missing_price",
+  });
+  return `💰 *Precios disponibles: *\n${priceLines}\n\n${nextQuestion}`;
 }
 
 /**
