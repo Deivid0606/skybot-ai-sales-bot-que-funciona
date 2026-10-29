@@ -2270,17 +2270,47 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         const words = normalizeIntentText(value).split(/[^a-z0-9ñ]+/).filter(w => w.length >= 2);
         return words.length > 0 && words.every(w => customerTokens.has(w));
       };
+      // El dato debe venir de un mensaje del cliente que responde a esa pregunta
+      // o que lo declara explícitamente; nunca de opiniones o consultas sueltas.
+      const turns = chatHistory.slice(-14);
+      const messageFor = (value: string) => {
+        const target = normalizeIntentText(value);
+        for (let i = turns.length - 1; i >= 0; i--) {
+          if (turns[i].role !== "user") continue;
+          const msg = normalizeIntentText(turns[i].content);
+          if (!target || !msg.includes(target)) continue;
+          const prevAsk = [...turns.slice(0, i)].reverse().find(t => t.role === "assistant")?.content ?? "";
+          return { msg, prevAsk: normalizeIntentText(prevAsk) };
+        }
+        const current = normalizeIntentText(body);
+        return target && current.includes(target) ? { msg: current, prevAsk: normalizeIntentText([...turns].reverse().find(t => t.role === "assistant")?.content ?? "") } : null;
+      };
+      const nameContextOk = (value: string) => {
+        const found = messageFor(value); if (!found) return false;
+        const target = normalizeIntentText(value);
+        const explicit = /\b(?:me llamo|mi nombre es|mi nombre|soy|a nombre de|nombre y apellido|nombre)\b/.test(found.msg) ||
+          new RegExp(`${target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s+(?:me llamo|es mi nombre)`).test(found.msg);
+        const answersAsk = /\b(?:nombre|apellido|como te llamas|quien (?:lo )?recibe)\b/.test(found.prevAsk) &&
+          found.msg.replace(/[^a-z0-9ñ ]/g, "").trim().split(/\s+/).length <= target.split(/\s+/).length + 2;
+        return explicit || answersAsk;
+      };
+      const streetContextOk = (value: string) => {
+        const found = messageFor(value); if (!found) return false;
+        return /\b(?:direccion|domicilio|ubicacion|calle|referencia|google maps|donde (?:te )?(?:lo )?entregamos)\b/.test(found.prevAsk) ||
+          /\b(?:calle|avenida|avda|ruta|esquina|casi|barrio|frente|entre|km|nro|numero|casa|mi direccion|vivo en)\b/.test(found.msg);
+      };
       const detectedName = result.detected.customer_name?.trim();
       const detectedStreet = result.detected.street?.trim();
       const filled: string[] = [];
       const prefilled: SaleState = { ...previousSale };
       if (!isValidCustomerName(saveStep.state.customerName) && detectedName &&
-          isValidCustomerName(detectedName) && writtenByCustomer(detectedName)) {
+          isValidCustomerName(detectedName) && writtenByCustomer(detectedName) && nameContextOk(detectedName)) {
         prefilled.customerName = detectedName; filled.push(`nombre y apellido: ${detectedName}`);
       }
       if (!isValidDeliveryAddress(saveStep.state.street) && !saveStep.state.locationUrl && detectedStreet &&
           saveStep.state.paymentMethod !== "anticipado" && saveStep.state.cityVerified &&
-          isValidDeliveryAddress(detectedStreet) && writtenByCustomer(detectedStreet) && !isValidCustomerName(detectedStreet)) {
+          isValidDeliveryAddress(detectedStreet) && writtenByCustomer(detectedStreet) && !isValidCustomerName(detectedStreet) &&
+          streetContextOk(detectedStreet)) {
         prefilled.street = detectedStreet; filled.push(`dirección: ${detectedStreet}`);
       }
       // Opción elegida en cualquier redacción («el de 2», «la promo de 99 mil»):
