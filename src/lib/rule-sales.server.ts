@@ -568,7 +568,10 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   // Una ubicación GPS válida pertenece a esta conversación; no es un nombre ni una ciudad.
   const gpsUrl = sharedLocationUrl || (text.match(/https?:\/\/www\.google\.com\/maps\/search\/\?api=1&query=-?\d+(?:\.\d+)?,-?\d+(?:\.\d+)?/i)?.[0] ?? null);
   if (gpsUrl) s.locationUrl = gpsUrl;
-  const direct=selectProduct(ctx,text);
+  // El texto leído de un comprobante o de una imagen («Concepto: ALARGUE CANILLA»)
+  // nunca cambia el producto de la venta en curso.
+  const fromMedia=/^\s*(?:\[(?:imagen|documento)\]\s*)?COMPROBANTE\b/i.test(text) || /^\s*\[(?:imagen|documento)\]/i.test(text);
+  const direct=fromMedia && s.productId ? null : selectProduct(ctx,text);
   if(direct && direct.id!==s.productId) s={productId:direct.id};
   const p=ctx.products.find(x=>x.id===s.productId)??(ctx.activeProductId?ctx.products.find(x=>x.id===ctx.activeProductId):undefined);
   if(!p)return null;
