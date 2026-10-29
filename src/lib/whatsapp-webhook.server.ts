@@ -14,7 +14,7 @@ import { generateAiReply, applyDynamicSellerTrainingReply, type AiContext } from
 import { advanceRuleSale, sellerUsesFirstOffer, isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi, isValidRecipientCi, type SaleState } from "@/lib/rule-sales.server";
 import { classifyCustomerIntent, addVerifiedOrderContext, addPendingSaleContext } from "@/lib/hybrid-intent.server";
 import { coordinatesFromText, validCoords } from "@/lib/hybrid-intent.server";
-import { parseCoverage, verifiedCoverage, sellerAllowsNationwideAdvance, deliveryPolicyForCity, hasTemplatePlaceholder, stripBankDetailsForCod, enforceVerifiedPaymentReply, isNonCityPhrase } from "@/lib/rule-sales.server";
+import { parseCoverage, verifiedCoverage, sellerAllowsNationwideAdvance, deliveryPolicyForCity, hasTemplatePlaceholder, stripBankDetailsForCod, enforceVerifiedPaymentReply, isNonCityPhrase, sellerBankText } from "@/lib/rule-sales.server";
 import { resolveDepartamento } from "@/lib/orders";
 import { sendWhatsAppText } from "@/lib/whatsapp.server";
 import { detectComplaint, COMPLAINT_REASON_LABELS } from "@/lib/complaints";
@@ -1822,11 +1822,10 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     }
     if (previousSale.productId && !conversation.sale_closed) {
       const digits = (value: string) => value.replace(/\D/g, "").replace(/^0+(?=\d)/, "");
-      const bankText = ctx.training.filter(t => /transferencias|comprobantes|datos bancarios/i.test(t.title))
-        .map(t => String(t.content ?? "")).join("\n");
       // Solo datos del vendedor actual: localizar el bloque bancario AUTORIZADO,
       // nunca el de ejemplos, textos históricos o entidades de otros workspaces.
-      const authorizedBankBlock = bankText.match(/^DATOS BANCARIOS AUTORIZADOS[^\n]*\n([\s\S]*?)(?=\n\s*(?:FORMATO OBLIGATORIO|## CONTROL DE COMPROBANTES|RESPUESTAS MODELO)|(?![\s\S]))/im)?.[1] ?? "";
+      // Cada vendedor redacta distinto: sellerBankText tolera otros títulos.
+      const authorizedBankBlock = sellerBankText(ctx.training);
       // Acepta: "Número de cuenta:", "N.º de cuenta:",
       // "N° de cuenta para transferencias desde otros bancos:", etc.
       // Las cuentas bancarias y los ALIAS explícitamente autorizados son
@@ -1840,7 +1839,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         .trim());
       const authorizedAccounts = [...new Set(bankLines.flatMap(line => {
         const match = line.trim().replace(/^[-*]\s*/, "").match(
-          /^(?:(?:n[úu]mero|n[.º°o\s]*|nro\.?)\s*(?:de\s+)?)?cuenta\b[^:]{0,60}:\s*([\d\s.-]{6,30})\s*$/i
+          /(?:^|\b)(?:(?:n[úu]mero|n[.º°o\s]*|nro\.?)\s*(?:de\s+)?)?(?:cuenta|cta\.?)(?:\s|\b)[^:\d]{0,60}[:\s#]\s*([\d\s.-]{6,30})\s*$/i
         );
         const account = match?.[1]?.replace(/\D/g, "") ?? "";
         return account.length >= 6 ? [account] : [];
