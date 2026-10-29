@@ -704,6 +704,66 @@ async function attachPaymentReceiptToLatestOrder(args: {
 
 
 /**
+ * Adjunta el comprobante documentalmente compatible del ciclo ACTUAL al pedido
+ * recién insertado. No depende de una ventana de 3 horas, no busca imágenes
+ * arbitrarias y jamás usa un archivo vinculado a otro pedido.
+ * El estado `anticipado` indica comprobante recibido, NO pago acreditado.
+ */
+async function linkVerifiedReceiptToOrder(args: {
+  workspaceId: string;
+  ownerId: string;
+  conversationId: string;
+  orderId: string;
+  verifiedReceiptPath: string;
+}): Promise<boolean> {
+  const {data: inbound, error: inboundError} = await supabaseAdmin.from("messages")
+    .select("id,media_url")
+    .eq("workspace_id", args.workspaceId)
+    .eq("conversation_id", args.conversationId)
+    .eq("direction", "inbound")
+    .eq("media_url", args.verifiedReceiptPath)
+    .limit(1).maybeSingle();
+  if (inboundError || !inbound) return false;
+  const {data: alreadyUsed, error: usedError} = await supabaseAdmin.from("orders")
+    .select("id")
+    .eq("workspace_id", args.workspaceId)
+    .eq("receipt_url", args.verifiedReceiptPath)
+    .neq("id", args.orderId)
+    .limit(1).maybeSingle();
+  if (usedError || alreadyUsed) return false;
+  const {data: order, error: orderError} = await supabaseAdmin.from("orders")
+    .select("id,payment_method,payment_status,receipt_url")
+    .eq("workspace_id", args.workspaceId)
+    .eq("conversation_id", args.conversationId)
+    .eq("id", args.orderId)
+    .maybeSingle();
+  if (orderError || !order || !/anticip|transfer|deposit|giro/i.test(order.payment_method ?? "") ||
+      (order.receipt_url && order.receipt_url !== args.verifiedReceiptPath)) return false;
+  if (!order.receipt_url) {
+    const {error: updateError} = await supabaseAdmin.from("orders").update({
+      receipt_url: args.verifiedReceiptPath,
+      payment_status: order.payment_status === "pagado" ? "pagado" : "anticipado",
+    }).eq("workspace_id",args.workspaceId).eq("id",args.orderId);
+    if (updateError) return false;
+  }
+  const {data: existing, error: receiptLookupError} = await supabaseAdmin.from("payment_receipts")
+    .select("id")
+    .eq("workspace_id",args.workspaceId).eq("order_id",args.orderId)
+    .eq("url",args.verifiedReceiptPath).limit(1).maybeSingle();
+  if (receiptLookupError) {
+    console.error("[BOT_SKY_RECEIPT_HISTORY_LOOKUP_ERROR]", receiptLookupError.message);
+  } else if (!existing) {
+    const {error: historyError} = await supabaseAdmin.from("payment_receipts").insert({
+      workspace_id: args.workspaceId, user_id: args.ownerId,
+      order_id: args.orderId, url: args.verifiedReceiptPath, amount: null,
+      note: "Comprobante compatible documentado en el checkout; pendiente de acreditación bancaria",
+    });
+    if (historyError) console.error("[BOT_SKY_RECEIPT_HISTORY_INSERT_ERROR]", historyError.message);
+  }
+  return true;
+}
+
+/**
  * Recupera un comprobante que el cliente pudo haber enviado ANTES de que
  * el pedido terminara de crearse.
  *
@@ -2340,34 +2400,49 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
        * comprobante, en el primer intento todavía no existía la orden.
        * Reintentamos ahora que createOrderFromAi() ya la creó.
        */
-      if (mediaPath && media) {
-        await attachPaymentReceiptToLatestOrder({
-          workspaceId,
-          ownerId,
-          conversationId: conversation.id,
-          mediaPath,
-          mediaType: media.type,
-          transcript,
+      // El INSERT ya tuvo éxito: fallos secundarios de vinculación del archivo
+      // o limpieza del estado NO deben ocultar el pedido ni impedir la respuesta.
+      // Cuando el comprador envió el comprobante antes del nombre, usamos el
+      // PATH DOCUMENTAL VALIDADO del ciclo actual, incluso si pasaron horas.
+      try {
+        if (isAdvance && paymentSaleState.receiptPath && !paymentSaleState.receiptReview &&
+            paymentSaleState.receiptDocuments?.some(r => r.path === paymentSaleState.receiptPath)) {
+          const linked = await linkVerifiedReceiptToOrder({
+            workspaceId, ownerId, conversationId: conversation.id,
+            orderId: createdOrder.id, verifiedReceiptPath: paymentSaleState.receiptPath,
+          });
+          if (!linked) console.error("[BOT_SKY_ORDER_RECEIPT_LINK_PENDING]", JSON.stringify({
+            workspaceId,conversationId:conversation.id,orderId:createdOrder.id,
+          }));
+        } else if (mediaPath && media) {
+          await attachPaymentReceiptToLatestOrder({
+            workspaceId, ownerId, conversationId: conversation.id,
+            mediaPath, mediaType: media.type, transcript,
+          });
+        } else {
+          await recoverRecentPaymentReceiptForOrder({
+            workspaceId, ownerId, conversationId: conversation.id,
+            orderId: createdOrder.id,
+          });
+        }
+      } catch (receiptLinkError) {
+        console.error("[BOT_SKY_ORDER_RECEIPT_LINK_ERROR]", {
+          orderId: createdOrder.id,
+          error: receiptLinkError instanceof Error ? receiptLinkError.message : String(receiptLinkError),
         });
       }
-
-      /*
-       * CASO 2:
-       * El cliente pudo haber enviado el comprobante ANTES de completar todos
-       * los datos necesarios para crear el pedido. En ese caso el archivo ya
-       * existe en messages.media_url, pero todavía no existía orders.
-       *
-       * Esta recuperación busca ese comprobante reciente y lo enlaza al pedido.
-       * Si el CASO 1 ya lo enlazó, esta función detecta receipt_url y no hace nada.
-       */
-      await recoverRecentPaymentReceiptForOrder({
-        workspaceId,
-        ownerId,
-        conversationId: conversation.id,
-        orderId: createdOrder.id,
-      });
-      await supabaseAdmin.from("bot_sale_states").delete()
-        .eq("workspace_id", workspaceId).eq("conversation_id", conversation.id);
+      try {
+        const {error: clearStateError}=await supabaseAdmin.from("bot_sale_states").delete()
+          .eq("workspace_id", workspaceId).eq("conversation_id", conversation.id);
+        if (clearStateError) console.error("[BOT_SKY_CHECKOUT_STATE_CLEANUP_ERROR]",{
+          orderId: createdOrder.id, error: clearStateError.message,
+        });
+      } catch (cleanupError) {
+        console.error("[BOT_SKY_CHECKOUT_STATE_CLEANUP_ERROR]", {
+          orderId: createdOrder.id,
+          error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+        });
+      }
       // Confirmar SOLO después de que Supabase haya insertado el pedido.
       // No afirmar que una transferencia quedó acreditada sin validarla.
       const createdProduct = ctx.products.find(p => p.id === detectedProduct);
@@ -2387,6 +2462,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         productName: createdProduct?.name ?? "Producto del pedido",
         productOption: confirmedOption?.label ?? completedOrder.price_option_label,
         savedQuantity: Number(savedConfirmationOrder.quantity),
+        recipientCi: isValidRecipientCi(completedOrder.recipient_ci) ? completedOrder.recipient_ci : null,
         address: savedConfirmationOrder.street,
         paymentStatus: savedConfirmationOrder.payment_status,
         // Informar la diferencia positiva solo después del INSERT y con base
@@ -3142,6 +3218,17 @@ export async function createOrderFromAi(args: {
     throw error;
   }
 
+  // Verificación definitiva contra el total calculado para el INSERT (no
+  // contra un estimado de la IA). El excedente solo existe si ambos importes
+  // son coherentes y el comprobante es documentalmente compatible.
+  if (args.documentedReceiptTotal !== undefined && args.documentedReceiptTotal !== null &&
+      /anticip|transfer|deposit|giro/i.test(args.order.payment_method ?? "")) {
+    if (!Number.isSafeInteger(args.documentedReceiptTotal) ||
+        Number(args.documentedReceiptTotal) < total) {
+      throw new Error("El comprobante documentado no cubre el total definitivo del pedido; no se registra la venta.");
+    }
+  }
+
   const customerName = cleanOrderText(args.order.customer_name) || "Cliente";
 
   const city = cleanOrderText(args.order.city);
@@ -3307,11 +3394,21 @@ export async function createOrderFromAi(args: {
     }
   }
 
-  const { data: settings } = await supabaseAdmin
-    .from("user_settings")
-    .select("apps_script_url")
-    .eq("workspace_id", args.workspaceId)
-    .maybeSingle();
+  let settings: {apps_script_url?: string|null}|null = null;
+  try {
+    const {data: fetchedSettings, error: settingsError} = await supabaseAdmin
+      .from("user_settings")
+      .select("apps_script_url")
+      .eq("workspace_id", args.workspaceId)
+      .maybeSingle();
+    if (settingsError) throw settingsError;
+    settings = fetchedSettings;
+  } catch (settingsError) {
+    console.error("[Pedidos] No se pudo consultar Apps Script; el pedido YA está registrado", {
+      orderId: created.id,
+      error: settingsError instanceof Error ? settingsError.message : String(settingsError),
+    });
+  }
 
   if (settings?.apps_script_url) {
     try {
