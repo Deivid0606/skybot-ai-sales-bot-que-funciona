@@ -20,6 +20,8 @@ type ConfirmationArgs = {
   deliveryMethod?: string | null;
   address?: string | null;
   requestRecipientCi?: boolean;
+  /** Excedente DOCUMENTADO, aún no disponible para gastar hasta verificar acreditación. */
+  pendingCreditGs?: number;
 };
 
 /** Solo invocar después del INSERT confirmado en orders. */
@@ -44,6 +46,8 @@ export function buildRegisteredOrderConfirmation(args: ConfirmationArgs): string
     `💵 Pago: ${payment}`,
     `🚚 Envío: ${shipping}`,
     ...(isAdvance ? [`📎 Comprobante: ${args.paymentStatus === "pagado" ? "Pago acreditado" : "Recibido, pendiente de verificación bancaria"}`] : []),
+    ...(isAdvance && Number.isSafeInteger(args.pendingCreditGs) && Number(args.pendingCreditGs) > 0
+      ? [`💳 Saldo a favor para próximas compras: ${formatGs(Number(args.pendingCreditGs))} (pendiente de acreditación bancaria)`] : []),
     `🧾 Pedido N.º: ${created.order_number}`,
     "",
     "¡Muchas gracias por tu compra! 😊",
