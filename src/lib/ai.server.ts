@@ -50,6 +50,11 @@ export type AiContext = {
     content: string;
     category: string;
     priority: number;
+    /** Metadatos del entrenamiento: usados SOLO para seleccionar instrucciones de IA. */
+    scope?: string | null;
+    product_id?: string | null;
+    keywords?: string[] | null;
+    created_at?: string | null;
   }[];
   history: {
     role: "user" | "assistant";
@@ -152,31 +157,44 @@ ${variants || `    - precio_unitario_heredado:${product.promo_price ?? product.p
     })
     .join("\n");
 
-  const sortedTraining = [...ctx.training].sort(
-    (a, b) => b.priority - a.priority,
-  );
+  // El panel permite guardar reglas globales con prioridad 0. Anteriormente
+  // se descartaban si el título no coincidía con el mensaje: parecían
+  // "guardadas" pero la IA nunca las recibía. Todas las entradas globales
+  // ACTIVAS de este workspace deben estar disponibles en cada respuesta.
+  // Entradas específicas de producto solo se envían al producto en curso;
+  // esto no altera ctx.training, que sigue usándose SIN CAMBIOS para las
+  // comprobaciones de cobertura, cierre y pagos del backend.
+  const relevantProductIds = new Set<string>();
+  const selectedProductId = state?.productId ?? ctx.activeProductId;
+  if (selectedProductId) relevantProductIds.add(selectedProductId);
+  for (const product of fullProducts) relevantProductIds.add(product.id);
 
+  const promptTraining = ctx.training.filter(entry => {
+    if (entry.scope !== "producto") return true;
+    return Boolean(entry.product_id && relevantProductIds.has(entry.product_id));
+  });
+  const sortedTraining = [...promptTraining].sort((a, b) =>
+    (Number(b.priority) || 0) - (Number(a.priority) || 0) ||
+    String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")),
+  );
   const isRule = (category: string) =>
     category === "correccion" || category === "reglas";
 
+  const formatTraining = (entry: AiContext["training"][number]) =>
+    `- [${entry.category || "general"} | prioridad ${Number(entry.priority) || 0}] ${entry.title}: ${entry.content}`;
+
   const corrections = sortedTraining
-    .filter((entry) => isRule(entry.category))
-    .map((entry) => `- ${entry.title}: ${entry.content}`)
+    .filter(entry => isRule(entry.category))
+    .map(formatTraining)
     .join("\n");
 
+  // No hacer depender la presencia de un entrenamiento de palabras del título,
+  // categoría ni prioridad: la IA necesita ver también Objeciones, Cierre,
+  // General, Producto, etc. Las palabras clave son ayudas de relevancia,
+  // NO condiciones para ocultar instrucciones activas.
   const knowledge = sortedTraining
-    .filter((entry) => !isRule(entry.category))
-    .filter((entry) => {
-      // Cobertura, entregas, pagos y otras normas deben estar siempre accesibles.
-      const heading = (entry.title + " " + entry.category).toLowerCase();
-      if (/cobertura|ciudad|entrega|envio|pago|banco|factur|horario|garantia|politica/.test(heading)) return true;
-      const keywords = entry.title.toLowerCase().split(/[^a-záéíóúñ0-9]+/).filter(w => w.length > 4);
-      return keywords.some(w => query.includes(w)) || entry.priority >= 90;
-    })
-    .map(
-      (entry) =>
-        `- [${entry.category}] ${entry.title}: ${entry.content}`,
-    )
+    .filter(entry => !isRule(entry.category))
+    .map(formatTraining)
     .join("\n");
 
   // BOT SKY: el código define solamente el contrato JSON, hechos verificables
