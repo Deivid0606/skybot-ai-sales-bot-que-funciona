@@ -678,6 +678,13 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   if(s.cityVerified && (expectingRecipientName || /^\s*(?:me llamo|mi nombre es)\b/i.test(text))) {
     const name=humanName(text,expectingRecipientName);if(name)s.customerName=name;
   }
+  // «quiero uno para San Lorenzo, me llamo David Alcaraz»: el nombre declarado
+  // en medio de la frase también vale, en cualquier etapa de la compra.
+  if(!s.customerName) {
+    const declared=text.match(/\b(?:me\s+llamo|mi\s+nombre\s+es)\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+(?:[ '-]+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+){1,4})/i)?.[1];
+    const name=declared ? humanName(`me llamo ${declared.trim()}`,false) : null;
+    if(name)s.customerName=name;
+  }
   // Horario de entrega: se guarda aparte y nunca reemplaza la dirección.
   if(s.cityVerified && SCHEDULE_REF.test(n)) {
     const note=text.trim().slice(0,200);

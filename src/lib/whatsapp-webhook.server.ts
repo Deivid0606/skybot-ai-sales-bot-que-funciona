@@ -1133,14 +1133,13 @@ async function recoverFailedInboundMessage(
         conn, workspaceId: conn.workspace_id, ownerId: conn.user_id,
         conversationId, adId: null, phone, wamid: message.id,
         reason: "No se pudo completar el procesamiento del mensaje; revisar los logs del webhook.",
-        reply: "Recibimos tu mensaje, pero tuvimos un inconveniente técnico. Un asesor podrá revisar tu consulta. 🙏",
+        reply: "Hubo un inconveniente técnico al procesar el último mensaje. Respondé el último mensaje del cliente con el entrenamiento; si no podés, decí que un asesor lo revisa.",
         queue: false,
       });
     } else {
-      // Si todavía no fue posible crear la conversación, no existe un pedido
-      // para confirmar. Dar acuse de recibo sin inventar una respuesta comercial.
-      await sendWhatsAppText(conn, phone,
-        "Recibimos tu mensaje, pero tuvimos un inconveniente técnico. Un asesor podrá revisar tu consulta. 🙏");
+      // Sin conversación no hay contexto para que la IA responda: no enviar
+      // texto fijo; queda registrado en los logs para revisión del vendedor.
+      console.error("[BOT_SKY_EARLY_FAILURE_NO_CONVERSATION]", { workspaceId: conn.workspace_id, wamid: message.id });
     }
   } catch (recoveryError) {
     console.error("[BOT_SKY_WEBHOOK_RECOVERY_FAILED]", {
@@ -1574,9 +1573,18 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         customerText:message.type === "text" ? body : ""});
     } catch (error) {
       console.error("[Postventa] No se pudo actualizar la cédula",error);
-      ciResult = {reply:"Tu pedido sigue confirmado. No pude guardar ese dato todavía; un asesor podrá revisarlo. 🙏",orderId:null};
+      ciResult = {reply:"El pedido sigue confirmado, pero no se pudo guardar la cédula todavía; un asesor la revisará.",orderId:null};
     }
     if (ciResult) {
+      // El resultado técnico de la cédula lo comunica la IA con el estilo del vendedor.
+      const ciCtx = await buildWorkspaceAiContext(supabaseAdmin,workspaceId,[{role:"user",content:body}],conversation.product_id,phone);
+      const ciText = await aiCompose(ciCtx, ciResult.reply);
+      if (!ciText) {
+        await sendSilenceFallback({conn,workspaceId,ownerId,conversationId:conversation.id,adId:attributedAdId,phone,wamid:message.id,
+          reason:"La IA no pudo responder sobre la cédula", reply:ciResult.reply, queue:false});
+        return;
+      }
+      ciResult = {...ciResult, reply: ciText};
       const wamid=await sendWhatsAppText(conn,phone,ciResult.reply);
       await supabaseAdmin.from("messages").insert({workspace_id:workspaceId,user_id:ownerId,
         conversation_id:conversation.id,ad_id:attributedAdId,direction:"outbound",sender:"ai",
@@ -1652,7 +1660,11 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         reason:`IA sin respuesta en postventa: ${error instanceof Error ? error.message : String(error)}`});
       return;
     }
-    if(!reply) reply="Gracias por escribirnos. 😊 Para darte información correcta sobre tu pedido, un asesor debe verificar el estado actual.";
+    if(!reply) {
+      await sendSilenceFallback({conn,workspaceId,ownerId,conversationId:conversation.id,adId:attributedAdId,phone,wamid:message.id,
+        reason:"La IA devolvió una respuesta vacía en postventa", reply:"El cliente ya compró. Respondé su último mensaje sobre el pedido sin inventar estados de entrega."});
+      return;
+    }
     const wamid=await sendWhatsAppText(conn,phone,reply);
     await supabaseAdmin.from("messages").insert({workspace_id:workspaceId,user_id:ownerId,conversation_id:conversation.id,ad_id:attributedAdId,direction:"outbound",sender:"ai",body:reply,wamid,status:"sent"});
     await supabaseAdmin.from("conversations").update({last_message:reply,last_message_at:new Date().toISOString(),unread_count:0}).eq("workspace_id",workspaceId).eq("id",conversation.id);
@@ -2168,7 +2180,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         console.error("[BOT_SKY_RECEIPT_NO_PROGRESS] La IA insistió en una respuesta de espera", conversation.id);
         await sendSilenceFallback({conn,workspaceId,ownerId,conversationId:conversation.id,
           adId:attributedAdId,phone,wamid:message.id,
-          reason:"La IA reiteró una espera sin avanzar el comprobante", reply:"¡Gracias! 😊 Recibimos tu comprobante. ¿Me pasás el nombre y apellido de quien va a recibir el pedido?"});
+          reason:"La IA reiteró una espera sin avanzar el comprobante", reply:"El comprobante ya fue recibido y revisado por el sistema. Agradecé y pedí el siguiente dato faltante del pedido (nombre y apellido de quien recibe, si falta)."});
         return;
       }
       result = {...result, reply: revised.reply};
@@ -2195,13 +2207,13 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
             /[¿?]|(?:pas[aá]me|indic[aá]me|confirm[aá]me|envi[aá]me|compart[ií]me|necesito|falta)/i.test(retried.reply)) {
           console.error("[BOT SKY CITY GUARD] IA reiteró datos posteriores sin ciudad", conversation.id);
           // Nunca dejar al cliente sin respuesta: pedir solo la ciudad.
-          result = {...result, reply:"¡Gracias! 😊 Para confirmarte la entrega, ¿me indicás en qué ciudad te lo enviamos?"};
+          result = {...result, reply:(await aiCompose(aiAnswerContext, "La ciudad de entrega todavía no está verificada: pedí ÚNICAMENTE la ciudad donde quiere recibir el pedido, sin pedir nombre, dirección ni pago.")) ?? ""};
         } else {
           result = {...result, reply: retried.reply};
         }
       } catch (error) {
         console.error("[BOT SKY CITY GUARD] No se pudo revalidar respuesta", error);
-        result = {...result, reply:"¡Gracias! 😊 Para confirmarte la entrega, ¿me indicás en qué ciudad te lo enviamos?"};
+        result = {...result, reply:(await aiCompose(aiAnswerContext, "La ciudad de entrega todavía no está verificada: pedí ÚNICAMENTE la ciudad donde quiere recibir el pedido.")) ?? ""};
       }
     }
     // El cliente todavía NO indicó nombre completo: nunca saltar directo a GPS/dirección.
@@ -2211,7 +2223,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         /(?:\b(?:direcci[oó]n|domicilio|ubicaci[oó]n|google maps|calle|referencia)\b)/i.test(result.reply) &&
         /[¿?]|(?:pas[aá]me|indic[aá]me|envi[aá]me|compart[ií]me)/i.test(result.reply)) {
       result = {...result, sale_closed:false, order:null,
-        reply:"😊 ¡Perfecto! Para preparar tu pedido, ¿me indicás tu nombre y apellido, por favor?"};
+        reply:(await aiCompose(aiAnswerContext, "Todavía falta el nombre y apellido de quien recibe: pedilo ahora, antes de pedir dirección o ubicación.")) ?? ""};
     }
     if (bypassSale && !result.order) result = {...result, sale_closed:false, order:null};
     if (saveStep) {
@@ -2275,17 +2287,20 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         else {
           console.error("[BOT SKY encomienda] La IA reiteró rechazo contrario al entrenamiento");
           await sendSilenceFallback({conn,workspaceId,ownerId,conversationId:conversation.id,adId:attributedAdId,phone,wamid:message.id,
-            reason:"La IA negó la encomienda contra el entrenamiento", reply:"¡Sí! 😊 Hacemos envíos por encomienda a todo el país, con pago anticipado. ¿Me confirmás en qué ciudad lo querés recibir? 📍"});
+            reason:"La IA negó la encomienda contra el entrenamiento", reply:"El vendedor SÍ hace envíos por encomienda a todo el país con pago anticipado. Confirmalo y pedí la ciudad donde quiere recibirlo."});
           return;
         }
       } catch(error) {
         console.error("[BOT SKY encomienda] No se pudo corregir rechazo",error);
         await sendSilenceFallback({conn,workspaceId,ownerId,conversationId:conversation.id,adId:attributedAdId,phone,wamid:message.id,
-          reason:"La IA no pudo corregir una respuesta de encomienda", reply:"¡Sí! 😊 Hacemos envíos por encomienda a todo el país, con pago anticipado. ¿Me confirmás en qué ciudad lo querés recibir? 📍"});
+          reason:"La IA no pudo corregir una respuesta de encomienda", reply:"El vendedor SÍ hace envíos por encomienda a todo el país con pago anticipado. Confirmalo y pedí la ciudad donde quiere recibirlo."});
         return;
       }
     }
-    const safeReply = bypassSale ? result.reply : buildSafeAiReply({
+    // Cierre completo por reglas: la respuesta queda vacía A PROPÓSITO porque el
+    // mensaje al cliente se genera recién tras el INSERT. No tratarlo como fallo
+    // de la IA (antes lanzaba error y el pedido nunca se registraba).
+    const safeReply = bypassSale || (checkoutCompleteByRules && !result.reply.trim()) ? result.reply : buildSafeAiReply({
       reply: result.reply,
       history: chatHistory,
       products: ctx.products,
@@ -2334,7 +2349,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
           `\nLa modalidad verificada para ${verifiedSaleState.city} es encomienda anticipada (sujeta a disponibilidad y costo). Tu borrador decía contraentrega. Reformulalo sin inventar modalidad, preguntas o precios.`});
       // Nunca quedar en silencio: si la IA insiste, usar un texto fijo correcto.
       finalReply = /(?:pago\s+al\s+recibir|contra\s*entrega)/i.test(revised.reply)
-        ? `📦 Para ${verifiedSaleState.city} el envío es por encomienda, con pago anticipado (el costo del envío depende de la transportadora). ¿Querés que te pase los datos para coordinarlo? 😊`
+        ? ((await aiCompose(aiAnswerContext, `Para ${verifiedSaleState.city} el envío es por encomienda con pago anticipado (NO contraentrega); el costo del envío depende de la transportadora. Ofrecé seguir con el pedido.`)) ?? "")
         : revised.reply;
     }
     // Una ciudad declarada por el comprador nunca se sustituye por una ciudad
@@ -2347,7 +2362,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         systemInstruction:aiAnswerContext.systemInstruction +
           `\nEl cliente indicó como destino ${cityDeclared}. Tu respuesta anterior sustituyó esa ciudad por Asunción sin autorización. Redactá de nuevo usando SOLO el destino realmente proporcionado. Si falta departamento o verificación logística, no los inventes.`});
       finalReply = /(?:\bpara\s+asunci[oó]n\b|\ben\s+asunci[oó]n\b)/i.test(rewritten.reply)
-        ? `😊 Anotado, el envío es para ${cityDeclared}. ¿Seguimos con tu pedido?`
+        ? ((await aiCompose(aiAnswerContext, `El destino del cliente es ${cityDeclared} (no Asunción). Confirmá ese destino y seguí con el siguiente dato del pedido.`)) ?? "")
         : rewritten.reply;
     }
     // Ciudad con pago al recibir: nunca enviar datos bancarios ni pedir comprobante.
@@ -2593,16 +2608,25 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         deliveryMethod: isEncomiendaAdvanceOrder(ctx.training,completedOrder.city,completedOrder.departamento,completedOrder.payment_method)
           ? "Encomienda con pago anticipado" : verifiedOrderCoverage?.method,
       });
+      // La IA redacta la confirmación con el estilo del vendedor, pero el número
+      // de pedido y el total deben aparecer EXACTOS; si no, se usa el resumen del registro.
+      const aiConfirmation = await aiCompose(aiAnswerContext,
+        `El pedido QUEDÓ REGISTRADO en el sistema. Confirmalo al cliente con el formato de cierre del entrenamiento, ` +
+        `usando EXACTAMENTE estos datos (no cambies número de pedido, total, cantidad ni modalidad):\n${confirmedMessage}`);
+      const confirmationText = aiConfirmation &&
+        aiConfirmation.includes(savedConfirmationOrder.order_number) &&
+        aiConfirmation.replace(/\D/g, "").includes(String(Math.round(Number(savedConfirmationOrder.total))))
+        ? aiConfirmation : confirmedMessage;
       try {
-        const confirmationWamid = await sendWhatsAppText(conn, phone, confirmedMessage);
+        const confirmationWamid = await sendWhatsAppText(conn, phone, confirmationText);
         await supabaseAdmin.from("messages").insert({
           workspace_id: workspaceId, user_id: ownerId,
           conversation_id: conversation.id, ad_id: attributedAdId,
-          direction: "outbound", sender: "ai", body: confirmedMessage,
+          direction: "outbound", sender: "ai", body: confirmationText,
           wamid: confirmationWamid, status: "sent",
         });
         await supabaseAdmin.from("conversations").update({
-          last_message: confirmedMessage,
+          last_message: confirmationText,
           last_message_at: new Date().toISOString(),
         }).eq("id", conversation.id).eq("workspace_id", workspaceId);
       } catch (confirmationError) {
@@ -2622,9 +2646,9 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       const pendingNeedsName = !isValidCustomerName(verifiedSaleState.customerName) &&
         !isValidCustomerName(result.order?.customer_name);
       const pendingProposal = pendingNeedsName
-        ? "😊 ¡Gracias por compartir tu ubicación! Para completar tu pedido, ¿me indicás tu nombre y apellido, por favor?"
+        ? ((await aiCompose(aiAnswerContext, "Para registrar el pedido falta el nombre y apellido de quien recibe: pedilo.")) ?? "")
         : (!pendingIsEncomienda && !pendingHasAddress)
-        ? `😊 ¡Gracias${pendingFirstName ? ", " + pendingFirstName : ""}! Para que el repartidor llegue bien, ¿me pasás tu dirección (calle y una referencia) o tu ubicación por Google Maps? 📍`
+        ? ((await aiCompose(aiAnswerContext, `Para registrar el pedido falta una dirección concreta (calle y referencia) o la ubicación de Google Maps${pendingFirstName ? `; el cliente se llama ${pendingFirstName}` : ""}: pedila.`)) ?? "")
         : (!safeBeforeInsert || /registrand|registrar[eé]?\s+tu\s+pedido|confirmand/i.test(safeBeforeInsert))
         ? await pendingCheckoutAiReply({
             ctx: aiAnswerContext,
@@ -2647,6 +2671,11 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         conversationId:conversation.id, paymentMethod:pendingChecked.paymentMethod, channel:"whatsapp_gps"
       }));
       const pendingText = pendingChecked.reply;
+      if (!pendingText.trim()) {
+        await sendSilenceFallback({conn,workspaceId,ownerId,conversationId:conversation.id,adId:attributedAdId,phone,wamid:message.id,
+          reason:"La IA no pudo redactar la respuesta del cierre pendiente", queue:false});
+        return;
+      }
       const pendingWamid = await sendWhatsAppText(conn, phone, pendingText);
       await supabaseAdmin.from("messages").insert({workspace_id:workspaceId,user_id:ownerId,
         conversation_id:conversation.id,ad_id:attributedAdId,direction:"outbound",sender:"ai",
@@ -2699,8 +2728,8 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
           overpayDoubtRe.test(outgoingProposal) || overpayWordsRe.test(outgoingProposal))) {
         // Respuesta fija: comprobante aceptado + saldo a favor + pedir nombre y apellido.
         const fav=receivedTotal-(expectedTotal as number);
-        outgoingProposal=`¡Gracias! 😊 Recibimos tu comprobante. Tenés un saldo a favor de Gs. ${fav.toLocaleString("es-PY")}.`+
-          (paymentSaleState.customerName?"":" ¿Me pasás el nombre y apellido de quien va a recibir el pedido?");
+        outgoingProposal=(await aiCompose(aiAnswerContext, `El comprobante fue recibido y cubre el total; el cliente tiene un saldo a favor de Gs. ${fav.toLocaleString("es-PY")} (pendiente de acreditación). No pidas otro comprobante.`+
+          (paymentSaleState.customerName?"":" Pedí el nombre y apellido de quien va a recibir el pedido."))) ?? "";
         console.warn("[BOT_SKY_OVERPAY_GUARD]",JSON.stringify({conversationId:conversation.id,expectedTotal,receivedTotal,fav}));
       }
       const asksForComplement=resendRe.test(outgoingProposal);
@@ -2714,9 +2743,9 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         outgoingProposal=corrected.reply;
         if (paidEnoughOrMore && expectedTotal!==null && resendRe.test(outgoingProposal)) {
           const fav=receivedTotal-expectedTotal;
-          outgoingProposal=`¡Gracias! 😊 Recibimos tu comprobante.`+
-            (fav>0?` Tenés un saldo a favor de Gs. ${fav.toLocaleString("es-PY")}.`:"")+
-            (paymentSaleState.customerName?"":" ¿Me pasás el nombre y apellido de quien va a recibir el pedido?");
+          outgoingProposal=(await aiCompose(aiAnswerContext, `El comprobante fue recibido y cubre el total; NO pidas otro comprobante ni diferencia.`+
+            (fav>0?` Saldo a favor: Gs. ${fav.toLocaleString("es-PY")}.`:"")+
+            (paymentSaleState.customerName?"":" Pedí el nombre y apellido de quien va a recibir el pedido."))) ?? "";
         } else if ((paidEnoughOrMore && resendRe.test(outgoingProposal)) ||
             (paymentSaleState.receiptReview && /(?:pago\s+acreditado|transferencia\s+verificada)/i.test(outgoingProposal)))
           throw new Error("La IA repitió información documental no válida");
@@ -2749,9 +2778,9 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
                   : !coverageReady
                     ? "La modalidad de entrega de esa ciudad necesita revisión en la cobertura de esta tienda."
                     : "Ya tengo los datos que compartiste, pero el pedido no aparece registrado. Necesitamos revisión del sistema antes de confirmarlo.";
-          outgoingProposal = nextRequired
-            ? `¡Gracias! 😊 Todavía nos falta un dato para registrar tu pedido.\n\n${nextRequired.question}`
-            : `Tu pedido todavía no está confirmado. ${technicalReason}`;
+          outgoingProposal = (await aiCompose(aiAnswerContext, nextRequired
+            ? `El pedido todavía no está registrado porque falta un dato. Pedilo: ${nextRequired.question}`
+            : `El pedido todavía no está confirmado. Motivo técnico: ${technicalReason}`)) ?? "";
         }
       }
       // Si pregunta «¿A la cuenta de quién transfiero?» en una zona verificada
@@ -2769,7 +2798,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
           : !isValidDeliveryAddress(verifiedSaleState.street) && !isValidDeliveryAddress(verifiedSaleState.locationUrl)
             ? "📍 ¿Me pasás tu dirección o ubicación para coordinar la entrega?"
             : "");
-        outgoingProposal = `🚚 Para ${paymentQuestionPolicy.city} pagás al recibir tu pedido; no necesitás hacer transferencia.${followQuestion ? `\n\n${followQuestion}` : ""}`;
+        outgoingProposal = (await aiCompose(aiAnswerContext, `Para ${paymentQuestionPolicy.city} el pago es AL RECIBIR (contraentrega): no hace falta transferencia ni datos bancarios.${followQuestion ? ` Después pedí: ${followQuestion}` : ""}`)) ?? "";
       }
       // Comparación aritmética independiente de la verificación documental:
       // un comprobante con 130.000 Gs nunca significa que falten 100 Gs
@@ -2777,7 +2806,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       const parsedCurrentReceipt = mediaPath && media &&
         (media.type === "image" || media.type === "document")
           ? parseReceiptFields(transcript) : null;
-      outgoingProposal = correctReceiptAmountReply({
+      const amountFixedProposal = correctReceiptAmountReply({
         reply: outgoingProposal,
         expectedTotal,
         parsedAmount: parsedCurrentReceipt?.amountGs ?? null,
@@ -2785,6 +2814,8 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
           paymentSaleState.receiptDocuments?.some(doc => doc.path === mediaPath)),
         customerNameValid: isValidCustomerName(verifiedSaleState.customerName),
       });
+      if (amountFixedProposal !== outgoingProposal)
+        outgoingProposal = (await aiCompose(aiAnswerContext, `Corregí el cálculo del pago: ${amountFixedProposal}`)) ?? "";
       // Segunda verificación determinista DESPUÉS de generar/corregir el texto
       // y ANTES de WhatsApp: una IA que insiste no vuelve a imponer encomienda
       // sobre una ciudad cubierta por contraentrega (ni el caso inverso).
@@ -2807,23 +2838,29 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         if (second.corrected) {
           const next = requiredCheckoutPrompt(verifiedSaleState, isValidCustomerName(verifiedSaleState.customerName));
           const mode = outgoingChecked.paymentMethod === "contraentrega"
-            ? `🚚 Para ${verifiedSaleState.city}, el pago es al recibir tu pedido.`
+            ? `Para ${verifiedSaleState.city} el pago es AL RECIBIR (contraentrega); no menciones transferencia ni datos bancarios.`
             : outgoingChecked.paymentMethod === "anticipado"
-              ? `📦 Para ${verifiedSaleState.city}, la modalidad es pago anticipado, según el entrenamiento de la tienda.`
-              : "Necesito confirmar la modalidad de entrega para tu ciudad.";
-          outgoingText = `${mode}${next ? `\n\n${next.question}` : ""}`;
+              ? `Para ${verifiedSaleState.city} la modalidad es pago anticipado (encomienda); no prometas pago al recibir.`
+              : "La modalidad de entrega de su ciudad todavía no está confirmada.";
+          outgoingText = (await aiCompose(aiAnswerContext, `${mode}${next ? ` Después pedí: ${next.question}` : ""}`)) ?? "";
         } else outgoingText = second.reply;
       }
       // Garantía de continuidad: no esperar a que el comprador escriba
       // «Excelente» luego del resumen de producto, precio y cobertura.
       // Las preguntas técnicas son universales; los textos comerciales y las
       // políticas de cada vendedor siguen viniendo de su entrenamiento + IA.
-      outgoingText = ensureCheckoutProgressReply({
+      const progressed = ensureCheckoutProgressReply({
         reply: outgoingText,
         state: verifiedSaleState,
         customerNameValid: isValidCustomerName(verifiedSaleState.customerName),
         checkoutActive: !bypassSale && !conversation.sale_closed,
       });
+      // Si falta pedir el siguiente dato, la IA reescribe su respuesta incluyéndolo.
+      if (progressed !== outgoingText.trim()) {
+        const pendingAsk = requiredCheckoutPrompt(verifiedSaleState, isValidCustomerName(verifiedSaleState.customerName));
+        outgoingText = (await aiCompose(aiAnswerContext,
+          `Tu borrador fue: «${outgoingText.trim()}». Mantené su contenido y terminá pidiendo el siguiente dato obligatorio: ${pendingAsk?.question ?? ""}`)) ?? outgoingText;
+      }
       // Regla declarativa del vendedor: si entrenó explícitamente un catálogo
       // para saludos sin producto, respetar la URL del entrenamiento aun cuando
       // el modelo la haya omitido. NO intervenir en checkout ni postventa.
@@ -2855,6 +2892,11 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         if (sentTotalLines.has(normalizedLine)) return false;
         sentTotalLines.add(normalizedLine); return true;
       }).join("\n").replace(/\n{3,}/g,"\n\n").trim();
+      if (!outgoingText) {
+        await sendSilenceFallback({conn,workspaceId,ownerId,conversationId:conversation.id,adId:attributedAdId,phone,wamid:message.id,
+          reason:"La IA no pudo redactar la respuesta", queue:false});
+        return;
+      }
       const outgoingWamid = await sendWhatsAppText(conn, phone, outgoingText);
       await supabaseAdmin.from("messages").insert({
         workspace_id: workspaceId, user_id: ownerId, conversation_id: conversation.id,
@@ -4092,6 +4134,30 @@ ${match.products.description ?? ""}`.trim();
 
 
 /**
+ * TODA respuesta al cliente la redacta la IA con el entrenamiento del vendedor.
+ * `goal` describe QUÉ comunicar (hechos verificados por el sistema y el
+ * siguiente dato a pedir); la IA decide CÓMO decirlo con el estilo de la tienda.
+ * Si la IA no responde devuelve null: el llamador NO envía texto fijo.
+ */
+async function aiCompose(ctx: Parameters<typeof generateAiReply>[0], goal: string): Promise<string | null> {
+  if (!goal.trim()) return null;
+  try {
+    const { reply } = await generateAiReplyWithRetry({
+      ...ctx,
+      systemInstruction: ctx.systemInstruction +
+        `\nOBJETIVO OBLIGATORIO DE ESTA RESPUESTA (hechos verificados por el sistema): ${goal}\n` +
+        "Redactalo vos con el tono, estilo y reglas del entrenamiento de este vendedor, contestando también el último mensaje del cliente si corresponde. " +
+        "No copies este objetivo literal, no agregues datos no verificados, no inventes número de pedido ni confirmes un pedido no registrado.",
+    });
+    const text = String(reply ?? "").trim();
+    return text || null;
+  } catch (error) {
+    console.error("[BOT_SKY_AI_COMPOSE]", error instanceof Error ? error.message : String(error));
+    return null;
+  }
+}
+
+/**
  * El extractor dio el cierre por completo pero el INSERT no procedió (monto,
  * variante o cobertura sin verificar). En lugar de un texto fijo, la IA con el
  * entrenamiento del vendedor explica al cliente qué falta, usando los hechos
@@ -4101,7 +4167,8 @@ async function pendingCheckoutAiReply(args: {
   ctx: Parameters<typeof generateAiReply>[0];
   facts: Record<string, unknown>;
 }): Promise<string> {
-  const fallback = "Recibí tus datos 😊 Un asesor está verificando tu pedido y te confirma en breve.";
+  // Sin texto fijo: si la IA falla, no se envía nada y el vendedor recibe la alerta.
+  const fallback = "";
   try {
     const { reply } = await generateAiReplyWithRetry({
       ...args.ctx,
@@ -4169,7 +4236,21 @@ async function sendSilenceFallback(args: {
       .eq("workspace_id", args.workspaceId).eq("conversation_id", args.conversationId)
       .eq("direction", "outbound").gte("created_at", since).limit(1);
     if (!recent?.length) {
-      const text = args.reply?.trim() || await nextMissingQuestion(args.workspaceId, args.conversationId);
+      // `reply` y la próxima pregunta son OBJETIVOS: la IA redacta el texto con
+      // el entrenamiento del vendedor. Si la IA no responde, no se envía nada.
+      const goal = args.reply?.trim() || await nextMissingQuestion(args.workspaceId, args.conversationId);
+      const { data: lastRows } = await supabaseAdmin.from("messages").select("sender,body")
+        .eq("workspace_id", args.workspaceId).eq("conversation_id", args.conversationId)
+        .order("created_at", { ascending: false }).limit(24);
+      const fallbackHistory = (lastRows ?? []).reverse().filter(m => Boolean(m.body)).map(m => ({
+        role: m.sender === "customer" ? ("user" as const) : ("assistant" as const), content: String(m.body),
+      }));
+      const { data: convRow } = await supabaseAdmin.from("conversations").select("product_id")
+        .eq("workspace_id", args.workspaceId).eq("id", args.conversationId).maybeSingle();
+      const fallbackCtx = await buildWorkspaceAiContext(supabaseAdmin, args.workspaceId, fallbackHistory,
+        convRow?.product_id ?? null, args.phone, args.conversationId);
+      const text = await aiCompose(fallbackCtx, `Siguiente paso de la venta: ${goal}`);
+      if (!text) throw new Error("IA sin respuesta para el mensaje de respaldo");
       const wamid = await sendWhatsAppText(args.conn, args.phone, text);
       await supabaseAdmin.from("messages").insert({
         workspace_id: args.workspaceId, user_id: args.ownerId, conversation_id: args.conversationId,
@@ -4202,13 +4283,14 @@ async function nextMissingQuestion(workspaceId: string, conversationId: string):
   } catch { /* sin estado: preguntar desde el inicio */ }
   const name = isValidCustomerName(st.customerName)
     ? String(st.customerName).trim().split(/\s+/)[0] : "";
-  const hi = name ? `¡Gracias, ${name}! 😊` : "¡Gracias por tu mensaje! 😊";
-  if (!st.productId) return `${hi} ¿Qué producto te interesa? Así te paso el precio 📦`;
-  if (!st.optionId && !st.cartLines?.length) return `${hi} ¿Qué opción o cantidad te gustaría llevar?`;
-  if (!st.city || st.cityVerified !== true) return `${hi} ¿En qué ciudad querés recibir tu pedido? 📍`;
-  if (!isValidCustomerName(st.customerName)) return `${hi} ¿Me pasás el nombre y apellido de quien va a recibir el pedido?`;
+  // Devuelve el OBJETIVO del próximo mensaje; la IA lo redacta (aiCompose).
+  const hi = name ? `El cliente se llama ${name}.` : "";
+  if (!st.productId) return `${hi} Preguntá qué producto le interesa para pasarle el precio.`;
+  if (!st.optionId && !st.cartLines?.length) return `${hi} Preguntá qué opción o cantidad quiere llevar, con los precios reales del catálogo.`;
+  if (!st.city || st.cityVerified !== true) return `${hi} Preguntá en qué ciudad quiere recibir el pedido.`;
+  if (!isValidCustomerName(st.customerName)) return `${hi} Pedí el nombre y apellido de quien va a recibir el pedido.`;
   if (st.paymentMethod !== "anticipado" && !st.street && !st.locationUrl)
-    return `${hi} ¿Me pasás tu dirección (calle y una referencia) o tu ubicación por Google Maps? 📍`;
-  if (st.paymentMethod === "anticipado") return `${hi} Cuando hagas la transferencia, enviame el comprobante por acá 🧾`;
-  return `${hi} ¿Hay algo más que quieras consultar sobre tu pedido?`;
+    return `${hi} Pedí la dirección (calle y una referencia) o la ubicación de Google Maps.`;
+  if (st.paymentMethod === "anticipado") return `${hi} Indicá que envíe por acá el comprobante de la transferencia.`;
+  return `${hi} El cliente ya dio todos los datos del pedido; el sistema todavía no pudo registrarlo. Avisá que un asesor lo confirma en breve, sin pedir más datos ni preguntar si necesita algo más.`;
 }
