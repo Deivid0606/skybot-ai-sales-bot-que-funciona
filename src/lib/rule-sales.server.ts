@@ -131,7 +131,7 @@ export function enforceVerifiedPaymentReply(args: {
   const normalized=norm(reply);
   const promisesCod=/\b(?:tenemos|contamos|disponemos|ofrecemos|hay|podes|podras|paga|pagas|pagar|se paga)\b.{0,95}\b(?:contra entrega|contraentrega|pago al recibir|al recibir|cuando recibas|cuando llegue|al delivery)\b|\b(?:pago al recibir|contra entrega|contraentrega)\b.{0,80}\b(?:disponible|habilitado|para (?:tu|esa|esta) (?:zona|ciudad))\b/.test(normalized);
   const wrongCod=policy?.paymentMethod==="contraentrega" &&
-    /\b(?:encomienda|pago anticipado|pagar por transferencia|transferencia obligatoria|datos bancarios|cuenta bancaria|no tenemos contra entrega|no hay contra entrega|comprobante de transferencia|comprobante de pago|comprobante|banco|titular|alias eko|cuenta desde|nro de cuenta|realices el pago)\b/.test(normalized);
+    /\b(?:encomienda|pago anticipado|pagar por transferencia|transferencia obligatoria|total a transferir|monto a transferir|importe a transferir|debes transferir|tenes que transferir|transferis a|datos bancarios|cuenta bancaria|no tenemos contra entrega|no hay contra entrega|comprobante de transferencia|comprobante de pago|comprobante|banco|titular|alias eko|cuenta desde|nro de cuenta|realices el pago)\b/.test(normalized);
   const wrongAdvance=policy?.paymentMethod==="anticipado" && promisesCod;
   return {reply,corrected:Boolean((promisesCod && policy?.paymentMethod!=="contraentrega")||wrongCod||wrongAdvance),paymentMethod:policy?.paymentMethod??null};
 }
@@ -378,7 +378,7 @@ function countOf(text:string, expecting:boolean):number|null {
   const num=word[m[1]]??Number(m[1]);return Number.isInteger(num)&&num>0&&num<=100?num:null;
 }
 /** Palabras que indican lugar, horario o pedido: nunca forman parte de un nombre. */
-const NOT_A_NAME=/\b(?:estoy|estamos|en|aeropuerto|trabajo|oficina|empresa|salgo|almorzar|almuerzo|horas?|hs|hasta|desde|avisa|avisame|avisas|traigas|traer|trae|aca|aqui|alla|cerca|frente|casa|shopping|colegio|hospital|terminal|cada|unidades?|cajas?)\b/;
+const NOT_A_NAME=/\b(?:ahora|despues|luego|manana|hoy|pasado|voy|vamos|sali(?:r|endo|go|mos|dr[eé])|vuelvo|regreso|puedo|tengo|estare|estaria|espera|esperame|avisar|hablamos|llevar|pasar|cuando|estoy|estamos|en|aeropuerto|trabajo|oficina|empresa|salgo|almorzar|almuerzo|horas?|hs|hasta|desde|avisa|avisame|avisas|traigas|traer|trae|aca|aqui|alla|cerca|frente|casa|shopping|colegio|hospital|terminal|cada|unidades?|cajas?)\b/;
 const PLACE_REF=/\b(?:aeropuerto|trabajo|oficina|empresa|shopping|colegio|escuela|universidad|hospital|sanatorio|terminal|supermercado|estacion|iglesia|plaza|frente|al lado|esquina|casi)\b/;
 const SCHEDULE_REF=/\b(?:\d{1,2}\s*(?::|\.|h)\s*\d{2}|\d{1,2}\s*(?:hs|horas?)|de\s+\d{1,2}\s+a\s+\d{1,2}|hasta\s+las|almorzar|almuerzo|salgo|horario)\b/;
 /** Mensaje que solo indica horario (p. ej. «Salgo a almorzar 12:30 a 13:30»). */
@@ -616,14 +616,18 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
       s.coverageStatus=candidate?.active ? "covered" : "uncovered";
     }
   }
-  if(s.cityVerified && (s.awaiting==="details" || s.awaiting==="address" || s.awaiting==="name" || s.awaiting==="city")) {
+  // Un comprobante aceptado puede dejar el estado anterior en `receipt`.
+  // La respuesta al pedido explícito de nombre también debe capturarse aquí.
+  const receiptDocumented = Boolean(s.receiptPath && !s.receiptReview && s.receiptDocuments?.length);
+  const expectingRecipientName = s.awaiting==="name" || (s.awaiting==="receipt" && receiptDocumented);
+  if(s.cityVerified && (s.awaiting==="details" || s.awaiting==="address" || expectingRecipientName || s.awaiting==="city")) {
     const details=extractCheckoutDetails(text,true,s.city);
     if(details.name && !s.customerName)s.customerName=details.name;
     if(details.street && (!s.street || s.street === s.locationUrl))s.street=details.street;
     if(details.alternatePhone && !s.alternatePhone)s.alternatePhone=details.alternatePhone;
   }
-  if(s.cityVerified && (s.awaiting==="name" || /^\s*(?:me llamo|mi nombre es)\b/i.test(text))) {
-    const name=humanName(text,s.awaiting==="name");if(name)s.customerName=name;
+  if(s.cityVerified && (expectingRecipientName || /^\s*(?:me llamo|mi nombre es)\b/i.test(text))) {
+    const name=humanName(text,expectingRecipientName);if(name)s.customerName=name;
   }
   // Horario de entrega: se guarda aparte y nunca reemplaza la dirección.
   if(s.cityVerified && SCHEDULE_REF.test(n)) {
