@@ -20,6 +20,7 @@ type ConfirmationArgs = {
   deliveryMethod?: string | null;
   address?: string | null;
   requestRecipientCi?: boolean;
+  recipientCi?: string | null;
   /** Excedente DOCUMENTADO, aún no disponible para gastar hasta verificar acreditación. */
   pendingCreditGs?: number;
 };
@@ -37,6 +38,8 @@ export function buildRegisteredOrderConfirmation(args: ConfirmationArgs): string
     "✅ PEDIDO CONFIRMADO 🎉",
     "",
     `👤 Cliente: ${created.customer_name}`,
+    ...(args.recipientCi && /^[0-9]{4,9}$/.test(args.recipientCi.replace(/[^0-9]/g,""))
+      ? [`🪪 Cédula: ${args.recipientCi.replace(/[^0-9]/g,"")}`] : []),
     `📦 Producto: ${product}`,
     `🔢 Cantidad: ${args.savedQuantity} unidad${args.savedQuantity === 1 ? "" : "es"}`,
     `💰 Total: ${formatGs(created.total)}`,
@@ -47,7 +50,7 @@ export function buildRegisteredOrderConfirmation(args: ConfirmationArgs): string
     `🚚 Envío: ${shipping}`,
     ...(isAdvance ? [`📎 Comprobante: ${args.paymentStatus === "pagado" ? "Pago acreditado" : "Recibido, pendiente de verificación bancaria"}`] : []),
     ...(isAdvance && Number.isSafeInteger(args.pendingCreditGs) && Number(args.pendingCreditGs) > 0
-      ? [`💳 Saldo a favor para próximas compras: ${formatGs(Number(args.pendingCreditGs))} (pendiente de acreditación bancaria)`] : []),
+      ? [`💚 Excedente documentado: ${formatGs(Number(args.pendingCreditGs))}, pendiente de acreditación para futuras compras.`] : []),
     `🧾 Pedido N.º: ${created.order_number}`,
     "",
     "¡Muchas gracias por tu compra! 😊",
