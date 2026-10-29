@@ -315,7 +315,10 @@ export function isNonCityPhrase(text:string):boolean{
   const n=norm(text);
   return !n || /\b(?:paga|pago|pagar|pagas|recibir|contra ?entrega|anticipado|transferencia|efectivo|envio|gratis|delivery|precio|costo|cuanto|quiero|gracias|hola|buenas|buen dia|si|no|ok|dale|listo|perfecto|litros?|caja|cajas|unidad|unidades|pedido|confirmo|cuando|como|donde|tienen|hacen|llega|casa|domicilio)\b/.test(n) ||
     // Opiniones o frases comunes («Es un poco alto», «O no», «muy caro») no son ciudades.
-    /\b(?:es|son|un|una|poco|muy|mas|menos|alto|alta|caro|cara|barato|solo|nomas|o|que|eso|esto|todo|nada|algo|ya|pero|porque|bueno|mejor|igual|creo|puede|hay|tengo|necesito|me|te|lo|le|mi|tu)\b/.test(n);
+    /\b(?:es|son|un|una|poco|muy|mas|menos|alto|alta|caro|cara|barato|solo|nomas|o|que|eso|esto|todo|nada|algo|ya|pero|porque|bueno|mejor|igual|creo|puede|hay|tengo|necesito|me|te|lo|le|mi|tu)\b/.test(n) ||
+    // Elecciones de opción o cantidad («dos», «el de 2», «la de 3») nunca son ciudades.
+    /^(?:(?:el|la|los|las)\s+(?:de\s+)?)?(?:\d+|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)(?:\s+(?:unidades?|cajas?|litros?|por favor|nomas))?$/.test(n) ||
+    /^(?:el|la|los|las)\s+de\b/.test(n);
 }
 
 export function cityIn(text:string, coverage:Coverage[]): Coverage | null {
@@ -748,7 +751,11 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     const directed = trimmed.match(/^(?:para|soy de|vivo en|enviar a|enviame a|envialo a|mandar a|mandalo a|a)\s+(.+)$/i)?.[1]
       ?? trimmed.match(/\b(?:quiero|llevo|dame|pido|necesito)\b.*?\bpara\s+(.{3,40})$/i)?.[1];
     const raw = (directed ?? (s.awaiting === "city" ? trimmed : "")).replace(/[.!¡]+$/,"").trim();
-    if (raw.length >= 3 && raw.length <= 40 && /^[\p{L}0-9 .'-]+$/u.test(raw) && !isNonCityPhrase(raw) &&
+    // Una elección de opción o cantidad («el de 2», «quiero 1», «2 unidades») nunca es una ciudad.
+    const looksLikeSelection = Boolean(chosen) || /^(?:el|la|los|las)\s+(?:de\s+)?\d|^\d|\b\d+\s*(?:unidad|unidades|cajas?|litros?)\b/i.test(norm(raw)) ||
+      /^(?:quiero|dame|llevo|me llevo|prefiero|elijo|ok|dale|si|bien)\b/i.test(norm(raw)) ||
+      !norm(raw).split(" ").some(w => w.length >= 4 && !/^\d+$/.test(w));
+    if (!looksLikeSelection && raw.length >= 3 && raw.length <= 40 && /^[\p{L}0-9 .'-]+$/u.test(raw) && !isNonCityPhrase(raw) &&
         !/\b(?:calle|barrio|casi|esquina|ruta|direccion|casa|unidad|unidades|caja|cajas)\b/i.test(raw)) {
       s.city = raw.replace(/\s+/g," ").replace(/(^|\s)(\p{L})/gu, (_m, sp, ch) => sp + ch.toUpperCase());
       s.department = s.department || "A confirmar";

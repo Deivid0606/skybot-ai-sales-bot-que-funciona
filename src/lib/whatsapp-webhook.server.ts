@@ -2614,7 +2614,8 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
     const violatesVerifiedFacts = (text: string) => {
       const policy = verifiedSaleState.cityVerified
         ? deliveryPolicyForCity(verifiedSaleState.city, verifiedSaleState.department, ctx.training) : null;
-      const prematureBank = verifiedSaleState.awaiting === "variant" && BANK_RE.test(text);
+      // Datos bancarios solo con opción elegida y ciudad confirmada (fuera de la cobertura).
+      const prematureBank = (verifiedSaleState.awaiting === "variant" || !verifiedSaleState.cityVerified) && BANK_RE.test(text);
       return enforceVerifiedPaymentReply({reply:text, city:verifiedSaleState.city, department:verifiedSaleState.department,
           cityVerified:verifiedSaleState.cityVerified, training:ctx.training}).corrected ||
         (policy?.paymentMethod === "contraentrega" && (BANK_RE.test(text) || /\bencomienda\b|pago anticipado|total a transferir/i.test(text))) ||
@@ -2637,6 +2638,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
           : policy?.paymentMethod === "anticipado"
             ? `Para ${verifiedSaleState.city} la modalidad VERIFICADA es pago anticipado; no prometas pago al recibir.` : "",
         verifiedSaleState.awaiting === "variant" ? "El cliente todavía no eligió una opción válida: mostrá las opciones reales con sus precios y preguntá cuál prefiere; no pidas pago." : "",
+        !verifiedSaleState.cityVerified && verifiedSaleState.productId ? "Todavía NO se sabe la ciudad de entrega: no menciones encomienda, pago anticipado ni datos bancarios; preguntá en qué ciudad quiere recibir el pedido." : "",
         "Nunca uses marcadores como [PRECIO] o [TOTAL]: usá los precios reales del catálogo.",
         WAITING_REPLY_RE.test(text) ? "No digas «un momento», «voy a verificar» ni «te aviso»: el sistema ya revisó todo en este turno; respondé con el resultado y el siguiente paso." : "",
         claimsRegisteredOrder(text) ? "El pedido TODAVÍA NO está registrado en el sistema: no digas que está confirmado, no muestres número de pedido ni agradezcas la compra; pedí el dato que falte." : "",
@@ -2646,7 +2648,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       // Último recurso SIN texto fijo: depurar el borrador de la IA quitando
       // solo las líneas que contradicen los hechos verificados.
       let cleaned = again ?? text;
-      if (policy?.paymentMethod === "contraentrega" || verifiedSaleState.awaiting === "variant")
+      if (policy?.paymentMethod === "contraentrega" || verifiedSaleState.awaiting === "variant" || !verifiedSaleState.cityVerified)
         cleaned = stripBankDetailsForCod(cleaned).split("\n")
           .filter(line => !/encomienda|pago anticipado|transferir|transferencia|cuenta|alias|c[eé]dula/i.test(line)).join("\n");
       cleaned = stripWaitingSentences(cleaned);
