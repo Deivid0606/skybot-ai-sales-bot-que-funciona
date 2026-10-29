@@ -40,8 +40,13 @@ export type SaleStep = {
   needsAi: boolean;
 };
 
+const NUMBER_WORDS: Record<string, string> = {un:"1",uno:"1",una:"1",dos:"2",tres:"3",cuatro:"4",cinco:"5",seis:"6",siete:"7",ocho:"8",nueve:"9",diez:"10"};
+// «el de dos litros» = «el de 2 litros»: los números en palabras delante de una
+// capacidad se escriben en dígitos para reconocer la presentación.
 const norm = (s: unknown) => String(s ?? "").toLowerCase().normalize("NFD")
-  .replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+  .replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim()
+  .replace(/\b(un|uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\s+(litros?|lts?|kg|kilos?|ml|cm|mm|gramos?)\b/g,
+    (_m, w: string, u: string) => `${NUMBER_WORDS[w]} ${u}`);
 const money = (n: number) => `Gs. ${Math.round(n).toLocaleString("es-PY")}`;
 const opts = (p: Product) => [...(p.product_prices ?? [])].filter(o => o.price > 0).sort((a,b) => a.sort_order-b.sort_order);
 const units = (s: string) => s.match(/\b\d+(?:[.,]\d+)?\s*(?:litros?|lts?|l|ml|kg|kilos?|cm|mm)\b/);
@@ -402,6 +407,14 @@ function selectOption(text:string, options:Option[], awaiting=false):Option|null
       if (selectedPackages.length === 1) return selectedPackages[0];
     }
   }
+  // Capacidades (2, 3 y 5 litros): «el de 2» / «la de 5» = esa capacidad, no una cantidad.
+  if (options.every(o => Boolean(units(norm(o.label))))) {
+    const cap = n.match(/\b(?:el|la|los|las)\s+de\s+(\d+(?:[.,]\d+)?)\b/)?.[1];
+    if (cap) {
+      const hit = options.filter(o => units(norm(o.label))![0].match(/\d+(?:[.,]\d+)?/)![0] === cap);
+      if (hit.length === 1) return hit[0];
+    }
+  }
   const matches=options.filter(o=>{
     const label=norm(o.label), specific=units(label);
     if(specific){const digits=specific[0].match(/\d+(?:[.,]\d+)?/)?.[0]??"";
@@ -441,7 +454,7 @@ function countOf(text:string, expecting:boolean):number|null {
   const n=norm(text);
   const word:Record<string,number>={un:1,uno:1,una:1,dos:2,tres:3,cuatro:4,cinco:5,seis:6};
   const m=n.match(/\b(\d{1,3}|un|uno|una|dos|tres|cuatro|cinco|seis)\s*(?:unidad(?:es)?|piezas?)\b/)
-    ?? n.match(/\b(?:el|la|los|las)\s+de\s+(\d{1,3}|un|uno|una|dos|tres|cuatro|cinco|seis)\b/)
+    ?? n.match(/\b(?:el|la|los|las)\s+de\s+(\d{1,3}|un|uno|una|dos|tres|cuatro|cinco|seis)\b(?!\s*(?:litros?|lts?|l|ml|kg|kilos?|cm|mm|gramos?)\b)/)
     ?? n.match(/\b(?:quiero|llevo|dame|necesito|mandame|pido)\s+(\d{1,3}|un|uno|una|dos|tres|cuatro|cinco|seis)\b/)
     ?? n.match(/\bcada\s+(?:uno|una)\b[\s,.;y]*(\d{1,2}|dos|tres|cuatro|cinco|seis)\b/)
     ?? n.match(/\b(\d{1,2}|dos|tres|cuatro|cinco|seis)\s+(?:cajas?|packs?|juegos?)\b/)
@@ -640,7 +653,9 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     // «2 cajas (8 unidades)» selecciona el paquete que INCLUYE 8 unidades.
     // El «2» es el número de cajas, no una cantidad adicional para recalcular
     // el precio oficial del paquete. No pisar quantity de product_prices.
-    const chosePackage = Boolean(chosen && /\b(?:caja(?:s)?|pack(?:s)?|combo(?:s)?)\b/.test(norm(chosen.label)) && chosen.quantity > 1);
+    const chosePackage = Boolean(chosen && /\b(?:caja(?:s)?|pack(?:s)?|combo(?:s)?)\b/.test(norm(chosen.label)) && chosen.quantity > 1) ||
+      // «el de 2» eligió la capacidad de 2 litros: ese 2 no es una cantidad.
+      Boolean(chosen && units(norm(chosen.label)) && /\b(?:el|la|los|las)\s+de\s+\d/.test(norm(selectionText)));
     if(q && !s.cartLines?.length && !chosePackage)s.quantity=q;
   } else {
     // "uno de 5 litros" sí comunica cantidad 1 explícita.
@@ -659,6 +674,11 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
       s.optionId = smallest.id;
       s.quantity = smallest.quantity;
     }
+  }
+  // Capacidad elegida («el de 2 litros») sin cantidad dicha: es 1 unidad.
+  {
+    const capOpt = variants.find(v => v.id === s.optionId);
+    if (capOpt && !s.quantity && !s.cartLines?.length && units(norm(capOpt.label))) s.quantity = 1;
   }
   const nationalDestination = sellerAllowsNationwideAdvance(ctx.training) && !gpsUrl
     ? nationwideDestinationFromText(text) : null;
