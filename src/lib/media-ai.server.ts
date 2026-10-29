@@ -381,7 +381,7 @@ export async function describeImage(
               "Responde en español, con información útil para que un asistente de ventas pueda contestarle.",
               "No inventes datos que no sean visibles.",
               "",
-              "Si es un comprobante de pago:",
+              "Si es un comprobante de pago o de transferencia (AUNQUE sea una captura de pantalla de la app del banco o de Eko/billetera), es COMPROBANTE:",
               "- diferenciar claramente cuenta de destino de cuenta de origen y beneficiario de remitente",
               "- no confundir saldo, precio anunciado, comisiones o números de referencia con monto transferido",
               "- La PRIMERA línea debe ser exactamente COMPROBANTE.",
@@ -407,7 +407,7 @@ export async function describeImage(
               "- describe qué producto es",
               "- color, marca, modelo, estado y detalles visibles",
               "",
-              "Si es una captura, consulta o texto:",
+              "Si es una captura, consulta o texto que NO es un comprobante de pago:",
               "- comienza exactamente con CONSULTA",
               "- resume lo importante visible",
               "",
@@ -426,7 +426,7 @@ export async function describeImage(
   });
   const instructions = [
     "Analizá esta imagen de WhatsApp. No inventes datos no visibles.",
-    "Si es comprobante, la primera línea EXACTA es COMPROBANTE y luego, una línea por clave:",
+    "Si es comprobante de pago o transferencia (aunque sea captura de pantalla de la app del banco), la primera línea EXACTA es COMPROBANTE y luego, una línea por clave:",
     "MONTO_GS: [dígitos del importe transferido o NO_LEGIBLE]",
     "BENEFICIARIO: [nombre bajo PARA o NO_LEGIBLE]",
     "CUENTA_DESTINO: [número de cuenta bajo PARA o NO_LEGIBLE]",
@@ -463,6 +463,45 @@ export async function describeImage(
 
   return cleanDescription;
 }
+/**
+ * Segunda lectura SOLO de comprobante, para cuando la primera interpretación
+ * clasificó una captura bancaria como consulta/imagen y no trajo los campos.
+ */
+export async function readReceiptImage(base64: string, mime: string, workspaceId?: string): Promise<string | null> {
+  const normalizedMime = normalizeMime(mime) || "image/jpeg";
+  if (!base64?.trim() || !normalizedMime.startsWith("image/")) return null;
+  const providers = await visionProviders(workspaceId);
+  const instructions = [
+    "Esta imagen es un comprobante de pago o transferencia (puede ser captura de pantalla de la app del banco). Extraé SOLO lo visible.",
+    "Primera línea EXACTA: COMPROBANTE. Si de verdad no es un comprobante de pago, respondé solo: NO_COMPROBANTE.",
+    "Luego una línea por clave, sin Markdown:",
+    "MONTO_GS: [importe transferido/debitado, solo dígitos, o NO_LEGIBLE]",
+    "BENEFICIARIO: [nombre del destinatario (Destino/Para), o NO_LEGIBLE]",
+    "CUENTA_DESTINO: [cuenta del destinatario tal como se ve, incluso con asteriscos, o NO_LEGIBLE]",
+    "ALIAS_DESTINO: [alias / CI del destinatario, o NO_LEGIBLE]",
+    "EMISOR: [nombre del que paga (Origen/De), o NO_LEGIBLE]",
+    "BANCO: [entidad, o NO_LEGIBLE]",
+    "OPERACION: [número de comprobante/operación, o NO_LEGIBLE]",
+    "FECHA: [fecha y hora, o NO_LEGIBLE]",
+    "Nunca confundas Origen con Destino ni el saldo con el monto.",
+  ].join("\n");
+  for (const provider of providers) {
+    try {
+      const out = provider.kind === "gemini"
+        ? await callGemini({ apiKey: provider.key, model: provider.model,
+            system: "Extraés datos de comprobantes de pago paraguayos con exactitud.",
+            contents: [{ role: "user", parts: [{ inlineData: { mimeType: normalizedMime, data: base64 } }, { text: instructions }] }],
+            temperature: 0, maxTokens: 600 })
+        : await callOpenAiImage(provider.key, provider.model, normalizedMime, base64, instructions);
+      const text = clean(out ?? "");
+      if (text && text !== "__GEMINI_QUOTA_EXCEEDED__") return /^NO_COMPROBANTE/i.test(text) ? null : text;
+    } catch {
+      console.warn("[Media AI] Lectura de comprobante no disponible", { provider: provider.label });
+    }
+  }
+  return null;
+}
+
 /** Lectura documental, nunca acreditación bancaria. Se evita inferir valores ausentes. */
 export type ReceiptFields = {
   amountGs: number | null; beneficiary: string | null; destinationAccount: string | null;
@@ -472,10 +511,12 @@ export type ReceiptFields = {
 export function parseReceiptFields(description: string | null | undefined): ReceiptFields | null {
   const raw = String(description ?? "").trim();
   const normalized = raw.replace(/^```(?:text|markdown)?\s*/i, "").replace(/\s*```\s*$/i, "").trim().replace(/^\*\*(COMPROBANTE)\*\*/i, "$1");
-  if (!/^(?:\uFEFF)?\s*(?:\[imagen\]\s*)?COMPROBANTE\b/i.test(normalized)) return null;
+  if (!/^(?:\uFEFF)?\s*(?:\[imagen\]\s*)?COMPROBANTE\b/i.test(normalized) &&
+      !(/^\s*(?:[-*]\s*)?(?:\*\*)?MONTO_GS(?:\*\*)?\s*:/im.test(normalized) &&
+        /^\s*(?:[-*]\s*)?(?:\*\*)?(?:BENEFICIARIO|CUENTA_DESTINO|ALIAS_DESTINO)(?:\*\*)?\s*:/im.test(normalized))) return null;
   const value = (key: string) => {
     const match = normalized.match(new RegExp(`^\\s*(?:[-*]\\s*)?(?:\\*\\*)?${key}(?:\\*\\*)?\\s*:\\s*(.+)$`, "im"));
-    const v = (match?.[1]?.trim() ?? "").replace(/\*\*\s*$/, "").trim();
+    const v = (match?.[1]?.trim() ?? "").replace(/^\*\*\s*/, "").replace(/\*\*\s*$/, "").trim();
     return v && !/^(?:NO_LEGIBLE|NO VISIBLE|DESCONOCIDO|N\/?A|null)$/i.test(v) ? v : null;
   };
   const amountText = value("MONTO_GS");
