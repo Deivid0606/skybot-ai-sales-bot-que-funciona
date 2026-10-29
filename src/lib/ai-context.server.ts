@@ -51,7 +51,7 @@ export async function buildWorkspaceAiContext(
       id, name, sku, price, promo_price, stock, sales_copy, description, delivery_info, ai_instructions,
       product_keywords(keyword), product_prices(id, label, quantity, price, sort_order)
     `).eq("workspace_id", workspaceId).eq("is_active", true),
-    supabase.from("training_entries").select("title, content, category, priority").eq("workspace_id", workspaceId).eq("is_active", true),
+    supabase.from("training_entries").select("title, content, category, priority, scope, product_id, keywords, created_at").eq("workspace_id", workspaceId).eq("is_active", true).order("priority", { ascending: false }).order("created_at", { ascending: false }),
     conversationId ? supabase.from("bot_sale_states").select("state").eq("workspace_id", workspaceId).eq("conversation_id", conversationId).maybeSingle() : Promise.resolve({ data: null, error: null }),
   ]);
   for (const result of [aiSettingsResult, settingsResult, productsResult, trainingResult, saleResult]) {
