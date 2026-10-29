@@ -1708,7 +1708,10 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
   // Primera consulta de un producto identificado: enviar UNA VEZ el copy y las
   // imágenes que el VENDEDOR guardó en su catálogo. No redactar guiones aquí.
   // Después de la presentación, todas las respuestas conversacionales usan IA.
-  const catalogResult = await sendCatalogByKeyword({
+  // Un comprobante (su texto leído) no es una consulta de producto: no dispara catálogo.
+  const isReceiptMedia = Boolean(media && (media.type === "image" || media.type === "document") &&
+    (parseReceiptFields(transcript) || /^\s*COMPROBANTE\b/i.test(String(transcript ?? ""))));
+  const catalogResult = isReceiptMedia ? null : await sendCatalogByKeyword({
     workspaceId, ownerId, conversationId: conversation.id,
     adId: attributedAdId, conn, phone, text: body,
   });
@@ -2477,8 +2480,10 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
     }
     console.info("[BOT SKY híbrido] respuesta", {workspaceId, conversationId:conversation.id, origin:responseOrigin});
 
+    // En el turno de un comprobante la IA no puede cambiar el producto de la venta.
+    const keepSaleProduct = Boolean(mediaPath && currentReceipt && (saveStep?.state.productId ?? previousSale.productId));
     const detectedProduct =
-      result.product_id && ctx.products.some((p) => p.id === result.product_id)
+      !keepSaleProduct && result.product_id && ctx.products.some((p) => p.id === result.product_id)
         ? result.product_id
         : (saveStep?.state.productId ?? previousSale.productId ?? conversation.product_id);
 
@@ -2995,7 +3000,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       // pertenece a la IA con entrenamiento. Nunca imponer preguntas aquí.
       let outgoingProposal = safeBeforeInsert;
       const paidEnoughOrMore=isAdvance && expectedTotal!==null && receivedTotal>=expectedTotal && receivedTotal>0;
-      const resendRe=/(complemento|comprobante\s+de\s+la\s+diferencia|faltan?\s+gs|nuevamente|reenvi|monto\s+sea\s+el\s+correcto|otro\s+comprobante)/i;
+      const resendRe=/(complemento|comprobante\s+de\s+la\s+diferencia|comprobante\s+adicional|por\s+(?:esa|la)\s+diferencia|faltan?\s+gs|nuevamente|reenvi|monto\s+sea\s+el\s+correcto|otro\s+comprobante)/i;
       // Dudas sobre un pago MAYOR al total ("¿realizaste un pago adicional o hay algún error?").
       const overpayDoubtRe=/(pago\s+adicional|alg[uú]n\s+error|hay\s+un\s+error|un\s+error|no\s+coincide|diferencia|monto\s+(?:distinto|diferente|mayor)|pero\s+el\s+comprobante\s+muestra|verificar\s+(?:los\s+datos\s+y\s+)?el\s+monto|confirm(?:ar|á|ame|arme|es)[\s\S]{0,60}(?:monto|pago|transferencia|error))/i;
       const overpaid=paidEnoughOrMore && expectedTotal!==null && receivedTotal>expectedTotal;
