@@ -2216,6 +2216,56 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       }
       result = {...result, reply: revised.reply};
     }
+    // DATOS QUE LA IA ENTENDIÓ DEL CLIENTE: el cliente puede escribir su nombre o
+    // dirección de cualquier forma («david alcaraz me llamo», «a nombre de…»).
+    // La IA los interpreta; el backend solo los acepta si CADA palabra aparece en
+    // los mensajes del propio cliente (nunca inventados) y pasan la validación.
+    if (saveStep && !bypassSale && !conversation.sale_closed && result.detected) {
+      const customerText = normalizeIntentText([...chatHistory.filter(h => h.role === "user").slice(-12).map(h => h.content), body].join(" \n "));
+      const customerTokens = new Set(customerText.split(/[^a-z0-9ñ]+/).filter(Boolean));
+      const writtenByCustomer = (value: string) => {
+        const words = normalizeIntentText(value).split(/[^a-z0-9ñ]+/).filter(w => w.length >= 2);
+        return words.length > 0 && words.every(w => customerTokens.has(w));
+      };
+      const detectedName = result.detected.customer_name?.trim();
+      const detectedStreet = result.detected.street?.trim();
+      const filled: string[] = [];
+      const prefilled: SaleState = { ...previousSale };
+      if (!isValidCustomerName(saveStep.state.customerName) && detectedName &&
+          isValidCustomerName(detectedName) && writtenByCustomer(detectedName)) {
+        prefilled.customerName = detectedName; filled.push(`nombre y apellido: ${detectedName}`);
+      }
+      if (!isValidDeliveryAddress(saveStep.state.street) && !saveStep.state.locationUrl && detectedStreet &&
+          saveStep.state.paymentMethod !== "anticipado" && saveStep.state.cityVerified &&
+          isValidDeliveryAddress(detectedStreet) && writtenByCustomer(detectedStreet) && !isValidCustomerName(detectedStreet)) {
+        prefilled.street = detectedStreet; filled.push(`dirección: ${detectedStreet}`);
+      }
+      if (filled.length) {
+        // Recalcular el estado con el MISMO mensaje y los datos ya reconocidos.
+        const rerun = advanceRuleSale(ctx, saleInput, prefilled,
+          media && (media.type === "image" || media.type === "document") ? mediaPath : null, gpsUrl);
+        if (rerun) {
+          if (prefilled.customerName && !rerun.state.customerName) rerun.state.customerName = prefilled.customerName;
+          if (prefilled.street && !rerun.state.street) rerun.state.street = prefilled.street;
+          if (saveStep.state.cityVerified && !rerun.state.cityVerified) {
+            rerun.state.city = saveStep.state.city; rerun.state.department = saveStep.state.department;
+            rerun.state.cityVerified = true; rerun.state.coverageStatus = saveStep.state.coverageStatus;
+          }
+          rerun.state.receiptDocuments = saveStep.state.receiptDocuments;
+          rerun.state.receiptReview = saveStep.state.receiptReview;
+          if (saveStep.state.receiptPath && !rerun.state.receiptPath) rerun.state.receiptPath = saveStep.state.receiptPath;
+          Object.assign(saveStep.state, rerun.state);
+          saveStep.complete = rerun.complete;
+        }
+        console.info("[BOT_SKY_AI_DETECTED_FIELDS]", JSON.stringify({conversationId:conversation.id,
+          fields:filled.map(f=>f.split(":")[0]), awaiting:saveStep.state.awaiting, complete:saveStep.complete}));
+        // Si la respuesta todavía pide un dato que ya dio, la IA la rehace con los datos actualizados.
+        if (!saveStep.complete && /\b(?:nombre|apellido|direcci[oó]n|domicilio|calle|referencia)\b/i.test(result.reply)) {
+          const updated = await aiCompose(aiAnswerContext, `El cliente YA dio estos datos y quedaron guardados: ${filled.join("; ")}. NO los pidas de nuevo. Respondé su último mensaje y pedí solo el siguiente dato pendiente (${saveStep.state.awaiting ?? "ninguno"}).`);
+          if (updated) result = {...result, reply: updated};
+        }
+      }
+    }
     // GARANTÍA DE ORDEN COMERCIAL: la IA redacta, pero no puede saltarse ciudad.
     // Si propone pedir datos personales o una dirección sin ciudad verificada,
     // volver a consultar a LA MISMA IA con el entrenamiento del workspace.
