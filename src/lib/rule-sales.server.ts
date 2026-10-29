@@ -1,6 +1,7 @@
 /** BOT SKY: extractor/validador de estado. No redacta preguntas comerciales. */
 import type { AiContext } from "@/lib/ai.server";
 import { isValidDeliveryAddress } from "@/lib/sale-reconciliation.server";
+import { PY_CITIES } from "@/lib/py-cities";
 
 type Product = AiContext["products"][number];
 type Option = Product["product_prices"][number];
@@ -89,7 +90,54 @@ export function parseCoverage(training: AiContext["training"]): Coverage[] {
     (x.active!==c.active || norm(x.method)!==norm(c.method) || x.addressRequired!==c.addressRequired)));
   // No agregar ciudades nacionales al listado de contraentrega.
   // Las localidades fuera de la lista se resuelven desde el pedido y la política del vendedor.
-  return clean;
+  return clean.length ? clean : looseCoverage(training);
+}
+
+/**
+ * Respaldo para vendedores que NO usan el formato estructurado
+ * (📍 Ciudad / DEPARTAMENTO: / COBERTURA: SI / MODALIDAD:). Solo toma ciudades
+ * paraguayas conocidas que el vendedor menciona en la misma línea o en la lista
+ * que sigue a un texto de contraentrega/pago al recibir. Nunca inventa ciudades.
+ */
+function looseCoverage(training: AiContext["training"]): Coverage[] {
+  const COD = /\b(?:contra ?entrega|pago al recibir|pagas al recibir|pagan al recibir|paga al recibir|cobro al recibir)\b/;
+  const NEGATIVE = /\b(?:sin cobertura|no (?:hay|tenemos|hacemos|llegamos|cubrimos|realizamos)|no hacemos contra|excepto|salvo|fuera de|solo encomienda|unicamente encomienda)\b/;
+  const cities = PY_CITIES.map(c => ({...c, key: norm(c.city)})).filter(c => c.key.length >= 3);
+  const found = new Map<string, Coverage>();
+  for (const entry of training) {
+    let inCod = false;
+    for (const raw of String(entry.content ?? "").split(/\r?\n/)) {
+      const n = norm(raw);
+      if (!n) continue;
+      const isHeading = /^\s*(?:#|\*\*[^*]+\*\*\s*$)/.test(raw) || /:\s*$/.test(raw.trim());
+      if (COD.test(n)) inCod = !NEGATIVE.test(n);
+      else if (isHeading || NEGATIVE.test(n)) inCod = false;
+      if (!inCod || NEGATIVE.test(n)) continue;
+      for (const c of cities) {
+        if (!(` ${n} `).includes(` ${c.key} `)) continue;
+        const id = `${c.key}|${norm(c.department)}`;
+        if (!found.has(id)) found.set(id, {city:c.city, department:c.department, aliases:[c.city],
+          active:true, method:"CONTRA ENTREGA", addressRequired:true});
+      }
+    }
+  }
+  return [...found.values()];
+}
+
+/**
+ * Datos bancarios del vendedor. Prioriza el bloque "DATOS BANCARIOS AUTORIZADOS";
+ * si el vendedor usa otro título ("Datos para transferencia", "Cuenta bancaria"...)
+ * se toma esa sección; como último recurso, todo el entrenamiento activo.
+ * El llamador sigue exigiendo líneas explícitas de cuenta/alias/titular.
+ */
+export function sellerBankText(training: AiContext["training"]): string {
+  const titled = training.filter(t => /transferencias|comprobantes|datos bancarios/i.test(t.title))
+    .map(t => String(t.content ?? "")).join("\n");
+  const strict = titled.match(/^DATOS BANCARIOS AUTORIZADOS[^\n]*\n([\s\S]*?)(?=\n\s*(?:FORMATO OBLIGATORIO|## CONTROL DE COMPROBANTES|RESPUESTAS MODELO)|(?![\s\S]))/im)?.[1];
+  if (strict?.trim()) return strict;
+  const all = training.map(t => String(t.content ?? "")).join("\n");
+  const section = all.match(/^[#*\s\p{Extended_Pictographic}]*(?:datos\s+bancarios|datos\s+(?:para|de)\s+(?:la\s+)?transferencia|cuenta\s+bancaria|datos\s+de\s+pago)[^\n]*\n([\s\S]*?)(?=\n\s*\n\s*#|\n#{1,6}\s|(?![\s\S]))/imu)?.[1];
+  return section?.trim() ? section : all;
 }
 
 /** La modalidad se obtiene de la ficha de cobertura ACTIVA DEL VENDEDOR.
@@ -175,7 +223,7 @@ export function isEncomiendaAdvanceOrder(training: AiContext["training"], city: 
 export function sellerAllowsNationwideAdvance(training: AiContext["training"]): boolean {
   return training.some(entry => {
     const body = String(entry.content ?? "");
-    return /(?:todo\s+(?:el\s+)?paraguay|(?:cualquier|todas\s+las)\s+ciudad(?:es)?\s+(?:del\s+)?paraguay|encomienda\s+nacional|encomienda\s+a\s+todo\s+paraguay|ciudad(?:es)?\s+(?:de\s+)?paraguay\s+(?:que|sin|fuera))/i.test(body) &&
+    return /(?:todo\s+(?:el\s+)?paraguay|(?:cualquier|todas\s+las)\s+ciudad(?:es)?\s+(?:del\s+)?paraguay|encomienda\s+nacional|encomienda\s+a\s+todo\s+paraguay|ciudad(?:es)?\s+(?:de\s+)?paraguay\s+(?:que|sin|fuera)|(?:al|el|del|para\s+el)\s+interior(?:\s+del\s+pa[ií]s)?)/i.test(body) &&
       /encomienda/i.test(body) && /(?:anticipado|transferencia|pagar\s+antes)/i.test(body);
   });
 }
