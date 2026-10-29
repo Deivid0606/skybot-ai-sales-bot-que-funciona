@@ -90,6 +90,8 @@ export type AiResult = {
   product_id: string | null;
   sale_closed: boolean;
   order: AiOrder | null;
+  /** Datos que el CLIENTE escribió (cualquier redacción). El backend verifica que aparezcan en sus mensajes. */
+  detected?: { customer_name?: string; street?: string };
 };
 
 /**
@@ -340,7 +342,10 @@ ${knowledge || "Sin entradas adicionales"}
 
 SALIDA OBLIGATORIA (no mostrar al cliente): devolvé exclusivamente UN objeto JSON válido,
 sin Markdown ni texto adicional, con estas claves:
-{"reply":"texto natural al cliente","product_id":null,"sale_closed":false,"order":null}
+{"reply":"texto natural al cliente","product_id":null,"sale_closed":false,"order":null,"detected":{"customer_name":"","street":""}}
+"detected" se completa SIEMPRE que el cliente haya dado en esta compra su nombre y apellido o su dirección de entrega,
+en cualquier forma («me llamo X», «X me llamo», «soy X», «a nombre de X», o un mensaje que solo diga el nombre).
+Copiá esas palabras TAL COMO las escribió el cliente; nunca inventes ni completes. Si no lo dijo, dejá "".
 product_id debe ser un ID REAL de catálogo o null. sale_closed indica que
 aportaste un pedido estructurado COMPLETO pero no prueba INSERT ni pago.
 Si falta un dato o no hay pedido suficientemente definido, sale_closed:false y order:null.
@@ -611,6 +616,12 @@ function parseResult(raw: string): AiResult {
     typeof parsed.city === "string" && (parsed.quantity !== undefined || parsed.product_price_id !== undefined);
   const order = normalizeOrder(directOrder ? parsed : parsed.order);
   const reply = sanitizeVisibleReply(parsed.reply);
+  const rawDetected = parsed.detected && typeof parsed.detected === "object" && !Array.isArray(parsed.detected)
+    ? parsed.detected as UnknownRecord : null;
+  const detected = rawDetected ? {
+    customer_name: cleanString(rawDetected.customer_name) || undefined,
+    street: cleanString(rawDetected.street) || undefined,
+  } : undefined;
 
   // Nunca reemplazar una salida incompleta de IA por preguntas o esperas
   // comerciales programadas. ensureValidResult hará probar otro proveedor.
@@ -619,6 +630,7 @@ function parseResult(raw: string): AiResult {
     product_id: normalizeProductId(parsed.product_id),
     sale_closed: directOrder ? Boolean(order) : parsed.sale_closed === true,
     order,
+    detected,
   };
 }
 
@@ -634,6 +646,7 @@ function ensureValidResult(result: AiResult): AiResult {
     product_id: result.product_id,
     sale_closed: result.sale_closed,
     order: result.order,
+    detected: result.detected,
   };
 }
 
