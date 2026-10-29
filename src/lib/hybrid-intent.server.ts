@@ -37,13 +37,14 @@ export async function addVerifiedOrderContext(
   // Buscar SOLO pedidos de este workspace y de este número.
   const phones=[phone, digits, digits.startsWith("595") ? "0"+digits.slice(3) : digits].filter(Boolean);
   const {data, error}=await supabase.from("orders")
-    .select("order_number,product_title,quantity,total,status,payment_status,city,created_at")
+    .select("order_number,product_title,quantity,total,status,payment_status,payment_method,city,departamento,created_at")
     .eq("workspace_id",workspaceId).in("phone",[...new Set(phones)])
     .order("created_at",{ascending:false}).limit(3);
   if(error) throw error;
-  const verified=(data??[]).map((o:any)=>({numero:o.order_number,producto:o.product_title,cantidad:o.quantity,total:o.total,estado:o.status,estado_pago:o.payment_status,ciudad:o.city,creado:o.created_at}));
+  const verified=(data??[]).map((o:any)=>({numero:o.order_number,producto:o.product_title,cantidad:o.quantity,total:o.total,estado:o.status,estado_pago:o.payment_status,forma_de_pago:o.payment_method,ciudad:o.city,departamento:o.departamento,creado:o.created_at}));
   return {...ctx, systemInstruction: ctx.systemInstruction +
     "\nCONSULTA SOBRE PEDIDO EXISTENTE / POSTVENTA. NO OFREZCAS PROMOCIONES NI PIDAS CANTIDAD, CIUDAD, NOMBRE O DIRECCION DE NUEVO. No prometas prioridad logística, contacto del delivery, transferencia al delivery, llegada hoy o fechas sin verificación. Si el cliente está molesto, reconoce el reclamo y proponé revisión humana SIN decir que la gestionaste. Si responde `ojalá`, `ah`, `ok` o saluda, contestá brevemente sin iniciar compra. Usa EXCLUSIVAMENTE estos datos verificados en la tabla orders del workspace actual: " + JSON.stringify(verified) +
+    "\nLa forma_de_pago de cada pedido es la REGISTRADA y no cambia en postventa: si es contraentrega, el cliente paga al recibir; NO digas que su ciudad es encomienda ni pidas transferencia o comprobante, salvo que el entrenamiento del vendedor permita expresamente transferir en contraentrega." +
     "\nSi la lista está vacía, indica que no encontraste un pedido asociado a ese WhatsApp y pide número de pedido para revisión humana. Nunca inventes guía, entrega, fecha, transportista o estado. No generes un pedido nuevo ni señales sale_closed por esta consulta. Responde en español paraguayo cordial con emojis moderados."};
 }
 
