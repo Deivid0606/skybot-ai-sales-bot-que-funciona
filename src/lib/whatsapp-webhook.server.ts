@@ -1660,6 +1660,28 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         reason:`IA sin respuesta en postventa: ${error instanceof Error ? error.message : String(error)}`});
       return;
     }
+    // Barrera de modalidad también en POSTVENTA: la forma de pago del pedido
+    // registrado y la cobertura del vendedor no cambian por una pregunta.
+    if (reply) {
+      const { data: lastOrder } = await supabaseAdmin.from("orders")
+        .select("city,departamento,payment_method").eq("workspace_id",workspaceId)
+        .eq("conversation_id",conversation.id).order("created_at",{ascending:false}).limit(1).maybeSingle();
+      if (lastOrder?.city) {
+        const check = (text: string) => enforceVerifiedPaymentReply({reply:text, city:lastOrder.city,
+          department:lastOrder.departamento, cityVerified:true, training:ctx.training});
+        const first = check(reply);
+        const registeredCod = /contra ?entrega/i.test(String(lastOrder.payment_method ?? "")) || first.paymentMethod === "contraentrega";
+        const wrongForCod = registeredCod && /(?:\bbanco\b|\btitular\b|cuenta desde|\balias\b|comprobante|total a transferir|encomienda)/i.test(reply);
+        if (first.corrected || wrongForCod) {
+          console.warn("[BOT_SKY_POSTSALE_PAYMENT_GUARD]", JSON.stringify({conversationId:conversation.id, city:lastOrder.city, paymentMethod:lastOrder.payment_method}));
+          const mode = registeredCod
+            ? `El pedido ya registrado de ${lastOrder.city} es CONTRAENTREGA: el cliente paga al recibir. No digas que es encomienda ni envíes datos bancarios ni pidas comprobante; si quiere transferir, explicá según el entrenamiento que en su zona se paga al recibir.`
+            : `El pedido ya registrado de ${lastOrder.city} es con pago anticipado; no prometas pago al recibir.`;
+          const rewritten = await aiCompose(safeCtx, mode);
+          reply = rewritten && !check(rewritten).corrected ? rewritten : (registeredCod ? stripBankDetailsForCod(rewritten ?? "") : "");
+        }
+      }
+    }
     if(!reply) {
       await sendSilenceFallback({conn,workspaceId,ownerId,conversationId:conversation.id,adId:attributedAdId,phone,wamid:message.id,
         reason:"La IA devolvió una respuesta vacía en postventa", reply:"El cliente ya compró. Respondé su último mensaje sobre el pedido sin inventar estados de entrega."});
@@ -2613,10 +2635,16 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       const aiConfirmation = await aiCompose(aiAnswerContext,
         `El pedido QUEDÓ REGISTRADO en el sistema. Confirmalo al cliente con el formato de cierre del entrenamiento, ` +
         `usando EXACTAMENTE estos datos (no cambies número de pedido, total, cantidad ni modalidad):\n${confirmedMessage}`);
-      const confirmationText = aiConfirmation &&
-        aiConfirmation.includes(savedConfirmationOrder.order_number) &&
-        aiConfirmation.replace(/\D/g, "").includes(String(Math.round(Number(savedConfirmationOrder.total))))
-        ? aiConfirmation : confirmedMessage;
+      const compact = (v: string) => v.toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const aiHasTotal = Boolean(aiConfirmation &&
+        aiConfirmation.replace(/\D/g, "").includes(String(Math.round(Number(savedConfirmationOrder.total)))));
+      const aiHasNumber = Boolean(aiConfirmation && compact(aiConfirmation).includes(compact(savedConfirmationOrder.order_number)));
+      // Si la IA omitió solo el número, se agrega la línea real; sin el total exacto se usa el resumen.
+      const confirmationText = aiConfirmation && aiHasTotal
+        ? (aiHasNumber ? aiConfirmation : `${aiConfirmation}\n\n🧾 Pedido N.º: ${savedConfirmationOrder.order_number}`)
+        : confirmedMessage;
+      if (confirmationText === confirmedMessage) console.warn("[BOT_SKY_CONFIRMATION_TEMPLATE]", JSON.stringify({
+        orderId: createdOrder.id, aiReturned: Boolean(aiConfirmation), aiHasTotal, aiHasNumber }));
       try {
         const confirmationWamid = await sendWhatsAppText(conn, phone, confirmationText);
         await supabaseAdmin.from("messages").insert({
