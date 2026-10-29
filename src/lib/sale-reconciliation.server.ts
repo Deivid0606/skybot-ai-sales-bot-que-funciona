@@ -161,7 +161,9 @@ export function recoverSaleStateFromHistory(ctx: AiContext, previous: SaleState,
       if (candidate) state.customerName = candidate;
     }
     if (!state.street && /(?:direccion|ubicacion|domicilio|referencia|numero de casa)/.test(lastQuestion)
-      && isValidDeliveryAddress(raw) && uniqueHits.length === 0) state.street = raw;
+      && isValidDeliveryAddress(raw) && uniqueHits.length === 0 &&
+      // Una ubicación compartida (enlace de Maps) se guarda como GPS, no como calle.
+      !/https?:\/\/|ubicaci[oó]n compartida/i.test(raw)) state.street = raw;
     if (!/[?¿]/.test(raw) && /\b(?:quiero pagar al recibir|pagare al recibir|prefiero contra entrega|elijo contra entrega)\b/.test(n)) state.paymentMethod = "contraentrega";
     else if (/\b(?:pago anticipado|voy a transferir|pago por transferencia)\b/.test(n)) state.paymentMethod = "anticipado";
   }
