@@ -740,7 +740,8 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     const details=extractCheckoutDetails(text,true,s.city);
     // El texto que se usó como ciudad («fdo de la mora») nunca es el nombre.
     if(details.name && !s.customerName && isValidCustomerName(details.name) && !match && !cityIn(details.name,coverage))s.customerName=details.name;
-    if(details.street && (!s.street || s.street === s.locationUrl) && isValidDeliveryAddress(details.street))s.street=details.street;
+    // Con GPS la ubicación queda en locationUrl; el texto «📍 Ubicación compartida» no es una calle.
+    if(details.street && !gpsUrl && (!s.street || s.street === s.locationUrl) && isValidDeliveryAddress(details.street))s.street=details.street;
     if(details.alternatePhone && !s.alternatePhone)s.alternatePhone=details.alternatePhone;
   }
   if(s.cityVerified && (expectingRecipientName || /^\s*(?:me llamo|mi nombre es)\b/i.test(text))) {
@@ -762,7 +763,7 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   if(s.cityVerified && !gpsUrl && isPlaceReference(text) && !/[¿?]/.test(text) && (!s.street || s.street===s.locationUrl)) {
     s.street=text.trim().replace(/[,;.]?\s*(?:me\s+avis\w*|avisame|avisas)\b.*$/i,"").replace(/^(?:y\s+)?(?:estoy\s+en|quiero\s+que\s+me\s+traigas\s+(?:en|a))\s+/i,"").trim() || text.trim();
   }
-  if(s.cityVerified && s.awaiting==="address" && !isScheduleOnly(text) && !match && !gpsUrl && n.length>=6 && !/^(?:si|no|hola|gracias|si por favor|dale|ok)$/.test(n) && !/\b(?:ubicacion|maps|pedido|precio|llega|ya te|ya le|pase|comparti|envie|mand[eé])\b/.test(n) && isValidDeliveryAddress(text.trim()))s.street=text.trim();
+  if(s.cityVerified && s.awaiting==="address" && !isScheduleOnly(text) && !match && !gpsUrl && !/ubicaci[oó]n compartida/i.test(text) && n.length>=6 && !/^(?:si|no|hola|gracias|si por favor|dale|ok)$/.test(n) && !/\b(?:ubicacion|maps|pedido|precio|llega|ya te|ya le|pase|comparti|envie|mand[eé])\b/.test(n) && isValidDeliveryAddress(text.trim()))s.street=text.trim();
   if(/\b(?:transferencia|transferir|anticipado|deposito|giro)\b/.test(n))s.paymentMethod="anticipado";
   // El mensaje del cliente no puede cambiar la política logística de la ciudad.
   // Mantener la modalidad oficial incluso si el estado previo traía un dato incorrecto.
