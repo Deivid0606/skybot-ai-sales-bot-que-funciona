@@ -759,6 +759,19 @@ export function hasTemplatePlaceholder(reply: string): boolean {
   return /\[(?:PRECIO|URL|NOMBRE|TOTAL|MONTO|CIUDAD|PRODUCTO)[^\]]*\]|URL_DE_LA_IMAGEN|\(URL[^)]*\)/i.test(reply);
 }
 
+/**
+ * Depura un texto de la IA quitando SOLO las líneas que contradicen la modalidad
+ * verificada (no agrega texto fijo). Contraentrega: sin encomienda, anticipo,
+ * transferencia ni datos bancarios. Anticipado: sin promesas de pago al recibir.
+ */
+export function cleanReplyForPolicy(reply: string, paymentMethod: "contraentrega" | "anticipado" | null | undefined): string {
+  if (!paymentMethod) return reply.trim();
+  const bad = paymentMethod === "contraentrega"
+    ? /(?:encomienda|pago anticipado|anticipad|transfer|banco|titular|c[eé]dula|cuenta|alias|eko|comprobante|realices el pago)/i
+    : /(?:pago al recibir|pag[aá]s al recibir|contra ?entrega|cuando (?:te )?llegue)/i;
+  return reply.split("\n").filter(line => !bad.test(line)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 /** Respaldo determinista: en ciudades con pago al recibir, quitar datos bancarios y pedido de comprobante. */
 export function stripBankDetailsForCod(reply: string): string {
   return reply.split("\n")

@@ -14,7 +14,7 @@ import { generateAiReply, applyDynamicSellerTrainingReply, type AiContext } from
 import { advanceRuleSale, sellerUsesFirstOffer, isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi, isValidRecipientCi, type SaleState } from "@/lib/rule-sales.server";
 import { classifyCustomerIntent, addVerifiedOrderContext, addPendingSaleContext } from "@/lib/hybrid-intent.server";
 import { coordinatesFromText, validCoords } from "@/lib/hybrid-intent.server";
-import { parseCoverage, verifiedCoverage, sellerAllowsNationwideAdvance, deliveryPolicyForCity, hasTemplatePlaceholder, stripBankDetailsForCod, enforceVerifiedPaymentReply, isNonCityPhrase, sellerBankText } from "@/lib/rule-sales.server";
+import { parseCoverage, verifiedCoverage, sellerAllowsNationwideAdvance, deliveryPolicyForCity, hasTemplatePlaceholder, stripBankDetailsForCod, enforceVerifiedPaymentReply, isNonCityPhrase, sellerBankText, cleanReplyForPolicy } from "@/lib/rule-sales.server";
 import { resolveDepartamento } from "@/lib/orders";
 import { sendWhatsAppText } from "@/lib/whatsapp.server";
 import { detectComplaint, COMPLAINT_REASON_LABELS } from "@/lib/complaints";
@@ -1678,7 +1678,9 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
             ? `El pedido ya registrado de ${lastOrder.city} es CONTRAENTREGA: el cliente paga al recibir. No digas que es encomienda ni envíes datos bancarios ni pidas comprobante; si quiere transferir, explicá según el entrenamiento que en su zona se paga al recibir.`
             : `El pedido ya registrado de ${lastOrder.city} es con pago anticipado; no prometas pago al recibir.`;
           const rewritten = await aiCompose(safeCtx, mode);
-          reply = rewritten && !check(rewritten).corrected ? rewritten : (registeredCod ? stripBankDetailsForCod(rewritten ?? "") : "");
+          // Último recurso: quitar solo las líneas contradictorias del texto de la IA.
+          reply = rewritten && !check(rewritten).corrected ? rewritten
+            : cleanReplyForPolicy(rewritten ?? reply, registeredCod ? "contraentrega" : "anticipado");
         }
       }
     }
@@ -4368,8 +4370,26 @@ async function sendSilenceFallback(args: {
         .eq("workspace_id", args.workspaceId).eq("id", args.conversationId).maybeSingle();
       const fallbackCtx = await buildWorkspaceAiContext(supabaseAdmin, args.workspaceId, fallbackHistory,
         convRow?.product_id ?? null, args.phone, args.conversationId);
-      const text = await aiCompose(fallbackCtx, `Siguiente paso de la venta: ${goal}`);
-      if (!text) throw new Error("IA sin respuesta para el mensaje de respaldo");
+      // El respaldo también respeta la modalidad: pedido registrado o ciudad en curso.
+      const { data: policyOrder } = await supabaseAdmin.from("orders").select("city,departamento,payment_method")
+        .eq("workspace_id", args.workspaceId).eq("conversation_id", args.conversationId)
+        .order("created_at", { ascending: false }).limit(1).maybeSingle();
+      const { data: policyState } = await supabaseAdmin.from("bot_sale_states").select("state")
+        .eq("workspace_id", args.workspaceId).eq("conversation_id", args.conversationId).maybeSingle();
+      const st = (policyState?.state ?? {}) as SaleState;
+      const policyCity = policyOrder?.city ?? (st.cityVerified ? st.city : null);
+      const policyDep = policyOrder?.departamento ?? (st.cityVerified ? st.department : null);
+      const policy = policyCity && policyDep ? deliveryPolicyForCity(policyCity, policyDep, fallbackCtx.training) : null;
+      const policyMethod = /contra ?entrega/i.test(String(policyOrder?.payment_method ?? "")) ? "contraentrega" as const
+        : policy?.paymentMethod ?? null;
+      const policyGoal = policyMethod === "contraentrega"
+        ? ` Modalidad VERIFICADA para ${policyCity}: CONTRAENTREGA (pago al recibir); no digas encomienda ni envíes datos bancarios.`
+        : policyMethod === "anticipado" ? ` Modalidad VERIFICADA para ${policyCity}: pago anticipado.` : "";
+      let text = await aiCompose(fallbackCtx, `Siguiente paso de la venta: ${goal}${policyGoal}`);
+      if (text && policyMethod && enforceVerifiedPaymentReply({reply:text, city:policyCity, department:policyDep,
+          cityVerified:true, training:fallbackCtx.training}).corrected) text = cleanReplyForPolicy(text, policyMethod);
+      if (text && policyMethod === "contraentrega") text = cleanReplyForPolicy(text, "contraentrega");
+      if (!text) throw new Error("IA sin respuesta válida para el mensaje de respaldo");
       const wamid = await sendWhatsAppText(args.conn, args.phone, text);
       await supabaseAdmin.from("messages").insert({
         workspace_id: args.workspaceId, user_id: args.ownerId, conversation_id: args.conversationId,
