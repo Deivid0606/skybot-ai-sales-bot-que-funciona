@@ -1993,7 +1993,11 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
           // Solo un identificador con número (cuenta o CI) puede contradecir la cuenta autorizada;
           // un texto sin dígitos («BANCO FAMILIAR S.A.E.C.A.», «PYG») no es un destino distinto.
           const hasNumber = /\d{4,}/.test(value.replace(/[\s.-]/g, ""));
-          return { accountMatch, aliasMatch, masked, maskedMatch, hasNumber };
+          // Error de lectura de UN dígito (p. ej. «8150600085» por «815060085»): solo
+          // cuenta si la titular también coincide (se verifica más abajo).
+          const nearMatch = !accountMatch && /^\d{8,}$/.test(normalized) &&
+            authorizedAccounts.some(account => oneDigitApart(normalizeDestination(String(account)), normalized));
+          return { accountMatch, aliasMatch, masked, maskedMatch, hasNumber, nearMatch };
         });
         // Un identificador completo que contradice la cuenta autorizada bloquea;
         // uno enmascarado solo cuenta si sus últimos dígitos coinciden.
@@ -2001,7 +2005,9 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         // Si la cuenta o el alias autorizados aparecen COMPLETOS, el comprobante va a la
         // cuenta del vendedor: otro número leído (n.º de comprobante/operación, cuenta de
         // origen) es un error de lectura, no un destino distinto.
-        const anyFullMatch = destinationChecks.some(check => check.accountMatch || check.aliasMatch);
+        const holderConfirms = Boolean(authorizedHolder && candidate.beneficiary && compatibleHolder(candidate.beneficiary));
+        const anyFullMatch = destinationChecks.some(check => check.accountMatch || check.aliasMatch) ||
+          (holderConfirms && destinationChecks.some(check => check.nearMatch));
         const accountOk = anyFullMatch || (destinationChecks.length > 0 &&
           destinationChecks.some(check => check.accountMatch || check.aliasMatch || check.maskedMatch) &&
           destinationChecks.every(check => check.accountMatch || check.aliasMatch || check.maskedMatch || !check.hasNumber ||
@@ -4492,6 +4498,18 @@ ${match.products.description ?? ""}`.trim();
   return { productId, sent: copySent || sentMediaCount > 0 };
 }
 
+
+/** true si dos números difieren en un solo dígito (uno de más, de menos o cambiado). */
+function oneDigitApart(a: string, b: string): boolean {
+  if (!a || !b || a === b || Math.abs(a.length - b.length) > 1) return false;
+  let i = 0, j = 0, edits = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) { i++; j++; continue; }
+    if (++edits > 1) return false;
+    if (a.length > b.length) i++; else if (b.length > a.length) j++; else { i++; j++; }
+  }
+  return edits + (a.length - i) + (b.length - j) <= 1;
+}
 
 /** Respuestas de espera que el bot nunca cumple (no hay trabajo posterior). */
 const WAITING_REPLY_RE = /\b(?:un momento|un momentito|aguard[aá]|esper[aá] (?:un|unos)|voy a verificar|vamos a verificar|proceder[eé]? a verificar|verificaremos|te aviso|le avisaremos|estoy guardando|estoy verificando|estoy revisando|necesito verificar|debo verificar|tengo que verificar|antes de continuar con tu pedido|proceder[eé]? a validar|voy a validar|vamos a validar|estoy validando|validar[eé] la informaci[oó]n|en breve te confirmo|te confirmo en breve|ahora (?:reviso|verifico|revisar[eé]|verificar[eé]))\b/i;
