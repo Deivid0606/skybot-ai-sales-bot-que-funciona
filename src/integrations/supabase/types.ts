@@ -1834,6 +1834,7 @@ export type Database = {
         | "nuevo"
         | "confirmado"
         | "cargado"
+        | "encomienda_cargada"
         | "preparacion"
         | "enviado"
         | "entregado"
@@ -1986,6 +1987,7 @@ export const Constants = {
         "nuevo",
         "confirmado",
         "cargado",
+        "encomienda_cargada",
         "preparacion",
         "enviado",
         "entregado",
