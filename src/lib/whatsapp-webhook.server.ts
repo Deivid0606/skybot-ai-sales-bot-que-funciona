@@ -1990,20 +1990,28 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
             normalizeDestination(String(account)) === normalized);
           const maskedMatch = masked && authorizedAccounts.some(account => String(account).endsWith(visibleDigits));
           const aliasMatch = authorizedAliases.includes(normalized) && normalized !== "";
-          return { accountMatch, aliasMatch, masked, maskedMatch };
+          // Solo un identificador con número (cuenta o CI) puede contradecir la cuenta autorizada;
+          // un texto sin dígitos («BANCO FAMILIAR S.A.E.C.A.», «PYG») no es un destino distinto.
+          const hasNumber = /\d{4,}/.test(value.replace(/[\s.-]/g, ""));
+          return { accountMatch, aliasMatch, masked, maskedMatch, hasNumber };
         });
         // Un identificador completo que contradice la cuenta autorizada bloquea;
         // uno enmascarado solo cuenta si sus últimos dígitos coinciden.
         const holderOkEarly = compatibleHolder(candidate.beneficiary);
         const accountOk = (destinationChecks.length > 0 &&
           destinationChecks.some(check => check.accountMatch || check.aliasMatch || check.maskedMatch) &&
-          destinationChecks.every(check => check.accountMatch || check.aliasMatch || check.maskedMatch)) ||
+          destinationChecks.every(check => check.accountMatch || check.aliasMatch || check.maskedMatch || !check.hasNumber ||
+            // Una cuenta enmascarada que no coincide (p. ej. la de ORIGEN «**** 1904») no anula la cuenta completa.
+            check.masked)) ||
           // Comprobante que solo identifica al destinatario por su NOMBRE completo autorizado.
           (destinationChecks.length === 0 && Boolean(authorizedHolder && candidate.beneficiary && holderOkEarly &&
             normalizeHolder(candidate.beneficiary).filter(t => t.length > 1).length >= 2));
         const wrongAccount = destinationChecks.length > 0 && !accountOk;
         const holderOk = compatibleHolder(candidate.beneficiary);
-        const wrongHolder = Boolean(authorizedHolder && candidate.beneficiary && !holderOk);
+        // Con la cuenta o el alias COMPLETOS coincidiendo, un titular distinto suele ser
+        // el nombre de ORIGEN leído por error (el comprobante tiene dos «Nombre»).
+        const fullDestinationMatch = destinationChecks.some(c => c.accountMatch || c.aliasMatch);
+        const wrongHolder = Boolean(authorizedHolder && candidate.beneficiary && !holderOk && !fullDestinationMatch);
         // Cuenta enmascarada SIN cuenta/alias completos: exigir titular visible y compatible.
         // El alias autorizado alcanza por sí solo (si aparece un titular, debe coincidir).
         const onlyMasked = destinationChecks.some(c => c.maskedMatch) && !destinationChecks.some(c => c.accountMatch || c.aliasMatch);
