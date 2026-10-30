@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect, useRef } from "react";
-import { formatDateTime } from "@/lib/format";
+import { formatDateTime, formatGs } from "@/lib/format";
 import { createFileRoute } from "@tanstack/react-router";
 import {
   useMutation,
@@ -12,6 +12,8 @@ import {
   Download,
   PackageCheck,
   Search,
+  Copy,
+  BarChart3,
   Trash2,
   ShoppingCart,
 } from "lucide-react";
@@ -63,7 +65,8 @@ export const Route = createFileRoute("/_authenticated/pedidos")({
 type QuickFilter =
   | "none"
   | "pending-load"
-  | "advance-payment";
+  | "advance-payment"
+  | "duplicates";
 
 function getTodayDate() {
   const today = new Date();
@@ -134,6 +137,8 @@ function OrdersPage() {
   // KPI especial seleccionado.
   const [quickFilter, setQuickFilter] =
     useState<QuickFilter>("none");
+  // Filtro por producto elegido desde «Ventas por producto».
+  const [productFilter, setProductFilter] = useState<string | null>(null);
 
   // Siempre comienza en HOY.
   const [dateFrom, setDateFrom] = useState(getTodayDate);
@@ -376,6 +381,51 @@ function OrdersPage() {
 
   /**
    * ============================================================
+   * VENTAS POR PRODUCTO (período, sin cancelados)
+   * ============================================================
+   */
+  const productKey = (order: { product_title?: string | null; product_id?: string | null }) =>
+    (order.product_title?.trim() || "Sin producto").replace(/\s+/g, " ");
+  const productStats = useMemo(() => {
+    const map = new Map<string, { name: string; orders: number; units: number; total: number }>();
+    for (const order of ordersInDateRange) {
+      if (order.status === "cancelado") continue;
+      const name = productKey(order);
+      const row = map.get(name) ?? { name, orders: 0, units: 0, total: 0 };
+      row.orders += 1;
+      row.units += Number(order.quantity) > 0 ? Number(order.quantity) : 1;
+      row.total += Number(order.total) || 0;
+      map.set(name, row);
+    }
+    return [...map.values()].sort((a, b) => b.orders - a.orders || b.total - a.total);
+  }, [ordersInDateRange]);
+  const productOrdersTotal = productStats.reduce((sum, row) => sum + row.orders, 0);
+
+  /**
+   * ============================================================
+   * POSIBLES PEDIDOS REPETIDOS (período, sin cancelados)
+   * ============================================================
+   * Mismo teléfono + mismo producto más de una vez en el período.
+   */
+  const duplicateOrders = useMemo(() => {
+    const groups = new Map<string, typeof ordersInDateRange>();
+    for (const order of ordersInDateRange) {
+      if (order.status === "cancelado") continue;
+      const phone = String(order.phone ?? "").replace(/\D/g, "").slice(-9);
+      if (!phone) continue;
+      const key = `${phone}|${productKey(order).toLowerCase()}`;
+      groups.set(key, [...(groups.get(key) ?? []), order]);
+    }
+    return [...groups.values()]
+      .filter(group => group.length > 1)
+      .flatMap(group => [...group].sort((a, b) => String(a.created_at).localeCompare(String(b.created_at))));
+  }, [ordersInDateRange]);
+  const duplicateGroupsCount = useMemo(() =>
+    new Set(duplicateOrders.map(o => `${String(o.phone ?? "").replace(/\D/g, "").slice(-9)}|${productKey(o).toLowerCase()}`)).size,
+  [duplicateOrders]);
+
+  /**
+   * ============================================================
    * PEDIDOS QUE SE MUESTRAN
    * ============================================================
    *
@@ -394,11 +444,16 @@ function OrdersPage() {
       return advancePaymentOrders;
     }
 
+    if (quickFilter === "duplicates") {
+      return duplicateOrders;
+    }
+
     return ordersInDateRange;
   }, [
     quickFilter,
     pendingLoadOrders,
     advancePaymentOrders,
+    duplicateOrders,
     ordersInDateRange,
   ]);
 
@@ -440,13 +495,16 @@ function OrdersPage() {
         phone.includes(query) ||
         orderNumber.includes(query);
 
-      return matchStatus && matchSearch;
+      const matchProduct = !productFilter || productKey(order) === productFilter;
+
+      return matchStatus && matchSearch && matchProduct;
     });
   }, [
     baseOrders,
     quickFilter,
     status,
     search,
+    productFilter,
   ]);
 
   const eligibleVisible = filtered.filter(o => ["nuevo", "confirmado"].includes(o.status));
@@ -806,7 +864,94 @@ function OrdersPage() {
               </p>
             </button>
           )}
+
+          {/* POSIBLES REPETIDOS - PERÍODO */}
+          {duplicateOrders.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setQuickFilter(quickFilter === "duplicates" ? "none" : "duplicates")}
+              className={`min-h-[86px] rounded-xl border p-4 text-left transition-all hover:border-rose-500/70 hover:bg-rose-500/10 ${
+                quickFilter === "duplicates" ? "border-rose-500 bg-rose-500/10 ring-1 ring-rose-500/30" : "border-border bg-card"
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <Copy className="h-4 w-4 text-rose-500" />
+                <p className="text-xs font-medium text-muted-foreground">Posibles repetidos</p>
+              </div>
+              <p className="mt-1 text-2xl font-bold">{duplicateOrders.length}</p>
+              <p className="mt-1 text-[10px] text-muted-foreground">
+                {duplicateGroupsCount} {duplicateGroupsCount === 1 ? "cliente" : "clientes"} · mismo teléfono y producto
+              </p>
+            </button>
+          )}
         </div>
+      )}
+
+      {/* VENTAS POR PRODUCTO - PERÍODO */}
+      {!isLoading && !error && productStats.length > 0 && (
+        <Card>
+          <CardContent className="p-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <BarChart3 className="h-4 w-4 text-primary" />
+                <p className="text-sm font-semibold">Ventas por producto</p>
+                <span className="text-xs text-muted-foreground">período seleccionado · sin cancelados</span>
+              </div>
+              {productFilter && (
+                <Button type="button" size="sm" variant="ghost" onClick={() => setProductFilter(null)}>
+                  Ver todos los productos
+                </Button>
+              )}
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[520px] text-sm">
+                <thead>
+                  <tr className="border-b text-left text-xs text-muted-foreground">
+                    <th className="py-2 pr-3 font-medium">Producto</th>
+                    <th className="py-2 pr-3 text-right font-medium">Pedidos</th>
+                    <th className="py-2 pr-3 text-right font-medium">Unidades</th>
+                    <th className="py-2 pr-3 text-right font-medium">Total</th>
+                    <th className="py-2 text-right font-medium">% pedidos</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {productStats.map((row) => {
+                    const share = productOrdersTotal ? Math.round((row.orders / productOrdersTotal) * 100) : 0;
+                    const selected = productFilter === row.name;
+                    return (
+                      <tr
+                        key={row.name}
+                        onClick={() => setProductFilter(selected ? null : row.name)}
+                        className={`cursor-pointer border-b last:border-0 hover:bg-accent/40 ${selected ? "bg-primary/10" : ""}`}
+                      >
+                        <td className="py-2 pr-3">
+                          <div className="font-medium">{row.name}</div>
+                          <div className="mt-1 h-1.5 w-full max-w-[220px] rounded-full bg-muted">
+                            <div className="h-1.5 rounded-full bg-primary" style={{ width: `${share}%` }} />
+                          </div>
+                        </td>
+                        <td className="py-2 pr-3 text-right font-semibold tabular-nums">{row.orders}</td>
+                        <td className="py-2 pr-3 text-right tabular-nums">{row.units}</td>
+                        <td className="py-2 pr-3 text-right tabular-nums">{formatGs(row.total)}</td>
+                        <td className="py-2 text-right tabular-nums text-muted-foreground">{share}%</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr className="text-xs font-semibold">
+                    <td className="pt-2 pr-3">Total</td>
+                    <td className="pt-2 pr-3 text-right tabular-nums">{productOrdersTotal}</td>
+                    <td className="pt-2 pr-3 text-right tabular-nums">{productStats.reduce((sum, row) => sum + row.units, 0)}</td>
+                    <td className="pt-2 pr-3 text-right tabular-nums">{formatGs(productStats.reduce((sum, row) => sum + row.total, 0))}</td>
+                    <td className="pt-2 text-right" />
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+            <p className="mt-2 text-[11px] text-muted-foreground">Tocá un producto para ver solo sus pedidos en la lista.</p>
+          </CardContent>
+        </Card>
       )}
 
       {/* ===================================================== */}
@@ -964,7 +1109,9 @@ function OrdersPage() {
                 {quickFilter ===
                 "pending-load"
                   ? "Mostrando pedidos pendientes de cargar de todas las fechas."
-                  : "Mostrando pagos anticipados pendientes de todas las fechas."}
+                  : quickFilter === "duplicates"
+                    ? "Mostrando posibles pedidos repetidos del período (mismo teléfono y mismo producto)."
+                    : "Mostrando pagos anticipados pendientes de todas las fechas."}
               </p>
 
               <Button
