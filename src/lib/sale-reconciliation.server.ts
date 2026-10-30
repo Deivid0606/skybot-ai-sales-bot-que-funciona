@@ -42,6 +42,9 @@ export function isValidDeliveryAddress(value: unknown): boolean {
   if (/^https:\/\/(?:www\.)?(?:google\.[^\s/]+\/maps|maps\.app\.goo\.gl\/|goo\.gl\/maps\/)/i.test(address)) return true;
   if (address.length < 7 || /^(?:ok|okey|dale|si|no|para el |el |este |proximo |mañana|manana|hoy|lunes|martes|miercoles|jueves|viernes|sabado|domingo)/.test(n)) return false;
   if (/^(?:barrio|zona|ciudad|de )\s+[\p{L} '\-]+$/u.test(n)) return false;
+  // Preguntas sin signo («Por qué es de 25kilo», «cuánto pesa») y medidas no son direcciones.
+  if (/^(?:por\s*que|porque|que|como|cuanto|cuanta|cual|donde|cuando|sera|es\s+de)\b/.test(n) ||
+      /\b\d+\s*(?:kilos?|kg|litros?|lts?|cm|mm|gramos?)\b|\d+(?:kilos?|kg|litros?)\b/.test(n)) return false;
   // Cantidades o pedidos («Solo 1 caja», «quiero 2 unidades») no son direcciones.
   if (/\b(?:cajas?|unidad(?:es)?|packs?|combos?|promo(?:cion)?|quiero|solo|nomas|precio|gs|guaranies|afilador(?:es)?|bases?)\b/.test(n) &&
       !/\b(?:calle|avenida|avda|ruta|esquina|casi|barrio|frente|entre|km|nro|numero)\b/.test(n)) return false;
