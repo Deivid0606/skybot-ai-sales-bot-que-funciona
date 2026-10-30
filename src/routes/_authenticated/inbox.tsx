@@ -553,7 +553,7 @@ function InboxPage() {
   });
 
   const {
-    data: dateConversationIds,
+    data: dateScan,
     isLoading: isLoadingDateConversationIds,
     error: dateConversationIdsError,
   } = useQuery({
@@ -566,9 +566,14 @@ function InboxPage() {
     enabled: Boolean(workspaceId && dateFrom && dateTo),
     queryFn: async () => {
       const range = getLocalDateRange(dateFrom, dateTo);
-      if (!range) return [] as string[];
+      const empty = { ids: [] as string[], lastOrigin: {} as Record<string, string>, lastCustomerText: {} as Record<string, string> };
+      if (!range) return empty;
 
       const conversationIds = new Set<string>();
+      // En la MISMA lectura: origen de la última respuesta y último mensaje del
+      // cliente por chat (antes eran 2 consultas por cada conversación).
+      const lastOrigin: Record<string, string> = {};
+      const lastCustomerText: Record<string, string> = {};
       const pageSize = 1000;
       let page = 0;
 
@@ -580,7 +585,8 @@ function InboxPage() {
 
         const { data, error } = await supabase
           .from("messages")
-          .select("id, conversation_id, created_at")
+          .select("id, conversation_id, created_at, sender, direction, response_origin, body")
+          .eq("workspace_id", workspaceId!)
           .gte("created_at", range.start)
           .lt("created_at", range.endExclusive)
           .not("conversation_id", "is", null)
@@ -590,9 +596,13 @@ function InboxPage() {
 
         if (error) throw error;
 
-        for (const message of data ?? []) {
+        type ScanRow = { conversation_id: string | null; direction: string | null; sender: string | null; response_origin: string | null; body: string | null };
+        for (const message of (data ?? []) as unknown as ScanRow[]) {
           if (message.conversation_id) {
             conversationIds.add(message.conversation_id);
+            // Orden ascendente: el último que se ve es el más reciente.
+            lastOrigin[message.conversation_id] = getResponseOrigin(message);
+            if (message.direction === "inbound") lastCustomerText[message.conversation_id] = message.body ?? "";
           }
         }
 
@@ -600,9 +610,14 @@ function InboxPage() {
         page += 1;
       }
 
-      return Array.from(conversationIds);
+      return { ids: Array.from(conversationIds), lastOrigin, lastCustomerText };
     },
   });
+  const dateConversationIds = dateScan?.ids;
+  const lastReplyOrigins = dateScan?.lastOrigin;
+  const latestCustomerTexts = dateScan?.lastCustomerText;
+  const loadingSmartMessages = false;
+  const smartMessagesError = null as Error | null;
 
   const {
     data: dateConversations,
@@ -686,33 +701,6 @@ function InboxPage() {
     },
   });
 
-  const { data: lastReplyOrigins } = useQuery({
-    queryKey: ["inbox-reply-origins", workspaceId, dateConversationIds],
-    enabled: Boolean(workspaceId && dateConversationIds?.length),
-    queryFn: async () => {
-      const result: Record<string, string> = {};
-      const ids = dateConversationIds ?? [];
-      // Sólo se leen los mensajes más recientes por lotes. Para evitar consultas
-      // costosas en chats largos, cada chat se consulta una vez.
-      for (let i = 0; i < ids.length; i += 20) {
-        const chunk = ids.slice(i, i + 20);
-        const rows = await Promise.all(chunk.map(async (id) => {
-          const { data, error } = await supabase.from("messages")
-            .select("sender,direction,response_origin")
-            .eq("conversation_id", id)
-            .order("created_at", { ascending: false })
-            .limit(1).maybeSingle();
-          if (error) throw error;
-          return {id, data};
-        }));
-        for (const row of rows) if (row.data) {
-          result[row.id] = getResponseOrigin(row.data);
-        }
-      }
-      return result;
-    },
-  });
-
   // Pedido real = venta cerrada. No utilizar sale_closed ni la última burbuja como prueba exclusiva.
   const { data: inboxOrders, error: inboxOrdersError, isLoading: loadingInboxOrders } = useQuery({
     queryKey: ["inbox-smart-orders", workspaceId, dateConversationIds],
@@ -728,25 +716,6 @@ function InboxPage() {
         all.push(...(data??[]));
       }
       return all;
-    },
-  });
-  const { data: latestCustomerTexts, error: smartMessagesError, isLoading: loadingSmartMessages }=useQuery({
-    queryKey:["inbox-smart-last-customer",workspaceId,dateConversationIds],
-    enabled:Boolean(workspaceId && dateConversationIds?.length),
-    queryFn:async()=>{
-      const result:Record<string,string>={};
-      const ids=dateConversationIds??[];
-      for(let i=0;i<ids.length;i+=15){
-        const batch=await Promise.all(ids.slice(i,i+15).map(async(id)=>{
-          const {data,error}=await supabase.from("messages")
-            .select("body").eq("conversation_id",id).eq("direction","inbound")
-            .order("created_at",{ascending:false}).limit(1).maybeSingle();
-          if(error)throw error;
-          return {id,body:data?.body??""};
-        }));
-        for(const item of batch)result[item.id]=item.body;
-      }
-      return result;
     },
   });
   // Origen del cierre: último mensaje de CONFIRMACIÓN asociado al pedido, no cualquier respuesta posterior.
@@ -819,27 +788,33 @@ function InboxPage() {
 
   useEffect(() => {
     if (!workspaceId) return;
+    // Agrupar ráfagas: el bot genera muchos cambios seguidos (mensaje nuevo,
+    // enviado, entregado, leído). Recargar las listas una vez cada 2 s como máximo.
+    let listTimer: ReturnType<typeof setTimeout> | null = null;
+    const refreshLists = () => {
+      if (listTimer) return;
+      listTimer = setTimeout(() => {
+        listTimer = null;
+        queryClient.invalidateQueries({ queryKey: ["conversations"] });
+        queryClient.invalidateQueries({ queryKey: ["inbox-conversation-ids-by-message-date"] });
+        queryClient.invalidateQueries({ queryKey: ["inbox-conversations-by-message-date"] });
+      }, 2000);
+    };
+    const filter = `workspace_id=eq.${workspaceId}`;
     const channel = supabase
-      .channel("inbox-realtime")
-      .on("postgres_changes", { event: "*", schema: "public", table: "messages" }, () => {
+      .channel(`inbox-realtime-${workspaceId}`)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages", filter }, () => {
         queryClient.invalidateQueries({ queryKey: ["messages"] });
-        queryClient.invalidateQueries({ queryKey: ["conversations"] });
-        queryClient.invalidateQueries({ queryKey: ["inbox-reply-origins"] });
-        queryClient.invalidateQueries({
-          queryKey: ["inbox-conversation-ids-by-message-date"],
-        });
-        queryClient.invalidateQueries({
-          queryKey: ["inbox-conversations-by-message-date"],
-        });
+        refreshLists();
       })
-      .on("postgres_changes", { event: "*", schema: "public", table: "conversations" }, () => {
-        queryClient.invalidateQueries({ queryKey: ["conversations"] });
-        queryClient.invalidateQueries({
-          queryKey: ["inbox-conversations-by-message-date"],
-        });
+      // Cambios de estado (enviado/entregado/leído): solo el chat abierto.
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "messages", filter }, () => {
+        queryClient.invalidateQueries({ queryKey: ["messages"] });
       })
+      .on("postgres_changes", { event: "*", schema: "public", table: "conversations", filter }, refreshLists)
       .subscribe();
     return () => {
+      if (listTimer) clearTimeout(listTimer);
       supabase.removeChannel(channel);
     };
   }, [workspaceId, queryClient]);
