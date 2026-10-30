@@ -687,7 +687,7 @@ function uniqueNonEmptyStrings(values: Array<string | null | undefined>): string
   }, []);
 }
 
-function getGeminiCandidates(preferredModel?: string | null): string[] {
+export function getGeminiCandidates(preferredModel?: string | null): string[] {
   const normalized = cleanString(preferredModel).replace(/^models\//i, "");
   // No confiar en modelos obsoletos guardados en ai_settings.model.
   // Tampoco activar un modelo Pro por accidente ni repetir solicitudes 404.
