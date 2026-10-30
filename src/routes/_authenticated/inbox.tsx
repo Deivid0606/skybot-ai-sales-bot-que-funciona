@@ -68,6 +68,8 @@ type OfficeOrder = {
   payment_status: string | null;
   receipt_url: string | null;
   status: string | null;
+  product_title: string | null;
+  quantity: number | null;
 };
 
 const moneyGs = (value: number) => `Gs. ${new Intl.NumberFormat("es-PY", { maximumFractionDigits: 0 }).format(value)}`;
@@ -248,65 +250,153 @@ function InboxOperationsPanel({
   const sales = orders.filter(order => order.status !== "cancelado");
   const amount = sales.reduce((total, order) => total + (Number.isFinite(Number(order.total)) ? Number(order.total) : 0), 0);
   const transfers = sales.filter(order => isAdvanceSale(order.payment_method));
-  const onDelivery = sales.filter(order => !isAdvanceSale(order.payment_method) && /contraentrega|contra entrega|al recibir/i.test(order.payment_method ?? ""));
+  const onDelivery = sales.filter(order => !isAdvanceSale(order.payment_method));
+  const transferAmount = transfers.reduce((sum, order) => sum + (Number(order.total) || 0), 0);
+  const deliveryAmount = amount - transferAmount;
   const attached = sales.filter(order => Boolean(order.receipt_url));
-  const hourly = Array.from({length:24}, (_,hour) => sales.filter(order => new Date(order.created_at).getHours() === hour).reduce((sum,order) => sum + Number(order.total || 0),0));
-  const peak = Math.max(1,...hourly);
-  const line = hourly.map((number,hour) => `${hour === 0 ? "M" : "L"}${(hour*12.4+8).toFixed(1)},${(86-(number/peak)*69).toFixed(1)}`).join(" ");
-  const fill = `${line} L293,92 L8,92 Z`;
+  const average = sales.length ? Math.round(amount / sales.length) : 0;
+  const conversion = totalChats ? Math.round((sales.length / totalChats) * 100) : 0;
+  // Productos vendidos hoy: pedidos, unidades y valor por producto.
+  const productMap = new Map<string, { name: string; orders: number; units: number; total: number }>();
+  for (const order of sales) {
+    const name = (order.product_title?.trim() || "Sin producto").replace(/\s+/g, " ");
+    const row = productMap.get(name) ?? { name, orders: 0, units: 0, total: 0 };
+    row.orders += 1;
+    row.units += Number(order.quantity) > 0 ? Number(order.quantity) : 1;
+    row.total += Number(order.total) || 0;
+    productMap.set(name, row);
+  }
+  const productRows = [...productMap.values()].sort((x, y) => y.orders - x.orders || y.total - x.total);
+  const topProducts = productRows.slice(0, 6);
+  const otherProducts = productRows.slice(6);
+  if (otherProducts.length) topProducts.push({
+    name: `Otros (${otherProducts.length})`,
+    orders: otherProducts.reduce((sum, row) => sum + row.orders, 0),
+    units: otherProducts.reduce((sum, row) => sum + row.units, 0),
+    total: otherProducts.reduce((sum, row) => sum + row.total, 0),
+  });
+  const maxProductOrders = Math.max(1, ...topProducts.map(row => row.orders));
+  // Pedidos por hora (cantidad), con el valor en el detalle al pasar el mouse.
+  const hourly = Array.from({ length: 24 }, (_, hour) => {
+    const inHour = sales.filter(order => new Date(order.created_at).getHours() === hour);
+    return { hour, count: inHour.length, total: inHour.reduce((sum, order) => sum + (Number(order.total) || 0), 0) };
+  });
+  const peakCount = Math.max(1, ...hourly.map(h => h.count));
+  const peakHour = hourly.reduce((best, h) => (h.count > best.count ? h : best), hourly[0]);
+  const deliveryShare = sales.length ? (onDelivery.length / sales.length) * 100 : 0;
   const statCards = [
-    {label:"Ventas registradas", value: String(sales.length), icon:<ShoppingBag className="h-4 w-4"/>, tone:"text-sky-300 bg-sky-400/10"},
-    {label:"Valor de pedidos", value: moneyGs(amount), icon:<Activity className="h-4 w-4"/>, tone:"text-emerald-300 bg-emerald-400/10"},
-    {label:"Por transferencia", value: String(transfers.length), icon:<CheckCircle2 className="h-4 w-4"/>, tone:"text-violet-300 bg-violet-400/10"},
-    {label:"Contraentregas", value: String(onDelivery.length), icon:<ShoppingBag className="h-4 w-4"/>, tone:"text-amber-300 bg-amber-400/10"},
-    {label:"Comprobantes", value: String(attached.length), icon:<Paperclip className="h-4 w-4"/>, tone:"text-cyan-300 bg-cyan-400/10"},
-    {label:"Chats del período", value: String(totalChats), icon:<MessageSquare className="h-4 w-4"/>, tone:"text-slate-200 bg-slate-400/10"},
+    { label: "Ticket promedio", value: moneyGs(average), icon: <Activity className="h-4 w-4" />, tone: "text-emerald-300 bg-emerald-400/10" },
+    { label: "Conversión de chats", value: `${conversion}%`, icon: <MessageSquare className="h-4 w-4" />, tone: "text-sky-300 bg-sky-400/10" },
+    { label: "Comprobantes", value: String(attached.length), icon: <Paperclip className="h-4 w-4" />, tone: "text-cyan-300 bg-cyan-400/10" },
+    { label: "Chats del período", value: String(totalChats), icon: <MessageSquare className="h-4 w-4" />, tone: "text-slate-200 bg-slate-400/10" },
   ];
+  const noData = loading && !orders.length;
   return (
     <div className="flex min-h-0 h-full flex-col bg-[#071527] text-white">
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3 [scrollbar-width:thin] [scrollbar-color:#274765_transparent]">
         <div className="rounded-[18px] border border-sky-500/20 bg-gradient-to-r from-[#122d4d] to-[#091d35] px-3 py-3">
-          <p className="truncate text-[11px] font-black uppercase tracking-wide text-sky-100">{businessName}</p>
-          <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-sky-200/75"><span>Panel de operaciones</span><span className="font-bold text-emerald-300">Datos registrados</span></div>
+          <div className="flex items-center justify-between gap-2">
+            <p className="truncate text-[11px] font-black uppercase tracking-wide text-sky-100">{businessName}</p>
+            <span className="shrink-0 rounded-lg border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] font-semibold text-slate-200">{getTodayDate().split('-').reverse().join('/')}</span>
+          </div>
+          {failed ? <p className="mt-2 rounded-xl border border-rose-400/30 bg-rose-400/10 p-2 text-xs text-rose-200">No se pudieron cargar las estadísticas. Revisá permisos de pedidos.</p> : null}
+          {/* Número principal del día */}
+          <p className="mt-3 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Vendido hoy</p>
+          <p className="text-[26px] font-black leading-tight tabular-nums">{noData ? "…" : moneyGs(amount)}</p>
+          <p className="mt-0.5 text-[11px] text-slate-300">{sales.length} {sales.length === 1 ? "pedido" : "pedidos"} · {productRows.length} {productRows.length === 1 ? "producto" : "productos"} · {pending} {pending === 1 ? "chat pendiente" : "chats pendientes"}</p>
           {recentActivity && <p className="mt-2 truncate rounded-lg border border-emerald-400/20 bg-emerald-400/10 px-2 py-1.5 text-[10px] text-emerald-100">Nuevo pedido: {shortName(recentActivity.customer_name)} · {moneyGs(recentActivity.total)}</p>}
         </div>
-        <div className="rounded-[20px] border border-sky-500/20 bg-[#0b2039] p-3.5 shadow-inner">
-          <div className="mb-3 flex items-start justify-between gap-3">
-            <div><h3 className="text-sm font-extrabold tracking-tight">Resumen de hoy</h3><p className="mt-0.5 text-[10px] text-slate-400">Pedidos registrados en esta tienda</p></div>
-            <span className="shrink-0 rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-[10px] font-semibold text-slate-200">{getTodayDate().split('-').reverse().join('/')}</span>
-          </div>
-          {failed ? <p className="rounded-xl border border-rose-400/30 bg-rose-400/10 p-2 text-xs text-rose-200">No se pudieron cargar las estadísticas. Revisá permisos de pedidos.</p> : null}
-          <div className="grid grid-cols-2 gap-2">
-            {statCards.map(stat => (
-              <div key={stat.label} className="min-w-0 rounded-xl border border-white/[.08] bg-[#102b4b] p-2.5">
-                <div className="mb-2 flex items-center gap-1.5 text-[10px] text-slate-300"><span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-lg ${stat.tone}`}>{stat.icon}</span><span className="leading-tight">{stat.label}</span></div>
-                <p className="break-words text-[15px] font-black leading-tight tabular-nums sm:text-base">{loading && !orders.length ? "…" : stat.value}</p>
-              </div>
-            ))}
-          </div>
-          <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-400/15 bg-sky-400/5 px-3 py-2 text-xs"><span className="text-slate-300">Respuestas pendientes</span><span className={`font-black ${pending > 0 ? 'text-amber-300':'text-emerald-300'}`}>{pending}</span></div>
+
+        <div className="grid grid-cols-2 gap-2">
+          {statCards.map(stat => (
+            <div key={stat.label} className="min-w-0 rounded-xl border border-white/[.08] bg-[#0b2039] p-2.5">
+              <div className="mb-1.5 flex items-center gap-1.5 text-[10px] text-slate-300"><span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-lg ${stat.tone}`}>{stat.icon}</span><span className="leading-tight">{stat.label}</span></div>
+              <p className="break-words text-[15px] font-black leading-tight tabular-nums">{noData ? "…" : stat.value}</p>
+            </div>
+          ))}
         </div>
+
+        {/* Forma de pago: barra 100 % con leyenda y etiquetas */}
         <div className="rounded-[20px] border border-sky-500/20 bg-[#0b2039] p-3.5">
-          <div className="mb-2 flex items-center justify-between gap-2"><h3 className="text-sm font-extrabold">Pedidos por hora</h3><span className="text-[10px] text-slate-400">Hoy · Gs.</span></div>
-          <svg role="img" aria-label="Gráfico de valor de pedidos por hora de hoy" viewBox="0 0 306 111" className="h-[115px] w-full">
-            <defs><linearGradient id="skyOfficeIncome" x1="0" x2="0" y1="0" y2="1"><stop stopColor="#06b6d4" stopOpacity=".45"/><stop offset="1" stopColor="#06b6d4" stopOpacity="0"/></linearGradient></defs>
-            {[18,42,66,92].map(y=><line key={y} x1="8" x2="293" y1={y} y2={y} stroke="#496987" strokeWidth=".7" opacity=".4"/>)}
-            <path d={fill} fill="url(#skyOfficeIncome)"/><path d={line} fill="none" stroke="#22d3ee" strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round"/>
-            {[0,6,12,18,23].map(h=><text key={h} x={h*12.4+8} y="106" fill="#94a3b8" fontSize="9" textAnchor="middle">{String(h).padStart(2,'0')}h</text>)}
-          </svg>
-          <p className="text-[10px] leading-relaxed text-slate-400">Valor de pedidos ingresados, no dinero acreditado. Los comprobantes requieren verificación bancaria.</p>
+          <div className="mb-2 flex items-center justify-between gap-2"><h3 className="text-sm font-extrabold">Forma de pago</h3><span className="text-[10px] text-slate-400">Hoy</span></div>
+          {sales.length === 0 ? <p className="text-xs text-slate-400">Sin pedidos todavía.</p> : (<>
+            <div className="flex h-3 w-full gap-[2px] overflow-hidden rounded-full" role="img" aria-label={`Contra entrega ${onDelivery.length}, anticipado ${transfers.length}`}>
+              {onDelivery.length > 0 && <div className="h-full rounded-l-full" style={{ width: `${deliveryShare}%`, background: "#3987e5" }} title={`Contra entrega: ${onDelivery.length} · ${moneyGs(deliveryAmount)}`} />}
+              {transfers.length > 0 && <div className="h-full rounded-r-full" style={{ width: `${100 - deliveryShare}%`, background: "#d95926" }} title={`Anticipado: ${transfers.length} · ${moneyGs(transferAmount)}`} />}
+            </div>
+            <div className="mt-2.5 grid grid-cols-2 gap-2 text-[11px]">
+              <div className="flex items-start gap-1.5"><span className="mt-1 h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: "#3987e5" }} /><div><p className="text-slate-300">Contra entrega</p><p className="font-bold tabular-nums">{onDelivery.length} · {moneyGs(deliveryAmount)}</p></div></div>
+              <div className="flex items-start gap-1.5"><span className="mt-1 h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: "#d95926" }} /><div><p className="text-slate-300">Anticipado</p><p className="font-bold tabular-nums">{transfers.length} · {moneyGs(transferAmount)}</p></div></div>
+            </div>
+          </>)}
         </div>
+
+        {/* Productos vendidos hoy: barras horizontales (una sola serie) */}
         <div className="rounded-[20px] border border-sky-500/20 bg-[#0b2039] p-3.5">
-          <h3 className="mb-2.5 text-sm font-extrabold">Últimos pedidos registrados</h3>
-          {sales.length === 0 ? <p className="text-xs leading-relaxed text-slate-400">Todavía no hay ventas registradas hoy.</p> : (
-            <div className="space-y-2">
-              {sales.slice(0,5).map(order=>(
-                <div key={order.id} className="flex min-w-0 items-center gap-2 rounded-xl border border-white/[.07] bg-white/[.035] px-2.5 py-2">
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-400/10 text-emerald-300"><ShoppingBag className="h-4 w-4"/></div>
-                  <div className="min-w-0 flex-1"><p className="truncate text-[11px] font-semibold">{shortName(order.customer_name)}</p><p className="truncate text-[10px] text-slate-400">Pedido registrado · {new Date(order.created_at).toLocaleTimeString('es-PY',{hour:'2-digit',minute:'2-digit'})}</p></div>
-                  <span className="shrink-0 text-right text-[11px] font-bold text-emerald-300">{moneyGs(Number(order.total || 0))}</span>
+          <div className="mb-2.5 flex items-center justify-between gap-2"><h3 className="text-sm font-extrabold">Productos vendidos</h3><span className="text-[10px] text-slate-400">Pedidos hoy</span></div>
+          {topProducts.length === 0 ? <p className="text-xs text-slate-400">Todavía no hay productos vendidos hoy.</p> : (
+            <div className="space-y-2.5">
+              {topProducts.map(row => (
+                <div key={row.name} title={`${row.name}: ${row.orders} pedidos · ${row.units} unidades · ${moneyGs(row.total)}`}>
+                  <div className="flex items-baseline justify-between gap-2 text-[11px]">
+                    <span className="min-w-0 truncate text-slate-200">{row.name}</span>
+                    <span className="shrink-0 font-bold tabular-nums">{row.orders}</span>
+                  </div>
+                  <div className="mt-1 h-2 w-full rounded-full bg-white/[.06]">
+                    <div className="h-2 rounded-r-[4px] rounded-l-full" style={{ width: `${Math.max(4, (row.orders / maxProductOrders) * 100)}%`, background: "#3987e5" }} />
+                  </div>
+                  <p className="mt-0.5 text-[10px] text-slate-400 tabular-nums">{row.units} {row.units === 1 ? "unidad" : "unidades"} · {moneyGs(row.total)}</p>
                 </div>
               ))}
+            </div>
+          )}
+        </div>
+
+        {/* Pedidos por hora: barras con detalle al pasar el mouse */}
+        <div className="rounded-[20px] border border-sky-500/20 bg-[#0b2039] p-3.5">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <h3 className="text-sm font-extrabold">Pedidos por hora</h3>
+            <span className="text-[10px] text-slate-400">{peakHour.count > 0 ? `Pico: ${String(peakHour.hour).padStart(2, "0")}h (${peakHour.count})` : "Hoy"}</span>
+          </div>
+          <svg role="img" aria-label="Cantidad de pedidos por hora de hoy" viewBox="0 0 300 100" className="h-[110px] w-full">
+            {[20, 50, 80].map(y => <line key={y} x1="0" x2="300" y1={y} y2={y} stroke="#496987" strokeWidth=".6" opacity=".35" />)}
+            {hourly.map(h => {
+              const height = h.count ? Math.max(3, (h.count / peakCount) * 76) : 0;
+              const x = h.hour * 12.5 + 1;
+              return (
+                <g key={h.hour}>
+                  {/* zona de hover más grande que la barra */}
+                  <rect x={x - 1} y={4} width={12.5} height={80} fill="transparent"><title>{`${String(h.hour).padStart(2, "0")}:00 · ${h.count} ${h.count === 1 ? "pedido" : "pedidos"} · ${moneyGs(h.total)}`}</title></rect>
+                  {height > 0 && <rect x={x} y={84 - height} width={10.5} height={height} rx={2} fill="#3987e5" pointerEvents="none" />}
+                </g>
+              );
+            })}
+            <line x1="0" x2="300" y1="84" y2="84" stroke="#496987" strokeWidth=".8" />
+            {[0, 6, 12, 18, 23].map(h => <text key={h} x={h * 12.5 + 6} y="97" fill="#94a3b8" fontSize="9" textAnchor="middle">{String(h).padStart(2, "0")}h</text>)}
+          </svg>
+          <p className="text-[10px] leading-relaxed text-slate-400">Pasá el mouse por una hora para ver pedidos y valor. Es valor de pedidos, no dinero acreditado.</p>
+        </div>
+
+        <div className="rounded-[20px] border border-sky-500/20 bg-[#0b2039] p-3.5">
+          <h3 className="mb-2.5 text-sm font-extrabold">Últimos pedidos</h3>
+          {sales.length === 0 ? <p className="text-xs leading-relaxed text-slate-400">Todavía no hay ventas registradas hoy.</p> : (
+            <div className="space-y-2">
+              {sales.slice(0, 6).map(order => {
+                const advance = isAdvanceSale(order.payment_method);
+                return (
+                  <div key={order.id} className="flex min-w-0 items-center gap-2 rounded-xl border border-white/[.07] bg-white/[.035] px-2.5 py-2">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-400/10 text-emerald-300"><ShoppingBag className="h-4 w-4" /></div>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-[11px] font-semibold">{shortName(order.customer_name)}</p>
+                      <p className="truncate text-[10px] text-slate-400">{order.product_title || "Pedido"} · {new Date(order.created_at).toLocaleTimeString('es-PY', { hour: '2-digit', minute: '2-digit' })}</p>
+                    </div>
+                    <div className="shrink-0 text-right">
+                      <p className="text-[11px] font-bold tabular-nums text-slate-100">{moneyGs(Number(order.total || 0))}</p>
+                      <span className="inline-flex items-center gap-1 text-[9px] text-slate-400"><span className="h-1.5 w-1.5 rounded-full" style={{ background: advance ? "#d95926" : "#3987e5" }} />{advance ? "Anticipado" : "Contra entrega"}</span>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
@@ -314,6 +404,7 @@ function InboxOperationsPanel({
     </div>
   );
 }
+
 function getTodayDate() {
   const today = new Date();
   const year = today.getFullYear();
@@ -449,7 +540,7 @@ function InboxPage() {
       const pageSize = 1000;
       for (let page = 0; page < 100; page++) {
         const { data, error } = await supabase.from("orders")
-          .select("id,created_at,customer_name,order_number,total,payment_method,payment_status,receipt_url,status")
+          .select("id,created_at,customer_name,order_number,total,payment_method,payment_status,receipt_url,status,product_title,quantity")
           .eq("workspace_id",workspaceId!)
           .gte("created_at",period.start)
           .lt("created_at",period.endExclusive)
@@ -1594,11 +1685,15 @@ function InboxPage() {
       {SMART_TABS.map(tab=>(
         <button key={tab.id} type="button" onClick={()=>setSmartTab(tab.id)}
           aria-pressed={smartTab===tab.id}
-          className={cn("whitespace-nowrap rounded-lg border px-2 py-1 text-[11px] font-semibold leading-snug shadow-sm backdrop-blur-sm transition-colors",
-            smartTab===tab.id?"border-primary bg-primary text-primary-foreground":
-            tab.id==="ai_failed"&&(smartCounts.ai_failed??0)>0?"border-red-500 bg-red-600/80 text-white hover:bg-red-600":
-            "border-sky-300/25 bg-[#0a2444]/85 text-sky-50 hover:bg-[#1b395a]")}
-        >{tab.icon} {tab.label} ({smartCounts[tab.id]??0})</button>
+          className={cn("inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border py-1 pl-2.5 pr-1 text-[11px] font-semibold leading-snug shadow-sm backdrop-blur-sm transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300",
+            smartTab===tab.id?"border-sky-300 bg-sky-400 text-[#06213d] shadow-sky-500/30":
+            tab.id==="ai_failed"&&(smartCounts.ai_failed??0)>0?"border-red-400 bg-red-600/85 text-white hover:bg-red-600":
+            "border-sky-300/20 bg-[#0a2444]/85 text-sky-50 hover:border-sky-300/50 hover:bg-[#1b395a]")}
+        >
+          <span aria-hidden>{tab.icon}</span>{tab.label}
+          <span className={cn("min-w-[22px] rounded-full px-1.5 py-0.5 text-center text-[10px] font-bold tabular-nums",
+            smartTab===tab.id?"bg-[#06213d]/15 text-[#06213d]":"bg-white/10 text-sky-100")}>{smartCounts[tab.id]??0}</span>
+        </button>
       ))}
     </div>
   );
