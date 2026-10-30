@@ -1,4 +1,4 @@
-import { getGeminiCandidates, type AiContext } from "@/lib/ai.server";
+import { getGeminiCandidates, isKeyTemporarilyUnavailable, markKeyUnavailable, type AiContext } from "@/lib/ai.server";
 import { cityIn, parseCoverage, nationwideDestinationFromText, deliveryPolicyForCity, sellerAllowsNationwideAdvance, type SaleState } from "@/lib/rule-sales.server";
 import { isValidCustomerName, isValidDeliveryAddress } from "@/lib/sale-reconciliation.server";
 
@@ -56,7 +56,7 @@ async function callJson(ctx: AiContext, system: string, user: string): Promise<s
   const tried = new Set<string>();
   for (const [provider, rawKey] of providers) {
     const key = rawKey?.trim();
-    if (!key || tried.has(key)) continue;
+    if (!key || tried.has(key) || isKeyTemporarilyUnavailable(key)) continue;
     tried.add(key);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 12000);
@@ -88,7 +88,9 @@ async function callJson(ctx: AiContext, system: string, user: string): Promise<s
       }
       throw new Error(`${provider} vacío`);
     } catch (error) {
-      failures.push(error instanceof Error ? error.message : String(error));
+      const reason = error instanceof Error ? error.message : String(error);
+      failures.push(reason);
+      markKeyUnavailable(key, reason);
     } finally {
       clearTimeout(timeout);
     }

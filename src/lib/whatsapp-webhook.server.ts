@@ -17,7 +17,27 @@ import { classifyCustomerIntent, addVerifiedOrderContext, addPendingSaleContext 
 import { coordinatesFromText, validCoords } from "@/lib/hybrid-intent.server";
 import { parseCoverage, verifiedCoverage, sellerAllowsNationwideAdvance, deliveryPolicyForCity, hasTemplatePlaceholder, stripBankDetailsForCod, enforceVerifiedPaymentReply, isNonCityPhrase, sellerBankText, cleanReplyForPolicy } from "@/lib/rule-sales.server";
 import { resolveDepartamento } from "@/lib/orders";
-import { sendWhatsAppText } from "@/lib/whatsapp.server";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { sendWhatsAppText as sendWhatsAppTextNow } from "@/lib/whatsapp.server";
+
+/**
+ * Tiempo de respuesta configurado por cada vendedor (Configuraciones →
+ * «Tiempo de respuesta del bot»): la primera respuesta sale a los N segundos de
+ * recibir el mensaje. Si preparar la respuesta tarda más, sale apenas esté lista.
+ */
+type TurnClock = { startedAt: number; delayMs: number; waited: boolean };
+const turnClock = new AsyncLocalStorage<TurnClock>();
+async function waitConfiguredReplyDelay(): Promise<void> {
+  const clock = turnClock.getStore();
+  if (!clock || clock.waited) return;
+  clock.waited = true;
+  const rest = clock.delayMs - (Date.now() - clock.startedAt);
+  if (rest > 0) await new Promise(resolve => setTimeout(resolve, rest));
+}
+async function sendWhatsAppText(...args: Parameters<typeof sendWhatsAppTextNow>) {
+  await waitConfiguredReplyDelay();
+  return sendWhatsAppTextNow(...args);
+}
 import { detectComplaint, COMPLAINT_REASON_LABELS } from "@/lib/complaints";
 
 type CheckoutPrompt = "city" | "name" | "address";
@@ -1084,7 +1104,8 @@ export async function handleWhatsAppWebhook(payload: WebhookPayload) {
       // procesamiento de otros mensajes del mismo evento de Meta.
       for (const message of messages) {
         try {
-          await processMessage(conn, value?.contacts?.[0]?.profile?.name ?? null, message);
+          await turnClock.run({ startedAt: Date.now(), delayMs: 0, waited: false },
+            () => processMessage(conn, value?.contacts?.[0]?.profile?.name ?? null, message));
         } catch (error) {
           // Algunos fallos (contacto, conversación, permisos y deduplicación)
           // ocurren ANTES del try/catch de processMessage. Antes se perdían:
@@ -1578,6 +1599,8 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     .eq("workspace_id", workspaceId)
     .maybeSingle();
 
+  const replyClock = turnClock.getStore();
+  if (replyClock) replyClock.delayMs = Math.min(30, Math.max(0, Number(aiSettings?.reply_delay_seconds) || 0)) * 1000;
   if (!aiSettings?.ai_enabled || conversation.ai_paused || conversation.is_closed) {
     console.warn("[BOT_SKY_REPLY_SKIPPED_SETTINGS]", {
       workspaceId, conversationId: conversation.id,
@@ -1775,6 +1798,15 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       .eq("workspace_id", workspaceId).eq("conversation_id", conversation.id).maybeSingle();
     if (saleReadError) throw saleReadError;
     const previousSale = recoverSaleStateFromHistory(ctx, (saleRow?.state ?? {}) as SaleState, chatHistory);
+    // La IA lee la compra EN PARALELO mientras se revisan comprobantes y estado.
+    const extractState: SaleState = {...previousSale, productId: previousSale.productId ?? conversation.product_id};
+    const extractionPromise = !conversation.sale_closed && !isLocation && body.trim() &&
+        !(media && (media.type === "image" || media.type === "document")) && extractState.productId
+      ? extractSaleWithAi(ctx, extractState).catch(extractError => {
+          console.warn("[BOT_SKY_AI_EXTRACT] sin extracción", extractError instanceof Error ? extractError.message.slice(0, 200) : extractError);
+          return null;
+        })
+      : Promise.resolve(null);
     // Reintento persistente con límite y espera: un error de Gemini no inutiliza
     // el archivo permanentemente. Los reintentos pertenecen al workspace/chat.
     if (!previousSale.receiptDocuments?.length && !previousSale.receiptPath &&
@@ -2082,21 +2114,14 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     // nombre y dirección en cualquier redacción. El código solo verifica cada
     // dato (catálogo, cobertura, texto real del cliente) y completa lo que falta.
     let aiApplied: string[] = [];
-    if (!conversation.sale_closed && !isLocation && body.trim() &&
-        !(media && (media.type === "image" || media.type === "document")) &&
-        (previousSale.productId || conversation.product_id)) {
-      try {
-        const extractState: SaleState = {...previousSale, productId: previousSale.productId ?? conversation.product_id};
-        const extraction = await extractSaleWithAi(ctx, extractState);
-        if (extraction) {
-          const customerTexts = chatHistory.filter(h => h.role === "user").slice(-16).map(h => h.content);
-          aiApplied = applyAiExtraction(ctx, extractState, extraction, customerTexts);
-          if (aiApplied.length) Object.assign(previousSale, extractState);
-          console.info("[BOT_SKY_AI_EXTRACT]", JSON.stringify({conversationId:conversation.id, extraction, applied:aiApplied}));
-        }
-      } catch (extractError) {
-        console.warn("[BOT_SKY_AI_EXTRACT] sin extracción", extractError instanceof Error ? extractError.message.slice(0, 200) : extractError);
-      }
+    const extraction = await extractionPromise;
+    if (extraction) {
+      // Aplicar sobre el estado ACTUAL (puede haber cambiado por un comprobante).
+      const current: SaleState = {...previousSale, productId: previousSale.productId ?? extractState.productId};
+      const customerTexts = chatHistory.filter(h => h.role === "user").slice(-16).map(h => h.content);
+      aiApplied = applyAiExtraction(ctx, current, extraction, customerTexts);
+      if (aiApplied.length) Object.assign(previousSale, current);
+      console.info("[BOT_SKY_AI_EXTRACT]", JSON.stringify({conversationId:conversation.id, extraction, applied:aiApplied}));
     }
     // Persistir recuperación antes de que la IA vuelva a intervenir.
     if (!conversation.sale_closed) {
@@ -4430,7 +4455,11 @@ ${match.products.description ?? ""}`.trim();
     ? `💰 *Precios disponibles:*\n${options.map((o) => `• *${o.label}* — Gs. ${Math.round(Number(o.price)).toLocaleString("es-PY")}`).join("\n")}\n\n¿Cuál te interesa? 😊`
     : null;
 
-  const { sendWhatsAppMedia } = await import("@/lib/whatsapp.server");
+  const { sendWhatsAppMedia: sendWhatsAppMediaNow } = await import("@/lib/whatsapp.server");
+  const sendWhatsAppMedia = async (...mediaArgs: Parameters<typeof sendWhatsAppMediaNow>) => {
+    await waitConfiguredReplyDelay();
+    return sendWhatsAppMediaNow(...mediaArgs);
+  };
 
   const { data: mediaRows, error: mediaError } = await supabaseAdmin
     .from("product_media")
