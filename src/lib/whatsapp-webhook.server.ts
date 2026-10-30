@@ -3252,6 +3252,17 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         sentTotalLines.add(normalizedLine); return true;
       }).join("\n").replace(/\n{3,}/g,"\n\n").trim();
       outgoingText = await finalPolicyGate(outgoingText);
+      // Comprobante aceptado y falta el nombre: el mensaje final SIEMPRE informa el
+      // saldo a favor (si pagó de más) y pide nombre y apellido, para poder confirmar.
+      if (!bypassSale && !conversation.sale_closed && verifiedSaleState.awaiting === "name" &&
+          /anticip|transfer|deposit|giro/i.test(String(verifiedSaleState.paymentMethod ?? "")) &&
+          (paymentSaleState.receiptDocuments?.length ?? 0) > 0 && !paymentSaleState.receiptReview) {
+        const credit = expectedTotal !== null && receivedTotal > expectedTotal ? receivedTotal - expectedTotal : 0;
+        if (credit > 0 && !/saldo a favor|a tu favor/i.test(outgoingText))
+          outgoingText = `${outgoingText.trim()}\n\n💚 Tenés un saldo a favor de ${formatGs(credit)} (pendiente de acreditación bancaria).`.trim();
+        if (!/\b(?:nombre|apellido)\b/i.test(outgoingText))
+          outgoingText = `${outgoingText.trim()}\n\n😊 ¿Me pasás el nombre y apellido de quien va a recibir el pedido?`.trim();
+      }
       // Ráfaga de mensajes: si el cliente ya escribió algo más, ese turno responde
       // con el historial completo; no mandar respuestas superpuestas.
       if (await newerInboundExists(workspaceId, conversation.id, message.id)) {
