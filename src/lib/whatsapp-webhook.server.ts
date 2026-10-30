@@ -1464,7 +1464,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     }
   }
 
-  const { data: savedMessage } = await supabaseAdmin
+  const { data: savedMessage, error: savedMessageError } = await supabaseAdmin
     .from("messages")
     .insert({
       workspace_id: workspaceId,
@@ -1486,6 +1486,13 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     })
     .select("id")
     .single();
+  // Meta reenvía el mismo mensaje si tardamos en contestarle. Si otro intento
+  // ya guardó este mensaje (índice único workspace_id + wamid), ese intento es
+  // el que responde: este se detiene para no mandar la respuesta dos veces.
+  if (savedMessageError?.code === "23505") {
+    console.info("[BOT_SKY_DUPLICATE_DELIVERY]", JSON.stringify({conversationId:conversation.id, wamid:message.id}));
+    return;
+  }
 
   /*
    * Si ya existe un pedido anticipado para esta conversación, el archivo
