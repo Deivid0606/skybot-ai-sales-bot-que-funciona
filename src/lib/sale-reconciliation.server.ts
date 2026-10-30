@@ -41,7 +41,9 @@ export function isValidDeliveryAddress(value: unknown): boolean {
   if (!address || address.length > 600) return false;
   if (/^https:\/\/(?:www\.)?(?:google\.[^\s/]+\/maps|maps\.app\.goo\.gl\/|goo\.gl\/maps\/)/i.test(address)) return true;
   if (address.length < 7 || /^(?:ok|okey|dale|si|no|para el |el |este |proximo |mañana|manana|hoy|lunes|martes|miercoles|jueves|viernes|sabado|domingo)/.test(n)) return false;
-  if (/^(?:barrio|zona|ciudad|de )\s+[\p{L} '\-]+$/u.test(n)) return false;
+  // «Barrio San Pablo» solo no basta; «Barrio San Alfredo casi Kurupay» sí (trae referencia).
+  if (/^(?:barrio|zona|ciudad|de )\s+[\p{L} '\-]+$/u.test(n) &&
+      !/\b(?:calle|avenida|avda|ruta|esquina|casi|frente|entre|al lado|detras|cerca de|pasaje|manzana|lote|casa)\b/.test(n)) return false;
   // Preguntas sin signo («Por qué es de 25kilo», «cuánto pesa») y medidas no son direcciones.
   if (/^(?:por\s*que|porque|que|como|cuanto|cuanta|cual|donde|cuando|sera|es\s+de)\b/.test(n) ||
       /\b\d+\s*(?:kilos?|kg|litros?|lts?|cm|mm|gramos?)\b|\d+(?:kilos?|kg|litros?)\b/.test(n)) return false;
