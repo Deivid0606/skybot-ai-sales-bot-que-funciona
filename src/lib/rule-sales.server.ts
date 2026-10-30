@@ -627,7 +627,22 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   const selectionText=destinationAlias
     ? n.slice(0,-(` para ${destinationAlias}`).length).trim()
     : text;
-  const chosen=s.cartLines?.length ? null : selectOption(selectionText,variants,s.awaiting==="variant");
+  let chosen=s.cartLines?.length ? null : selectOption(selectionText,variants,s.awaiting==="variant");
+  let chosenByPrice=false;
+  // «el de 98mil», «la de 98.000», «la de 159»: elegir por el PRECIO de la opción.
+  if (!chosen && !s.cartLines?.length && variants.length > 1) {
+    const prices = [...n.matchAll(/\b(\d{2,3})\s*mil\b|\b(\d{1,3}(?:\s?\d{3})+|\d{4,7})\b|\b(?:el|la|los|las)\s+de\s+(\d{2,3})\b(?!\s*(?:unidad|caja|litro|kilo|kg))/g)]
+      .map(m => m[1] ? Number(m[1]) * 1000 : m[3] ? Number(m[3]) * 1000 : Number(m[2].replace(/\s/g, "")));
+    const byPrice = variants.filter(v => prices.some(p => p === Math.round(v.price) || (p < 1000 && p * 1000 === Math.round(v.price / 1000) * 1000)));
+    if (byPrice.length === 1) { chosen = byPrice[0]; chosenByPrice = true; }
+  }
+  // «Sí / dale / ok / esa» después de que el bot propuso UNA opción concreta: queda elegida.
+  if (!chosen && !s.cartLines?.length && variants.length > 1 && !s.optionId &&
+      /^(?:s[ií]|si+|dale|ok(?:ey)?|esa|ese|bueno|perfecto|de una|claro|listo)\b/.test(n)) {
+    const lastBot = [...(ctx.history ?? [])].reverse().find(h => h.role === "assistant")?.content ?? "";
+    const proposed = variants.filter(v => norm(lastBot).includes(norm(v.label)));
+    if (proposed.length === 1 && /[?¿]/.test(lastBot)) chosen = proposed[0];
+  }
   if(chosen) {
     s.optionId=chosen.id;
     // Una opción etiquetada «N unidades» es un paquete, distinto de «N litros».
@@ -641,7 +656,8 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     // El «2» es el número de cajas, no una cantidad adicional para recalcular
     // el precio oficial del paquete. No pisar quantity de product_prices.
     const chosePackage = Boolean(chosen && /\b(?:caja(?:s)?|pack(?:s)?|combo(?:s)?)\b/.test(norm(chosen.label)) && chosen.quantity > 1);
-    if(q && !s.cartLines?.length && !chosePackage)s.quantity=q;
+    // Si eligió por precio («la de 98.000»), ese número es el precio, no una cantidad.
+    if(q && !s.cartLines?.length && !chosePackage && !chosenByPrice)s.quantity=q;
   } else {
     // "uno de 5 litros" sí comunica cantidad 1 explícita.
     const match=n.match(/\b(un|uno|una|dos|tres|\d+)\s+de\s+\d+\s*(?:litros?|l|lts?)\b/);

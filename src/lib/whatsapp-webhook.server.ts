@@ -4690,6 +4690,9 @@ async function sendSilenceFallback(args: {
           cityVerified:true, training:fallbackCtx.training}).corrected) text = cleanReplyForPolicy(text, policyMethod);
       if (text && policyMethod === "contraentrega") text = cleanReplyForPolicy(text, "contraentrega");
       if (text && WAITING_REPLY_RE.test(text)) text = stripWaitingSentences(text);
+      // El respaldo nunca anuncia un pedido confirmado: eso solo lo hace el registro real.
+      if (text) text = text.split(/(?<=[.!?\n])\s*/).filter(part =>
+        !/(?:pedido|compra)[^.!?\n]{0,25}(?:confirmad|registrad)|\bBS-[A-F0-9]{6,}|pedido\s+n\.?\s*[º°o]/i.test(part)).join(" ").trim();
       if (!text) throw new Error("IA sin respuesta válida para el mensaje de respaldo");
       const wamid = await sendWhatsAppText(args.conn, args.phone, text);
       await supabaseAdmin.from("messages").insert({
