@@ -2203,6 +2203,12 @@ Respetá el estilo, productos y condiciones del entrenamiento particular del ven
     if (verifiedSaleState.pendingPlace && !verifiedSaleState.cityVerified) {
       aiAnswerContext.systemInstruction += `\nLUGAR SIN CIUDAD (dato del sistema): el cliente indicó «${verifiedSaleState.pendingPlace}», que no figura en la lista de ciudades del vendedor ni como ciudad conocida; puede ser un barrio, una compañía o una zona. NO digas todavía si es contraentrega o encomienda, NO envíes datos bancarios ni el detalle a transferir. Preguntale amablemente a qué ciudad corresponde ese lugar (por ejemplo: «📍 ¿Ese barrio en qué ciudad queda?»).`;
     }
+    // Comprobante ya ACEPTADO: la IA no debe ver (y copiar) sus mensajes
+    // anteriores que pedían otro comprobante o hablaban de un monto incorrecto.
+    if (((verifiedSaleState.receiptDocuments ?? previousSale.receiptDocuments)?.length ?? 0) > 0 && !previousSale.receiptReview &&
+        /anticip|transfer|deposit|giro/i.test(String(verifiedSaleState.paymentMethod ?? ""))) {
+      aiAnswerContext.history = aiAnswerContext.history.filter(h => !(h.role === "assistant" && RECEIPT_RESEND_RE.test(h.content)));
+    }
     // Consulta u objeción del cliente en medio de la compra: se responde PRIMERO.
     if (intent !== "checkout" && !isGpsMessage) {
       aiAnswerContext.systemInstruction += `\nEL ÚLTIMO MENSAJE DEL CLIENTE ES UNA CONSULTA U OBJECIÓN («${body.slice(0, 200)}»): respondela primero de forma concreta con el catálogo y el entrenamiento (si es sobre el precio, destacá el valor, la promo y las condiciones reales del vendedor, sin inventar descuentos). Después, en el mismo mensaje y brevemente, invitá a continuar pidiendo el dato pendiente.`;
@@ -3284,7 +3290,8 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       });
       // ÚLTIMA barrera de precio, luego de todos los ajustes de IA y
       // entrenamiento. El catálogo sigue siendo la fuente de importes reales.
-      const priceCheck = (reply: string) => enforceVerifiedCatalogPriceReply({
+      const isMediaTurn = Boolean(media && (media.type === "image" || media.type === "document"));
+      const priceCheck = (reply: string) => isMediaTurn || enforceVerifiedCatalogPriceReply({
         reply, customerText: body, productId: detectedProduct,
         products: ctx.products, selectedOptionId: verifiedSaleState.optionId,
       }) === reply;
@@ -3331,8 +3338,10 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         // Último recurso: quitar de la respuesta de la IA las frases que piden otro comprobante.
         if (RECEIPT_RESEND_RE.test(outgoingText)) {
           console.warn("[BOT_SKY_RECEIPT_CONTRADICTION]", JSON.stringify({conversationId:conversation.id, text:outgoingText.slice(0,300)}));
-          const kept = outgoingText.split(/(?<=[.!?\n])\s*/).filter(part => !RECEIPT_RESEND_RE.test(part)).join(" ").trim();
-          if (kept) outgoingText = kept;
+          // Frases enteras: «Gs. 129.000» no es un fin de frase.
+          const kept = outgoingText.split(/(?<=[!?\n])\s*|(?<=[a-záéíóúñ0-9)][.])\s+(?=[¿¡A-ZÁÉÍÓÚÑ📎💚😊🙏✅])/u)
+            .filter(part => !RECEIPT_RESEND_RE.test(part)).join(" ").trim();
+          if (/[a-záéíóúñ]{4,}/i.test(kept) && !/^[\d\s.,]/.test(kept)) outgoingText = kept;
         }
       }
       // Ráfaga de mensajes: si el cliente ya escribió algo más, ese turno responde
