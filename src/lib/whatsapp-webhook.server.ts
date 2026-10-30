@@ -11,6 +11,7 @@ import { reconcileOrderWithSaleState, recoverSaleStateFromHistory, isValidCustom
 import { buildRegisteredOrderConfirmation } from "@/lib/order-confirmation.server";
 import { buildWorkspaceAiContext } from "@/lib/ai-context.server";
 import { generateAiReply, applyDynamicSellerTrainingReply, type AiContext } from "@/lib/ai.server";
+import { extractSaleWithAi, applyAiExtraction } from "@/lib/ai-extract.server";
 import { advanceRuleSale, cityIn, sellerUsesFirstOffer, isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi, isValidRecipientCi, type SaleState } from "@/lib/rule-sales.server";
 import { classifyCustomerIntent, addVerifiedOrderContext, addPendingSaleContext } from "@/lib/hybrid-intent.server";
 import { coordinatesFromText, validCoords } from "@/lib/hybrid-intent.server";
@@ -2077,6 +2078,26 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       }
     }
 
+    // LA IA ENTIENDE LA COMPRA: lee la conversación y devuelve opción, ciudad,
+    // nombre y dirección en cualquier redacción. El código solo verifica cada
+    // dato (catálogo, cobertura, texto real del cliente) y completa lo que falta.
+    let aiApplied: string[] = [];
+    if (!conversation.sale_closed && !isLocation && body.trim() &&
+        !(media && (media.type === "image" || media.type === "document")) &&
+        (previousSale.productId || conversation.product_id)) {
+      try {
+        const extractState: SaleState = {...previousSale, productId: previousSale.productId ?? conversation.product_id};
+        const extraction = await extractSaleWithAi(ctx, extractState);
+        if (extraction) {
+          const customerTexts = chatHistory.filter(h => h.role === "user").slice(-16).map(h => h.content);
+          aiApplied = applyAiExtraction(ctx, extractState, extraction, customerTexts);
+          if (aiApplied.length) Object.assign(previousSale, extractState);
+          console.info("[BOT_SKY_AI_EXTRACT]", JSON.stringify({conversationId:conversation.id, extraction, applied:aiApplied}));
+        }
+      } catch (extractError) {
+        console.warn("[BOT_SKY_AI_EXTRACT] sin extracción", extractError instanceof Error ? extractError.message.slice(0, 200) : extractError);
+      }
+    }
     // Persistir recuperación antes de que la IA vuelva a intervenir.
     if (!conversation.sale_closed) {
       const { error: recoveryError } = await supabaseAdmin.from("bot_sale_states").upsert({
@@ -2137,7 +2158,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     // Solo se clasifica la intención: el contenido de la respuesta lo crea la IA
     // desde el entrenamiento de este workspace.
     const asksAboutSeller = /\b(?:de\s+d[oó]nde\s+(?:son|son\s+ustedes|es\s+(?:la\s+)?tienda|est[aá]n|queda)|d[oó]nde\s+(?:queda|est[aá])\s+(?:la\s+)?(?:tienda|local|negocio)|tienen\s+(?:local|sucursal|direcci[oó]n)|cu[aá]l\s+es\s+(?:su|la)\s+direcci[oó]n)\b/i.test(body);
-    const bypassSale = asksAboutSeller || (!pendingAdvanceReceipt && intent !== "checkout" && !savedSaleReadyForFinalization && !awaitingCheckoutDetail &&
+    const bypassSale = asksAboutSeller || (!aiApplied.length && !pendingAdvanceReceipt && intent !== "checkout" && !savedSaleReadyForFinalization && !awaitingCheckoutDetail &&
       !(previousSale.productId && !conversation.sale_closed && /(?:calle|barrio|casi|esquina|avenida|ruta|direccion|ubicacion|^[\p{L}]+(?:\s+[\p{L}]+){1,3}$)/iu.test(body)));
     const answerContextBase = intent === "order_status"
       ? await addVerifiedOrderContext(supabaseAdmin, ctx, workspaceId, phone)
