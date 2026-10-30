@@ -2562,6 +2562,32 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         reply:(await aiCompose(aiAnswerContext, "Todavía falta el nombre y apellido de quien recibe: pedilo ahora, antes de pedir dirección o ubicación.")) ?? ""};
     }
     if (bypassSale && !result.order) result = {...result, sale_closed:false, order:null};
+    // Respaldo de intención: el cliente eligió con palabras que el código no
+    // reconoce («3 seria», «me quedo con la grande») y la IA lo entendió y lo
+    // AFIRMÓ («llevás 3 unidades por Gs. 129.900»). Se guarda esa opción para
+    // no perder la venta. Solo si la IA nombra UNA opción en una frase afirmativa.
+    const intentState = saveStep?.state ?? (!bypassSale || conversation.sale_closed ? null : previousSale);
+    if (intentState?.productId && !intentState.optionId && !intentState.cartLines?.length && !conversation.sale_closed &&
+        /\d|\b(?:una?|uno|dos|tres|cuatro|cinco|quiero|llevo|dame|esa|ese|grande|chic[oa]|mediano|promo|oferta)\b/i.test(normalizeIntentText(body))) {
+      const intentOptions = (ctx.products.find(p => p.id === intentState.productId)?.product_prices ?? []).filter(o => Number(o.price) > 0);
+      const affirmed = String(result.reply ?? "").split(/(?<=[.!?\n])/).filter(part => !/[¿?]/.test(part));
+      const named = intentOptions.filter(o => {
+        const label = normalizeIntentText(o.label);
+        return label.length >= 3 && affirmed.some(part => normalizeIntentText(part).includes(label));
+      });
+      if (intentOptions.length > 1 && named.length === 1) {
+        intentState.optionId = named[0].id;
+        if (/\b(?:unidad(?:es)?|piezas?|caja(?:s)?|pack(?:s)?)\b/.test(normalizeIntentText(named[0].label))) intentState.quantity = named[0].quantity;
+        console.info("[BOT_SKY_AI_OPTION_INTENT]", JSON.stringify({conversationId:conversation.id,optionId:named[0].id,label:named[0].label}));
+        if (!saveStep) {
+          const { error: intentSaveError } = await supabaseAdmin.from("bot_sale_states").upsert({
+            workspace_id:workspaceId,conversation_id:conversation.id,state:intentState,
+            updated_at:new Date().toISOString()
+          },{onConflict:"workspace_id,conversation_id"});
+          if (intentSaveError) throw intentSaveError;
+        }
+      }
+    }
     if (saveStep) {
       const {error: saveStateError} = await supabaseAdmin.from("bot_sale_states")
         .upsert({workspace_id:workspaceId,conversation_id:conversation.id,
