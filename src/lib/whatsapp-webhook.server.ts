@@ -11,7 +11,7 @@ import { reconcileOrderWithSaleState, recoverSaleStateFromHistory, isValidCustom
 import { buildRegisteredOrderConfirmation } from "@/lib/order-confirmation.server";
 import { buildWorkspaceAiContext } from "@/lib/ai-context.server";
 import { generateAiReply, applyDynamicSellerTrainingReply, type AiContext } from "@/lib/ai.server";
-import { advanceRuleSale, sellerUsesFirstOffer, isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi, isValidRecipientCi, type SaleState } from "@/lib/rule-sales.server";
+import { advanceRuleSale, cityIn, sellerUsesFirstOffer, isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi, isValidRecipientCi, type SaleState } from "@/lib/rule-sales.server";
 import { classifyCustomerIntent, addVerifiedOrderContext, addPendingSaleContext } from "@/lib/hybrid-intent.server";
 import { coordinatesFromText, validCoords } from "@/lib/hybrid-intent.server";
 import { parseCoverage, verifiedCoverage, sellerAllowsNationwideAdvance, deliveryPolicyForCity, hasTemplatePlaceholder, stripBankDetailsForCod, enforceVerifiedPaymentReply, isNonCityPhrase, sellerBankText, cleanReplyForPolicy } from "@/lib/rule-sales.server";
@@ -2153,6 +2153,25 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     if (asksAboutSeller) {
       answerContext.systemInstruction += "\nPRIORIDAD PARA ESTE MENSAJE: el cliente pregunta por la ubicación u origen de LA TIENDA, NO informa su ciudad de entrega. Respondé la consulta concreta basándote exclusivamente en el entrenamiento de este vendedor. Si la dirección de la tienda no está documentada, indicá que no tenés ese dato confirmado. No repitas la pregunta anterior de ciudad en esta respuesta ni cambies los datos guardados del pedido. Conservá el progreso para el siguiente turno.";
     }
+    // «¿Envía a Ciudad del Este?»: una PREGUNTA que nombra una ciudad de la
+    // cobertura del vendedor fija esa ciudad, para que la IA responda con la
+    // modalidad oficial (contraentrega) y no la deduzca por su cuenta.
+    if (!conversation.sale_closed && !asksAboutSeller && !isGpsMessage && !previousSale.cityVerified &&
+        /[¿?]/.test(body) && !/https?:\/\//i.test(body)) {
+      const askedCity = cityIn(body, parseCoverage(ctx.training));
+      if (askedCity) {
+        previousSale.city = askedCity.city; previousSale.department = askedCity.department;
+        previousSale.cityVerified = true; previousSale.coverageStatus = askedCity.active ? "covered" : "uncovered";
+        previousSale.pendingPlace = null;
+        if (previousSale.productId) {
+          const { error: askedCityError } = await supabaseAdmin.from("bot_sale_states").upsert({
+            workspace_id:workspaceId,conversation_id:conversation.id,state:previousSale,
+            updated_at:new Date().toISOString()
+          },{onConflict:"workspace_id,conversation_id"});
+          if (askedCityError) throw askedCityError;
+        }
+      }
+    }
     const ruleStep = !bypassSale
       ? advanceRuleSale(ctx, saleInput, previousSale, media && (media.type === "image" || media.type === "document") ? mediaPath : null, gpsUrl)
       : null;
@@ -2180,6 +2199,10 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
 AVANCE DEL CIERRE, OBLIGATORIO EN EL MISMO TURNO: si ya identificaste producto, variante, cantidad y ciudad, NO termines una respuesta mostrando solo el detalle o preguntando «¿seguimos?», «¿está bien?» o «¿confirmás?»; pedí inmediatamente el SIGUIENTE dato faltante del estado técnico. Si awaiting="name", solicitá nombre Y apellido en ese mismo mensaje, aun cuando acabes de explicar el pago al recibir y el total. Cuando te respondan el nombre, si awaiting="address", pedí dirección o ubicación. Si awaiting="receipt" para encomienda, explicá las instrucciones de pago SOLO desde los datos bancarios reales de este vendedor y decí que envíe el comprobante; no pidas dirección ni GPS. ORDEN DE CADA RESPUESTA: PRIMERO respondé lo que el cliente preguntó o comentó en su último mensaje (dudas del producto, precio, objeciones como «es caro», envío, garantía, uso) usando el catálogo y el entrenamiento; RECIÉN DESPUÉS, en el mismo mensaje, pedí el dato pendiente sin repetir lo ya dicho. Nunca ignores una consulta para pedir datos. Nunca digas «pedido confirmado» antes de que el servidor lo registre.
 Respetá el estilo, productos y condiciones del entrenamiento particular del vendedor; el backend solamente asegura que la venta NO se estanque sin pedir el siguiente dato obligatorio.`
     };
+    // Lugar que no es una ciudad conocida («Barrio Vista Alegre»): preguntar la ciudad.
+    if (verifiedSaleState.pendingPlace && !verifiedSaleState.cityVerified) {
+      aiAnswerContext.systemInstruction += `\nLUGAR SIN CIUDAD (dato del sistema): el cliente indicó «${verifiedSaleState.pendingPlace}», que no figura en la lista de ciudades del vendedor ni como ciudad conocida; puede ser un barrio, una compañía o una zona. NO digas todavía si es contraentrega o encomienda, NO envíes datos bancarios ni el detalle a transferir. Preguntale amablemente a qué ciudad corresponde ese lugar (por ejemplo: «📍 ¿Ese barrio en qué ciudad queda?»).`;
+    }
     // Consulta u objeción del cliente en medio de la compra: se responde PRIMERO.
     if (intent !== "checkout" && !isGpsMessage) {
       aiAnswerContext.systemInstruction += `\nEL ÚLTIMO MENSAJE DEL CLIENTE ES UNA CONSULTA U OBJECIÓN («${body.slice(0, 200)}»): respondela primero de forma concreta con el catálogo y el entrenamiento (si es sobre el precio, destacá el valor, la promo y las condiciones reales del vendedor, sin inventar descuentos). Después, en el mismo mensaje y brevemente, invitá a continuar pidiendo el dato pendiente.`;
