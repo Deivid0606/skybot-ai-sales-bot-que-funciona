@@ -3127,9 +3127,9 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       // pertenece a la IA con entrenamiento. Nunca imponer preguntas aquí.
       let outgoingProposal = safeBeforeInsert;
       const paidEnoughOrMore=isAdvance && expectedTotal!==null && receivedTotal>=expectedTotal && receivedTotal>0;
-      const resendRe=/(complemento|comprobante\s+de\s+la\s+diferencia|comprobante\s+adicional|por\s+(?:esa|la)\s+diferencia|faltan?\s+gs|nuevamente|reenvi|monto\s+sea\s+el\s+correcto|otro\s+comprobante)/i;
+      const resendRe=RECEIPT_RESEND_RE;
       // Dudas sobre un pago MAYOR al total ("¿realizaste un pago adicional o hay algún error?").
-      const overpayDoubtRe=/(pago\s+adicional|alg[uú]n\s+error|hay\s+un\s+error|un\s+error|no\s+coincide|diferencia|monto\s+(?:distinto|diferente|mayor)|pero\s+el\s+comprobante\s+muestra|verificar\s+(?:los\s+datos\s+y\s+)?el\s+monto|confirm(?:ar|á|ame|arme|es)[\s\S]{0,60}(?:monto|pago|transferencia|error))/i;
+      const overpayDoubtRe=/(pero\s+el\s+monto|monto\s+exacto|comprobante\s+(?:correcto|v[aá]lido)|pago\s+adicional|alg[uú]n\s+error|hay\s+un\s+error|un\s+error|no\s+coincide|diferencia|monto\s+(?:distinto|diferente|mayor)|pero\s+el\s+comprobante\s+muestra|verificar\s+(?:los\s+datos\s+y\s+)?el\s+monto|confirm(?:ar|á|ame|arme|es)[\s\S]{0,60}(?:monto|pago|transferencia|error))/i;
       const overpaid=paidEnoughOrMore && expectedTotal!==null && receivedTotal>expectedTotal;
       const overpayWordsRe=/(excedente|sobrante|provisional|verificaci[oó]n\s+bancaria|pagaste\s+(?:de\s+)?m[aá]s|monto\s+transferido)/i;
       if (overpaid && (!paymentSaleState.customerName || resendRe.test(outgoingProposal) ||
@@ -3316,13 +3316,23 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         const missingCredit = credit > 0 && !/saldo a favor|a tu favor/i.test(outgoingText);
         const missingName = !/\b(?:nombre|apellido)\b/i.test(outgoingText);
         // Lo redacta la IA: el código solo indica qué dato verificado falta en el mensaje.
-        for (let attempt = 0; attempt < 2 && (missingCredit || missingName); attempt++) {
+        for (let attempt = 0; attempt < 3 && (missingCredit || missingName || RECEIPT_RESEND_RE.test(outgoingText)); attempt++) {
           const goal = [missingCredit ? `informá que tiene un saldo a favor de ${formatGs(credit)} (pendiente de acreditación bancaria)` : "",
             missingName ? "terminá pidiendo el nombre y apellido de quien va a recibir el pedido" : ""].filter(Boolean).join(" y ");
-          const rewritten = await aiCompose(aiAnswerContext, `Tu borrador fue: «${outgoingText.trim()}». Mantené su contenido y ${goal}. No digas que el pedido está confirmado.`);
+          const contradicts = RECEIPT_RESEND_RE.test(outgoingText);
+          const rewritten = await aiCompose(aiAnswerContext, contradicts
+            ? `El comprobante fue RECIBIDO y su monto CUBRE el total del pedido (no pidas otro comprobante ni hables de diferencia ni de monto incorrecto). Agradecé el comprobante${credit > 0 ? `, informá que tiene un saldo a favor de ${formatGs(credit)} (pendiente de acreditación bancaria)` : ""} y terminá pidiendo el nombre y apellido de quien va a recibir el pedido. No digas que el pedido está confirmado.`
+            : `Tu borrador fue: «${outgoingText.trim()}». Mantené su contenido y ${goal}. No digas que el pedido está confirmado.`);
           if (!rewritten) continue;
           outgoingText = await finalPolicyGate(rewritten);
-          if ((!missingCredit || /saldo a favor|a tu favor/i.test(outgoingText)) && (!missingName || /\b(?:nombre|apellido)\b/i.test(outgoingText))) break;
+          if ((!missingCredit || /saldo a favor|a tu favor/i.test(outgoingText)) && (!missingName || /\b(?:nombre|apellido)\b/i.test(outgoingText)) &&
+              !RECEIPT_RESEND_RE.test(outgoingText)) break;
+        }
+        // Último recurso: quitar de la respuesta de la IA las frases que piden otro comprobante.
+        if (RECEIPT_RESEND_RE.test(outgoingText)) {
+          console.warn("[BOT_SKY_RECEIPT_CONTRADICTION]", JSON.stringify({conversationId:conversation.id, text:outgoingText.slice(0,300)}));
+          const kept = outgoingText.split(/(?<=[.!?\n])\s*/).filter(part => !RECEIPT_RESEND_RE.test(part)).join(" ").trim();
+          if (kept) outgoingText = kept;
         }
       }
       // Ráfaga de mensajes: si el cliente ya escribió algo más, ese turno responde
@@ -4622,6 +4632,9 @@ async function newerInboundExists(workspaceId: string, conversationId: string, w
  * siguiente dato a pedir); la IA decide CÓMO decirlo con el estilo de la tienda.
  * Si la IA no responde devuelve null: el llamador NO envía texto fijo.
  */
+/** La IA pide reenviar o completar un comprobante (sirve para detectar contradicciones). */
+const RECEIPT_RESEND_RE=/(complemento|comprobante\s+de\s+la\s+diferencia|comprobante\s+adicional|por\s+(?:esa|la)\s+diferencia|faltan?\s+gs|nuevamente|reenvi|monto\s+sea\s+el\s+correcto|otro\s+comprobante|comprobante\s+(?:correcto|v[aá]lido|con\s+el\s+monto)|monto\s+exacto|env[ií]a(?:r)?me\s+(?:el|un)\s+comprobante|pero\s+el\s+monto\s+es)/i;
+
 async function aiCompose(ctx: Parameters<typeof generateAiReply>[0], goal: string): Promise<string | null> {
   if (!goal.trim()) return null;
   try {
