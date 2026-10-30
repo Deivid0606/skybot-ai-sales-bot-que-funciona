@@ -331,7 +331,9 @@ async function ingestMedia(args: {
   const emptyResult = {
     storagePath: null as string | null,
     transcript: null as string | null,
+    aiError: null as string | null,
   };
+  let aiError: string | null = null;
 
   try {
     const mediaUrl = await downloadWhatsAppMediaUrl(
@@ -489,6 +491,7 @@ async function ingestMedia(args: {
         }
       }
     } catch (error) {
+      aiError = error instanceof Error ? error.message : String(error);
       console.error("[WhatsApp media] Error procesando archivo con IA", {
         mediaId: args.mediaId,
         type: args.type,
@@ -500,6 +503,7 @@ async function ingestMedia(args: {
     return {
       storagePath: uploadedFile.path,
       transcript,
+      aiError,
     };
   } catch (error) {
     console.error("[WhatsApp media] Error inesperado procesando archivo", {
@@ -1419,6 +1423,15 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
 
       mediaPath = ingested.storagePath;
       transcript = ingested.transcript;
+      // Aviso al vendedor: si la IA no pudo leer una imagen, el motivo queda en la campanita.
+      if (media.type === "image" && !transcript) {
+        await supabaseAdmin.from("notifications").insert({
+          workspace_id: workspaceId, user_id: ownerId, type: "ia",
+          title: `No se pudo leer una imagen · ${phone}`,
+          body: (ingested.aiError ? `Motivo: ${ingested.aiError}` : (mediaPath ? "La IA de imágenes no devolvió texto." : "No se pudo descargar o guardar la imagen de WhatsApp.")).slice(0, 240),
+          link: "/inbox", audience: "user",
+        });
+      }
 
       if (transcript) {
         body =
@@ -1910,6 +1923,11 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       const normalizeDestination = (value: string) => {
         const result = value.toUpperCase().normalize("NFD")
           .replace(/[\u0300-\u036f]/g, "").replace(/[\s._-]/g, "");
+        // La IA puede leer la cuenta con texto extra («815060085 (Banco Familiar)»,
+        // «Cuenta 815060085», «N° 815060085»): comparar solo el número de cuenta.
+        const digitRun = value.replace(/(\d)[\s.-](?=\d)/g, "$1").match(/\d{6,}/g);
+        if (digitRun?.length === 1 && !/^\d+$/.test(result) && !/^(?:ALIAS)?(?:CI|CEDULA|RUC)\d{5,12}$/.test(result))
+          return digitRun[0].replace(/^0+(?=\d)/, "");
         if (!/^[A-Z0-9]{4,80}$/.test(result)) return "";
         // "CI 4804126", "C.I. 4804126" o "Alias ci 4804126" = mismo alias numérico.
         const ciDigits = result.match(/^(?:ALIAS)?(?:CI|CEDULA|RUC)(\d{5,12})$/)?.[1];
@@ -1932,8 +1950,11 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       ).find(Boolean) ?? null;
       if (!authorizedAccounts.length && !authorizedAliases.length)
         console.warn("[BOT_SKY_RECEIPT_CONFIGURATION] No se encontró cuenta ni alias bancario autorizado en este vendedor",{workspaceId,conversationId:conversation.id});
+      // Palabras que la IA puede agregar al leer el titular («– Banco Familiar», «Nombre:»).
+      const HOLDER_NOISE = new Set(["BANCO","FAMILIAR","SAECA","SA","EKO","CUENTA","CTA","DESTINO","PARA","NOMBRE","TITULAR","BENEFICIARIO","ENTIDAD"]);
       const normalizeHolder = (value: string) => value.toUpperCase().normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "").replace(/[^A-Z\s]/g, " ").trim().split(/\s+/).filter(Boolean);
+        .replace(/[\u0300-\u036f]/g, "").replace(/S\.?\s*A\.?\s*E\.?\s*C\.?\s*A\.?/g, " ").replace(/[^A-Z\s]/g, " ")
+        .trim().split(/\s+/).filter(token => token && !HOLDER_NOISE.has(token));
       const compatibleHolder = (received: string | null) => {
         // La abreviación de un titular (p.ej., nombre + apellido) es habitual
         // en recibos; si es ambigua debe revisarse, no afirmarse acreditación.
@@ -1994,6 +2015,18 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
             path:source.media_url,hasConfiguredAccount:authorizedAccounts.length > 0,
             hasConfiguredAlias:authorizedAliases.length > 0,
             hasDestination:Boolean(receivedDestinations.length),amountOk,wrongAccount,wrongHolder,missingAliasHolder}));
+          // Aviso al vendedor con lo que se leyó, para que sepa por qué no se aceptó.
+          await supabaseAdmin.from("notifications").insert({
+            workspace_id: workspaceId, user_id: ownerId, type: "ia",
+            title: `Comprobante no aceptado · ${phone}`,
+            body: [
+              wrongAccount ? "La cuenta o alias de destino no coincide con los datos bancarios del entrenamiento." : "",
+              wrongHolder || missingAliasHolder ? "El titular no coincide o no se ve." : "",
+              !amountOk ? "No se pudo leer el monto." : "",
+              `Leído: monto ${candidate.amountGs ?? "?"}, destino ${candidate.destinationAccount ?? candidate.destinationAlias ?? "?"}, titular ${candidate.beneficiary ?? "?"}.`,
+            ].filter(Boolean).join(" ").slice(0, 240),
+            link: "/inbox", audience: "user",
+          });
           // El último comprobante incompleto bloquea el registro; jamás se inventa monto.
           // No se debe sobreescribir un comprobante válido anterior con otro ilegible.
           if (!previousSale.receiptDocuments?.length)
@@ -2157,6 +2190,12 @@ Respetá el estilo, productos y condiciones del entrenamiento particular del ven
       (media.type === "image" || media.type === "document") && verifiedSaleState.productId);
     if (advanceCheckoutMedia && !currentReceipt &&
         /anticip|transfer|deposit|giro/i.test(String(verifiedSaleState.paymentMethod ?? ""))) {
+      if (transcript) await supabaseAdmin.from("notifications").insert({
+        workspace_id: workspaceId, user_id: ownerId, type: "ia",
+        title: `Imagen no reconocida como comprobante · ${phone}`,
+        body: `La IA leyó: ${transcript.replace(/\s+/g, " ").slice(0, 200)}`,
+        link: "/inbox", audience: "user",
+      });
       aiAnswerContext.systemInstruction += `\nIMAGEN RECIBIDA DURANTE EL PAGO ANTICIPADO (resultado del sistema, YA revisada): no se pudo leer un comprobante de transferencia en ese archivo (ilegible, recortado o no es un comprobante). NO digas «voy a verificar» ni «un momento». Pedí amablemente una captura o foto completa y nítida del comprobante donde se vean el monto, la cuenta o alias de destino y el titular. Si el cliente pregunta otra cosa, respondela también.`;
     }
     if (currentReceipt && !conversation.sale_closed) {
@@ -4435,7 +4474,7 @@ ${match.products.description ?? ""}`.trim();
 
 
 /** Respuestas de espera que el bot nunca cumple (no hay trabajo posterior). */
-const WAITING_REPLY_RE = /\b(?:un momento|un momentito|aguard[aá]|esper[aá] (?:un|unos)|voy a verificar|vamos a verificar|proceder[eé]? a verificar|verificaremos|te aviso|le avisaremos|estoy guardando|estoy verificando|estoy revisando|necesito verificar|debo verificar|tengo que verificar|antes de continuar con tu pedido|ahora (?:reviso|verifico|revisar[eé]|verificar[eé]))\b/i;
+const WAITING_REPLY_RE = /\b(?:un momento|un momentito|aguard[aá]|esper[aá] (?:un|unos)|voy a verificar|vamos a verificar|proceder[eé]? a verificar|verificaremos|te aviso|le avisaremos|estoy guardando|estoy verificando|estoy revisando|necesito verificar|debo verificar|tengo que verificar|antes de continuar con tu pedido|proceder[eé]? a validar|voy a validar|vamos a validar|estoy validando|validar[eé] la informaci[oó]n|en breve te confirmo|te confirmo en breve|ahora (?:reviso|verifico|revisar[eé]|verificar[eé]))\b/i;
 
 function stripWaitingSentences(text: string): string {
   return text.split(/(?<=[.!?\n])\s*/).filter(part => !WAITING_REPLY_RE.test(part)).join(" ")
