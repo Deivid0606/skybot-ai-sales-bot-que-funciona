@@ -1588,7 +1588,11 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     if (ciResult) {
       // El resultado técnico de la cédula lo comunica la IA con el estilo del vendedor.
       const ciCtx = await buildWorkspaceAiContext(supabaseAdmin,workspaceId,[{role:"user",content:body}],conversation.product_id,phone);
-      const ciText = await aiCompose(ciCtx, ciResult.reply);
+      // Cédula guardada = último paso de la encomienda: agradecer y despedirse.
+      const ciSaved = /agregu[eé] la c[eé]dula|ya est[aá] guardada/i.test(ciResult.reply);
+      const ciText = await aiCompose(ciCtx, ciSaved
+        ? `${ciResult.reply} Es el último dato: agradecé la compra y despedite cordialmente, sin pedir nada más.`
+        : ciResult.reply);
       if (!ciText) {
         await sendSilenceFallback({conn,workspaceId,ownerId,conversationId:conversation.id,adId:attributedAdId,phone,wamid:message.id,
           reason:"La IA no pudo responder sobre la cédula", reply:ciResult.reply, queue:false});
@@ -2266,6 +2270,15 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
               product_id: saveStep?.productId ?? previousSale.productId ?? null } as Awaited<ReturnType<typeof generateAiReply>>
           : await generateAiReplyWithRetry(aiAnswerContext);
       if (receiptTurnGoal) console.info("[BOT_SKY_RECEIPT_TURN_GOAL]", JSON.stringify({conversationId:conversation.id, goal:receiptTurnGoal.slice(0,120)}));
+      // Comprobante aceptado y falta el nombre: la respuesta SIEMPRE debe pedirlo,
+      // porque es el dato que destraba la confirmación del pedido.
+      if (receiptTurnGoal && /Pedí ahora el nombre y apellido/.test(receiptTurnGoal) &&
+          !/\b(?:nombre|apellido)\b/i.test(result.reply)) {
+        const withName = await aiCompose(aiAnswerContext, `${receiptTurnGoal} Tu respuesta DEBE terminar preguntando el nombre y apellido de quien va a recibir el pedido.`);
+        result = {...result, reply: withName && /\b(?:nombre|apellido)\b/i.test(withName)
+          ? withName
+          : `${(withName ?? result.reply).trim()}\n\n😊 ¿Me pasás el nombre y apellido de quien va a recibir el pedido?`.trim()};
+      }
       if (checkoutCompleteByRules) console.info("[BOT_SKY_CHECKOUT_READY_WITHOUT_AI]", JSON.stringify({
         conversationId:conversation.id,hasName:isValidCustomerName(saveStep?.state.customerName),
         hasDocument:Boolean(saveStep?.state.receiptDocuments?.length),paymentMethod:saveStep?.state.paymentMethod,
