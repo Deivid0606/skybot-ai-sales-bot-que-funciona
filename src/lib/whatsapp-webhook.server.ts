@@ -1615,7 +1615,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       const wamid=await sendWhatsAppText(conn,phone,ciResult.reply);
       await supabaseAdmin.from("messages").insert({workspace_id:workspaceId,user_id:ownerId,
         conversation_id:conversation.id,ad_id:attributedAdId,direction:"outbound",sender:"ai",
-        body:ciResult.reply,response_origin:"code",wamid,status:"sent"});
+        body:ciResult.reply,response_origin:"ai",wamid,status:"sent"});
       await supabaseAdmin.from("conversations").update({last_message:ciResult.reply,
         last_message_at:new Date().toISOString(),unread_count:0}).eq("workspace_id",workspaceId).eq("id",conversation.id);
       return;
@@ -2363,9 +2363,9 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       if (receiptTurnGoal && /Pedí ahora el nombre y apellido/.test(receiptTurnGoal) &&
           !/\b(?:nombre|apellido)\b/i.test(result.reply)) {
         const withName = await aiCompose(aiAnswerContext, `${receiptTurnGoal} Tu respuesta DEBE terminar preguntando el nombre y apellido de quien va a recibir el pedido.`);
-        result = {...result, reply: withName && /\b(?:nombre|apellido)\b/i.test(withName)
-          ? withName
-          : `${(withName ?? result.reply).trim()}\n\n😊 ¿Me pasás el nombre y apellido de quien va a recibir el pedido?`.trim()};
+        const retry = withName && /\b(?:nombre|apellido)\b/i.test(withName) ? withName
+          : await aiCompose(aiAnswerContext, `${receiptTurnGoal} OBLIGATORIO: la última frase de tu mensaje es la pregunta por el nombre y apellido de quien va a recibir el pedido.`);
+        result = {...result, reply: retry ?? withName ?? result.reply};
       }
       if (checkoutCompleteByRules) console.info("[BOT_SKY_CHECKOUT_READY_WITHOUT_AI]", JSON.stringify({
         conversationId:conversation.id,hasName:isValidCustomerName(saveStep?.state.customerName),
@@ -3087,7 +3087,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       const pendingWamid = await sendWhatsAppText(conn, phone, pendingText);
       await supabaseAdmin.from("messages").insert({workspace_id:workspaceId,user_id:ownerId,
         conversation_id:conversation.id,ad_id:attributedAdId,direction:"outbound",sender:"ai",
-        response_origin:"code",body:pendingText,wamid:pendingWamid,status:"sent"} as any);
+        response_origin:"ai",body:pendingText,wamid:pendingWamid,status:"sent"} as any);
       await supabaseAdmin.from("conversations").update({last_message:pendingText,
         last_message_at:new Date().toISOString(),unread_count:0}).eq("workspace_id",workspaceId).eq("id",conversation.id);
     } else if (result.sale_closed && !result.order) {
@@ -3284,13 +3284,19 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       });
       // ÚLTIMA barrera de precio, luego de todos los ajustes de IA y
       // entrenamiento. El catálogo sigue siendo la fuente de importes reales.
-      outgoingText = enforceVerifiedCatalogPriceReply({
-        reply: outgoingText,
-        customerText: body,
-        productId: detectedProduct,
-        products: ctx.products,
-        selectedOptionId: verifiedSaleState.optionId,
-      });
+      const priceCheck = (reply: string) => enforceVerifiedCatalogPriceReply({
+        reply, customerText: body, productId: detectedProduct,
+        products: ctx.products, selectedOptionId: verifiedSaleState.optionId,
+      }) === reply;
+      if (!priceCheck(outgoingText)) {
+        // El precio lo redacta la IA con los importes REALES del catálogo; el código no responde.
+        const realOptions = (ctx.products.find(p => p.id === detectedProduct)?.product_prices ?? [])
+          .filter(o => Number(o.price) > 0).map(o => `${o.label} = ${formatGs(Number(o.price))}`).join("; ");
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const fixed = await aiCompose(aiAnswerContext, `Tu borrador fue: «${outgoingText.trim()}». Los precios no coinciden con el catálogo o faltan. Precios REALES: ${realOptions}. Respondé la consulta del cliente usando exactamente esos precios y seguí con el siguiente dato del pedido.`);
+          if (fixed) { outgoingText = fixed; if (priceCheck(fixed)) break; }
+        }
+      }
       // Un mismo total no se repite dos veces en el resumen automático.
       // Aplica solo a líneas de total idénticas; no borra otros detalles.
       const sentTotalLines = new Set<string>();
@@ -3307,10 +3313,17 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
           /anticip|transfer|deposit|giro/i.test(String(verifiedSaleState.paymentMethod ?? "")) &&
           (paymentSaleState.receiptDocuments?.length ?? 0) > 0 && !paymentSaleState.receiptReview) {
         const credit = expectedTotal !== null && receivedTotal > expectedTotal ? receivedTotal - expectedTotal : 0;
-        if (credit > 0 && !/saldo a favor|a tu favor/i.test(outgoingText))
-          outgoingText = `${outgoingText.trim()}\n\n💚 Tenés un saldo a favor de ${formatGs(credit)} (pendiente de acreditación bancaria).`.trim();
-        if (!/\b(?:nombre|apellido)\b/i.test(outgoingText))
-          outgoingText = `${outgoingText.trim()}\n\n😊 ¿Me pasás el nombre y apellido de quien va a recibir el pedido?`.trim();
+        const missingCredit = credit > 0 && !/saldo a favor|a tu favor/i.test(outgoingText);
+        const missingName = !/\b(?:nombre|apellido)\b/i.test(outgoingText);
+        // Lo redacta la IA: el código solo indica qué dato verificado falta en el mensaje.
+        for (let attempt = 0; attempt < 2 && (missingCredit || missingName); attempt++) {
+          const goal = [missingCredit ? `informá que tiene un saldo a favor de ${formatGs(credit)} (pendiente de acreditación bancaria)` : "",
+            missingName ? "terminá pidiendo el nombre y apellido de quien va a recibir el pedido" : ""].filter(Boolean).join(" y ");
+          const rewritten = await aiCompose(aiAnswerContext, `Tu borrador fue: «${outgoingText.trim()}». Mantené su contenido y ${goal}. No digas que el pedido está confirmado.`);
+          if (!rewritten) continue;
+          outgoingText = await finalPolicyGate(rewritten);
+          if ((!missingCredit || /saldo a favor|a tu favor/i.test(outgoingText)) && (!missingName || /\b(?:nombre|apellido)\b/i.test(outgoingText))) break;
+        }
       }
       // Ráfaga de mensajes: si el cliente ya escribió algo más, ese turno responde
       // con el historial completo; no mandar respuestas superpuestas.
@@ -4746,7 +4759,7 @@ async function sendSilenceFallback(args: {
       const wamid = await sendWhatsAppText(args.conn, args.phone, text);
       await supabaseAdmin.from("messages").insert({
         workspace_id: args.workspaceId, user_id: args.ownerId, conversation_id: args.conversationId,
-        ad_id: args.adId ?? null, direction: "outbound", sender: "ai", response_origin: "code",
+        ad_id: args.adId ?? null, direction: "outbound", sender: "ai", response_origin: "ai",
         body: text, wamid, status: "sent",
       } as any);
       await supabaseAdmin.from("conversations").update({
