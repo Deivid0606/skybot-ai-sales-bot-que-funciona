@@ -31,6 +31,8 @@ export type SaleState = {
   deliveryNotes?: string | null;
   /** Cantidad que pidió el cliente cuando era menor que el paquete mínimo (se tomó el mínimo). */
   packAdjustedFrom?: number | null;
+  /** Lugar que no es ciudad conocida (barrio, compañía…): se pregunta a qué ciudad corresponde. */
+  pendingPlace?: string | null;
 };
 export type SaleStep = {
   reply: string;
@@ -401,6 +403,16 @@ function selectOption(text:string, options:Option[], awaiting=false):Option|null
       const selectedPackages = options.filter(o => o.quantity === count);
       if (selectedPackages.length === 1) return selectedPackages[0];
     }
+    // Mensaje corto con UN solo número: «3 seria», «serían 3», «entonces 2 nomás».
+    // El número es la opción del paquete, salvo que hable de hora, días o dinero.
+    const words = n.split(" ");
+    const numbers = words.filter(w => /^\d{1,3}$/.test(w) || (w in wordNumbers && w !== "un"));
+    if (words.length <= 4 && numbers.length === 1 &&
+        !/\b(?:litros?|lts?|kg|kilos?|mil|gs|guaranies|hs|horas?|tarde|manana|noche|dias?|semanas?|cuotas?|meses|anos?|veces)\b/.test(n)) {
+      const count = wordNumbers[numbers[0]] ?? Number(numbers[0]);
+      const selectedPackages = options.filter(o => o.quantity === count);
+      if (selectedPackages.length === 1) return selectedPackages[0];
+    }
   }
   const matches=options.filter(o=>{
     const label=norm(o.label), specific=units(label);
@@ -678,6 +690,25 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   }
   const nationalDestination = sellerAllowsNationwideAdvance(ctx.training) && !gpsUrl
     ? nationwideDestinationFromText(text) : null;
+  // «Barrio Vista Alegre», «Avarrio…», «B° San Pablo», «Compañía…»: un barrio o
+  // compañía NO es una ciudad. Se pregunta a qué ciudad corresponde antes de
+  // decidir contraentrega o encomienda.
+  const placeOnly = !match && !nationalDestination && !gpsUrl &&
+    (/\b(?:barrio|bario|varrio|avarrio|abarrio|barrios|asentamiento|loteamiento|compania|cia|zona)\b/.test(n) || /\bb\s?[°º]/i.test(text));
+  // Un lugar desconocido (no está en la cobertura ni es un municipio conocido)
+  // se pregunta UNA vez; si el cliente lo repite o da otro, se toma como ciudad.
+  let askedPlaceNow = false;
+  // «Para el sábado», «mañana a la tarde»: es un día u horario, no un lugar.
+  const isWhen = SCHEDULE_REF.test(n) || /\b(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo|manana|hoy|pasado|semana|tarde|noche|mediodia|finde|fin de semana)\b/.test(n);
+  // «Sí, es una ciudad» después de preguntar: se toma el lugar indicado antes.
+  if (existing.pendingPlace && !s.cityVerified && !match && !nationalDestination &&
+      !/\b(?:barrio|bario|varrio|avarrio|abarrio|asentamiento|loteamiento|compania|cia|zona)\b/.test(norm(existing.pendingPlace)) &&
+      /^(?:(?:si|sii|correcto|exacto|asi es)\b[\s,.]*)?(?:es\s+(?:una\s+|la\s+)?ciudad|es\s+(?:un\s+)?(?:distrito|municipio|pueblo))\b|^(?:si|sii|correcto|exacto|asi es)$/.test(n)) {
+    s.city = existing.pendingPlace.replace(/\s+/g," ").replace(/(^|\s)(\p{L})/gu, (_m, sp, ch) => sp + ch.toUpperCase());
+    s.department = s.department || "A confirmar";
+    s.cityVerified = true; s.coverageStatus = "uncovered";
+    if (sellerAllowsNationwideAdvance(ctx.training)) s.paymentMethod = "anticipado";
+  }
   const hasAddressWords=/\b(?:calle|esquina|casi|barrio|referencia|avenida|avda|av|cuadras?|direccion)\b/.test(n);
   // Mensaje completo: «Estoy en la ciudad de X … Mi dirección es …». Tomar
   // ciudad Y dirección del mismo mensaje en lugar de quedarse sin responder.
@@ -700,6 +731,9 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     s.city=nationalDestination.city;s.department=nationalDestination.department;
     s.cityVerified=true;s.coverageStatus="uncovered";s.paymentMethod="anticipado";
   }
+  else if(placeOnly && (s.awaiting==="city" || !s.cityVerified)) {
+    s.pendingPlace = text.trim(); askedPlaceNow = true;
+  }
   else if(s.awaiting==="city" && !gpsUrl && !s.cityVerified && !personName) {
     // Mensaje multilínea (nombre, cédula, teléfono y ciudad juntos): la ciudad
     // es la línea que coincide con la lista de cobertura.
@@ -710,7 +744,9 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     const lineCoverage=lineHit ? cityIn(lineHit,coverage) : null;
     if(lineCoverage) {
       s.city=lineCoverage.city;s.department=lineCoverage.department;s.cityVerified=true;s.coverageStatus=lineCoverage.active?"covered":"uncovered";
-    } else if(n.length>=3 && n.length<=55 && /^[a-z ]+$/.test(n) && !isNonCityPhrase(text)) {
+    } else if(n.length>=3 && n.length<=55 && /^[a-z ]+$/.test(n) && !isNonCityPhrase(text) && !existing.pendingPlace && !isWhen) {
+      s.pendingPlace = text.trim(); askedPlaceNow = true;
+    } else if(n.length>=3 && n.length<=55 && /^[a-z ]+$/.test(n) && !isNonCityPhrase(text) && !isWhen) {
       // La ciudad sola no determina el departamento. Solicitar aclaración, sin inventar.
       s.city = text.trim().replace(/^(?:para|soy de|vivo en|enviar a|mandar a|a)\s+/i, "");
       s.department = null;
@@ -719,7 +755,7 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     }
   }
 
-  if (!match && !personName && sellerAllowsNationwideAdvance(ctx.training) && !gpsUrl &&
+  if (!match && !personName && !askedPlaceNow && sellerAllowsNationwideAdvance(ctx.training) && !gpsUrl &&
       (s.awaiting === "city" || (s.city && !s.cityVerified))) {
     const destination=declaredDestination(text);
     if(destination) {
@@ -739,18 +775,23 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   }
   // Regla del vendedor: una ciudad que NO figura en su cobertura de contraentrega
   // es pago anticipado (encomienda), aunque no sepamos su departamento.
-  if (!s.cityVerified && !match && !gpsUrl && !personName && sellerAllowsNationwideAdvance(ctx.training)) {
+  if (!s.cityVerified && !match && !gpsUrl && !personName && !placeOnly && !askedPlaceNow && sellerAllowsNationwideAdvance(ctx.training)) {
     const trimmed = text.trim();
     const directed = trimmed.match(/^(?:para|soy de|vivo en|enviar a|enviame a|envialo a|mandar a|mandalo a|a)\s+(.+)$/i)?.[1]
       ?? trimmed.match(/\b(?:quiero|llevo|dame|pido|necesito)\b.*?\bpara\s+(.{3,40})$/i)?.[1];
     const raw = (directed ?? (s.awaiting === "city" ? trimmed : "")).replace(/[.!¡]+$/,"").trim();
     if (raw.length >= 3 && raw.length <= 40 && /^[\p{L}0-9 .'-]+$/u.test(raw) && !isNonCityPhrase(raw) &&
-        !/\b(?:calle|barrio|casi|esquina|ruta|direccion|casa|unidad|unidades|caja|cajas)\b/i.test(raw)) {
+        !/\b(?:calle|barrio|casi|esquina|ruta|direccion|casa|unidad|unidades|caja|cajas)\b/i.test(raw) && !existing.pendingPlace && !isWhen) {
+      // Primera vez: preguntar a qué ciudad corresponde (puede ser un barrio).
+      s.pendingPlace = raw; askedPlaceNow = true;
+    } else if (raw.length >= 3 && raw.length <= 40 && /^[\p{L}0-9 .'-]+$/u.test(raw) && !isNonCityPhrase(raw) &&
+        !/\b(?:calle|barrio|casi|esquina|ruta|direccion|casa|unidad|unidades|caja|cajas)\b/i.test(raw) && existing.pendingPlace && !isWhen) {
       s.city = raw.replace(/\s+/g," ").replace(/(^|\s)(\p{L})/gu, (_m, sp, ch) => sp + ch.toUpperCase());
       s.department = s.department || "A confirmar";
       s.cityVerified = true; s.coverageStatus = "uncovered"; s.paymentMethod = "anticipado";
     }
   }
+  if (s.cityVerified) s.pendingPlace = null;
   // Un comprobante aceptado puede dejar el estado anterior en `receipt`.
   // La respuesta al pedido explícito de nombre también debe capturarse aquí.
   const receiptDocumented = Boolean(s.receiptPath && !s.receiptReview && s.receiptDocuments?.length);
