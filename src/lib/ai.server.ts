@@ -941,6 +941,21 @@ async function generateWithOpenAI(ctx: AiContext, key: string): Promise<AiResult
   }
 }
 
+/**
+ * Claves sin saldo o rechazadas (402/401/403/429): se saltean unos minutos para
+ * no perder tiempo en cada llamada; se vuelven a probar solas al vencer.
+ */
+const unavailableKeys = new Map<string, number>();
+export function isKeyTemporarilyUnavailable(key: string): boolean {
+  const until = unavailableKeys.get(key);
+  if (!until) return false;
+  if (Date.now() > until) { unavailableKeys.delete(key); return false; }
+  return true;
+}
+export function markKeyUnavailable(key: string, reason: string): void {
+  if (/\b(?:402|401|403|429)\b|gemini_key_unavailable/.test(reason)) unavailableKeys.set(key, Date.now() + 10 * 60_000);
+}
+
 /** Orden fijo de respaldo por workspace: Gemini 1, 2, 3, OpenAI. */
 export async function generateAiReply(ctx: AiContext): Promise<AiResult> {
   const keys: Record<string, string | null | undefined> = {
@@ -957,6 +972,9 @@ export async function generateAiReply(ctx: AiContext): Promise<AiResult> {
     if (attempts >= MAX_PROVIDER_ATTEMPTS) break;
     const key = keys[provider]?.trim();
     if (!key || triedKeys.has(`${provider.startsWith("gemini") ? "gemini" : provider}:${key}`)) continue;
+    // La última clave disponible se prueba igual, aunque haya fallado hace poco.
+    const laterKey = order.slice(order.indexOf(provider) + 1).some(p => keys[p]?.trim() && !isKeyTemporarilyUnavailable(keys[p]!.trim()));
+    if (isKeyTemporarilyUnavailable(key) && laterKey) continue;
     triedKeys.add(`${provider.startsWith("gemini") ? "gemini" : provider}:${key}`);
     attempts++;
     try {
@@ -964,6 +982,7 @@ export async function generateAiReply(ctx: AiContext): Promise<AiResult> {
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       console.warn(`[AI] Falló ${provider}: ${reason.slice(0, 200)}`);
+      markKeyUnavailable(key, reason);
       failures.push(`${provider}: ${reason.slice(0, 200)}`);
     }
   }
