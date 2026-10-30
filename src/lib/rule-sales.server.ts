@@ -678,7 +678,12 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   // «Quiero uno» cuando solo hay paquetes de 2 y 3: no existe otra opción menor,
   // así que se toma el paquete MÍNIMO (la IA le explica al cliente el cambio).
   const packOptions = variants.length > 0 && variants.every(v => /\b(?:unidad(?:es)?|piezas?)\b/.test(norm(v.label)) && v.quantity >= 1);
-  if (packOptions && !s.optionId && !s.cartLines?.length && s.quantity && s.quantity > 0) {
+  // «Quiero 2» y después «ahora quiero 1 sólo»: la opción elegida antes (2 unidades)
+  // ya no coincide con la cantidad nueva; si existe la opción exacta, se cambia a esa.
+  const currentPack = variants.find(v => v.id === s.optionId);
+  const packMismatch = Boolean(currentPack && s.quantity && currentPack.quantity !== s.quantity &&
+    variants.filter(v => v.quantity === s.quantity).length === 1);
+  if (packOptions && (!s.optionId || packMismatch) && !s.cartLines?.length && s.quantity && s.quantity > 0) {
     const smallest = [...variants].sort((a,b) => a.quantity - b.quantity)[0];
     const exactPack = variants.filter(v => v.quantity === s.quantity);
     if (exactPack.length === 1) s.optionId = exactPack[0].id; // «quiero 3» = paquete de 3 unidades
