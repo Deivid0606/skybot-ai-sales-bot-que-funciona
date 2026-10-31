@@ -272,6 +272,15 @@ export function OrderCard({ order }: { order: Order }) {
             </SelectContent>
           </Select>
 
+          {["nuevo", "confirmado"].includes(order.status) && (order as Order & { ecommerce_sync_error?: string | null }).ecommerce_sync_error && (
+            <span
+              className="inline-flex min-h-8 max-w-full items-center rounded-md border border-amber-500/40 bg-amber-500/10 px-2 text-xs text-amber-700 dark:text-amber-300"
+              title="La carga automática a DCANP no aceptó este pedido. Corregilo o cargalo a mano."
+            >
+              DCANP: {(order as Order & { ecommerce_sync_error?: string | null }).ecommerce_sync_error}
+            </span>
+          )}
+
           {(order as Order & { ecommerce_status?: string | null }).ecommerce_status && (
             <span
               className="inline-flex h-8 items-center rounded-md border border-dashed px-2 text-xs text-muted-foreground"

@@ -25,6 +25,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -137,6 +138,28 @@ function OrdersPage() {
   // KPI especial seleccionado.
   const [quickFilter, setQuickFilter] =
     useState<QuickFilter>("none");
+  // Carga automática a DCANP: estado del vendedor (correo vinculado por el administrador).
+  const { data: dcanpAuto, refetch: refetchDcanpAuto } = useQuery({
+    queryKey: ["dcanp-auto", workspaceId],
+    enabled: Boolean(workspaceId),
+    refetchInterval: 60_000,
+    queryFn: async () => {
+      const { data, error } = await supabase.from("workspaces")
+        .select("dcanp_email, dcanp_auto_import, dcanp_auto_status, dcanp_auto_checked_at" as never)
+        .eq("id", workspaceId!).maybeSingle();
+      if (error) throw error;
+      return data as unknown as { dcanp_email: string | null; dcanp_auto_import: boolean; dcanp_auto_status: string | null; dcanp_auto_checked_at: string | null } | null;
+    },
+  });
+  const toggleDcanpAuto = useMutation({
+    mutationFn: async (enabled: boolean) => {
+      const { error } = await supabase.rpc("set_dcanp_auto_import" as never, { p_enabled: enabled } as never);
+      if (error) throw error;
+    },
+    onSuccess: () => { void refetchDcanpAuto(); },
+    onError: (e: Error) => window.alert(e.message),
+  });
+
   // Filtro por producto elegido desde «Ventas por producto».
   const [productFilter, setProductFilter] = useState<string | null>(null);
 
@@ -718,6 +741,32 @@ function OrdersPage() {
           </Button>
         }
       />
+
+      {/* CARGA AUTOMÁTICA A DCANP */}
+      <Card>
+        <CardContent className="flex flex-wrap items-center gap-3 p-4">
+          <ShoppingCart className="h-5 w-5 shrink-0 text-primary" />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold">Carga automática a DCANP</p>
+            <p className="text-xs text-muted-foreground">
+              {!dcanpAuto?.dcanp_email
+                ? "Pedile al administrador que vincule tu cuenta de DCANP para poder activarla."
+                : dcanpAuto.dcanp_auto_import
+                  ? `${dcanpAuto.dcanp_auto_status ?? "Activada."}${dcanpAuto.dcanp_auto_checked_at ? ` · Revisado ${formatDateTime(dcanpAuto.dcanp_auto_checked_at)}` : ""}`
+                  : `Cuenta DCANP: ${dcanpAuto.dcanp_email}. Al activarla, los pedidos nuevos que califiquen se cargan solos cada 2 minutos, siempre que hayas abierto DCANP ese día.`}
+            </p>
+          </div>
+          <label className="flex items-center gap-2 text-sm font-medium">
+            <Switch
+              checked={Boolean(dcanpAuto?.dcanp_auto_import)}
+              disabled={!dcanpAuto?.dcanp_email || toggleDcanpAuto.isPending}
+              onCheckedChange={(value) => toggleDcanpAuto.mutate(value)}
+              aria-label="Activar carga automática a DCANP"
+            />
+            {dcanpAuto?.dcanp_auto_import ? "Activada" : "Desactivada"}
+          </label>
+        </CardContent>
+      </Card>
 
       {/* ===================================================== */}
       {/* DASHBOARD / KPIs                                     */}
