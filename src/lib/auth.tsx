@@ -42,11 +42,74 @@ function readStoredSession(): Session | null {
 }
 
 /**
+ * «Mantener sesión iniciada por 30 días» (se elige al iniciar sesión).
+ * - Marcado: la sesión dura 30 días desde el inicio de sesión.
+ * - Sin marcar: la sesión termina al cerrar el navegador.
+ * Sin elección guardada (sesiones anteriores a esta opción) no se cierra nada.
+ */
+const REMEMBER_UNTIL_KEY = "botsky-session-until";
+const BROWSER_ONLY_KEY = "botsky-session-browser-only";
+const BROWSER_ALIVE_KEY = "botsky-session-alive";
+const REMEMBER_DAYS = 30;
+
+export function rememberSession(remember: boolean) {
+  if (typeof window === "undefined") return;
+  try {
+    if (remember) {
+      window.localStorage.setItem(REMEMBER_UNTIL_KEY, String(Date.now() + REMEMBER_DAYS * 24 * 60 * 60 * 1000));
+      window.localStorage.removeItem(BROWSER_ONLY_KEY);
+    } else {
+      window.localStorage.setItem(BROWSER_ONLY_KEY, "1");
+      window.localStorage.removeItem(REMEMBER_UNTIL_KEY);
+    }
+    window.sessionStorage.setItem(BROWSER_ALIVE_KEY, "1");
+  } catch {
+    // Sin almacenamiento disponible: se mantiene el comportamiento habitual.
+  }
+}
+
+function clearSessionPreference() {
+  try {
+    window.localStorage.removeItem(REMEMBER_UNTIL_KEY);
+    window.localStorage.removeItem(BROWSER_ONLY_KEY);
+  } catch {
+    // ignorar
+  }
+}
+
+/** true si la sesión guardada ya no debe seguir abierta según la opción elegida. */
+function sessionPolicyExpired(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const until = Number(window.localStorage.getItem(REMEMBER_UNTIL_KEY) || 0);
+    if (until && Date.now() > until) return true;
+    const browserOnly = window.localStorage.getItem(BROWSER_ONLY_KEY) === "1";
+    if (browserOnly && window.sessionStorage.getItem(BROWSER_ALIVE_KEY) !== "1") return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * supabase-js serializes auth calls behind a Web Lock. If another tab/iframe
  * holds a stale lock, getSession() never resolves and the whole app renders
  * blank. Race it against a short timeout and fall back to the stored session.
  */
 export async function getSessionFast(timeoutMs = 2000): Promise<Session | null> {
+  if (sessionPolicyExpired()) {
+    clearSessionPreference();
+    try {
+      window.localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      // ignorar
+    }
+    await Promise.race([
+      supabase.auth.signOut({ scope: "local" }).catch(() => undefined),
+      new Promise((resolve) => setTimeout(resolve, timeoutMs)),
+    ]);
+    return null;
+  }
   const stored = readStoredSession();
   try {
     const result = await Promise.race([
