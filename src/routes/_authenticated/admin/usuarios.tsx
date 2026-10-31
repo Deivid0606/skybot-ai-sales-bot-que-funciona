@@ -1,10 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { PageHeader, PageShell, EmptyState } from "@/components/page-shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -43,6 +46,33 @@ function AdminUsersPage() {
     },
   });
 
+  // Cuenta de DCANP de cada vendedor (solo el administrador la vincula).
+  const { data: workspaces } = useQuery({
+    queryKey: ["admin-workspaces-dcanp"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("workspaces")
+        .select("id, dcanp_email, dcanp_auto_import, dcanp_auto_status" as never);
+      if (error) throw error;
+      return (data ?? []) as unknown as Array<{ id: string; dcanp_email: string | null; dcanp_auto_import: boolean; dcanp_auto_status: string | null }>;
+    },
+  });
+  const workspaceById = new Map((workspaces ?? []).map((w) => [w.id, w]));
+  const saveDcanp = useMutation({
+    mutationFn: async ({ workspaceId, email }: { workspaceId: string; email: string }) => {
+      const value = email.trim().toLowerCase();
+      if (value && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) throw new Error("Correo inválido");
+      const { error } = await supabase.from("workspaces")
+        .update({ dcanp_email: value || null } as never).eq("id", workspaceId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      toast.success("Cuenta de DCANP guardada");
+      queryClient.invalidateQueries({ queryKey: ["admin-workspaces-dcanp"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
   const update = useMutation({
     mutationFn: async ({ profileId, status }: { profileId: string; status: (typeof states)[number] }) =>
       updateUserStatus({ data: { profileId, status } }),
@@ -69,6 +99,16 @@ function AdminUsersPage() {
                     {u.email} {u.company ? `· ${u.company}` : ""} {u.phone ? `· ${u.phone}` : ""}
                   </p>
                 </div>
+                {u.workspace_id && (
+                  <DcanpEmailField
+                    key={`${u.workspace_id}-${workspaceById.get(u.workspace_id)?.dcanp_email ?? ""}`}
+                    initial={workspaceById.get(u.workspace_id)?.dcanp_email ?? ""}
+                    suggestion={u.email ?? ""}
+                    autoOn={Boolean(workspaceById.get(u.workspace_id)?.dcanp_auto_import)}
+                    saving={saveDcanp.isPending}
+                    onSave={(email) => saveDcanp.mutate({ workspaceId: u.workspace_id!, email })}
+                  />
+                )}
                 <Badge variant={u.status === "approved" || u.status === "active" ? "default" : "secondary"}>
                   {u.status}
                 </Badge>
@@ -95,5 +135,27 @@ function AdminUsersPage() {
         </div>
       )}
     </PageShell>
+  );
+}
+
+function DcanpEmailField({ initial, suggestion, autoOn, saving, onSave }: {
+  initial: string; suggestion: string; autoOn: boolean; saving: boolean; onSave: (email: string) => void;
+}) {
+  const [value, setValue] = useState(initial);
+  const changed = value.trim().toLowerCase() !== initial.trim().toLowerCase();
+  return (
+    <div className="flex w-full items-center gap-2 sm:w-auto">
+      <Input
+        className="h-9 w-full sm:w-64"
+        placeholder={suggestion ? `Correo DCANP (ej. ${suggestion})` : "Correo DCANP"}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        aria-label="Correo de la cuenta DCANP del vendedor"
+      />
+      <Button size="sm" variant={changed ? "default" : "outline"} disabled={!changed || saving} onClick={() => onSave(value)}>
+        Guardar
+      </Button>
+      {initial && <Badge variant={autoOn ? "default" : "secondary"} title="Carga automática a DCANP">{autoOn ? "Auto ON" : "Auto OFF"}</Badge>}
+    </div>
   );
 }
