@@ -9,8 +9,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useAuth } from "@/lib/auth";
+import { useAuth, rememberSession } from "@/lib/auth";
 
 const searchSchema = z.object({
   mode: z.enum(["signin", "signup"]).optional(),
@@ -45,6 +46,7 @@ function AuthPage() {
   const [company, setCompany] = useState("");
   const [phone, setPhone] = useState("");
   const [loading, setLoading] = useState(false);
+  const [remember, setRemember] = useState(true);
 
   // Si ya hay sesión activa, no dejar al usuario atrapado en la pantalla de login.
   useEffect(() => {
@@ -75,6 +77,7 @@ function AuthPage() {
           setMode("signin");
           return;
         }
+        rememberSession(remember);
         toast.success("¡Cuenta creada! Entrando a tu panel...");
       } else {
         const { data, error } = await supabase.auth.signInWithPassword({
@@ -83,6 +86,7 @@ function AuthPage() {
         });
         if (error) throw error;
         if (!data.session) throw new Error("No se pudo iniciar la sesión, intentá de nuevo");
+        rememberSession(remember);
         toast.success("Bienvenido de nuevo");
       }
       // El refresh no debe bloquear la navegación (los locks del navegador
@@ -99,6 +103,7 @@ function AuthPage() {
 
   async function handleGoogle() {
     setLoading(true);
+    rememberSession(remember);
     const result = await lovable.auth.signInWithOAuth("google", {
       redirect_uri: window.location.origin,
     });
@@ -193,6 +198,10 @@ function AuthPage() {
                   required
                 />
               </div>
+              <label htmlFor="remember" className="flex cursor-pointer items-center gap-2 text-sm text-muted-foreground">
+                <Checkbox id="remember" checked={remember} onCheckedChange={(value) => setRemember(value === true)} />
+                Mantener sesión iniciada por 30 días
+              </label>
               <Button type="submit" className="w-full" disabled={loading}>
                 {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 {mode === "signin" ? "Ingresar" : "Crear cuenta"}
