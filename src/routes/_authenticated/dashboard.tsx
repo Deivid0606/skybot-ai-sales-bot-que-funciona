@@ -11,6 +11,7 @@ import {
   Megaphone,
   MessageSquare,
   PackageCheck,
+  Truck,
   RefreshCcw,
   ShoppingCart,
   Sparkles,
@@ -326,6 +327,14 @@ function DashboardPage() {
     (order) => order.status === "cargado",
   ).length;
 
+  // Entregados: el estado llega solo desde el E-commerce (sincronización automática).
+  const deliveredOrders = rangeOrders.filter(
+    (order) => order.status === "entregado",
+  ).length;
+  const deliveredRate = rangeOrders.length
+    ? Math.round((deliveredOrders / rangeOrders.length) * 100)
+    : 0;
+
   const centralOrders = rangeOrders.filter((order) => {
     const departamento = resolveDepartamento(order.departamento, order.city);
     return departamento === "Central";
@@ -524,6 +533,12 @@ function DashboardPage() {
       helper: "Estado cargado",
     },
     {
+      label: "Pedidos entregados",
+      value: deliveredOrders,
+      icon: Truck,
+      helper: `${deliveredRate}% de los pedidos del periodo`,
+    },
+    {
       label: "Pedidos de Central",
       value: centralOrders,
       icon: Building2,
@@ -671,7 +686,7 @@ function DashboardPage() {
           ))}
         </div>
 
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
           {orderStats.map((stat) => (
             <Card
               key={stat.label}
