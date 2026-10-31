@@ -4,6 +4,7 @@ import { LogOut, Loader2 } from "lucide-react";
 
 import { AppSidebar } from "@/components/app-sidebar";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { ViewModeToggle } from "@/components/view-mode-toggle";
 import { NotificationsBell } from "@/components/notifications-bell";
 import { BalanceBadge } from "@/components/balance-badge";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
@@ -59,6 +60,7 @@ function AuthenticatedLayout() {
             </div>
             <BalanceBadge />
             <NotificationsBell />
+            <ViewModeToggle />
             <ThemeToggle />
             <Button
               variant="ghost"
