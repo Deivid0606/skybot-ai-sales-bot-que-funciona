@@ -1837,7 +1837,9 @@ export type Database = {
         | "encomienda_cargada"
         | "preparacion"
         | "enviado"
+        | "reagendado"
         | "entregado"
+        | "devuelto_deposito"
         | "cancelado"
       payment_state:
         | "pendiente"
@@ -1990,7 +1992,9 @@ export const Constants = {
         "encomienda_cargada",
         "preparacion",
         "enviado",
+        "reagendado",
         "entregado",
+        "devuelto_deposito",
         "cancelado",
       ],
       payment_state: [

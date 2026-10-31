@@ -272,6 +272,15 @@ export function OrderCard({ order }: { order: Order }) {
             </SelectContent>
           </Select>
 
+          {(order as Order & { ecommerce_status?: string | null }).ecommerce_status && (
+            <span
+              className="inline-flex h-8 items-center rounded-md border border-dashed px-2 text-xs text-muted-foreground"
+              title="Estado actual del pedido en el E-commerce (se actualiza solo)"
+            >
+              E-commerce: <span className="ml-1 font-semibold text-foreground">{(order as Order & { ecommerce_status?: string | null }).ecommerce_status}</span>
+            </span>
+          )}
+
           <Button size="sm" onClick={sendToEcommerce} disabled={isMixedVariantOrder} title={isMixedVariantOrder ? "Variantes mezcladas: cargar manualmente en E-commerce" : "Cargar a E-commerce"}>
             <ShoppingCart className="mr-1 h-4 w-4" /> Ecommerce
           </Button>

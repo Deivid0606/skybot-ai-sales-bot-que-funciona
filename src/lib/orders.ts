@@ -7,7 +7,9 @@ export const ORDER_STATES = [
   "encomienda_cargada",
   "preparacion",
   "enviado",
+  "reagendado",
   "entregado",
+  "devuelto_deposito",
   "cancelado",
 ] as const;
 
@@ -36,6 +38,8 @@ const STATE_LABELS: Record<string, string> = {
   preparacion: "En preparación",
   enviado: "Enviado",
   entregado: "Entregado",
+  reagendado: "Reagendado",
+  devuelto_deposito: "Devuelto a depósito",
   cancelado: "Cancelado",
 };
 
