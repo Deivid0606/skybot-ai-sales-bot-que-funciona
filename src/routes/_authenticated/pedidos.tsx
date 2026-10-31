@@ -151,6 +151,15 @@ function OrdersPage() {
       return data as unknown as { dcanp_email: string | null; dcanp_auto_import: boolean; dcanp_auto_status: string | null; dcanp_auto_checked_at: string | null } | null;
     },
   });
+  const [dcanpEmailDraft, setDcanpEmailDraft] = useState<string | null>(null);
+  const saveDcanpEmail = useMutation({
+    mutationFn: async (email: string) => {
+      const { error } = await supabase.rpc("set_dcanp_email" as never, { p_email: email } as never);
+      if (error) throw error;
+    },
+    onSuccess: () => { setDcanpEmailDraft(null); void refetchDcanpAuto(); },
+    onError: (e: Error) => window.alert(e.message),
+  });
   const toggleDcanpAuto = useMutation({
     mutationFn: async (enabled: boolean) => {
       const { error } = await supabase.rpc("set_dcanp_auto_import" as never, { p_enabled: enabled } as never);
@@ -750,12 +759,33 @@ function OrdersPage() {
             <p className="text-sm font-semibold">Carga automática a DCANP</p>
             <p className="text-xs text-muted-foreground">
               {!dcanpAuto?.dcanp_email
-                ? "Pedile al administrador que vincule tu cuenta de DCANP para poder activarla."
+                ? "Escribí el correo con el que entrás a DCANP para poder activarla."
                 : dcanpAuto.dcanp_auto_import
                   ? `${dcanpAuto.dcanp_auto_status ?? "Activada."}${dcanpAuto.dcanp_auto_checked_at ? ` · Revisado ${formatDateTime(dcanpAuto.dcanp_auto_checked_at)}` : ""}`
                   : `Cuenta DCANP: ${dcanpAuto.dcanp_email}. Al activarla, los pedidos nuevos que califiquen se cargan solos cada 2 minutos, siempre que hayas abierto DCANP ese día.`}
             </p>
           </div>
+          <form
+            className="flex w-full items-center gap-2 sm:w-auto"
+            onSubmit={(event) => { event.preventDefault(); saveDcanpEmail.mutate(dcanpEmailDraft ?? dcanpAuto?.dcanp_email ?? ""); }}
+          >
+            <Input
+              type="email"
+              className="h-9 w-full sm:w-60"
+              placeholder="Correo de DCANP"
+              value={dcanpEmailDraft ?? dcanpAuto?.dcanp_email ?? ""}
+              onChange={(event) => setDcanpEmailDraft(event.target.value)}
+              aria-label="Correo con el que entrás a DCANP"
+            />
+            <Button
+              type="submit"
+              size="sm"
+              variant={dcanpEmailDraft !== null && dcanpEmailDraft.trim().toLowerCase() !== (dcanpAuto?.dcanp_email ?? "") ? "default" : "outline"}
+              disabled={saveDcanpEmail.isPending || dcanpEmailDraft === null || dcanpEmailDraft.trim().toLowerCase() === (dcanpAuto?.dcanp_email ?? "")}
+            >
+              Guardar
+            </Button>
+          </form>
           <label className="flex items-center gap-2 text-sm font-medium">
             <Switch
               checked={Boolean(dcanpAuto?.dcanp_auto_import)}
