@@ -105,7 +105,8 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       },
       { rel: "icon", href: "/favicon.ico", type: "image/x-icon" },
       { rel: "manifest", href: "/manifest.webmanifest" },
-      { rel: "apple-touch-icon", href: "/botsky-icon.svg" },
+      // iPhone usa este ícono (PNG 180×180, fondo sólido) en la pantalla de inicio Y en las notificaciones; no acepta SVG.
+      { rel: "apple-touch-icon", sizes: "180x180", href: "/apple-touch-icon.png" },
     ],
   }),
   shellComponent: RootShell,
