@@ -16,6 +16,13 @@ const BATCH = 50;
 type DcanpResult = { source_order_id: string; status: "created" | "already_exists" | "error"; message?: string };
 type WorkspaceRow = { id: string; dcanp_email: string; dcanp_auto_since: string | null };
 
+function isAdvancePayment(order: { payment_method?: string | null; payment_status?: string | null; tags?: string[] | null }): boolean {
+  const method = String(order.payment_method ?? "").toLowerCase();
+  return order.payment_status === "anticipado" ||
+    /anticip|transfer|dep[oó]sito|giro|encomienda/.test(method) ||
+    (order.tags ?? []).some(tag => /pago anticipado/i.test(tag));
+}
+
 async function callDcanp(body: unknown): Promise<{ status: number; data: any }> {
   const secret = process.env.DCANP_IMPORT_SECRET;
   if (!secret) throw new Error("Falta DCANP_IMPORT_SECRET");
@@ -44,7 +51,7 @@ async function importWorkspace(ws: WorkspaceRow) {
   const since = new Date(new Date(ws.dcanp_auto_since ?? Date.now()).getTime() - BACKLOG_MS).toISOString();
   const retryBefore = new Date(Date.now() - RETRY_MS).toISOString();
   const { data: orders, error } = await supabaseAdmin.from("orders")
-    .select("id,order_number,customer_name,phone,city,departamento,street,district,sku,product_title,quantity,total,payment_method,payment_status,receipt_url,observations,status,ecommerce_sync_error,ecommerce_sync_attempted_at" as never)
+    .select("id,order_number,customer_name,phone,city,departamento,street,district,sku,product_title,quantity,total,payment_method,payment_status,receipt_url,observations,status,tags,ecommerce_sync_error,ecommerce_sync_attempted_at" as never)
     .eq("workspace_id", ws.id)
     .in("status", ["nuevo", "confirmado"])
     .is("ecommerce_synced_at", null)
@@ -53,7 +60,12 @@ async function importWorkspace(ws: WorkspaceRow) {
     .limit(200);
   if (error) throw error;
   const rows = ((orders ?? []) as any[]).filter(order =>
-    // Varias presentaciones del mismo producto: se cargan a mano (artículos separados).
+    // No van en la carga automática (quedan para cargar a mano):
+    // - pagos anticipados;
+    // - pedidos sin SKU;
+    // - varias presentaciones del mismo producto (artículos separados).
+    !isAdvancePayment(order) &&
+    String(order.sku ?? "").trim() !== "" &&
     !String(order.observations ?? "").includes("MULTIVARIANTE (MISMO PRODUCTO)") &&
     (!order.ecommerce_sync_error || !order.ecommerce_sync_attempted_at || order.ecommerce_sync_attempted_at < retryBefore))
     .slice(0, BATCH);
