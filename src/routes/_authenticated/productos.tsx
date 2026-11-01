@@ -33,6 +33,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useAuth } from "@/lib/auth";
+import { StoreScopeToggle, useStoreScope } from "@/lib/admin-scope";
+import { AdminAllProducts } from "@/components/admin-all-products";
 import { guessMediaType, MAX_FILE_BYTES, uploadWorkspaceFile } from "@/lib/storage";
 import {
   MEDIA_LIMITS,
@@ -104,6 +106,7 @@ function createEmptyForm(): ProductForm {
 function ProductsPage() {
   const { profile, user } = useAuth();
   const workspaceId = profile?.workspace_id ?? null;
+  const { allStores } = useStoreScope();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState<ProductForm>(createEmptyForm());
@@ -394,6 +397,7 @@ function ProductsPage() {
         description="Tu catálogo alimenta directamente las respuestas de la IA."
         actions={
           <div className="flex flex-wrap gap-2">
+            <StoreScopeToggle />
             <Button
               variant={catalogPhone ? "outline" : "default"}
               disabled={!workspaceId}
@@ -438,7 +442,9 @@ function ProductsPage() {
 
       />
 
-      {isLoading ? (
+      {allStores ? (
+        <AdminAllProducts />
+      ) : isLoading ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {[0, 1, 2].map((i) => (
             <Skeleton key={i} className="h-52 w-full" />

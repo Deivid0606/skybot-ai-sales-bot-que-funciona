@@ -26,6 +26,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { StoreScopeToggle, useStoreDirectory, useStoreScope } from "@/lib/admin-scope";
 import {
   Select,
   SelectContent,
@@ -123,6 +124,9 @@ function isWithinLocalDateRange(
 
 function OrdersPage() {
   const workspaceId = useWorkspaceId();
+  // Administrador con «Todas las tiendas»: pedidos de todos los vendedores (solo consulta).
+  const { allStores } = useStoreScope();
+  const { data: storeDirectory } = useStoreDirectory(allStores);
   const queryClient = useQueryClient();
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [importing, setImporting] = useState(false);
@@ -181,9 +185,29 @@ function OrdersPage() {
     isLoading,
     error,
   } = useQuery({
-    queryKey: ["orders", workspaceId],
+    queryKey: ["orders", workspaceId, allStores ? `todas:${dateFrom}:${dateTo}` : "propia"],
     enabled: Boolean(workspaceId),
     queryFn: async () => {
+      if (allStores) {
+        // Todas las tiendas: solo el período elegido (pueden ser miles de pedidos).
+        const start = new Date(`${dateFrom}T00:00:00`).toISOString();
+        const end = new Date(`${dateTo}T23:59:59.999`).toISOString();
+        const all: NonNullable<Awaited<ReturnType<typeof loadPage>>> = [];
+        async function loadPage(page: number) {
+          const { data, error } = await supabase.from("orders").select("*")
+            .gte("created_at", start).lte("created_at", end)
+            .order("created_at", { ascending: false })
+            .range(page * 1000, page * 1000 + 999);
+          if (error) throw error;
+          return data ?? [];
+        }
+        for (let page = 0; page < 50; page++) {
+          const rows = await loadPage(page);
+          all.push(...rows);
+          if (rows.length < 1000) break;
+        }
+        return all;
+      }
       const { data, error } = await supabase
         .from("orders")
         .select("*")
@@ -740,6 +764,8 @@ function OrdersPage() {
         title="Pedidos"
         description="Cada venta cerrada por la IA se registra automáticamente aquí."
         actions={
+          <div className="flex flex-wrap items-center gap-2">
+          <StoreScopeToggle />
           <Button
             variant="outline"
             onClick={exportCsv}
@@ -748,11 +774,17 @@ function OrdersPage() {
             <Download className="mr-2 h-4 w-4" />
             Exportar CSV
           </Button>
+          </div>
         }
       />
 
       {/* CARGA AUTOMÁTICA A DCANP */}
-      <Card>
+      {allStores && (
+        <p className="rounded-lg border border-dashed bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+          Viendo los pedidos de TODAS las tiendas del período elegido. En esta vista no se cargan pedidos a DCANP: cada vendedor carga los suyos.
+        </p>
+      )}
+      {!allStores && <Card>
         <CardContent className="flex flex-wrap items-center gap-3 p-4">
           <ShoppingCart className="h-5 w-5 shrink-0 text-primary" />
           <div className="min-w-0 flex-1">
@@ -796,7 +828,7 @@ function OrdersPage() {
             {dcanpAuto?.dcanp_auto_import ? "Activada" : "Desactivada"}
           </label>
         </CardContent>
-      </Card>
+      </Card>}
 
       {/* ===================================================== */}
       {/* DASHBOARD / KPIs                                     */}
@@ -1208,7 +1240,7 @@ function OrdersPage() {
         </CardContent>
       </Card>
 
-      <Card><CardContent className="flex flex-wrap items-center gap-3 p-3">
+      {!allStores && <Card><CardContent className="flex flex-wrap items-center gap-3 p-3">
         <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" checked={allVisibleSelected} disabled={!eligibleVisible.length || importing}
             onChange={e => setSelectedIds(prev => e.target.checked
@@ -1221,7 +1253,7 @@ function OrdersPage() {
           {importing ? "Esperando E-commerce…" : `Cargar seleccionados a E-commerce (${selectedIds.length})`}
         </Button>
         {importReport && <p role="status" className="w-full text-sm break-words">{importReport}</p>}
-      </CardContent></Card>
+      </CardContent></Card>}
 
       {/* ===================================================== */}
       {/* LISTA DE PEDIDOS                                      */}
@@ -1282,7 +1314,7 @@ function OrdersPage() {
                 key={order.id}
                 className="relative min-w-0"
               >
-                <div className="absolute right-3 top-3 z-10">
+                <div className={allStores ? "hidden" : "absolute right-3 top-3 z-10"}>
                   <Button
                     type="button"
                     variant="destructive"
@@ -1303,7 +1335,12 @@ function OrdersPage() {
                   </Button>
                 </div>
 
-                {(["nuevo", "confirmado"].includes(order.status)) && (
+                {allStores && (
+                  <p className="mb-1 truncate text-xs font-semibold text-primary" title={storeDirectory?.get(order.workspace_id)?.name}>
+                    {storeDirectory?.get(order.workspace_id)?.email ?? "Tienda"} · {storeDirectory?.get(order.workspace_id)?.name ?? ""}
+                  </p>
+                )}
+                {!allStores && (["nuevo", "confirmado"].includes(order.status)) && (
                   <label className="absolute left-3 top-3 z-10 flex items-center gap-1 rounded bg-background/95 px-2 py-1 text-xs shadow">
                     <input type="checkbox" checked={selectedIds.includes(order.id)} disabled={importing}
                       onChange={e => setSelectedIds(prev => e.target.checked

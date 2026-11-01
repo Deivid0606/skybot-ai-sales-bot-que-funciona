@@ -21,6 +21,7 @@ import {
 
 import { formatGs } from "@/lib/format";
 import { resolveDepartamento } from "@/lib/orders";
+import { StoreScopeToggle, useStoreDirectory, useStoreScope } from "@/lib/admin-scope";
 import { supabase } from "@/integrations/supabase/client";
 import { PageHeader, PageShell } from "@/components/page-shell";
 import { Card, CardContent } from "@/components/ui/card";
@@ -117,6 +118,9 @@ function getNormalizedCityName(city?: string | null) {
 
 function DashboardPage() {
   const workspaceId = useWorkspaceId();
+  // Administrador con «Todas las tiendas»: se suman los datos de todos los vendedores.
+  const { allStores } = useStoreScope();
+  const { data: storeDirectory } = useStoreDirectory(allStores);
   const today = getTodayDate();
 
   const [dateFrom, setDateFrom] = useState(today);
@@ -125,7 +129,7 @@ function DashboardPage() {
   const hasInvalidRange = dateFrom > dateTo;
 
   const { data, isLoading, isFetching, isError, error } = useQuery({
-    queryKey: ["dashboard", workspaceId, dateFrom, dateTo],
+    queryKey: ["dashboard", allStores ? "todas" : workspaceId, dateFrom, dateTo],
     enabled:
       Boolean(workspaceId) &&
       Boolean(dateFrom) &&
@@ -147,6 +151,7 @@ function DashboardPage() {
 
       type ConversationRow = {
         id: string;
+        workspace_id: string;
         status: string | null;
         sale_closed: boolean | null;
         created_at: string | null;
@@ -155,6 +160,7 @@ function DashboardPage() {
 
       type OrderRow = {
         id: string;
+        workspace_id: string;
         total: number | string | null;
         status: string | null;
         created_at: string | null;
@@ -201,12 +207,18 @@ function DashboardPage() {
         return rows;
       }
 
+      // Todas las tiendas: sin filtrar por tienda (la base ya limita al administrador).
+      const allWorkspaceIds = allStores
+        ? ((await supabase.from("workspaces").select("id")).data ?? []).map((w) => w.id)
+        : [];
+      const scopeIds = allStores ? allWorkspaceIds : [workspaceId];
+
       const [conversations, orders, balance, ads] = await Promise.all([
         fetchAllPages<ConversationRow>((from, to) =>
           supabase
             .from("conversations")
-            .select("id, status, sale_closed, created_at, ad_id")
-            .eq("workspace_id", workspaceId)
+            .select("id, status, sale_closed, created_at, ad_id, workspace_id")
+            .in("workspace_id", scopeIds)
             .gte("created_at", startIso)
             .lte("created_at", endIso)
             .order("created_at", { ascending: true })
@@ -220,9 +232,9 @@ function DashboardPage() {
           supabase
             .from("orders")
             .select(
-              "id, total, status, created_at, product_title, city, departamento, payment_status, payment_method, tags, conversation_id, ad_id",
+              "id, total, status, created_at, product_title, city, departamento, payment_status, payment_method, tags, conversation_id, ad_id, workspace_id",
             )
-            .eq("workspace_id", workspaceId)
+            .in("workspace_id", scopeIds)
             .gte("created_at", startIso)
             .lte("created_at", endIso)
             .order("created_at", { ascending: true })
@@ -235,13 +247,12 @@ function DashboardPage() {
         supabase
           .from("conversation_balances")
           .select("available, consumed, purchased")
-          .eq("workspace_id", workspaceId)
-          .maybeSingle(),
+          .in("workspace_id", scopeIds),
 
         supabase
           .from("ads")
           .select("id, ad_id, name, media_url, products(name)")
-          .eq("workspace_id", workspaceId),
+          .in("workspace_id", scopeIds),
       ]);
 
       if (balance.error) throw balance.error;
@@ -250,7 +261,15 @@ function DashboardPage() {
       return {
         conversations,
         orders,
-        balance: balance.data,
+        // Saldo: suma de las tiendas incluidas.
+        balance: (balance.data ?? []).reduce(
+          (sum, row) => ({
+            available: sum.available + Number(row.available ?? 0),
+            consumed: sum.consumed + Number(row.consumed ?? 0),
+            purchased: sum.purchased + Number(row.purchased ?? 0),
+          }),
+          { available: 0, consumed: 0, purchased: 0 },
+        ),
         ads: ads.data ?? [],
       };
     },
@@ -359,6 +378,25 @@ function DashboardPage() {
       hasOrderTag(order.tags, "Pendiente de pago")
     );
   }).length;
+
+  // Todas las tiendas: resumen por vendedor (correo).
+  const storeRows = allStores
+    ? [...new Set([...data.conversations.map((c) => c.workspace_id), ...rangeOrders.map((o) => o.workspace_id)])]
+        .map((id) => {
+          const storeOrders = rangeOrders.filter((o) => o.workspace_id === id);
+          const store = storeDirectory?.get(id);
+          return {
+            id,
+            email: store?.email ?? "sin correo",
+            name: store?.name ?? "Tienda",
+            conversations: data.conversations.filter((c) => c.workspace_id === id).length,
+            orders: storeOrders.length,
+            delivered: storeOrders.filter((o) => o.status === "entregado").length,
+            revenue: storeOrders.reduce((sum, o) => sum + Number(o.total ?? 0), 0),
+          };
+        })
+        .sort((a, b) => b.orders - a.orders || b.revenue - a.revenue)
+    : [];
 
   const conversationById = new Map(
     data.conversations.map((conversation) => [conversation.id, conversation]),
@@ -562,7 +600,8 @@ function DashboardPage() {
     <PageShell>
       <PageHeader
         title="Dashboard"
-        description="Métricas de conversaciones, ventas y desempeño de tu IA."
+        description={allStores ? "Datos de TODAS las tiendas." : "Métricas de conversaciones, ventas y desempeño de tu IA."}
+        actions={<StoreScopeToggle />}
       />
 
       <div className="space-y-5">
@@ -729,6 +768,47 @@ function DashboardPage() {
             </div>
           </CardContent>
         </Card>
+
+        {allStores && storeRows.length > 0 && (
+          <Card className="rounded-2xl border-border/70 shadow-sm">
+            <CardContent className="p-5 sm:p-6">
+              <div className="mb-3 flex items-center gap-2">
+                <Building2 className="h-5 w-5 text-primary" />
+                <h2 className="font-display text-lg font-semibold">Ventas por tienda</h2>
+                <span className="text-sm text-muted-foreground">periodo seleccionado · sin cancelados</span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[640px] text-sm">
+                  <thead>
+                    <tr className="border-b text-left text-xs text-muted-foreground">
+                      <th className="py-2 pr-3 font-medium">Vendedor</th>
+                      <th className="py-2 pr-3 text-right font-medium">Conversaciones</th>
+                      <th className="py-2 pr-3 text-right font-medium">Pedidos</th>
+                      <th className="py-2 pr-3 text-right font-medium">Entregados</th>
+                      <th className="py-2 pr-3 text-right font-medium">Conversión</th>
+                      <th className="py-2 text-right font-medium">Ingresos</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {storeRows.map((row) => (
+                      <tr key={row.id} className="border-b last:border-0">
+                        <td className="py-2 pr-3">
+                          <div className="font-medium">{row.email}</div>
+                          <div className="text-xs text-muted-foreground">{row.name}</div>
+                        </td>
+                        <td className="py-2 pr-3 text-right tabular-nums">{row.conversations}</td>
+                        <td className="py-2 pr-3 text-right font-semibold tabular-nums">{row.orders}</td>
+                        <td className="py-2 pr-3 text-right tabular-nums">{row.delivered}</td>
+                        <td className="py-2 pr-3 text-right tabular-nums">{row.conversations ? Math.round((row.orders / row.conversations) * 100) : 0}%</td>
+                        <td className="py-2 text-right tabular-nums">{formatGs(row.revenue)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         <Card className="rounded-2xl border-border/70 shadow-sm">
           <CardContent className="p-5 sm:p-6">
