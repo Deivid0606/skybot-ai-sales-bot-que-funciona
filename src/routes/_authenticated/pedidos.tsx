@@ -149,19 +149,35 @@ function OrdersPage() {
     refetchInterval: 60_000,
     queryFn: async () => {
       const { data, error } = await supabase.from("workspaces")
-        .select("dcanp_email, dcanp_auto_import, dcanp_auto_status, dcanp_auto_checked_at" as never)
+        .select("dcanp_email, dcanp_verified_at, dcanp_auto_import, dcanp_auto_status, dcanp_auto_checked_at" as never)
         .eq("id", workspaceId!).maybeSingle();
       if (error) throw error;
-      return data as unknown as { dcanp_email: string | null; dcanp_auto_import: boolean; dcanp_auto_status: string | null; dcanp_auto_checked_at: string | null } | null;
+      return data as unknown as { dcanp_email: string | null; dcanp_verified_at: string | null; dcanp_auto_import: boolean; dcanp_auto_status: string | null; dcanp_auto_checked_at: string | null } | null;
     },
   });
-  const [dcanpEmailDraft, setDcanpEmailDraft] = useState<string | null>(null);
-  const saveDcanpEmail = useMutation({
-    mutationFn: async (email: string) => {
-      const { error } = await supabase.rpc("set_dcanp_email" as never, { p_email: email } as never);
+  // «Conectar con DCANP»: correo y contraseña UNA vez (DCANP los verifica; la contraseña no se guarda).
+  const [dcanpConnectOpen, setDcanpConnectOpen] = useState(false);
+  const [dcanpLogin, setDcanpLogin] = useState({ email: "", password: "" });
+  const connectDcanp = useMutation({
+    mutationFn: async () => {
+      const { data } = await supabase.auth.getSession();
+      const response = await fetch("/api/dcanp/link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${data.session?.access_token ?? ""}` },
+        body: JSON.stringify(dcanpLogin),
+      });
+      const result = await response.json().catch(() => null) as { error?: string } | null;
+      if (!response.ok) throw new Error(result?.error ?? "No se pudo conectar con DCANP");
+    },
+    onSuccess: () => { setDcanpConnectOpen(false); setDcanpLogin({ email: "", password: "" }); void refetchDcanpAuto(); },
+    onError: (e: Error) => window.alert(e.message),
+  });
+  const disconnectDcanp = useMutation({
+    mutationFn: async () => {
+      const { error } = await supabase.rpc("disconnect_dcanp" as never);
       if (error) throw error;
     },
-    onSuccess: () => { setDcanpEmailDraft(null); void refetchDcanpAuto(); },
+    onSuccess: () => { void refetchDcanpAuto(); },
     onError: (e: Error) => window.alert(e.message),
   });
   const toggleDcanpAuto = useMutation({
@@ -790,43 +806,55 @@ function OrdersPage() {
           <div className="min-w-0 flex-1">
             <p className="text-sm font-semibold">Carga automática a DCANP</p>
             <p className="text-xs text-muted-foreground">
-              {!dcanpAuto?.dcanp_email
-                ? "Escribí el correo con el que entrás a DCANP para poder activarla."
-                : dcanpAuto.dcanp_auto_import
-                  ? `${dcanpAuto.dcanp_auto_status ?? "Activada."}${dcanpAuto.dcanp_auto_checked_at ? ` · Revisado ${formatDateTime(dcanpAuto.dcanp_auto_checked_at)}` : ""}`
-                  : `Cuenta DCANP: ${dcanpAuto.dcanp_email}. Al activarla, los pedidos nuevos que califiquen se cargan solos cada 2 minutos, siempre que hayas abierto DCANP ese día.`}
+              {!dcanpAuto?.dcanp_verified_at
+                ? "Conectá tu cuenta de DCANP una sola vez y los pedidos que califiquen se cargan solos cada 2 minutos. Pagos anticipados y pedidos sin SKU quedan para cargar a mano."
+                : `Conectado a DCANP como ${dcanpAuto.dcanp_email}. ${dcanpAuto.dcanp_auto_import
+                    ? `${dcanpAuto.dcanp_auto_status ?? "Activada."}${dcanpAuto.dcanp_auto_checked_at ? ` · Revisado ${formatDateTime(dcanpAuto.dcanp_auto_checked_at)}` : ""}`
+                    : "Carga automática pausada."}`}
             </p>
           </div>
-          <form
-            className="flex w-full items-center gap-2 sm:w-auto"
-            onSubmit={(event) => { event.preventDefault(); saveDcanpEmail.mutate(dcanpEmailDraft ?? dcanpAuto?.dcanp_email ?? ""); }}
-          >
-            <Input
-              type="email"
-              className="h-9 w-full sm:w-60"
-              placeholder="Correo de DCANP"
-              value={dcanpEmailDraft ?? dcanpAuto?.dcanp_email ?? ""}
-              onChange={(event) => setDcanpEmailDraft(event.target.value)}
-              aria-label="Correo con el que entrás a DCANP"
-            />
-            <Button
-              type="submit"
-              size="sm"
-              variant={dcanpEmailDraft !== null && dcanpEmailDraft.trim().toLowerCase() !== (dcanpAuto?.dcanp_email ?? "") ? "default" : "outline"}
-              disabled={saveDcanpEmail.isPending || dcanpEmailDraft === null || dcanpEmailDraft.trim().toLowerCase() === (dcanpAuto?.dcanp_email ?? "")}
-            >
-              Guardar
+          {dcanpAuto?.dcanp_verified_at ? (
+            <Button type="button" size="sm" variant="outline" disabled={disconnectDcanp.isPending}
+              onClick={() => { if (window.confirm("¿Desconectar tu cuenta de DCANP? La carga automática se apaga.")) disconnectDcanp.mutate(); }}>
+              Desconectar
             </Button>
-          </form>
+          ) : (
+            <Button type="button" size="sm" onClick={() => setDcanpConnectOpen((value) => !value)}>
+              Conectar con DCANP
+            </Button>
+          )}
           <label className="flex items-center gap-2 text-sm font-medium">
             <Switch
-              checked={Boolean(dcanpAuto?.dcanp_auto_import)}
-              disabled={!dcanpAuto?.dcanp_email || toggleDcanpAuto.isPending}
+              checked={Boolean(dcanpAuto?.dcanp_auto_import && dcanpAuto?.dcanp_verified_at)}
+              disabled={!dcanpAuto?.dcanp_verified_at || toggleDcanpAuto.isPending}
               onCheckedChange={(value) => toggleDcanpAuto.mutate(value)}
               aria-label="Activar carga automática a DCANP"
             />
-            {dcanpAuto?.dcanp_auto_import ? "Activada" : "Desactivada"}
+            {dcanpAuto?.dcanp_auto_import && dcanpAuto?.dcanp_verified_at ? "Activada" : "Desactivada"}
           </label>
+          {dcanpConnectOpen && !dcanpAuto?.dcanp_verified_at && (
+            <form
+              className="flex w-full flex-wrap items-end gap-2 rounded-lg border bg-muted/30 p-3"
+              onSubmit={(event) => { event.preventDefault(); connectDcanp.mutate(); }}
+            >
+              <label className="flex-1 space-y-1 text-xs font-medium text-muted-foreground">
+                Correo de DCANP
+                <Input type="email" autoComplete="username" required value={dcanpLogin.email}
+                  onChange={(event) => setDcanpLogin((login) => ({ ...login, email: event.target.value }))} />
+              </label>
+              <label className="flex-1 space-y-1 text-xs font-medium text-muted-foreground">
+                Contraseña de DCANP
+                <Input type="password" autoComplete="current-password" required value={dcanpLogin.password}
+                  onChange={(event) => setDcanpLogin((login) => ({ ...login, password: event.target.value }))} />
+              </label>
+              <Button type="submit" disabled={connectDcanp.isPending}>
+                {connectDcanp.isPending ? "Verificando…" : "Conectar"}
+              </Button>
+              <p className="w-full text-[11px] text-muted-foreground">
+                La contraseña se usa solo para verificar tu cuenta con DCANP en este momento; no se guarda.
+              </p>
+            </form>
+          )}
         </CardContent>
       </Card>}
 

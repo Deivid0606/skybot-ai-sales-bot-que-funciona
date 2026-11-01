@@ -41,6 +41,14 @@ async function callDcanp(body: unknown): Promise<{ status: number; data: any }> 
   }
 }
 
+/** Verifica UNA vez el correo y la contraseña de DCANP (DCANP los comprueba; no se guardan). */
+export async function linkDcanpAccount(email: string, password: string): Promise<{ ok: true } | { ok: false; status: number; message: string }> {
+  const response = await callDcanp({ seller_email: email, action: "link", password });
+  if (response.status === 200 && response.data?.linked) return { ok: true };
+  const message = String(response.data?.message ?? "No se pudo verificar la cuenta de DCANP.");
+  return { ok: false, status: response.status === 401 || response.status === 403 || response.status === 404 ? response.status : 502, message };
+}
+
 async function setWorkspaceStatus(workspaceId: string, status: string) {
   await supabaseAdmin.from("workspaces")
     .update({ dcanp_auto_status: status.slice(0, 300), dcanp_auto_checked_at: new Date().toISOString() } as never)
@@ -72,7 +80,7 @@ async function importWorkspace(ws: WorkspaceRow) {
 
   if (!rows.length) {
     // Igual se informa si el vendedor abrió DCANP hoy, para mostrarlo en Pedidos.
-    const check = await callDcanp({ seller_email: ws.dcanp_email, check_only: true });
+    const check = await callDcanp({ seller_email: ws.dcanp_email, check_only: true, linked: true });
     await setWorkspaceStatus(ws.id, check.status === 200
       ? "Activa: no hay pedidos nuevos para cargar."
       : String(check.data?.message ?? `DCANP respondió ${check.status}`));
@@ -81,6 +89,7 @@ async function importWorkspace(ws: WorkspaceRow) {
 
   const response = await callDcanp({
     seller_email: ws.dcanp_email,
+    linked: true,
     orders: rows.map(o => ({
       source_order_id: o.id, order_number: o.order_number, customer_name: o.customer_name, phone: o.phone,
       city: o.city, departamento: o.departamento, street: o.street, district: o.district, email: "", obs: "",
@@ -119,7 +128,8 @@ export async function runDcanpAutoImport() {
   const { data: workspaces, error } = await supabaseAdmin.from("workspaces")
     .select("id,dcanp_email,dcanp_auto_since" as never)
     .eq("dcanp_auto_import" as never, true)
-    .not("dcanp_email" as never, "is", null);
+    .not("dcanp_email" as never, "is", null)
+    .not("dcanp_verified_at" as never, "is", null);
   if (error) throw error;
   const summary = [];
   for (const ws of (workspaces ?? []) as unknown as WorkspaceRow[]) {
