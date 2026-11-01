@@ -2,7 +2,7 @@ import { useState } from "react";
 import { formatGs } from "@/lib/format";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ExternalLink, Link as LinkIcon, Loader2, Pencil, Phone, Plus, Trash2, Upload, X } from "lucide-react";
+import { ExternalLink, Link as LinkIcon, Loader2, Mail, Pencil, Phone, Plus, Trash2, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { PageHeader, PageShell, EmptyState } from "@/components/page-shell";
@@ -33,8 +33,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useAuth } from "@/lib/auth";
-import { StoreScopeToggle, useStoreScope } from "@/lib/admin-scope";
-import { AdminAllProducts } from "@/components/admin-all-products";
+import { StoreScopeToggle, useStoreDirectory, useStoreScope } from "@/lib/admin-scope";
 import { guessMediaType, MAX_FILE_BYTES, uploadWorkspaceFile } from "@/lib/storage";
 import {
   MEDIA_LIMITS,
@@ -116,6 +115,8 @@ function ProductsPage() {
   const [editingMedia, setEditingMedia] = useState<ExistingMedia[]>([]);
   const [phoneOpen, setPhoneOpen] = useState(false);
   const [phoneValue, setPhoneValue] = useState("");
+  // Tienda y usuario dueños del producto que se edita (el administrador puede editar productos de otros).
+  const [editOwner, setEditOwner] = useState<{ workspace_id: string; user_id: string } | null>(null);
 
   const { data: waConn } = useQuery({
     queryKey: ["catalog-phone", workspaceId],
@@ -160,25 +161,57 @@ function ProductsPage() {
   });
 
   const { data: products, isLoading } = useQuery({
-    queryKey: ["products", workspaceId],
+    queryKey: ["products", allStores ? "todas" : workspaceId],
     enabled: Boolean(workspaceId),
     queryFn: async () => {
+      const select = "*, product_keywords(id, keyword), product_media(id, media_type, storage_path), product_prices(id, label, quantity, price, sort_order)";
+      if (allStores) {
+        // Administrador: productos de todas las tiendas (editables).
+        const all = [];
+        for (let page = 0; page < 20; page++) {
+          const { data, error } = await supabase.from("products").select(select)
+            .order("name").range(page * 1000, page * 1000 + 999);
+          if (error) throw error;
+          all.push(...(data ?? []));
+          if (!data || data.length < 1000) break;
+        }
+        return all;
+      }
       const { data, error } = await supabase
         .from("products")
-        .select("*, product_keywords(id, keyword), product_media(id, media_type, storage_path), product_prices(id, label, quantity, price, sort_order)")
+        .select(select)
         .eq("workspace_id", workspaceId!)
         .order("created_at", { ascending: false });
       if (error) throw error;
       return data;
     },
   });
+  const { data: storeDirectory } = useStoreDirectory(allStores);
+  const [storeSearch, setStoreSearch] = useState("");
+  // Grupos por vendedor (solo en «Todas las tiendas»).
+  const productGroups = (() => {
+    if (!allStores) return [{ id: workspaceId ?? "propia", rows: products ?? [] }];
+    const q = storeSearch.trim().toLowerCase();
+    const map = new Map<string, NonNullable<typeof products>>();
+    for (const p of products ?? []) {
+      const store = storeDirectory?.get(p.workspace_id);
+      if (q && !`${p.name} ${p.sku ?? ""} ${store?.email ?? ""} ${store?.name ?? ""}`.toLowerCase().includes(q)) continue;
+      map.set(p.workspace_id, [...(map.get(p.workspace_id) ?? []), p]);
+    }
+    return [...map.entries()]
+      .map(([id, rows]) => ({ id, rows }))
+      .sort((a, b) => (storeDirectory?.get(a.id)?.email ?? "").localeCompare(storeDirectory?.get(b.id)?.email ?? ""));
+  })();
 
   const save = useMutation({
     mutationFn: async (values: ProductForm) => {
       if (!workspaceId || !user) throw new Error("Sesión no válida");
+      // Al editar, todo queda en la tienda del producto; un producto nuevo va a la tienda propia.
+      const targetWorkspace = values.id && editOwner ? editOwner.workspace_id : workspaceId;
+      const targetUser = values.id && editOwner ? editOwner.user_id : user.id;
       const payload = {
-        workspace_id: workspaceId,
-        user_id: user.id,
+        workspace_id: targetWorkspace,
+        user_id: targetUser,
         created_by: user.id,
         name: values.name.trim(),
         sku: values.sku.trim() || null,
@@ -201,7 +234,9 @@ function ProductsPage() {
       };
       let productId = values.id;
       if (productId) {
-        const { error } = await supabase.from("products").update(payload).eq("id", productId);
+        // Editar nunca cambia la tienda ni el dueño del producto.
+        const { workspace_id: _w, user_id: _u, created_by: _c, ...updatePayload } = payload;
+        const { error } = await supabase.from("products").update(updatePayload).eq("id", productId);
         if (error) throw error;
       } else {
         const { data, error } = await supabase.from("products").insert(payload).select("id").single();
@@ -222,8 +257,8 @@ function ProductsPage() {
       if (normalizedPrices.length) {
         const { error } = await supabase.from("product_prices").insert(
           normalizedPrices.map((item) => ({
-            workspace_id: workspaceId,
-            user_id: user.id,
+            workspace_id: targetWorkspace,
+            user_id: targetUser,
             product_id: productId!,
             ...item,
           })),
@@ -239,8 +274,8 @@ function ProductsPage() {
       if (keywords.length) {
         const { error } = await supabase.from("product_keywords").insert(
           keywords.map((keyword) => ({
-            workspace_id: workspaceId,
-            user_id: user.id,
+            workspace_id: targetWorkspace,
+            user_id: targetUser,
             product_id: productId!,
             keyword,
           })),
@@ -249,10 +284,10 @@ function ProductsPage() {
       }
       if (pendingFiles.length) {
         for (const file of pendingFiles) {
-          const path = await uploadWorkspaceFile("product-media", workspaceId, file, productId!);
+          const path = await uploadWorkspaceFile("product-media", targetWorkspace, file, productId!);
           const { error } = await supabase.from("product_media").insert({
-            workspace_id: workspaceId,
-            user_id: user.id,
+            workspace_id: targetWorkspace,
+            user_id: targetUser,
             product_id: productId!,
             media_type: guessMediaType(file),
             url: path,
@@ -302,8 +337,10 @@ function ProductsPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
-  async function handleUpload(productId: string, files: FileList | null) {
+  async function handleUpload(productId: string, files: FileList | null, owner?: { workspace_id: string; user_id: string }) {
     if (!files?.length || !workspaceId || !user) return;
+    const targetWorkspace = owner?.workspace_id ?? workspaceId;
+    const targetUser = owner?.user_id ?? user.id;
     setUploadingFor(productId);
     try {
       for (const file of Array.from(files)) {
@@ -311,10 +348,10 @@ function ProductsPage() {
           toast.error(`${file.name} supera 25MB`);
           continue;
         }
-        const path = await uploadWorkspaceFile("product-media", workspaceId, file, productId);
+        const path = await uploadWorkspaceFile("product-media", targetWorkspace, file, productId);
         const { error } = await supabase.from("product_media").insert({
-          workspace_id: workspaceId,
-          user_id: user.id,
+          workspace_id: targetWorkspace,
+          user_id: targetUser,
           product_id: productId,
           media_type: guessMediaType(file),
           url: path,
@@ -333,6 +370,8 @@ function ProductsPage() {
 
   function editProduct(p: {
     id: string;
+    workspace_id: string;
+    user_id: string;
     name: string;
     sku: string | null;
     description: string | null;
@@ -357,6 +396,7 @@ function ProductsPage() {
     product_keywords: { keyword: string }[];
     product_media: ExistingMedia[];
   }) {
+    setEditOwner({ workspace_id: p.workspace_id, user_id: p.user_id });
     setForm({
       id: p.id,
       name: p.name,
@@ -429,6 +469,7 @@ function ProductsPage() {
             </Button>
             <Button
               onClick={() => {
+                setEditOwner(null);
                 setForm(createEmptyForm());
                 setPendingFiles([]);
                 setEditingMedia([]);
@@ -442,9 +483,13 @@ function ProductsPage() {
 
       />
 
-      {allStores ? (
-        <AdminAllProducts />
-      ) : isLoading ? (
+      {allStores && (
+        <div className="mb-4 flex flex-wrap items-center gap-3">
+          <Input className="w-full sm:w-80" placeholder="Buscar producto, SKU o correo del vendedor" value={storeSearch} onChange={(e) => setStoreSearch(e.target.value)} />
+          <p className="text-sm text-muted-foreground">{(products ?? []).length} productos de {productGroups.length} tiendas · podés editar cualquiera</p>
+        </div>
+      )}
+      {isLoading ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {[0, 1, 2].map((i) => (
             <Skeleton key={i} className="h-52 w-full" />
@@ -457,6 +502,7 @@ function ProductsPage() {
           action={
             <Button
               onClick={() => {
+                setEditOwner(null);
                 setForm(createEmptyForm());
                 setPendingFiles([]);
                 setEditingMedia([]);
@@ -468,8 +514,19 @@ function ProductsPage() {
           }
         />
       ) : (
+        <div className="space-y-6">
+        {productGroups.map((group) => (
+        <section key={group.id} className="space-y-3">
+          {allStores && (
+            <div className="sticky top-14 z-[5] flex flex-wrap items-center gap-2 rounded-lg border bg-background/95 px-3 py-2 backdrop-blur">
+              <Mail className="h-4 w-4 text-primary" />
+              <span className="font-semibold">{storeDirectory?.get(group.id)?.email ?? "sin correo"}</span>
+              <span className="text-sm text-muted-foreground">· {storeDirectory?.get(group.id)?.name ?? "Tienda"}</span>
+              <Badge variant="secondary" className="ml-auto">{group.rows.filter((r) => r.is_active).length} activos / {group.rows.length}</Badge>
+            </div>
+          )}
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {products.map((p) => (
+          {group.rows.map((p) => (
             <Card key={p.id} className="flex flex-col">
               <CardContent className="flex flex-1 flex-col gap-3 p-5">
                 <div className="flex items-start justify-between gap-2">
@@ -529,7 +586,7 @@ function ProductsPage() {
                       type="file"
                       multiple
                       className="hidden"
-                      onChange={(e) => handleUpload(p.id, e.target.files)}
+                      onChange={(e) => handleUpload(p.id, e.target.files, { workspace_id: p.workspace_id, user_id: p.user_id })}
                     />
                     <span className="inline-flex h-8 cursor-pointer items-center rounded-md border border-input px-3 text-xs font-medium hover:bg-accent">
                       {uploadingFor === p.id ? (
@@ -553,6 +610,9 @@ function ProductsPage() {
               </CardContent>
             </Card>
           ))}
+        </div>
+        </section>
+        ))}
         </div>
       )}
 
