@@ -47,6 +47,8 @@ function AuthPage() {
   const [phone, setPhone] = useState("");
   const [loading, setLoading] = useState(false);
   const [remember, setRemember] = useState(true);
+  const [forgot, setForgot] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
 
   // Si ya hay sesión activa, no dejar al usuario atrapado en la pantalla de login.
   useEffect(() => {
@@ -101,6 +103,27 @@ function AuthPage() {
   }
 
 
+  async function handleForgot(e: React.FormEvent) {
+    e.preventDefault();
+    const parsed = z.string().trim().email("Correo inválido").safeParse(email);
+    if (!parsed.success) {
+      toast.error(parsed.error.issues[0].message);
+      return;
+    }
+    setLoading(true);
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(parsed.data, {
+        redirectTo: `${window.location.origin}/restablecer`,
+      });
+      if (error) throw error;
+      setResetSent(true);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "No fue posible enviar el correo");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function handleGoogle() {
     setLoading(true);
     rememberSession(remember);
@@ -127,6 +150,53 @@ function AuthPage() {
           <span className="font-display text-lg font-bold">BOT SKY</span>
         </Link>
         <Card className="surface-glow">
+          {forgot ? (
+            <>
+              <CardHeader>
+                <CardTitle>Recuperar contraseña</CardTitle>
+                <CardDescription>
+                  Te enviamos un enlace a tu correo para crear una contraseña nueva.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {resetSent ? (
+                  <p className="rounded-md border bg-muted/40 p-3 text-sm">
+                    Si <strong>{email.trim()}</strong> tiene una cuenta en BOT SKY, ya te llegó un correo con el enlace.
+                    Revisá también la carpeta de spam. El enlace vence en 1 hora.
+                  </p>
+                ) : (
+                  <form onSubmit={handleForgot} className="space-y-3">
+                    <div className="space-y-1.5">
+                      <Label htmlFor="forgot-email">Correo de tu cuenta</Label>
+                      <Input
+                        id="forgot-email"
+                        type="email"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        required
+                        autoFocus
+                      />
+                    </div>
+                    <Button type="submit" className="w-full" disabled={loading}>
+                      {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                      Enviar enlace
+                    </Button>
+                  </form>
+                )}
+                <Button
+                  variant="ghost"
+                  className="w-full"
+                  onClick={() => {
+                    setForgot(false);
+                    setResetSent(false);
+                  }}
+                >
+                  Volver a iniciar sesión
+                </Button>
+              </CardContent>
+            </>
+          ) : (
+          <>
           <CardHeader>
             <CardTitle>{mode === "signin" ? "Iniciar sesión" : "Crear cuenta"}</CardTitle>
             <CardDescription>
@@ -189,7 +259,18 @@ function AuthPage() {
                 />
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="password">Contraseña</Label>
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="password">Contraseña</Label>
+                  {mode === "signin" && (
+                    <button
+                      type="button"
+                      className="text-xs font-medium text-primary hover:underline"
+                      onClick={() => setForgot(true)}
+                    >
+                      ¿Olvidaste tu contraseña?
+                    </button>
+                  )}
+                </div>
                 <Input
                   id="password"
                   type="password"
@@ -217,6 +298,8 @@ function AuthPage() {
               Continuar con Google
             </Button>
           </CardContent>
+          </>
+          )}
         </Card>
       </div>
     </div>

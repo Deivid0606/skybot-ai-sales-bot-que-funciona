@@ -81,6 +81,12 @@ function clearSessionPreference() {
 function sessionPolicyExpired(): boolean {
   if (typeof window === "undefined") return false;
   try {
+    // Recién llegado desde un enlace del correo (restablecer contraseña o
+    // confirmar cuenta): es un ingreso nuevo, no cerrar esa sesión.
+    if (/access_token=|type=recovery/.test(window.location.hash) || /[?&]code=/.test(window.location.search)) {
+      window.sessionStorage.setItem(BROWSER_ALIVE_KEY, "1");
+      return false;
+    }
     const until = Number(window.localStorage.getItem(REMEMBER_UNTIL_KEY) || 0);
     if (until && Date.now() > until) return true;
     const browserOnly = window.localStorage.getItem(BROWSER_ONLY_KEY) === "1";
@@ -149,8 +155,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let active = true;
 
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, newSession) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, newSession) => {
       if (!active) return;
+      // Enlace de «Olvidé mi contraseña»: llevar siempre a la pantalla de nueva
+      // contraseña, aunque el correo haya abierto otra página del sitio.
+      if (event === "PASSWORD_RECOVERY" && window.location.pathname !== "/restablecer") {
+        window.location.replace("/restablecer");
+        return;
+      }
       setSession(newSession);
       if (!newSession) {
         setProfile(null);
