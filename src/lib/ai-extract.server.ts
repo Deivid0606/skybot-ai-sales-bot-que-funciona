@@ -1,4 +1,4 @@
-import { getGeminiCandidates, isKeyTemporarilyUnavailable, markKeyUnavailable, type AiContext } from "@/lib/ai.server";
+import { getGeminiCandidates, wellFormedJson, isKeyTemporarilyUnavailable, markKeyUnavailable, type AiContext } from "@/lib/ai.server";
 import { cityIn, parseCoverage, nationwideDestinationFromText, deliveryPolicyForCity, sellerAllowsNationwideAdvance, type SaleState } from "@/lib/rule-sales.server";
 import { isValidCustomerName, isValidDeliveryAddress } from "@/lib/sale-reconciliation.server";
 
@@ -66,7 +66,7 @@ async function callJson(ctx: AiContext, system: string, user: string): Promise<s
         const res = await fetch("https://api.openai.com/v1/chat/completions", {
           method: "POST", signal: controller.signal,
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-          body: JSON.stringify({ model, temperature: 0, max_completion_tokens: 400, response_format: { type: "json_object" },
+          body: wellFormedJson({ model, temperature: 0, max_completion_tokens: 400, response_format: { type: "json_object" },
             messages: [{ role: "system", content: system }, { role: "user", content: user }] }),
         });
         if (!res.ok) throw new Error(`openai ${res.status}`);
@@ -77,7 +77,7 @@ async function callJson(ctx: AiContext, system: string, user: string): Promise<s
         const model = getGeminiCandidates(ctx.model)[0];
         const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`, {
           method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ systemInstruction: { parts: [{ text: system }] },
+          body: wellFormedJson({ systemInstruction: { parts: [{ text: system }] },
             contents: [{ role: "user", parts: [{ text: user }] }],
             generationConfig: { maxOutputTokens: 400, temperature: 0, responseMimeType: "application/json" } }),
         });

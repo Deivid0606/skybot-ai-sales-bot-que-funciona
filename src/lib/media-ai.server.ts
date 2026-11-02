@@ -1,5 +1,8 @@
+import { getGeminiCandidates, wellFormedJson } from "@/lib/ai.server";
+
+// gemini-2.5-flash fue retirado por Google (404): usar un modelo vigente.
 const GEMINI_MODEL =
-  process.env.GEMINI_MEDIA_MODEL?.trim() || "gemini-2.5-flash";
+  process.env.GEMINI_MEDIA_MODEL?.trim() || "gemini-3.5-flash-lite";
 
 function requireGeminiKey(): string {
   const key = process.env.GEMINI_API_KEY?.trim();
@@ -83,7 +86,7 @@ async function callGemini({
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(body),
+      body: wellFormedJson(body),
     },
   );
 
@@ -271,10 +274,13 @@ export async function transcribeAudio(
   if (!geminiKeys.length && !openAiKeys.length) {
     throw new Error("Este vendedor no tiene una API compatible para transcribir audios");
   }
+  const triedAudio = new Set<string>();
   for (const provider of geminiKeys) {
     // Modelo multimedia de transcripción; el modelo de chat no siempre admite audio.
     const candidates = [...new Set([provider.model, GEMINI_MODEL].filter(Boolean))];
     for (const model of candidates) {
+      if (triedAudio.has(`${provider.key}:${model}`)) continue;
+      triedAudio.add(`${provider.key}:${model}`);
       try {
         const transcript = await transcribeAudioWithGemini({ apiKey: provider.key, model, audioBase64: base64, mime: normalizedMime });
         const cleaned = clean(transcript);
@@ -310,9 +316,11 @@ async function visionProviders(workspaceId?: string): Promise<VisionProvider[]> 
       .eq("workspace_id",workspaceId).maybeSingle();
     if (error) throw new Error("No se pudo consultar la configuración de IA del vendedor: " + error.message);
     if (data) {
-      const model = String(data.model ?? "").trim().replace(/^models\//, "") || "gemini-3.5-flash-lite";
+      // Nunca usar tal cual el modelo guardado: puede estar retirado (gemini-2.5-flash
+      // da 404) o traer prefijo («google/…»). Se prueban solo modelos vigentes.
+      const models = getGeminiCandidates(String(data.model ?? "").trim().replace(/^(?:models|google)\//i, ""));
       const keys = [data.gemini_api_key,data.gemini_api_key_2,data.gemini_api_key_3];
-      keys.forEach((k,i)=> {if (typeof k === "string" && k.trim()) providers.push({kind:"gemini",key:k.trim(),model,label:`gemini${i+1}`});});
+      keys.forEach((k,i)=> {if (typeof k === "string" && k.trim()) for (const model of models) providers.push({kind:"gemini",key:k.trim(),model,label:`gemini${i+1}`});});
       const openKey = data.openai_api_key;
       if (typeof openKey === "string" && openKey.trim()) providers.push({kind:"openai",key:openKey.trim(),model:"gpt-4o-mini",label:"openai"});
     }

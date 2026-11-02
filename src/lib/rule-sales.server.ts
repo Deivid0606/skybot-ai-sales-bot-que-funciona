@@ -908,7 +908,15 @@ export function cleanReplyForPolicy(reply: string, paymentMethod: "contraentrega
   const bad = paymentMethod === "contraentrega"
     ? /(?:encomienda|pago anticipado|anticipad|transfer|banco|titular|c[eé]dula|cuenta|alias|eko|comprobante|realices el pago)/i
     : /(?:pago al recibir|pag[aá]s al recibir|contra ?entrega|cuando (?:te )?llegue)/i;
-  return reply.split("\n").filter(line => !bad.test(line)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  // Datos bancarios reales: siempre se quitan en contraentrega.
+  const bankData = /(?:\bbanco\b|titular|\balias\b|\beko\b|n[uú]mero de cuenta|cuenta (?:n[º°o.]|corriente|de ahorro)|realices el pago|total a transferir)/i;
+  // Una línea que CONFIRMA el pago al recibir («no hace falta transferir, pagás
+  // al recibir») es justamente la respuesta correcta: no borrarla, porque si no
+  // el mensaje queda vacío y el cliente no recibe respuesta.
+  const affirmsCod = /(?:al recibir|contra ?entrega|en efectivo|cuando (?:te )?llegue)/i;
+  return reply.split("\n").filter(line => paymentMethod === "contraentrega"
+    ? !bankData.test(line) && (!bad.test(line) || affirmsCod.test(line))
+    : !bad.test(line)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 /** Respaldo determinista: en ciudades con pago al recibir, quitar datos bancarios y pedido de comprobante. */
