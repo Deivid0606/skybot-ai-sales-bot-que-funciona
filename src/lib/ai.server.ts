@@ -652,6 +652,16 @@ function ensureValidResult(result: AiResult): AiResult {
   };
 }
 
+/**
+ * JSON seguro para los proveedores de IA: un emoji cortado a la mitad deja un
+ * «surrogate» suelto que OpenAI rechaza con «Invalid body: failed to parse JSON».
+ */
+export function wellFormedJson(value: unknown): string {
+  return JSON.stringify(value, (_key, v) => typeof v === "string"
+    ? v.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "\uFFFD")
+    : v);
+}
+
 // Modelos Flash-Lite estables anunciados por Google para la API Gemini.
 // El 404 de gemini-2.5-flash-lite no debe volver a repetirse.
 const GEMINI_FALLBACK_MODELS = [
@@ -753,7 +763,7 @@ async function generateWithGemini(
               "Content-Type": "application/json",
             },
             signal: controller.signal,
-            body: JSON.stringify({
+            body: wellFormedJson({
               systemInstruction: {
                 parts: [{ text: buildSystemPrompt(ctx) }],
               },
@@ -909,7 +919,7 @@ async function generateWithOpenAI(ctx: AiContext, key: string): Promise<AiResult
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
       signal: controller.signal,
-      body: JSON.stringify({
+      body: wellFormedJson({
         model,
         messages: [{ role: "system", content: buildSystemPrompt(ctx) }, ...limitedHistory(ctx)],
         temperature: 0.25,

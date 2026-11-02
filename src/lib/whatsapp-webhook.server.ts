@@ -1742,6 +1742,18 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         }
       }
     }
+    // La depuración de modalidad pudo dejar la respuesta vacía: una sola
+    // reescritura breve antes de dar la falla por perdida.
+    if (!reply) {
+      const { data: postOrder } = await supabaseAdmin.from("orders").select("payment_method")
+        .eq("workspace_id",workspaceId).eq("conversation_id",conversation.id)
+        .order("created_at",{ascending:false}).limit(1).maybeSingle();
+      const isCod = /contra ?entrega/i.test(String(postOrder?.payment_method ?? ""));
+      const brief = await aiCompose(safeCtx, isCod
+        ? "Respondé en 1 o 2 frases el último mensaje del cliente. Su pedido es CONTRAENTREGA: se paga en efectivo al recibir, no hace falta transferir ni enviar comprobante. No incluyas datos bancarios."
+        : "Respondé en 1 o 2 frases el último mensaje del cliente sobre su pedido ya registrado, sin inventar estados de entrega.");
+      if (brief) reply = isCod ? cleanReplyForPolicy(brief, "contraentrega") : brief;
+    }
     if(!reply) {
       await sendSilenceFallback({conn,workspaceId,ownerId,conversationId:conversation.id,adId:attributedAdId,phone,wamid:message.id,
         reason:"La IA devolvió una respuesta vacía en postventa", reply:"El cliente ya compró. Respondé su último mensaje sobre el pedido sin inventar estados de entrega."});
@@ -2831,12 +2843,25 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       if (again && !violatesVerifiedFacts(again)) return again;
       // Último recurso SIN texto fijo: depurar el borrador de la IA quitando
       // solo las líneas que contradicen los hechos verificados.
-      let cleaned = again ?? text;
-      if (policy?.paymentMethod === "contraentrega" || verifiedSaleState.awaiting === "variant")
-        cleaned = stripBankDetailsForCod(cleaned).split("\n")
-          .filter(line => !/encomienda|pago anticipado|transferir|transferencia|cuenta|alias|c[eé]dula/i.test(line)).join("\n");
-      cleaned = stripWaitingSentences(cleaned);
-      cleaned = cleaned.split("\n").filter(line => !hasTemplatePlaceholder(line) && !claimsRegisteredOrder(line)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+      const scrub = (draft: string) => {
+        let out = draft;
+        // Contraentrega: quitar datos bancarios y modalidad contraria, conservando
+        // las líneas que confirman el pago al recibir. Sin opción elegida (y sin
+        // contraentrega) solo se quitan los datos bancarios: decir que una ciudad
+        // es por encomienda es correcto y no debe borrar toda la respuesta.
+        if (policy?.paymentMethod === "contraentrega") out = cleanReplyForPolicy(stripBankDetailsForCod(out), "contraentrega");
+        else if (verifiedSaleState.awaiting === "variant") out = stripBankDetailsForCod(out);
+        out = stripWaitingSentences(out);
+        return out.split("\n").filter(line => !hasTemplatePlaceholder(line) && !claimsRegisteredOrder(line)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+      };
+      let cleaned = scrub(again ?? text);
+      // Nunca quedar en silencio por la depuración: pedir a la IA una respuesta
+      // breve que conteste al cliente sin los puntos prohibidos.
+      if (!cleaned) {
+        const brief = await aiCompose(aiAnswerContext, `${facts} Respondé en 1 o 2 frases el último mensaje del cliente y pedí solo el siguiente dato pendiente${verifiedSaleState.awaiting ? ` (${verifiedSaleState.awaiting})` : ""}. No incluyas datos bancarios ni números de cuenta.`);
+        if (brief) cleaned = violatesVerifiedFacts(brief) ? scrub(brief) : brief;
+      }
+      if (!cleaned) console.warn("[BOT_SKY_FINAL_POLICY_GATE_EMPTY]", JSON.stringify({conversationId:conversation.id, draft:(again ?? text).slice(0, 300)}));
       return cleaned;
     };
     if (codPolicy?.paymentMethod === "contraentrega" && BANK_RE.test(finalReply)) {
