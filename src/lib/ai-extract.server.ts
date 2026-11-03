@@ -1,4 +1,5 @@
 import { getGeminiCandidates, wellFormedJson, isKeyTemporarilyUnavailable, markKeyUnavailable, type AiContext } from "@/lib/ai.server";
+import { findParaguayPlace } from "@/lib/py-cities";
 import { cityIn, parseCoverage, nationwideDestinationFromText, deliveryPolicyForCity, sellerAllowsNationwideAdvance, type SaleState } from "@/lib/rule-sales.server";
 import { isValidCustomerName, isValidDeliveryAddress } from "@/lib/sale-reconciliation.server";
 
@@ -135,17 +136,25 @@ export function applyAiExtraction(ctx: AiContext, state: SaleState, ext: AiSaleE
   // 2) Ciudad: la forma de pago sale SIEMPRE de la cobertura del vendedor.
   if (ext.city && !state.cityVerified) {
     const coverage = parseCoverage(ctx.training);
-    const covered = ext.place_kind === "barrio" ? null : cityIn(ext.city, coverage);
+    // Una ciudad REAL de Paraguay nunca es «barrio», aunque la IA lo haya
+    // marcado así («Concepción barrio Inmaculada», «Pedro Juan Caballero»).
+    const lastText = customerTexts[customerTexts.length - 1] ?? "";
+    const geo = findParaguayPlace(ext.city) ?? (ext.place_kind === "barrio" ? findParaguayPlace(lastText) : null);
+    const geoSaid = geo && (wordsSaid(geo.city.replace(/\(.*\)/, "")) || findParaguayPlace(lastText)?.city === geo.city);
+    if (geo && geoSaid) ext = {...ext, place_kind: "city", city: geo.city};
+    const covered = ext.place_kind === "barrio" ? null : cityIn(ext.city!, coverage);
     const coveredSaid = covered && [covered.city, ...covered.aliases].some(a => norm(a).length >= 3 && said.includes(` ${norm(a)} `));
-    const national = ext.place_kind === "barrio" || !sellerAllowsNationwideAdvance(ctx.training) ? null
-      : (nationwideDestinationFromText(ext.city) ?? nationwideDestinationFromText(`para ${ext.city}`));
+    // Geografía (no cobertura): identifica municipio y departamento para cualquier vendedor.
+    const national = ext.place_kind === "barrio" ? null
+      : (geo && geoSaid ? geo
+        : sellerAllowsNationwideAdvance(ctx.training) ? (nationwideDestinationFromText(ext.city!) ?? nationwideDestinationFromText(`para ${ext.city}`)) : null);
     if (ext.place_kind === "barrio") {
-      if (!state.pendingPlace && wordsSaid(ext.city)) { state.pendingPlace = ext.city; applied.push("barrio"); }
+      if (!state.pendingPlace && wordsSaid(ext.city!)) { state.pendingPlace = ext.city; applied.push("barrio"); }
     } else if (covered && coveredSaid) {
       state.city = covered.city; state.department = covered.department; state.cityVerified = true;
       state.coverageStatus = covered.active ? "covered" : "uncovered"; state.pendingPlace = null;
       applied.push("city");
-    } else if (national && wordsSaid(national.city.replace(/\(.*\)/, ""))) {
+    } else if (national && (wordsSaid(national.city.replace(/\(.*\)/, "")) || (geo && geoSaid && national.city === geo.city))) {
       state.city = national.city; state.department = national.department; state.cityVerified = true;
       state.coverageStatus = "uncovered"; state.pendingPlace = null;
       applied.push("city");
@@ -153,7 +162,8 @@ export function applyAiExtraction(ctx: AiContext, state: SaleState, ext: AiSaleE
     if (state.cityVerified) {
       const policy = deliveryPolicyForCity(state.city, state.department, ctx.training);
       if (policy?.paymentMethod) state.paymentMethod = policy.paymentMethod;
-      else if (state.coverageStatus === "uncovered") state.paymentMethod = "anticipado";
+      // Fuera de la cobertura: pago anticipado solo si el entrenamiento del vendedor lo permite.
+      else if (state.coverageStatus === "uncovered" && sellerAllowsNationwideAdvance(ctx.training)) state.paymentMethod = "anticipado";
     }
   }
   // 3) Nombre: tiene que estar escrito por el cliente y ser un nombre válido.
