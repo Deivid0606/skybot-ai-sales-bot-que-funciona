@@ -2265,7 +2265,14 @@ AVANCE DEL CIERRE, OBLIGATORIO EN EL MISMO TURNO: si ya identificaste producto, 
 Respetá el estilo, productos y condiciones del entrenamiento particular del vendedor; el backend solamente asegura que la venta NO se estanque sin pedir el siguiente dato obligatorio.`
     };
     // Lugar que no es una ciudad conocida («Barrio Vista Alegre»): preguntar la ciudad.
-    if (verifiedSaleState.pendingPlace && !verifiedSaleState.cityVerified) {
+    // Solo en el turno en que el cliente NOMBRÓ ese lugar: no repetir la pregunta
+    // del barrio cuando después escribe «Igualmente», un color o una reacción.
+    const pendingPlaceIsFresh = (() => {
+      const words = normalizeIntentText(String(verifiedSaleState.pendingPlace ?? "")).split(" ").filter(w => w.length >= 3);
+      const current = ` ${normalizeIntentText(body)} `;
+      return words.length > 0 && words.every(w => current.includes(` ${w} `));
+    })();
+    if (verifiedSaleState.pendingPlace && !verifiedSaleState.cityVerified && pendingPlaceIsFresh) {
       aiAnswerContext.systemInstruction += `\nLUGAR SIN CIUDAD (dato del sistema): el cliente indicó «${verifiedSaleState.pendingPlace}», que no figura en la lista de ciudades del vendedor ni como ciudad conocida; puede ser un barrio, una compañía o una zona. NO digas todavía si es contraentrega o encomienda, NO envíes datos bancarios ni el detalle a transferir. Preguntale amablemente a qué ciudad corresponde ese lugar (por ejemplo: «📍 ¿Ese barrio en qué ciudad queda?»).`;
     }
     // Comprobante ya ACEPTADO: la IA no debe ver (y copiar) sus mensajes

@@ -1,7 +1,7 @@
 /** BOT SKY: extractor/validador de estado. No redacta preguntas comerciales. */
 import type { AiContext } from "@/lib/ai.server";
 import { isValidDeliveryAddress, isValidCustomerName } from "@/lib/sale-reconciliation.server";
-import { PY_CITIES } from "@/lib/py-cities";
+import { PY_CITIES, findParaguayPlace, departmentIn } from "@/lib/py-cities";
 
 type Product = AiContext["products"][number];
 type Option = Product["product_prices"][number];
@@ -310,6 +310,9 @@ function declaredDestination(text:string): {city:string;department:string}|null 
 /** Frases que NO son nombres de ciudad (pago, saludos, preguntas, pedidos). */
 export function isNonCityPhrase(text:string):boolean{
   const n=norm(text);
+  // Colores, cortesías y reacciones sueltas no son lugares («Marrón», «Igualmente»).
+  if (/^(?:negro|negra|blanco|blanca|marron|rojo|roja|azul|verde|rosa|rosado|gris|beige|dorado|plateado|celeste|amarillo|lila|violeta)$/.test(n) ||
+      /\b(?:igualmente|genial|excelente|reaction|okey|oki|gracia|grasias|adios|chau)\b/.test(n)) return true;
   return !n || /\b(?:paga|pago|pagar|pagas|recibir|contra ?entrega|anticipado|transferencia|efectivo|envio|gratis|delivery|precio|costo|cuanto|quiero|gracias|hola|buenas|buen dia|si|no|ok|dale|listo|perfecto|litros?|caja|cajas|unidad|unidades|pedido|confirmo|cuando|como|donde|tienen|hacen|llega|casa|domicilio)\b/.test(n) ||
     // Opiniones o frases comunes («Es un poco alto», «O no», «muy caro») no son ciudades.
     /\b(?:es|son|un|una|poco|muy|mas|menos|alto|alta|caro|cara|barato|solo|nomas|o|que|eso|esto|todo|nada|algo|ya|pero|porque|bueno|mejor|igual|creo|puede|hay|tengo|necesito|me|te|lo|le|mi|tu)\b/.test(n);
@@ -698,7 +701,16 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   // «Barrio Vista Alegre», «Avarrio…», «B° San Pablo», «Compañía…»: un barrio o
   // compañía NO es una ciudad. Se pregunta a qué ciudad corresponde antes de
   // decidir contraentrega o encomienda.
-  const placeOnly = !match && !nationalDestination && !gpsUrl &&
+  // Ciudad REAL de Paraguay nombrada en el mensaje (aunque no esté en la lista
+  // del vendedor y aunque venga con un barrio: «Concepción barrio Inmaculada»).
+  // Solo identifica la ciudad: la modalidad la decide la cobertura del vendedor.
+  const isWhenEarly = SCHEDULE_REF.test(n);
+  // «¿Ustedes de dónde son? ¿Están en Luque?» pregunta por la tienda, no da un destino.
+  const asksStore = /\b(?:ustedes|uds|su local|tienen local|donde (?:estan|quedan|queda)|de donde son)\b/.test(n);
+  const geoPlace = !match && !nationalDestination && !gpsUrl && !personName && !s.cityVerified && !isWhenEarly && !asksStore &&
+    (Boolean(s.productId) || s.awaiting === "city")
+    ? findParaguayPlace(text) : null;
+  const placeOnly = !match && !nationalDestination && !gpsUrl && !geoPlace &&
     (/\b(?:barrio|bario|varrio|avarrio|abarrio|barrios|asentamiento|loteamiento|compania|cia|zona)\b/.test(n) || /\bb\s?[°º]/i.test(text));
   // Un lugar desconocido (no está en la cobertura ni es un municipio conocido)
   // se pregunta UNA vez; si el cliente lo repite o da otro, se toma como ciudad.
@@ -713,6 +725,20 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     s.department = s.department || "A confirmar";
     s.cityVerified = true; s.coverageStatus = "uncovered";
     if (sellerAllowsNationwideAdvance(ctx.training)) s.paymentMethod = "anticipado";
+  }
+  // Se preguntó por un lugar y el cliente contesta el DEPARTAMENTO: el lugar
+  // anterior es la ciudad de ese departamento (no volver a preguntar).
+  if (existing.pendingPlace && !s.cityVerified && !match && !geoPlace && !nationalDestination && !gpsUrl &&
+      !/\b(?:barrio|bario|varrio|avarrio|abarrio|asentamiento|loteamiento|compania|cia|zona)\b/.test(norm(existing.pendingPlace))) {
+    const dep = departmentIn(text);
+    if (dep) {
+      const fromList = findParaguayPlace(`${existing.pendingPlace} ${dep}`);
+      const listed = cityIn(fromList?.city ?? existing.pendingPlace, coverage);
+      s.city = listed?.city ?? fromList?.city ?? existing.pendingPlace.replace(/\s+/g," ").replace(/(^|\s)(\p{L})/gu, (_m, sp, ch) => sp + ch.toUpperCase());
+      s.department = listed?.department ?? fromList?.department ?? dep;
+      s.cityVerified = true; s.coverageStatus = listed?.active ? "covered" : "uncovered";
+      if (!listed?.active && sellerAllowsNationwideAdvance(ctx.training)) s.paymentMethod = "anticipado";
+    }
   }
   const hasAddressWords=/\b(?:calle|esquina|casi|barrio|referencia|avenida|avda|av|cuadras?|direccion)\b/.test(n);
   // Mensaje completo: «Estoy en la ciudad de X … Mi dirección es …». Tomar
@@ -736,6 +762,12 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     s.city=nationalDestination.city;s.department=nationalDestination.department;
     s.cityVerified=true;s.coverageStatus="uncovered";s.paymentMethod="anticipado";
   }
+  else if(geoPlace) {
+    const listed = cityIn(geoPlace.city, coverage) ?? verifiedCoverage(geoPlace.city, geoPlace.department, coverage);
+    s.city = listed?.city ?? geoPlace.city; s.department = listed?.department ?? geoPlace.department;
+    s.cityVerified = true; s.coverageStatus = listed?.active ? "covered" : "uncovered";
+    if (!listed?.active && sellerAllowsNationwideAdvance(ctx.training)) s.paymentMethod = "anticipado";
+  }
   else if(placeOnly && (s.awaiting==="city" || !s.cityVerified)) {
     s.pendingPlace = text.trim(); askedPlaceNow = true;
   }
@@ -749,9 +781,9 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     const lineCoverage=lineHit ? cityIn(lineHit,coverage) : null;
     if(lineCoverage) {
       s.city=lineCoverage.city;s.department=lineCoverage.department;s.cityVerified=true;s.coverageStatus=lineCoverage.active?"covered":"uncovered";
-    } else if(n.length>=3 && n.length<=55 && /^[a-z ]+$/.test(n) && !isNonCityPhrase(text) && !existing.pendingPlace && !isWhen) {
+    } else if(n.length>=3 && n.length<=55 && /^[a-z ]+$/.test(n) && !isNonCityPhrase(text) && !existing.pendingPlace && !isWhen && !departmentIn(text)) {
       s.pendingPlace = text.trim(); askedPlaceNow = true;
-    } else if(n.length>=3 && n.length<=55 && /^[a-z ]+$/.test(n) && !isNonCityPhrase(text) && !isWhen) {
+    } else if(n.length>=3 && n.length<=55 && /^[a-z ]+$/.test(n) && !isNonCityPhrase(text) && !isWhen && !departmentIn(text)) {
       // La ciudad sola no determina el departamento. Solicitar aclaración, sin inventar.
       s.city = text.trim().replace(/^(?:para|soy de|vivo en|enviar a|mandar a|a)\s+/i, "");
       s.department = null;
@@ -790,7 +822,9 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
       // Primera vez: preguntar a qué ciudad corresponde (puede ser un barrio).
       s.pendingPlace = raw; askedPlaceNow = true;
     } else if (raw.length >= 3 && raw.length <= 40 && /^[\p{L}0-9 .'-]+$/u.test(raw) && !isNonCityPhrase(raw) &&
-        !/\b(?:calle|barrio|casi|esquina|ruta|direccion|casa|unidad|unidades|caja|cajas)\b/i.test(raw) && existing.pendingPlace && !isWhen) {
+        !/\b(?:calle|barrio|casi|esquina|ruta|direccion|casa|unidad|unidades|caja|cajas)\b/i.test(raw) && existing.pendingPlace && !isWhen &&
+        // «Del departamento de Paraguarí» no es una ciudad: falta el distrito.
+        !departmentIn(raw)) {
       s.city = raw.replace(/\s+/g," ").replace(/(^|\s)(\p{L})/gu, (_m, sp, ch) => sp + ch.toUpperCase());
       s.department = s.department || "A confirmar";
       s.cityVerified = true; s.coverageStatus = "uncovered"; s.paymentMethod = "anticipado";
