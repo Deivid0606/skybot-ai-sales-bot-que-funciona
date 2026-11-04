@@ -3389,6 +3389,26 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
           if (fixed) { outgoingText = fixed; if (priceCheck(fixed)) break; }
         }
       }
+      // Control de precios en TODA respuesta (no solo cuando preguntan «precio»):
+      // un importe que no sale del catálogo ni del entrenamiento es inventado.
+      if (!isMediaTurn && !(verifiedSaleState.receiptDocuments?.length)) {
+        const { allowedAmounts, inventedAmounts, realPriceList, dropInventedSentences } = await import("@/lib/price-guard.server");
+        const allowed = allowedAmounts({ products: ctx.products as any, training: ctx.training,
+          customerTexts: chatHistory.filter(h => h.role === "user").slice(-8).map(h => h.content) });
+        let invented = inventedAmounts(outgoingText, allowed);
+        if (invented.length) {
+          console.warn("[BOT_SKY_INVENTED_PRICE]", JSON.stringify({conversationId:conversation.id, invented}));
+          const real = realPriceList(ctx.products as any, detectedProduct);
+          for (let attempt = 0; attempt < 2 && invented.length; attempt++) {
+            const fixed = await aiCompose(aiAnswerContext, `Tu borrador fue: «${outgoingText.trim()}». Usó importes que NO existen en el catálogo ni en el entrenamiento (${invented.map(formatGs).join(", ")}). Precios REALES: ${real}. Reescribí la respuesta usando SOLO esos precios y los costos que figuran en el entrenamiento; no calcules precios nuevos ni inventes descuentos.`);
+            if (fixed) { outgoingText = fixed; invented = inventedAmounts(fixed, allowed); }
+          }
+          if (invented.length) {
+            const cleaned = dropInventedSentences(outgoingText, allowed);
+            if (cleaned) outgoingText = cleaned;
+          }
+        }
+      }
       // Un mismo total no se repite dos veces en el resumen automático.
       // Aplica solo a líneas de total idénticas; no borra otros detalles.
       const sentTotalLines = new Set<string>();

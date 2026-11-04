@@ -668,6 +668,31 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     // La segunda respuesta IA (corrección de cobertura) también debe continuar
     // el checkout, nunca terminar en un resumen sin la siguiente pregunta.
     if (!createdOrder) reply = ensureInboxCheckoutProgress(reply, pendingCheckout, prematurelyClosed);
+    // Control de precios: ningún importe fuera del catálogo o del entrenamiento.
+    const isReceiptTurn = newest.media_type === "image" || newest.media_type === "document" || Boolean(savedCheckoutState.receiptDocuments?.length);
+    if (!createdOrder && !isReceiptTurn) {
+      const { allowedAmounts, inventedAmounts, realPriceList, dropInventedSentences } = await import("@/lib/price-guard.server");
+      const allowed = allowedAmounts({ products: ctx.products as any, training: ctx.training,
+        customerTexts: (ctx.history ?? []).filter(h => h.role === "user").slice(-8).map(h => h.content) });
+      let invented = inventedAmounts(reply, allowed);
+      if (invented.length) {
+        console.warn("[BOT_SKY_INVENTED_PRICE]", JSON.stringify({conversationId:conversation.id, invented, channel:"inbox"}));
+        const real = realPriceList(ctx.products as any, detectedProduct);
+        for (let attempt = 0; attempt < 2 && invented.length; attempt++) {
+          try {
+            const fixed = await generateAiReply({...answerContext, saleState:savedCheckoutState,
+              systemInstruction: answerContext.systemInstruction +
+                `\nTu borrador fue: «${reply.trim().slice(0, 1200)}». Usó importes que NO existen en el catálogo ni en el entrenamiento. Precios REALES: ${real}. Reescribí la respuesta usando SOLO esos precios y los costos que figuran en el entrenamiento; no calcules precios nuevos ni inventes descuentos.`});
+            if (fixed.reply?.trim()) { reply = fixed.reply.trim(); invented = inventedAmounts(reply, allowed); }
+          } catch (error) { console.error("[BOT SKY Inbox precios] IA no disponible", error); break; }
+        }
+        if (invented.length) {
+          const cleaned = dropInventedSentences(reply, allowed);
+          if (!cleaned) return {skipped:true,reason:"La IA no pudo responder con los precios reales del catálogo"};
+          reply = cleaned;
+        }
+      }
+    }
     const wamid = await sendWhatsAppText(conn, phone, reply);
     const { error: insertError } = await supabase.from("messages").insert({
       workspace_id: conversation.workspace_id, user_id: conversation.user_id,
