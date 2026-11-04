@@ -178,7 +178,7 @@ function oneEdit(a: string, b: string): boolean {
   return d[a.length][b.length] <= 1;
 }
 
-const PLACE_CUE = /\b(?:vivo en|soy de|estoy en|estoy n|desde|para|ciudad|ciudad de|departamento|dpto|depto|dto|barrio|zona|en|de la ciudad|localidad|distrito)\b/;
+const PLACE_CUE = /\b(?:vivo en|soy de|estoy en|estoy n|desde|para|ciudad|ciudad de|departamento|dpto|depto|dto|barrio|zona|en|de la ciudad|localidad|distrito|envian|envias|envio|envios|mandan|llega|llegan|delivery|deliveri|cobertura|entregan)\b/;
 
 /**
  * Ciudad real de Paraguay nombrada en el texto (en cualquier posición), o null

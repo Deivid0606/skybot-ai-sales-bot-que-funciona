@@ -408,6 +408,21 @@ export const aiReplyNow = createServerFn({ method: "POST" })
           normalized.split(/\s+/).length <= 5) bypassSale = false;
     }
 
+    // Ciudad que el cliente ya nombró en sus últimos mensajes: se fija con la
+    // cobertura del entrenamiento ANTES de responder (también si después mandó GPS).
+    if(!conversation.sale_closed && !previous.cityVerified){
+      const {declaredCityFromTexts,applyDeclaredCity}=await import("@/lib/rule-sales.server");
+      const recent=(ctx.history??[]).filter(h=>h.role==="user").slice(-5).map(h=>h.content);
+      const declared=declaredCityFromTexts(ctx.training,recent);
+      if(declared){
+        applyDeclaredCity(previous,declared,ctx.training);
+        const {error:declaredError}=await (supabase as any).from("bot_sale_states").upsert({
+          workspace_id:conversation.workspace_id,conversation_id:conversation.id,
+          state:previous,updated_at:new Date().toISOString()
+        },{onConflict:"workspace_id,conversation_id"});
+        if(declaredError)throw declaredError;
+      }
+    }
     if(isGpsMessage){
       if(!previous.cityVerified){previous.city=null;previous.department=null;previous.coverageStatus="unknown";previous.awaiting="city";}
       if(coordinates){
