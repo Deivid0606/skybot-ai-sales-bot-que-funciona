@@ -318,6 +318,46 @@ export function isNonCityPhrase(text:string):boolean{
     /\b(?:es|son|un|una|poco|muy|mas|menos|alto|alta|caro|cara|barato|solo|nomas|o|que|eso|esto|todo|nada|algo|ya|pero|porque|bueno|mejor|igual|creo|puede|hay|tengo|necesito|me|te|lo|le|mi|tu)\b/.test(n);
 }
 
+/**
+ * Ciudad de ENTREGA que el cliente ya nombró en sus últimos mensajes («A Lambaré
+ * cuánto sería el delivery», «soy de Pedro Juan»), aunque todavía no haya elegido
+ * producto o haya mandado después un GPS. La modalidad sale SOLO de la cobertura
+ * del entrenamiento del vendedor; la geografía solo identifica la ciudad.
+ */
+export function declaredCityFromTexts(training: AiContext["training"], texts: string[]):
+  {city:string; department:string; listed:Coverage|null} | null {
+  const coverage = parseCoverage(training);
+  for (const raw of [...texts].reverse()) {
+    const text = String(raw ?? "").trim();
+    if (!text || /https?:\/\//i.test(text) || /^\s*(?:\[|📍|COMPROBANTE)/i.test(text) || text.length > 240) continue;
+    const n = norm(text);
+    // Preguntas por la tienda («¿de dónde son?», «¿están en Luque?») no son destino.
+    if (/\b(?:ustedes|uds|su local|tienen local|donde (?:estan|quedan|queda)|de donde son)\b/.test(n)) continue;
+    const deliveryCue = /[¿?]/.test(text) || /\b(?:delivery|deliveri|delivari|envio|envios|envian|envias|llega|llegan|llegaria|cobertura|entrega|entregan|mandan|para|soy de|vivo en|estoy en|ciudad|cuanto (?:sale|seria|cuesta|cobran))\b/.test(n);
+    // Sin señal de envío, solo cuenta si el mensaje ES la ciudad («Lambaré», «de Limpio»),
+    // para no confundir «lo quiero limpio» con la ciudad de Limpio.
+    const hitCity = cityIn(text, coverage);
+    const bare = n.replace(/^(?:de|para|en|a|soy de|desde)\s+/, "").trim();
+    const listed = hitCity && (deliveryCue || [hitCity.city, ...hitCity.aliases].some(a => norm(a) === bare)) ? hitCity : null;
+    if (listed) return {city:listed.city, department:listed.department, listed};
+    const geo = findParaguayPlace(text);
+    if (geo) {
+      const inList = cityIn(geo.city, coverage) ?? verifiedCoverage(geo.city, geo.department, coverage);
+      return {city:inList?.city ?? geo.city, department:inList?.department ?? geo.department, listed:inList};
+    }
+  }
+  return null;
+}
+
+/** Aplica al estado la ciudad declarada con la modalidad de la cobertura del vendedor. */
+export function applyDeclaredCity(state: SaleState, hit: {city:string; department:string; listed:Coverage|null}, training: AiContext["training"]) {
+  state.city = hit.city; state.department = hit.department; state.cityVerified = true;
+  state.coverageStatus = hit.listed?.active ? "covered" : "uncovered"; state.pendingPlace = null;
+  const policy = deliveryPolicyForCity(state.city, state.department, training);
+  if (policy?.paymentMethod) state.paymentMethod = policy.paymentMethod;
+  else if (!hit.listed?.active && sellerAllowsNationwideAdvance(training)) state.paymentMethod = "anticipado";
+}
+
 export function cityIn(text:string, coverage:Coverage[]): Coverage | null {
   const normalized=norm(text);
   // Preguntas sobre pago no son declaraciones de una ciudad.

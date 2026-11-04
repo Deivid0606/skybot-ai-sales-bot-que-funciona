@@ -15,7 +15,7 @@ import { extractSaleWithAi, applyAiExtraction } from "@/lib/ai-extract.server";
 import { advanceRuleSale, cityIn, sellerUsesFirstOffer, isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi, isValidRecipientCi, type SaleState } from "@/lib/rule-sales.server";
 import { classifyCustomerIntent, addVerifiedOrderContext, addPendingSaleContext } from "@/lib/hybrid-intent.server";
 import { coordinatesFromText, validCoords } from "@/lib/hybrid-intent.server";
-import { parseCoverage, verifiedCoverage, sellerAllowsNationwideAdvance, deliveryPolicyForCity, hasTemplatePlaceholder, stripBankDetailsForCod, enforceVerifiedPaymentReply, isNonCityPhrase, sellerBankText, cleanReplyForPolicy } from "@/lib/rule-sales.server";
+import { declaredCityFromTexts, applyDeclaredCity, parseCoverage, verifiedCoverage, sellerAllowsNationwideAdvance, deliveryPolicyForCity, hasTemplatePlaceholder, stripBankDetailsForCod, enforceVerifiedPaymentReply, isNonCityPhrase, sellerBankText, cleanReplyForPolicy } from "@/lib/rule-sales.server";
 import { resolveDepartamento } from "@/lib/orders";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { sendWhatsAppText as sendWhatsAppTextNow } from "@/lib/whatsapp.server";
@@ -2221,20 +2221,20 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     // «¿Envía a Ciudad del Este?»: una PREGUNTA que nombra una ciudad de la
     // cobertura del vendedor fija esa ciudad, para que la IA responda con la
     // modalidad oficial (contraentrega) y no la deduzca por su cuenta.
-    if (!conversation.sale_closed && !asksAboutSeller && !isGpsMessage && !previousSale.cityVerified &&
-        /[¿?]/.test(body) && !/https?:\/\//i.test(body)) {
-      const askedCity = cityIn(body, parseCoverage(ctx.training));
-      if (askedCity) {
-        previousSale.city = askedCity.city; previousSale.department = askedCity.department;
-        previousSale.cityVerified = true; previousSale.coverageStatus = askedCity.active ? "covered" : "uncovered";
-        previousSale.pendingPlace = null;
-        if (previousSale.productId) {
-          const { error: askedCityError } = await supabaseAdmin.from("bot_sale_states").upsert({
-            workspace_id:workspaceId,conversation_id:conversation.id,state:previousSale,
-            updated_at:new Date().toISOString()
-          },{onConflict:"workspace_id,conversation_id"});
-          if (askedCityError) throw askedCityError;
-        }
+    // Ciudad de entrega que el cliente ya nombró («A Lambaré cuánto sería el
+    // delivery», también antes de elegir producto o antes de mandar un GPS): se
+    // fija con la modalidad de la cobertura del ENTRENAMIENTO, para que la IA no
+    // la deduzca por su cuenta.
+    if (!conversation.sale_closed && !asksAboutSeller && !previousSale.cityVerified) {
+      const recentCustomer = (ctx.history ?? []).filter(h => h.role === "user").slice(-4).map(h => h.content);
+      const declared = declaredCityFromTexts(ctx.training, isGpsMessage ? recentCustomer : [...recentCustomer, body]);
+      if (declared) {
+        applyDeclaredCity(previousSale, declared, ctx.training);
+        const { error: askedCityError } = await (supabaseAdmin.from("bot_sale_states") as any).upsert({
+          workspace_id:workspaceId,conversation_id:conversation.id,state:previousSale,
+          updated_at:new Date().toISOString()
+        },{onConflict:"workspace_id,conversation_id"});
+        if (askedCityError) throw askedCityError;
       }
     }
     const ruleStep = !bypassSale
