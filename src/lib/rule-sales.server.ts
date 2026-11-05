@@ -210,7 +210,10 @@ export function extractRecipientCiFromCustomerText(text: string, awaitingCi=fals
   const raw=text.trim();
   if (/\b(?:alias|cuenta|banco|titular|beneficiario|operaci[oó]n|celular|tel[eé]fono|whatsapp)\b/i.test(raw)) return null;
   const explicit=raw.match(/(?:\bc[eé]dula\b|\bc\.?\s*i\.?(?=\s|[:=#-]|\d|$))(?:\s+(?:del\s+destinatario|de\s+identidad))?(?:\s*(?:n[uú]mero|nro\.?|es|ser[ií]a))?\s*[:#=-]?\s*(\S.*)$/im);
-  const candidate=explicit?.[1] ?? (awaitingCi && /^[0-9.\s-]{4,16}$/.test(raw) ? raw : null);
+  // An ID and a recipient name may arrive together, on separate lines.
+  // Extract only the digits immediately following CI, never a phone/account.
+  const candidate = explicit?.[1]?.match(/^\s*(\d[\d.\s-]{2,14}\d)(?=\s*(?:[.\n,;]|$))/)?.[1]
+    ?? (awaitingCi && /^[0-9.\s-]{4,16}$/.test(raw) ? raw : null);
   if (!candidate || !isValidRecipientCi(candidate)) return null;
   return candidate.replace(/[^0-9]/g,"");
 }
@@ -633,6 +636,14 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   s.productId=p.id;
   const ci=extractRecipientCiFromCustomerText(text,s.awaiting==="recipient_ci");
   if (ci) s.recipientCi=ci;
+  // Encomienda: a single message can carry both CI and the recipient's full name.
+  // A name on its own line following the CI is trustworthy; ignore locations and instructions.
+  if (ci && !isValidCustomerName(s.customerName)) {
+    const lines = text.split(/[\n;]+/).map(line => line.trim().replace(/[.,]+$/, "")).filter(Boolean);
+    const candidate = lines.find(line => !/\b(?:ci|c[eé]dula|ruta|ciudad|barrio|departamento|calle|direccion|dirección|alias|cuenta|banco)\b/i.test(line)
+      && isValidCustomerName(line));
+    if (candidate) s.customerName = candidate;
+  }
   const variants=opts(p);
   // «?» después de una selección no es una pregunta técnica: continuar la
   // compra pendiente sin borrar producto, variante, cantidad, ciudad o GPS.
@@ -935,7 +946,7 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   if(location?.active && /contra entrega|contraentrega/i.test(norm(location.method)))s.paymentMethod="contraentrega";
   else if(s.cityVerified && (national || (location && /encomienda|anticipado|transferencia/i.test(norm(location.method)))))s.paymentMethod="anticipado";
   const encomienda=isEncomiendaAdvanceOrder(ctx.training,s.city,s.department,s.paymentMethod);
-  void encomienda; // la cédula de encomienda se pide después de confirmar el pedido
+  // La cédula exigida por el vendedor se reúne antes del INSERT, no después.
   const needsAddress=s.paymentMethod==="contraentrega" && location?.addressRequired!==false;
   // La misma validación que exige el INSERT: un barrio suelto no es dirección.
   const hasValidAddress=isValidDeliveryAddress(s.street) || isValidDeliveryAddress(s.locationUrl);
@@ -958,7 +969,8 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   else if (!s.quantity || s.quantity<1 || !validPrice) s.awaiting="quantity";
   else if (!s.paymentMethod) s.awaiting="payment";
   else if (s.paymentMethod==="anticipado" && !receiptVerified) s.awaiting="receipt";
-  else if (!s.customerName) s.awaiting="name";
+  else if (!isValidCustomerName(s.customerName)) s.awaiting="name";
+  else if (encomienda && sellerRequiresEncomiendaCi(ctx.training) && !isValidRecipientCi(s.recipientCi)) s.awaiting="recipient_ci";
   else if (needsAddress && !hasValidAddress) s.awaiting="address";
   else s.awaiting=null;
   const complete=Boolean(s.awaiting===null && s.cityVerified &&
