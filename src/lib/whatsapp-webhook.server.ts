@@ -2810,7 +2810,8 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
     // Ciudad con pago al recibir: nunca enviar datos bancarios ni pedir comprobante.
     const codPolicy = verifiedSaleState.cityVerified
       ? deliveryPolicyForCity(verifiedSaleState.city, verifiedSaleState.department, ctx.training) : null;
-    const BANK_RE = /(?:\bbanco\b|\btitular\b|cuenta desde|alias\s+eko|comprobante|realices el pago)/i;
+    // A purchase receipt in a complaint is not a request for bank-transfer proof.
+    const BANK_RE = /(?:\bbanco\b|\btitular\b|cuenta desde|alias\s+eko|comprobante(?!\s+de\s+compra\b)|realices el pago)/i;
     /**
      * CONTROL FINAL antes de WhatsApp: se aplica a TODO texto automático,
      * incluidas las reescrituras de la IA. Ninguna respuesta puede contradecir
