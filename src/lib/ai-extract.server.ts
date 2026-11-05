@@ -71,7 +71,8 @@ async function callJson(ctx: AiContext, system: string, user: string): Promise<s
             messages: [{ role: "system", content: system }, { role: "user", content: user }] }),
         });
         if (!res.ok) throw new Error(`openai ${res.status}`);
-        const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
+        const data = await res.json() as { choices?: Array<{ message?: { content?: string } }>; usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } };
+        if (data.usage) console.info("[BOT_SKY_AI_USAGE]", JSON.stringify({ stage: "sale_extraction", provider: "openai", model, input_tokens: data.usage.prompt_tokens ?? 0, output_tokens: data.usage.completion_tokens ?? 0, total_tokens: data.usage.total_tokens ?? 0 }));
         const raw = data.choices?.[0]?.message?.content ?? "";
         if (raw.trim()) return raw;
       } else {
@@ -83,7 +84,8 @@ async function callJson(ctx: AiContext, system: string, user: string): Promise<s
             generationConfig: { maxOutputTokens: 400, temperature: 0, responseMimeType: "application/json" } }),
         });
         if (!res.ok) throw new Error(`gemini ${res.status}`);
-        const data = await res.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+        const data = await res.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>; usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number } };
+        if (data.usageMetadata) console.info("[BOT_SKY_AI_USAGE]", JSON.stringify({ stage: "sale_extraction", provider: "gemini", model, input_tokens: data.usageMetadata.promptTokenCount ?? 0, output_tokens: data.usageMetadata.candidatesTokenCount ?? 0, total_tokens: data.usageMetadata.totalTokenCount ?? 0 }));
         const raw = data.candidates?.[0]?.content?.parts?.map(p => p.text ?? "").join("") ?? "";
         if (raw.trim()) return raw;
       }
