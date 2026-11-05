@@ -215,7 +215,7 @@ function buildSystemPrompt(ctx: AiContext): string {
   });
   // Indice compacto de otros productos: la IA identifica el nuevo producto sin reenviar todos los copys.
   const compactIndex = ctx.products.filter(p => !fullProducts.some(f => f.id === p.id))
-    .map(p => `${p.id}:${p.name}`).join(" | ").slice(0, 5000);
+    .map(p => `${p.id}:${p.name}`).join(" | ").slice(0, ctx.promptMode === "revision" ? 1200 : 5000);
   const catalog = fullProducts
     .map((product) => {
       const variants = [...(product.product_prices ?? [])]
@@ -227,7 +227,7 @@ function buildSystemPrompt(ctx: AiContext): string {
       return `- id:${product.id} | ${product.name} | stock:${product.stock} | claves:${product.keywords.join(", ") || "-"}
   variantes/precios de catálogo:
 ${variants || `    - precio_unitario_heredado:${product.promo_price ?? product.price} ${ctx.currency}`}
-  copy: ${product.sales_copy ?? product.description ?? "-"}
+  copy: ${ctx.promptMode === "revision" ? String(product.sales_copy ?? product.description ?? "-").slice(0, 400) : product.sales_copy ?? product.description ?? "-"}
   entrega: ${product.delivery_info ?? "-"}
   instrucciones: ${product.ai_instructions ?? "-"}`;
     })
