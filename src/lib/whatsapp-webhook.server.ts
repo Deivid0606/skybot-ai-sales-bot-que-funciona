@@ -4813,6 +4813,10 @@ async function generateAiReplyWithRetry(ctx: Parameters<typeof generateAiReply>[
     return await generateAiReply(ctx);
   } catch (firstError) {
     console.warn("[BOT SKY IA] Primer intento falló; reintentando", firstError instanceof Error ? firstError.message : firstError);
+    // Credits, authentication and invalid configuration will not recover in 2 seconds.
+    // Retrying these failures duplicates the entire prompt and delays customer support.
+    const reason = firstError instanceof Error ? firstError.message : String(firstError);
+    if (/\b(?:401|402|403|429)\b|(?:insufficient_quota|credit_balance_exhausted|credits? remaining|prepayment credits|gemini_key_unavailable|no(?:\s+)?claves? configuradas)/i.test(reason)) throw firstError;
     await new Promise((r) => setTimeout(r, 2000));
     return await generateAiReply(ctx);
   }
@@ -4828,9 +4832,8 @@ async function sendSilenceFallback(args: {
   adId: string | null | undefined; phone: string; wamid: string; reason: string;
   reply?: string; queue?: boolean;
 }) {
-  // Si falla la IA, NO mandar «un asesor te responde» ni ningún guion
-  // comercial programado. Mantener el último mensaje del comprador visible
-  // en Inbox, registrar la falla y alertar al vendedor.
+  // Registrar la falla y notificar al vendedor; un aviso neutro evita dejar
+  // al comprador sin respuesta cuando todas las IA están agotadas o inválidas.
   if (args.queue !== false) {
     await supabaseAdmin.from("ai_failed_messages").upsert({
       workspace_id: args.workspaceId, user_id: args.ownerId, conversation_id: args.conversationId,
@@ -4850,9 +4853,9 @@ async function sendSilenceFallback(args: {
       .eq("workspace_id", args.workspaceId).eq("conversation_id", args.conversationId)
       .eq("direction", "outbound").gte("created_at", since).limit(1);
     if (!recent?.length) {
-      // `reply` y la próxima pregunta son OBJETIVOS: la IA redacta el texto con
-      // el entrenamiento del vendedor. Si la IA no responde, no se envía nada.
-      const goal = args.reply?.trim() || await nextMissingQuestion(args.workspaceId, args.conversationId);
+      // Evitar otra llamada costosa cuando el error ya indica falta de crédito.
+      const providerUnavailable = /\b(?:401|402|403|429)\b|insufficient_quota|credit_balance_exhausted|credits? remaining|prepayment credits|gemini_key_unavailable|todos los proveedores fallaron/i.test(args.reason);
+      const goal = providerUnavailable ? "" : (args.reply?.trim() || await nextMissingQuestion(args.workspaceId, args.conversationId));
       const { data: lastRows } = await supabaseAdmin.from("messages").select("sender,body")
         .eq("workspace_id", args.workspaceId).eq("conversation_id", args.conversationId)
         .order("created_at", { ascending: false }).limit(24);
@@ -4878,7 +4881,7 @@ async function sendSilenceFallback(args: {
       const policyGoal = policyMethod === "contraentrega"
         ? ` Modalidad VERIFICADA para ${policyCity}: CONTRAENTREGA (pago al recibir); no digas encomienda ni envíes datos bancarios.`
         : policyMethod === "anticipado" ? ` Modalidad VERIFICADA para ${policyCity}: pago anticipado.` : "";
-      let text = await aiCompose(fallbackCtx, `Siguiente paso de la venta: ${goal}${policyGoal}`);
+      let text = providerUnavailable ? null : await aiCompose({...fallbackCtx, promptMode: "revision"}, `Siguiente paso de la venta: ${goal}${policyGoal}`);
       if (text && policyMethod && enforceVerifiedPaymentReply({reply:text, city:policyCity, department:policyDep,
           cityVerified:true, training:fallbackCtx.training}).corrected) text = cleanReplyForPolicy(text, policyMethod);
       if (text && policyMethod === "contraentrega") text = cleanReplyForPolicy(text, "contraentrega");
@@ -4886,7 +4889,12 @@ async function sendSilenceFallback(args: {
       // El respaldo nunca anuncia un pedido confirmado: eso solo lo hace el registro real.
       if (text) text = text.split(/(?<=[.!?\n])\s*/).filter(part =>
         !/(?:pedido|compra)[^.!?\n]{0,25}(?:confirmad|registrad)|\bBS-[A-F0-9]{6,}|pedido\s+n\.?\s*[º°o]/i.test(part)).join(" ").trim();
-      if (!text) throw new Error("IA sin respuesta válida para el mensaje de respaldo");
+      // Never claim that a payment was accredited or an order was registered.
+      // This is a service notice, not a commercial reply or a promise of timing.
+      if (!text) {
+        text = "Recibimos tu mensaje. En este momento no podemos darte una respuesta automática. Tu consulta quedó pendiente para que la tienda pueda revisarla. Gracias por tu paciencia.";
+        console.warn("[BOT_SKY_AI_NEUTRAL_FALLBACK]", JSON.stringify({conversationId: args.conversationId, providerUnavailable}));
+      }
       const wamid = await sendWhatsAppText(args.conn, args.phone, text);
       await supabaseAdmin.from("messages").insert({
         workspace_id: args.workspaceId, user_id: args.ownerId, conversation_id: args.conversationId,
