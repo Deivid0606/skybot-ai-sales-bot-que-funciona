@@ -3055,6 +3055,12 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         // Excedente del comprobante documentado; NO equivale a crédito acreditado.
         documentedReceiptTotal: isAdvance && financiallyReady ? receivedTotal : null,
       });
+      if (createdOrder.already_registered) {
+        // Another webhook already inserted and confirmed the same checkout.
+        // Do not emit a second "PEDIDO CONFIRMADO" or duplicate side effects.
+        console.warn("[BOT_SKY_ORDER_DUPLICATE_TURN]", JSON.stringify({conversationId:conversation.id}));
+        return;
+      }
       orderWasCreated = true;
 
       /*
@@ -4067,26 +4073,33 @@ export async function createOrderFromAi(args: {
     payment_status: "pendiente" as const,
   };
 
-  const { data: created, error } = await supabaseAdmin
-    .from("orders")
-    .insert(orderPayload)
-    .select("id, order_number, customer_name, phone, total")
-    .single();
+  // Database-level advisory transaction lock prevents two independent
+  // serverless invocations from inserting the same near-simultaneous checkout.
+  const { data: registration, error } = await (supabaseAdmin as any)
+    .rpc("bot_sky_register_order_once", { p_order: orderPayload });
+  const created = registration?.order
+    ? { ...registration.order, already_registered: registration.already_registered === true }
+    : null;
 
-  if (error) {
+  if (error || !created) {
+    const issue = error ?? { message:"Registro sin respuesta de base de datos", details:"", hint:"", code:"" };
     await logOrderIssue({
       workspaceId: args.workspaceId,
       ownerId: args.ownerId,
       message:
         `No se pudo crear el pedido. ` +
-        `Mensaje: ${error.message}. ` +
-        `Detalles: ${error.details ?? "-"}. ` +
-        `Sugerencia: ${error.hint ?? "-"}. ` +
-        `Código: ${error.code ?? "-"}. ` +
+        `Mensaje: ${issue.message}. ` +
+        `Detalles: ${issue.details ?? "-"}. ` +
+        `Sugerencia: ${issue.hint ?? "-"}. ` +
+        `Código: ${issue.code ?? "-"}. ` +
         `Pedido: ${orderNumber}; workspace: ${args.workspaceId}; conversación: ${args.conversationId}`,
     });
 
-    throw error;
+    throw issue;
+  }
+  if (created.already_registered) {
+    console.warn("[BOT_SKY_ORDER_DEDUPED]", JSON.stringify({conversationId: args.conversationId, orderNumber: created.order_number}));
+    return created;
   }
 
   const { error: conversationError } = await supabaseAdmin
