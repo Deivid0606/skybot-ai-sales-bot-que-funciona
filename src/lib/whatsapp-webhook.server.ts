@@ -1798,8 +1798,11 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       console.info("[BOT_SKY_PRODUCT_SWITCH]", JSON.stringify({conversationId: conversation.id}));
     }
     conversation.product_id = catalogResult.productId;
+    // An explicit different catalog product starts a fresh purchase even when
+    // the prior purchase was already marked sold. Historical orders remain.
+    conversation.sale_closed = false;
     const { error: productUpdateError } = await supabaseAdmin.from("conversations")
-      .update({ product_id: catalogResult.productId })
+      .update({ product_id: catalogResult.productId, sale_closed: false, status: "abierta" })
       .eq("workspace_id", workspaceId).eq("id", conversation.id);
     if (productUpdateError) throw productUpdateError;
   }
