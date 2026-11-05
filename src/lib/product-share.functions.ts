@@ -91,3 +91,34 @@ export const importProductByCode = createServerFn({ method:"POST" })
     }
     return {productId:targetId,existing:Boolean(registration.existing),mediaCopied:copied};
   });
+
+/** Immediately retry eligible unsynced DCANP orders when a product SKU changes. */
+export const retryAfterProductSkuSave = createServerFn({method:"POST"})
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input:unknown)=>z.object({productId:z.string().uuid(),sku:z.string().trim().min(1)}).parse(input))
+  .handler(async ({data,context})=>{
+    const {supabase,userId}=context;
+    const {data:profile}=await supabase.from("profiles").select("workspace_id,status").eq("id",userId).single();
+    const {data:isAdmin}=await supabase.rpc("has_role",{_user_id:userId,_role:"admin"});
+    if (!profile || !["active","approved"].includes(profile.status)) throw new Error("Usuario sin tienda habilitada");
+    const {supabaseAdmin}=await import("@/integrations/supabase/client.server");
+    const {data:product,error}=await supabaseAdmin.from("products")
+      .select("id,workspace_id,sku").eq("id",data.productId).single();
+    if (error || !product) throw new Error("Producto no encontrado");
+    if (!isAdmin && product.workspace_id!==profile.workspace_id) throw new Error("Acceso denegado");
+    if (String(product.sku??"").trim()!==data.sku) throw new Error("SKU no coincide con el catálogo");
+    const {data:workspace}=await supabaseAdmin.from("workspaces")
+      .select("dcanp_auto_import,dcanp_verified_at,dcanp_email" as never)
+      .eq("id",product.workspace_id).single();
+    if (!(workspace as any)?.dcanp_auto_import || !(workspace as any)?.dcanp_verified_at || !(workspace as any)?.dcanp_email)
+      return {enabled:false,updated:0,sent:0,loaded:0,failed:0};
+    // Repair stale SKU snapshots only on unsynced orders of this specific product.
+    const {data:updated,error:updateError}=await supabaseAdmin.from("orders")
+      .update({sku:data.sku} as never).eq("workspace_id",product.workspace_id)
+      .eq("product_id",product.id).in("status",["nuevo","confirmado"])
+      .is("ecommerce_synced_at",null).select("id");
+    if (updateError) throw updateError;
+    const {retryDcanpForProductSku}=await import("@/lib/dcanp-auto-import.server");
+    const result=await retryDcanpForProductSku(product.workspace_id,product.id);
+    return {...result,updated:(updated??[]).length};
+  });
