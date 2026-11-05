@@ -3124,6 +3124,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         order: { ...completedOrder, payment_method: savedConfirmationOrder.payment_method },
         productName: createdProduct?.name ?? "Producto del pedido",
         productOption: confirmedOption?.label ?? completedOrder.price_option_label,
+        packageCopy: createdProduct?.sales_copy ?? createdProduct?.description ?? null,
         savedQuantity: Number(savedConfirmationOrder.quantity),
         recipientCi: isValidRecipientCi(completedOrder.recipient_ci) ? completedOrder.recipient_ci : null,
         address: savedConfirmationOrder.street,
@@ -3784,7 +3785,7 @@ export async function createOrderFromAi(args: {
       adId: existingOrder.ad_id ?? args.adId,
     });
 
-    return existingOrder;
+    return { ...existingOrder, already_registered: true };
   }
 
   const product =
