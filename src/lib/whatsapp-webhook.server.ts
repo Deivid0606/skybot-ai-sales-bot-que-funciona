@@ -4842,6 +4842,8 @@ async function sendSilenceFallback(args: {
       updated_at: new Date().toISOString(),
     }, { onConflict: "workspace_id,wamid" });
   }
+  const neutralNotice = "Recibimos tu mensaje. En este momento no podemos darte una respuesta automática. Tu consulta necesita revisión de la tienda. Gracias por tu paciencia.";
+  let responseSent = false;
   // No considerar como respuesta del mensaje ACTUAL un catálogo o promoción
   // que salió ANTES de que el cliente escribiera. Antes se usaban 45 s sin
   // mirar el mensaje entrante, por eso podía suprimir el único respaldo.
@@ -4893,10 +4895,11 @@ async function sendSilenceFallback(args: {
       // Never claim that a payment was accredited or an order was registered.
       // This is a service notice, not a commercial reply or a promise of timing.
       if (!text) {
-        text = "Recibimos tu mensaje. En este momento no podemos darte una respuesta automática. Tu consulta quedó pendiente para que la tienda pueda revisarla. Gracias por tu paciencia.";
+        text = neutralNotice;
         console.warn("[BOT_SKY_AI_NEUTRAL_FALLBACK]", JSON.stringify({conversationId: args.conversationId, providerUnavailable}));
       }
       const wamid = await sendWhatsAppText(args.conn, args.phone, text);
+      responseSent = true;
       await supabaseAdmin.from("messages").insert({
         workspace_id: args.workspaceId, user_id: args.ownerId, conversation_id: args.conversationId,
         ad_id: args.adId ?? null, direction: "outbound", sender: "ai", response_origin: "ai",
@@ -4908,6 +4911,24 @@ async function sendSilenceFallback(args: {
     }
   } catch (sendError) {
     console.error("[BOT SKY] No se pudo enviar respuesta de respaldo", sendError);
+    // Errors while loading context must not prevent a neutral WhatsApp acknowledgement.
+    // Do not send twice if WhatsApp already accepted the original text.
+    if (!responseSent) {
+      try {
+        const wamid = await sendWhatsAppText(args.conn, args.phone, neutralNotice);
+        responseSent = true;
+        await supabaseAdmin.from("messages").insert({
+          workspace_id: args.workspaceId, user_id: args.ownerId, conversation_id: args.conversationId,
+          ad_id: args.adId ?? null, direction: "outbound", sender: "ai", response_origin: "ai",
+          body: neutralNotice, wamid, status: "sent",
+        } as any);
+        await supabaseAdmin.from("conversations").update({
+          last_message: neutralNotice, last_message_at: new Date().toISOString(),
+        }).eq("workspace_id", args.workspaceId).eq("id", args.conversationId);
+      } catch (backupError) {
+        console.error("[BOT SKY] Falló el aviso neutral", backupError);
+      }
+    }
   }
   await supabaseAdmin.from("notifications").insert({
     workspace_id: args.workspaceId, user_id: args.ownerId, type: "ia",
