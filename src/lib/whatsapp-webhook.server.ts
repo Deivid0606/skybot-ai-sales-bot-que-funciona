@@ -40,7 +40,7 @@ async function sendWhatsAppText(...args: Parameters<typeof sendWhatsAppTextNow>)
 }
 import { detectComplaint, COMPLAINT_REASON_LABELS } from "@/lib/complaints";
 
-type CheckoutPrompt = "city" | "name" | "address";
+type CheckoutPrompt = "city" | "name" | "address" | "recipient_ci";
 
 const looksLikeCheckoutQuestion = (reply: string, stage: CheckoutPrompt): boolean => {
   // La pregunta debe existir en la respuesta, no basta con listar «Nombre: ...».
@@ -49,7 +49,9 @@ const looksLikeCheckoutQuestion = (reply: string, stage: CheckoutPrompt): boolea
     ? /\b(?:ciudad|localidad|d[oó]nde\s+(?:lo|te)\s+(?:enviamos|entregamos|recib[ií]s)|d[oó]nde\s+quer[eé]s\s+recibir)\b/i
     : stage === "name"
       ? /\b(?:nombre|apellido|c[oó]mo\s+te\s+llam[aá]s|qui[eé]n\s+(?:lo\s+)?recibe)\b/i
-      : /\b(?:direcci[oó]n|domicilio|calle|referencia|ubicaci[oó]n|google\s+maps)\b/i;
+      : stage === "recipient_ci"
+        ? /\b(?:c[eé]dula|c\.?i\.?|documento\s+de\s+identidad)\b/i
+        : /\b(?:direcci[oó]n|domicilio|calle|referencia|ubicaci[oó]n|google\s+maps)\b/i;
   return questions.some(question => target.test(question));
 };
 
@@ -76,6 +78,9 @@ function requiredCheckoutPrompt(
       stage: "name",
       question: "😊 Para preparar tu pedido, ¿me pasás tu nombre y apellido?",
     };
+  }
+  if (state.awaiting === "recipient_ci" && state.cityVerified && customerNameValid) {
+    return { stage: "recipient_ci", question: "🪪 Para registrar la encomienda, ¿me pasás la cédula del destinatario?" };
   }
   if (state.awaiting === "address" && state.cityVerified && customerNameValid &&
       state.paymentMethod === "contraentrega" && !isValidDeliveryAddress(state.street) && !isValidDeliveryAddress(state.locationUrl)) {
@@ -1484,7 +1489,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       wamid: message.id,
       status: "received",
     })
-    .select("id")
+    .select("id,created_at")
     .single();
   // Meta reenvía el mismo mensaje si tardamos en contestarle. Si otro intento
   // ya guardó este mensaje (índice único workspace_id + wamid), ese intento es
@@ -1776,9 +1781,28 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     adId: attributedAdId, conn, phone, text: body,
   });
   if (catalogResult?.productId && catalogResult.productId !== conversation.product_id) {
+    // A fresh product selection starts its own checkout. Never carry the old
+    // product/variant/quantity/receipt into this catalogue, even in the same chat.
+    const { data: activeSale } = await supabaseAdmin.from("bot_sale_states").select("state")
+      .eq("workspace_id", workspaceId).eq("conversation_id", conversation.id).maybeSingle();
+    const activeProduct = (activeSale?.state as SaleState | undefined)?.productId ?? conversation.product_id;
+    if (activeProduct !== catalogResult.productId) {
+      // A saved cycle boundary prevents historic product selections, names and
+      // quantities from being replayed into this new sale.
+      const { error: resetError } = await supabaseAdmin.from("bot_sale_states").upsert({
+        workspace_id: workspaceId, conversation_id: conversation.id,
+        state: { productId: catalogResult.productId, cycleStartedAt: savedMessage?.created_at ?? new Date().toISOString() },
+        updated_at: new Date().toISOString(),
+      }, { onConflict: "workspace_id,conversation_id" });
+      if (resetError) throw resetError;
+      console.info("[BOT_SKY_PRODUCT_SWITCH]", JSON.stringify({conversationId: conversation.id}));
+    }
     conversation.product_id = catalogResult.productId;
+    // An explicit different catalog product starts a fresh purchase even when
+    // the prior purchase was already marked sold. Historical orders remain.
+    conversation.sale_closed = false;
     const { error: productUpdateError } = await supabaseAdmin.from("conversations")
-      .update({ product_id: catalogResult.productId })
+      .update({ product_id: catalogResult.productId, sale_closed: false, status: "abierta" })
       .eq("workspace_id", workspaceId).eq("id", conversation.id);
     if (productUpdateError) throw productUpdateError;
   }
@@ -1786,12 +1810,15 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
   // No enviar además una respuesta IA duplicada; IA asume los turnos siguientes.
   if (catalogResult?.sent) return;
 
-  const { data: history } = await supabaseAdmin
-    .from("messages")
-    .select("sender, body")
-    .eq("conversation_id", conversation.id)
-    .order("created_at", { ascending: false })
-    .limit(24);
+  const { data: activeCycle } = await supabaseAdmin.from("bot_sale_states").select("state")
+    .eq("workspace_id", workspaceId).eq("conversation_id", conversation.id).maybeSingle();
+  const cycleStart = (activeCycle?.state as SaleState | null)?.cycleStartedAt;
+  let historyQuery = supabaseAdmin.from("messages").select("sender, body")
+    .eq("workspace_id", workspaceId).eq("conversation_id", conversation.id);
+  if (cycleStart && !Number.isNaN(Date.parse(cycleStart))) {
+    historyQuery = historyQuery.gte("created_at", cycleStart);
+  }
+  const { data: history } = await historyQuery.order("created_at", { ascending: false }).limit(24);
 
   const chatHistory = (history ?? [])
     .reverse()
@@ -2189,7 +2216,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       previousSale.productId && previousSale.cityVerified &&
       ((previousSale.receiptDocuments?.length ?? 0) > 0 || previousSale.receiptPath));
     const awaitingCheckoutDetail = Boolean(previousSale.productId &&
-      (["name", "details", "address", "quantity", "variant", "city"].includes(String(previousSale.awaiting ?? "")) ||
+      (["name", "recipient_ci", "details", "address", "quantity", "variant", "city"].includes(String(previousSale.awaiting ?? "")) ||
         hasPendingDocumentedCheckout) &&
       !/\b(?:gracias|chau|adios|no quiero|cancelar|reclamo|mi pedido|donde esta)\b/i.test(normalizeIntentText(body)));
     // Los archivos de pago forman parte del checkout activo aunque el clasificador
@@ -2426,7 +2453,10 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         return `Comprobante RECIBIDO y compatible por ${formatGs(documented)}, pero el total del pedido es ${formatGs(expected)}: falta ${formatGs(expected - documented)}. Pedí el comprobante de esa diferencia.`;
       const extra = expected > 0 && documented > expected ? ` Tiene un saldo a favor de ${formatGs(documented - expected)} (pendiente de acreditación bancaria).` : "";
       return `Comprobante RECIBIDO y compatible con la cuenta del vendedor (monto ${formatGs(documented)}${expected > 0 ? `, total ${formatGs(expected)}` : ""}).${extra} Agradecé sin decir que el pago está acreditado.` +
-        (isValidCustomerName(st.customerName) ? " Indicá que estamos registrando el pedido." : " Pedí ahora el nombre y apellido de quien va a recibir el pedido.");
+        (!isValidCustomerName(st.customerName) ? " Pedí ahora el nombre y apellido de quien va a recibir el pedido."
+          : sellerRequiresEncomiendaCi(ctx.training) && !isValidRecipientCi(st.recipientCi)
+            ? " Pedí la cédula del destinatario; NO confirmes el pedido todavía."
+            : " Indicá que estamos registrando el pedido.");
     })();
     try {
       result = checkoutCompleteByRules
@@ -2687,10 +2717,13 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
 
     // En el turno de un comprobante la IA no puede cambiar el producto de la venta.
     const keepSaleProduct = Boolean(mediaPath && currentReceipt && (saveStep?.state.productId ?? previousSale.productId));
-    const detectedProduct =
-      !keepSaleProduct && result.product_id && ctx.products.some((p) => p.id === result.product_id)
-        ? result.product_id
-        : (saveStep?.state.productId ?? previousSale.productId ?? conversation.product_id);
+    const currentSaleProduct = saveStep?.state.productId ?? previousSale.productId ?? conversation.product_id;
+    // Product explicitly saved by the current checkout wins over a model guess
+    // that may refer to an older product still present in chat history.
+    const detectedProduct = currentSaleProduct && ctx.products.some(p => p.id === currentSaleProduct)
+      ? currentSaleProduct
+      : (!keepSaleProduct && result.product_id && ctx.products.some(p => p.id === result.product_id)
+        ? result.product_id : null);
 
     // Segunda barrera anti-repetición:
     // si la IA intenta volver a mandar prácticamente el mismo copy largo del
@@ -2963,6 +2996,8 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
     const orderReady = financiallyReady && isOrderReady(result.order, detectedProduct) &&
       // Nombre verificado desde el mensaje del cliente, no solamente del JSON de IA.
       isValidCustomerName(verifiedSaleState.customerName) &&
+      (!isEncomiendaAdvanceOrder(ctx.training, result.order?.city, result.order?.departamento, result.order?.payment_method)
+        || !sellerRequiresEncomiendaCi(ctx.training) || isValidRecipientCi(verifiedSaleState.recipientCi)) &&
       (Boolean(saveStep?.state.cartLines?.length) || stateExpectedTotal !== null || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory)) &&
       (!isAdvance || hasReceiptForOrder);
     // La cédula del destinatario de encomienda se pide DESPUÉS de confirmar
@@ -3031,6 +3066,12 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         // Excedente del comprobante documentado; NO equivale a crédito acreditado.
         documentedReceiptTotal: isAdvance && financiallyReady ? receivedTotal : null,
       });
+      if (createdOrder.already_registered) {
+        // Another webhook already inserted and confirmed the same checkout.
+        // Do not emit a second "PEDIDO CONFIRMADO" or duplicate side effects.
+        console.warn("[BOT_SKY_ORDER_DUPLICATE_TURN]", JSON.stringify({conversationId:conversation.id}));
+        return;
+      }
       orderWasCreated = true;
 
       /*
@@ -3100,6 +3141,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         order: { ...completedOrder, payment_method: savedConfirmationOrder.payment_method },
         productName: createdProduct?.name ?? "Producto del pedido",
         productOption: confirmedOption?.label ?? completedOrder.price_option_label,
+        packageCopy: createdProduct?.sales_copy ?? createdProduct?.description ?? null,
         savedQuantity: Number(savedConfirmationOrder.quantity),
         recipientCi: isValidRecipientCi(completedOrder.recipient_ci) ? completedOrder.recipient_ci : null,
         address: savedConfirmationOrder.street,
@@ -3678,6 +3720,9 @@ export async function createOrderFromAi(args: {
       (!orderIsEncomienda && args.order.street && !isValidDeliveryAddress(args.order.street))) {
     throw new Error("Pedido incompleto: nombre, ciudad, cantidad o pago inválidos. No se registró la venta.");
   }
+  if (!isValidCustomerName(args.order.customer_name)) throw new Error("Nombre y apellido del destinatario inválidos: pedido no registrado.");
+  if (orderIsEncomienda && args.training && sellerRequiresEncomiendaCi(args.training) &&
+      !isValidRecipientCi(args.order.recipient_ci)) throw new Error("Cédula del destinatario pendiente: pedido no registrado.");
   const sourceMessageId = cleanOrderText(args.sourceMessageId);
 
   if (!sourceMessageId) {
@@ -3757,7 +3802,7 @@ export async function createOrderFromAi(args: {
       adId: existingOrder.ad_id ?? args.adId,
     });
 
-    return existingOrder;
+    return { ...existingOrder, already_registered: true };
   }
 
   const product =
@@ -4039,26 +4084,33 @@ export async function createOrderFromAi(args: {
     payment_status: "pendiente" as const,
   };
 
-  const { data: created, error } = await supabaseAdmin
-    .from("orders")
-    .insert(orderPayload)
-    .select("id, order_number, customer_name, phone, total")
-    .single();
+  // Database-level advisory transaction lock prevents two independent
+  // serverless invocations from inserting the same near-simultaneous checkout.
+  const { data: registration, error } = await (supabaseAdmin as any)
+    .rpc("bot_sky_register_order_once", { p_order: orderPayload });
+  const created = registration?.order
+    ? { ...registration.order, already_registered: registration.already_registered === true }
+    : null;
 
-  if (error) {
+  if (error || !created) {
+    const issue = error ?? { message:"Registro sin respuesta de base de datos", details:"", hint:"", code:"" };
     await logOrderIssue({
       workspaceId: args.workspaceId,
       ownerId: args.ownerId,
       message:
         `No se pudo crear el pedido. ` +
-        `Mensaje: ${error.message}. ` +
-        `Detalles: ${error.details ?? "-"}. ` +
-        `Sugerencia: ${error.hint ?? "-"}. ` +
-        `Código: ${error.code ?? "-"}. ` +
+        `Mensaje: ${issue.message}. ` +
+        `Detalles: ${issue.details ?? "-"}. ` +
+        `Sugerencia: ${issue.hint ?? "-"}. ` +
+        `Código: ${issue.code ?? "-"}. ` +
         `Pedido: ${orderNumber}; workspace: ${args.workspaceId}; conversación: ${args.conversationId}`,
     });
 
-    throw error;
+    throw issue;
+  }
+  if (created.already_registered) {
+    console.warn("[BOT_SKY_ORDER_DEDUPED]", JSON.stringify({conversationId: args.conversationId, orderNumber: created.order_number}));
+    return created;
   }
 
   const { error: conversationError } = await supabaseAdmin

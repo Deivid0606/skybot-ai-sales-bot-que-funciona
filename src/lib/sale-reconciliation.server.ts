@@ -16,6 +16,8 @@ export function isValidCustomerName(value: unknown): boolean {
   if (typeof value !== "string") return false;
   const name = value.replace(/^(?:soy|me llamo|mi nombre es|nombre(?: y apellido)?:)\s*/i, "").trim();
   const n = normal(name);
+  // WhatsApp profile labels and greetings ("Buen dia") are never legal names.
+  if (/^(?:buen(?:os|as)?\s+(?:dia|dias|tardes|noches)|buenas?\s*dia|saludos?|hola(?:\s+que\s+tal)?|sin\s+nombre|cliente|informacion|precio|buen\s+dia\s+soy\s+de)\b/i.test(n)) return false;
   if (name.length < 5 || name.length > 160 || !/^[\p{L}]+(?:[ '\-]+[\p{L}]+){1,5}$/u.test(name)) return false;
   // Un destino escrito como "Para itaugua" no es nombre y apellido.
   // Rechazar también otras frases de entrega que pueden parecer nombres.
