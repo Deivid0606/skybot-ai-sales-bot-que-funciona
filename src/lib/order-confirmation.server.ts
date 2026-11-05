@@ -15,6 +15,7 @@ type ConfirmationArgs = {
   order: AiOrder;
   productName: string;
   productOption?: string | null;
+  packageCopy?: string | null;
   savedQuantity: number;
   paymentStatus?: string | null;
   deliveryMethod?: string | null;
@@ -34,14 +35,21 @@ export function buildRegisteredOrderConfirmation(args: ConfirmationArgs): string
   const product = [args.productName, args.productOption?.trim()].filter(Boolean).join(" — ");
   const city = [order.city, order.departamento].filter(Boolean).join(" — ");
   const address = args.address?.trim() || order.street?.trim() || "";
+  // Package presentation is not the number of physical pieces inside the box.
+  const optionLabel = String(args.productOption ?? "").trim();
+  const boxLabel = /^(?:1|un|una)\s+caja\b/i.test(optionLabel);
+  const packContainsTwoBases = boxLabel && /\b(?:1|una)\s+caja\s+(?:trae|contiene|incluye)\s+(?:2|dos)\s+bases\b/i.test(String(args.packageCopy ?? ""));
+  const quantityDescription = boxLabel && args.savedQuantity === 1
+    ? packContainsTwoBases ? "1 caja (contiene 2 bases)" : optionLabel
+    : `${args.savedQuantity} unidad${args.savedQuantity === 1 ? "" : "es"}`;
   return [
     "✅ PEDIDO CONFIRMADO 🎉",
     "",
-    `👤 Cliente: ${created.customer_name}`,
+    `${isAdvance ? "👤 Destinatario" : "👤 Cliente"}: ${created.customer_name}`,
     ...(args.recipientCi && /^[0-9]{4,9}$/.test(args.recipientCi.replace(/[^0-9]/g,""))
       ? [`🪪 Cédula: ${args.recipientCi.replace(/[^0-9]/g,"")}`] : []),
     `📦 Producto: ${product}`,
-    `🔢 Cantidad: ${args.savedQuantity} unidad${args.savedQuantity === 1 ? "" : "es"}`,
+    `🔢 Cantidad: ${quantityDescription}`,
     `💰 Total: ${formatGs(created.total)}`,
     `📍 Ciudad: ${city}`,
     ...(address ? [`🏠 Dirección: ${address}`] : []),
