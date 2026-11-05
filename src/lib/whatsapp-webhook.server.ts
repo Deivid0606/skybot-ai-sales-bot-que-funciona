@@ -2594,7 +2594,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
           fields:filled.map(f=>f.split(":")[0]), awaiting:saveStep.state.awaiting, complete:saveStep.complete}));
         // Si la respuesta todavía pide un dato que ya dio, la IA la rehace con los datos actualizados.
         if (!saveStep.complete && (prefilled.optionId || /\b(?:nombre|apellido|direcci[oó]n|domicilio|calle|referencia)\b/i.test(result.reply))) {
-          const updated = await aiCompose(aiAnswerContext, `El cliente YA dio estos datos y quedaron guardados: ${filled.join("; ")}. NO los pidas de nuevo. Respondé su último mensaje y pedí solo el siguiente dato pendiente (${saveStep.state.awaiting ?? "ninguno"}).`);
+          const updated = await aiCompose({...aiAnswerContext, promptMode: "revision"}, `El cliente YA dio estos datos y quedaron guardados: ${filled.join("; ")}. NO los pidas de nuevo. Respondé su último mensaje y pedí solo el siguiente dato pendiente (${saveStep.state.awaiting ?? "ninguno"}).`);
           if (updated) result = {...result, reply: updated};
         }
       }
@@ -2846,7 +2846,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         WAITING_REPLY_RE.test(text) ? "No digas «un momento», «voy a verificar» ni «te aviso»: el sistema ya revisó todo en este turno; respondé con el resultado y el siguiente paso." : "",
         claimsRegisteredOrder(text) ? "El pedido TODAVÍA NO está registrado en el sistema: no digas que está confirmado, no muestres número de pedido ni agradezcas la compra; pedí el dato que falte." : "",
       ].filter(Boolean).join(" ");
-      const again = await aiCompose(aiAnswerContext, `${facts} Tu borrador anterior violaba estas reglas: «${text.slice(0, 1200)}». Reescribí la respuesta correcta.`);
+      const again = await aiCompose({...aiAnswerContext, promptMode: "revision"}, `${facts} Tu borrador anterior violaba estas reglas: «${text.slice(0, 1200)}». Reescribí la respuesta correcta.`);
       if (again && !violatesVerifiedFacts(again)) return again;
       // Último recurso SIN texto fijo: depurar el borrador de la IA quitando
       // solo las líneas que contradicen los hechos verificados.
@@ -3385,7 +3385,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         const realOptions = (ctx.products.find(p => p.id === detectedProduct)?.product_prices ?? [])
           .filter(o => Number(o.price) > 0).map(o => `${o.label} = ${formatGs(Number(o.price))}`).join("; ");
         for (let attempt = 0; attempt < 2; attempt++) {
-          const fixed = await aiCompose(aiAnswerContext, `Tu borrador fue: «${outgoingText.trim()}». Los precios no coinciden con el catálogo o faltan. Precios REALES: ${realOptions}. Respondé la consulta del cliente usando exactamente esos precios y seguí con el siguiente dato del pedido.`);
+          const fixed = await aiCompose({...aiAnswerContext, promptMode: "revision"}, `Tu borrador fue: «${outgoingText.trim()}». Los precios no coinciden con el catálogo o faltan. Precios REALES: ${realOptions}. Respondé la consulta del cliente usando exactamente esos precios y seguí con el siguiente dato del pedido.`);
           if (fixed) { outgoingText = fixed; if (priceCheck(fixed)) break; }
         }
       }
@@ -3400,7 +3400,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
           console.warn("[BOT_SKY_INVENTED_PRICE]", JSON.stringify({conversationId:conversation.id, invented}));
           const real = realPriceList(ctx.products as any, detectedProduct);
           for (let attempt = 0; attempt < 2 && invented.length; attempt++) {
-            const fixed = await aiCompose(aiAnswerContext, `Tu borrador fue: «${outgoingText.trim()}». Usó importes que NO existen en el catálogo ni en el entrenamiento (${invented.map(formatGs).join(", ")}). Precios REALES: ${real}. Reescribí la respuesta usando SOLO esos precios y los costos que figuran en el entrenamiento; no calcules precios nuevos ni inventes descuentos.`);
+            const fixed = await aiCompose({...aiAnswerContext, promptMode: "revision"}, `Tu borrador fue: «${outgoingText.trim()}». Usó importes que NO existen en el catálogo ni en el entrenamiento (${invented.map(formatGs).join(", ")}). Precios REALES: ${real}. Reescribí la respuesta usando SOLO esos precios y los costos que figuran en el entrenamiento; no calcules precios nuevos ni inventes descuentos.`);
             if (fixed) { outgoingText = fixed; invented = inventedAmounts(fixed, allowed); }
           }
           if (invented.length) {
@@ -3432,7 +3432,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
           const goal = [missingCredit ? `informá que tiene un saldo a favor de ${formatGs(credit)} (pendiente de acreditación bancaria)` : "",
             missingName ? "terminá pidiendo el nombre y apellido de quien va a recibir el pedido" : ""].filter(Boolean).join(" y ");
           const contradicts = RECEIPT_RESEND_RE.test(outgoingText);
-          const rewritten = await aiCompose(aiAnswerContext, contradicts
+          const rewritten = await aiCompose({...aiAnswerContext, promptMode: "revision"}, contradicts
             ? `El comprobante fue RECIBIDO y su monto CUBRE el total del pedido (no pidas otro comprobante ni hables de diferencia ni de monto incorrecto). Agradecé el comprobante${credit > 0 ? `, informá que tiene un saldo a favor de ${formatGs(credit)} (pendiente de acreditación bancaria)` : ""} y terminá pidiendo el nombre y apellido de quien va a recibir el pedido. No digas que el pedido está confirmado.`
             : `Tu borrador fue: «${outgoingText.trim()}». Mantené su contenido y ${goal}. No digas que el pedido está confirmado.`);
           if (!rewritten) continue;
