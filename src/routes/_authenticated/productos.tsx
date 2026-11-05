@@ -41,7 +41,7 @@ import {
   type ExistingMedia,
 } from "@/components/product-media-manager";
 import { ProductPreview } from "@/components/product-preview";
-import { listMyProductShares, setProductSharing, importProductByCode } from "@/lib/product-share.functions";
+import { listMyProductShares, setProductSharing, importProductByCode, retryAfterProductSkuSave } from "@/lib/product-share.functions";
 
 export const Route = createFileRoute("/_authenticated/productos")({
   head: () => ({
@@ -261,6 +261,8 @@ function ProductsPage() {
         no_repeat_template: values.no_repeat_template,
       };
       let productId = values.id;
+      const oldSku = productId ? String((products ?? []).find(p=>p.id===productId)?.sku ?? "").trim() : "";
+      const shouldRetrySku = Boolean(productId && payload.sku && oldSku !== payload.sku);
       if (productId) {
         // Editar nunca cambia la tienda ni el dueño del producto.
         const { workspace_id: _w, user_id: _u, created_by: _c, ...updatePayload } = payload;
@@ -324,10 +326,26 @@ function ProductsPage() {
           if (error) throw error;
         }
       }
-      return productId;
+      // Do not make the catalog save fail when the external importer is unavailable.
+      // A corrected SKU must trigger the retry immediately, not await the cron.
+      let retryResult: { enabled:boolean; updated:number; sent:number; loaded:number; failed:number } | null = null;
+      let retryError: string | null = null;
+      if (shouldRetrySku && productId && payload.sku) {
+        try {
+          retryResult = await retryAfterProductSkuSave({data:{productId,sku:payload.sku}});
+        } catch (e) {
+          retryError = e instanceof Error ? e.message : "No se pudo ejecutar el reintento";
+        }
+      }
+      return {productId,retryResult,retryError,shouldRetrySku};
     },
-    onSuccess: () => {
-      toast.success("Producto guardado");
+    onSuccess: ({retryResult,retryError,shouldRetrySku}) => {
+      if (retryError) toast.warning("SKU guardado, pero no se pudo reintentar la carga automática: "+retryError);
+      else if (shouldRetrySku && retryResult?.enabled)
+        toast.success(`SKU guardado. Carga probada: ${retryResult.loaded} pedido(s) cargado(s), ${retryResult.failed} con observaciones.`);
+      else if (shouldRetrySku && retryResult && !retryResult.enabled)
+        toast.info("SKU guardado. La carga automática de DCANP no está habilitada o vinculada para esta tienda.");
+      else toast.success("Producto guardado");
       queryClient.invalidateQueries({queryKey:["product-sharing",workspaceId]});
       setOpen(false);
       setForm(createEmptyForm());
