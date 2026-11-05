@@ -1,11 +1,13 @@
 // Limites defensivos por mensaje, configurables en Vercel.
-const MAX_HISTORY_MESSAGES = 20;
+const MAX_HISTORY_MESSAGES = 16;
 const MAX_HISTORY_CHARS = 950;
 const MAX_OUTPUT_TOKENS = 1536; // Dejar margen para JSON completo y el razonamiento del modelo.
 const MAX_PROVIDER_ATTEMPTS = 4;
 const MAX_PROMPT_CHARS = 100000;
 function limitedHistory(ctx: AiContext) {
-  return ctx.history.slice(-MAX_HISTORY_MESSAGES).map(message => ({
+  // Rewrites need the latest user context, not a second full conversation transcript.
+  const limit = ctx.promptMode === "revision" ? 8 : MAX_HISTORY_MESSAGES;
+  return ctx.history.slice(-limit).map(message => ({
     role: message.role,
     content: message.content.slice(-MAX_HISTORY_CHARS),
   }));
@@ -15,6 +17,8 @@ function lastCustomerText(ctx: AiContext) {
 }
 export type AiContext = {
   systemInstruction: string;
+  /** Use a shorter chat window when correcting an already-generated reply. */
+  promptMode?: "revision";
   geminiApiKey?: string | null;
   geminiApiKey2?: string | null;
   geminiApiKey3?: string | null;
@@ -255,20 +259,10 @@ ${variants || `    - precio_unitario_heredado:${product.promo_price ?? product.p
   const formatTraining = (entry: AiContext["training"][number]) =>
     `- [${entry.category || "general"} | prioridad ${Number(entry.priority) || 0}] ${entry.title}: ${entry.content}`;
 
-  const corrections = sortedTraining
-    .filter(entry => isRule(entry.category))
-    .map(formatTraining)
-    .join("\n");
-
   // No hacer depender la presencia de un entrenamiento de palabras del título,
   // categoría ni prioridad: la IA necesita ver también Objeciones, Cierre,
   // General, Producto, etc. Las palabras clave son ayudas de relevancia,
   // NO condiciones para ocultar instrucciones activas.
-  const knowledge = sortedTraining
-    .filter(entry => !isRule(entry.category))
-    .map(formatTraining)
-    .join("\n");
-
   // En cada mensaje se vuelven a evaluar las reglas activas. Las condiciones
   // comerciales del vendedor tienen prioridad en el turno al que aplican;
   // esta selección solo afecta el PROMPT y nunca las validaciones de pedidos.
@@ -284,7 +278,16 @@ ${variants || `    - precio_unitario_heredado:${product.promo_price ?? product.p
     const titleWords = normalizeSellerText(entry.title).split(" ").filter(word => word.length > 4);
     return titleWords.length > 0 && titleWords.some(word => incomingNormalized.split(" ").includes(word));
   }).slice(0, 16);
+  // Focused entries were previously sent again in CORRECTIONS or KNOWLEDGE.
+  // Keep every active rule in the prompt, but transmit each entry only once.
+  const focusedEntries = new Set(focusedTraining);
   const focusInstructions = focusedTraining.map(formatTraining).join("\n\n");
+  const correctionsWithoutFocused = sortedTraining
+    .filter(entry => isRule(entry.category) && !focusedEntries.has(entry))
+    .map(formatTraining).join("\n");
+  const knowledgeWithoutFocused = sortedTraining
+    .filter(entry => !isRule(entry.category) && !focusedEntries.has(entry))
+    .map(formatTraining).join("\n");
   const generalInquiryHint = generalInquiry
     ? "CONSULTA GENERAL SIN PRODUCTO: atendé el saludo o la pregunta actual antes de intentar capturar datos de pedido. Si el vendedor entrenó un envío de catálogo para este caso, incluí el enlace EXACTO de esa regla ahora (si no se envió previamente); no lo inventes ni repitas. No pidas ciudad, nombre ni cantidad hasta que haya intención de compra de un producto."
     : "PRIORIZÁ las instrucciones del vendedor que se aplican al mensaje actual y respetá el progreso del pedido.";
@@ -328,7 +331,7 @@ Teléfono de este contacto, si lo hay: ${detectedCustomerPhone || "No disponible
 Producto activo: ${ctx.activeProductId || "No identificado"}
 
 REGLAS Y CORRECCIONES DEL VENDEDOR (PRIORIDAD MÁXIMA):
-${corrections || "Sin entradas de reglas"}
+${correctionsWithoutFocused || "Sin entradas adicionales de reglas"}
 
 INSTRUCCIONES DEL WORKSPACE:
 ${ctx.systemInstruction || "Sin instrucciones adicionales"}
@@ -338,7 +341,7 @@ ${catalog || "No hay producto inequívoco todavía"}
 ÍNDICE ADICIONAL DE PRODUCTOS: ${compactIndex || "-"}
 
 OTRAS ENTRADAS ENTRENADAS:
-${knowledge || "Sin entradas adicionales"}
+${knowledgeWithoutFocused || "Sin entradas adicionales"}
 
 SALIDA OBLIGATORIA (no mostrar al cliente): devolvé exclusivamente UN objeto JSON válido,
 sin Markdown ni texto adicional, con estas claves:
