@@ -1,7 +1,7 @@
 -- Product exchange is opt-in. Codes do not expose product details to unauthenticated visitors.
 CREATE TABLE IF NOT EXISTS public.bot_sky_product_shares (
   product_id uuid PRIMARY KEY REFERENCES public.products(id) ON DELETE CASCADE,
-  share_code text NOT NULL UNIQUE DEFAULT ('SKY-' || upper(encode(gen_random_bytes(8), 'hex'))),
+  share_code text NOT NULL UNIQUE DEFAULT ('SKY-' || upper(substr(replace(gen_random_uuid()::text,'-',''),1,12))),
   enabled boolean NOT NULL DEFAULT false,
   created_at timestamptz NOT NULL DEFAULT now()
 );
@@ -39,16 +39,15 @@ DECLARE
  v_source public.products%ROWTYPE;
  v_target uuid;
  v_existing uuid;
- v_sharing boolean;
  v_created uuid;
 BEGIN
  SELECT pr.workspace_id INTO v_target FROM public.profiles pr
  WHERE pr.id=p_user AND pr.workspace_id=p_workspace AND pr.status::text IN ('approved','active');
  IF v_target IS NULL THEN RAISE EXCEPTION 'No tenés permiso para importar en esta tienda'; END IF;
- SELECT p.*,s.enabled INTO v_source,v_sharing FROM public.products p
+ SELECT p.* INTO v_source FROM public.products p
  JOIN public.bot_sky_product_shares s ON s.product_id=p.id
  WHERE s.share_code=upper(trim(p_code)) AND s.enabled=true AND p.is_active=true;
- IF NOT FOUND OR NOT v_sharing THEN RAISE EXCEPTION 'Código no encontrado o no compartido'; END IF;
+ IF NOT FOUND THEN RAISE EXCEPTION 'Código no encontrado o no compartido'; END IF;
  IF v_source.workspace_id = p_workspace THEN RAISE EXCEPTION 'El producto ya pertenece a tu tienda'; END IF;
  PERFORM pg_advisory_xact_lock(hashtextextended(v_source.id::text || ':' || p_workspace::text,0));
  SELECT imported_product_id INTO v_existing FROM public.bot_sky_product_imports
