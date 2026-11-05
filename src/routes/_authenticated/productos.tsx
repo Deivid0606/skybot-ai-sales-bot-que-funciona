@@ -2,7 +2,7 @@ import { useState } from "react";
 import { formatGs } from "@/lib/format";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ExternalLink, Link as LinkIcon, Loader2, Mail, Pencil, Phone, Plus, Trash2, Upload, X } from "lucide-react";
+import { Copy, Download, ExternalLink, Link as LinkIcon, Loader2, Mail, Pencil, Phone, Plus, Search, Share2, Trash2, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { PageHeader, PageShell, EmptyState } from "@/components/page-shell";
@@ -41,6 +41,7 @@ import {
   type ExistingMedia,
 } from "@/components/product-media-manager";
 import { ProductPreview } from "@/components/product-preview";
+import { listMyProductShares, setProductSharing, importProductByCode } from "@/lib/product-share.functions";
 
 export const Route = createFileRoute("/_authenticated/productos")({
   head: () => ({
@@ -114,6 +115,9 @@ function ProductsPage() {
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [editingMedia, setEditingMedia] = useState<ExistingMedia[]>([]);
   const [phoneOpen, setPhoneOpen] = useState(false);
+  const [productSearch, setProductSearch] = useState("");
+  const [importOpen, setImportOpen] = useState(false);
+  const [importCode, setImportCode] = useState("");
   const [phoneValue, setPhoneValue] = useState("");
   // Tienda y usuario dueños del producto que se edita (el administrador puede editar productos de otros).
   const [editOwner, setEditOwner] = useState<{ workspace_id: string; user_id: string } | null>(null);
@@ -187,15 +191,39 @@ function ProductsPage() {
     },
   });
   const { data: storeDirectory } = useStoreDirectory(allStores);
-  const [storeSearch, setStoreSearch] = useState("");
+  const { data: sharedProducts } = useQuery({
+    queryKey:["product-sharing",workspaceId],
+    enabled:Boolean(workspaceId),
+    queryFn:() => listMyProductShares(),
+  });
+  const shareByProduct = new Map((sharedProducts ?? []).map(p => [p.product_id,p]));
+  const sharingMutation = useMutation({
+    mutationFn:(values:{productId:string;enabled:boolean}) => setProductSharing({data:values}),
+    onSuccess:(result) => {
+      toast.success(result.enabled ? "Producto habilitado para compartir" : "Producto privado");
+      queryClient.invalidateQueries({queryKey:["product-sharing",workspaceId]});
+    },
+    onError:(err:Error)=>toast.error(err.message),
+  });
+  const importMutation = useMutation({
+    mutationFn:(code:string)=>importProductByCode({data:{code}}),
+    onSuccess:(result)=>{
+      toast.success(result.existing ? "Ya importaste este producto; archivos actualizados" : "Producto importado a tu tienda");
+      setImportOpen(false);setImportCode("");
+      queryClient.invalidateQueries({queryKey:["products"]});
+      queryClient.invalidateQueries({queryKey:["product-sharing",workspaceId]});
+    },
+    onError:(err:Error)=>toast.error(err.message),
+  });
   // Grupos por vendedor (solo en «Todas las tiendas»).
   const productGroups = (() => {
-    if (!allStores) return [{ id: workspaceId ?? "propia", rows: products ?? [] }];
-    const q = storeSearch.trim().toLowerCase();
+    const q = productSearch.trim().toLowerCase();
+    if (!allStores) return [{ id: workspaceId ?? "propia", rows: (products ?? []).filter(p =>
+      !q || `${p.name} ${p.sku ?? ""} ${shareByProduct.get(p.id)?.share_code ?? ""}`.toLowerCase().includes(q)) }];
     const map = new Map<string, NonNullable<typeof products>>();
     for (const p of products ?? []) {
       const store = storeDirectory?.get(p.workspace_id);
-      if (q && !`${p.name} ${p.sku ?? ""} ${store?.email ?? ""} ${store?.name ?? ""}`.toLowerCase().includes(q)) continue;
+      if (q && !`${p.name} ${p.sku ?? ""} ${shareByProduct.get(p.id)?.share_code ?? ""} ${store?.email ?? ""} ${store?.name ?? ""}`.toLowerCase().includes(q)) continue;
       map.set(p.workspace_id, [...(map.get(p.workspace_id) ?? []), p]);
     }
     return [...map.entries()]
@@ -300,6 +328,7 @@ function ProductsPage() {
     },
     onSuccess: () => {
       toast.success("Producto guardado");
+      queryClient.invalidateQueries({queryKey:["product-sharing",workspaceId]});
       setOpen(false);
       setForm(createEmptyForm());
       setPendingFiles([]);
@@ -467,6 +496,10 @@ function ProductsPage() {
             >
               <ExternalLink className="mr-1 h-4 w-4" /> Ver catálogo
             </Button>
+            <Button variant="outline" disabled={!workspaceId}
+              onClick={() => {setImportOpen(true);setImportCode("");}}>
+              <Download className="mr-1 h-4 w-4" /> Importar por ID
+            </Button>
             <Button
               onClick={() => {
                 setEditOwner(null);
@@ -483,12 +516,16 @@ function ProductsPage() {
 
       />
 
-      {allStores && (
-        <div className="mb-4 flex flex-wrap items-center gap-3">
-          <Input className="w-full sm:w-80" placeholder="Buscar producto, SKU o correo del vendedor" value={storeSearch} onChange={(e) => setStoreSearch(e.target.value)} />
-          <p className="text-sm text-muted-foreground">{(products ?? []).length} productos de {productGroups.length} tiendas · podés editar cualquiera</p>
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <div className="relative w-full max-w-xl">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input className="pl-9 pr-9" placeholder={allStores ? "Buscar producto, SKU, ID o vendedor..." : "Buscar producto por nombre, SKU o ID..."}
+            value={productSearch} onChange={e=>setProductSearch(e.target.value)} />
+          {productSearch && <button type="button" aria-label="Limpiar búsqueda" onClick={()=>setProductSearch("")}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"><X className="h-4 w-4"/></button>}
         </div>
-      )}
+        <p className="text-sm text-muted-foreground">{productGroups.reduce((sum,g)=>sum+g.rows.length,0)} productos encontrados</p>
+      </div>
       {isLoading ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {[0, 1, 2].map((i) => (
@@ -515,6 +552,9 @@ function ProductsPage() {
         />
       ) : (
         <div className="space-y-6">
+        {productGroups.every(g=>g.rows.length===0) && (
+          <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">No encontramos productos con esa búsqueda.</p>
+        )}
         {productGroups.map((group) => (
         <section key={group.id} className="space-y-3">
           {allStores && (
@@ -529,6 +569,27 @@ function ProductsPage() {
           {group.rows.map((p) => (
             <Card key={p.id} className="flex flex-col">
               <CardContent className="flex flex-1 flex-col gap-3 p-5">
+                {p.workspace_id === workspaceId && shareByProduct.get(p.id) && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-muted/50 px-2.5 py-2">
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">ID para compartir</p>
+                      <p className="font-mono text-xs font-semibold">{shareByProduct.get(p.id)!.share_code}</p>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <Button size="icon" variant="ghost" aria-label="Copiar ID del producto"
+                        onClick={async()=>{
+                          await navigator.clipboard.writeText(shareByProduct.get(p.id)!.share_code);
+                          toast.success("ID copiado");
+                        }}><Copy className="h-3.5 w-3.5"/></Button>
+                      <Button size="sm" variant={shareByProduct.get(p.id)!.enabled ? "secondary" : "outline"}
+                        disabled={sharingMutation.isPending}
+                        onClick={()=>sharingMutation.mutate({productId:p.id,enabled:!shareByProduct.get(p.id)!.enabled})}>
+                        <Share2 className="mr-1 h-3.5 w-3.5"/>
+                        {shareByProduct.get(p.id)!.enabled ? "Compartido" : "Habilitar compartir"}
+                      </Button>
+                    </div>
+                  </div>
+                )}
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <h3 className="truncate font-semibold">{p.name}</h3>
@@ -615,6 +676,29 @@ function ProductsPage() {
         ))}
         </div>
       )}
+
+      <Dialog open={importOpen} onOpenChange={setImportOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Importar producto por ID</DialogTitle>
+            <DialogDescription>Ingresá el código que otro vendedor habilitó para compartir. Se creará una copia independiente en tu tienda, con precios, fotos y textos; tus pedidos, bancos y entrenamiento no cambian.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="share-code">ID del producto</Label>
+            <Input id="share-code" placeholder="SKY-..." value={importCode}
+              onChange={e=>setImportCode(e.target.value.toUpperCase().trim())}
+              onKeyDown={e=>{if(e.key==="Enter" && importCode.trim() && !importMutation.isPending) importMutation.mutate(importCode.trim());}} />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={()=>setImportOpen(false)}>Cancelar</Button>
+            <Button disabled={importMutation.isPending || !importCode.trim()}
+              onClick={()=>importMutation.mutate(importCode.trim())}>
+              {importMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <Download className="mr-2 h-4 w-4"/>}
+              Importar producto
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-5xl">
