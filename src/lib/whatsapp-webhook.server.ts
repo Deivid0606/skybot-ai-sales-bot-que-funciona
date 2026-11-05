@@ -40,7 +40,7 @@ async function sendWhatsAppText(...args: Parameters<typeof sendWhatsAppTextNow>)
 }
 import { detectComplaint, COMPLAINT_REASON_LABELS } from "@/lib/complaints";
 
-type CheckoutPrompt = "city" | "name" | "address";
+type CheckoutPrompt = "city" | "name" | "address" | "recipient_ci";
 
 const looksLikeCheckoutQuestion = (reply: string, stage: CheckoutPrompt): boolean => {
   // La pregunta debe existir en la respuesta, no basta con listar «Nombre: ...».
@@ -49,7 +49,9 @@ const looksLikeCheckoutQuestion = (reply: string, stage: CheckoutPrompt): boolea
     ? /\b(?:ciudad|localidad|d[oó]nde\s+(?:lo|te)\s+(?:enviamos|entregamos|recib[ií]s)|d[oó]nde\s+quer[eé]s\s+recibir)\b/i
     : stage === "name"
       ? /\b(?:nombre|apellido|c[oó]mo\s+te\s+llam[aá]s|qui[eé]n\s+(?:lo\s+)?recibe)\b/i
-      : /\b(?:direcci[oó]n|domicilio|calle|referencia|ubicaci[oó]n|google\s+maps)\b/i;
+      : stage === "recipient_ci"
+        ? /\b(?:c[eé]dula|c\.?i\.?|documento\s+de\s+identidad)\b/i
+        : /\b(?:direcci[oó]n|domicilio|calle|referencia|ubicaci[oó]n|google\s+maps)\b/i;
   return questions.some(question => target.test(question));
 };
 
@@ -76,6 +78,9 @@ function requiredCheckoutPrompt(
       stage: "name",
       question: "😊 Para preparar tu pedido, ¿me pasás tu nombre y apellido?",
     };
+  }
+  if (state.awaiting === "recipient_ci" && state.cityVerified && customerNameValid) {
+    return { stage: "recipient_ci", question: "🪪 Para registrar la encomienda, ¿me pasás la cédula del destinatario?" };
   }
   if (state.awaiting === "address" && state.cityVerified && customerNameValid &&
       state.paymentMethod === "contraentrega" && !isValidDeliveryAddress(state.street) && !isValidDeliveryAddress(state.locationUrl)) {
@@ -1776,6 +1781,17 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     adId: attributedAdId, conn, phone, text: body,
   });
   if (catalogResult?.productId && catalogResult.productId !== conversation.product_id) {
+    // A fresh product selection starts its own checkout. Never carry the old
+    // product/variant/quantity/receipt into this catalogue, even in the same chat.
+    const { data: activeSale } = await supabaseAdmin.from("bot_sale_states").select("state")
+      .eq("workspace_id", workspaceId).eq("conversation_id", conversation.id).maybeSingle();
+    const activeProduct = (activeSale?.state as SaleState | undefined)?.productId ?? conversation.product_id;
+    if (activeProduct && activeProduct !== catalogResult.productId) {
+      const { error: resetError } = await supabaseAdmin.from("bot_sale_states").delete()
+        .eq("workspace_id", workspaceId).eq("conversation_id", conversation.id);
+      if (resetError) throw resetError;
+      console.info("[BOT_SKY_PRODUCT_SWITCH]", JSON.stringify({conversationId: conversation.id}));
+    }
     conversation.product_id = catalogResult.productId;
     const { error: productUpdateError } = await supabaseAdmin.from("conversations")
       .update({ product_id: catalogResult.productId })
@@ -2426,7 +2442,10 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         return `Comprobante RECIBIDO y compatible por ${formatGs(documented)}, pero el total del pedido es ${formatGs(expected)}: falta ${formatGs(expected - documented)}. Pedí el comprobante de esa diferencia.`;
       const extra = expected > 0 && documented > expected ? ` Tiene un saldo a favor de ${formatGs(documented - expected)} (pendiente de acreditación bancaria).` : "";
       return `Comprobante RECIBIDO y compatible con la cuenta del vendedor (monto ${formatGs(documented)}${expected > 0 ? `, total ${formatGs(expected)}` : ""}).${extra} Agradecé sin decir que el pago está acreditado.` +
-        (isValidCustomerName(st.customerName) ? " Indicá que estamos registrando el pedido." : " Pedí ahora el nombre y apellido de quien va a recibir el pedido.");
+        (!isValidCustomerName(st.customerName) ? " Pedí ahora el nombre y apellido de quien va a recibir el pedido."
+          : sellerRequiresEncomiendaCi(ctx.training) && !isValidRecipientCi(st.recipientCi)
+            ? " Pedí la cédula del destinatario; NO confirmes el pedido todavía."
+            : " Indicá que estamos registrando el pedido.");
     })();
     try {
       result = checkoutCompleteByRules
@@ -2687,10 +2706,13 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
 
     // En el turno de un comprobante la IA no puede cambiar el producto de la venta.
     const keepSaleProduct = Boolean(mediaPath && currentReceipt && (saveStep?.state.productId ?? previousSale.productId));
-    const detectedProduct =
-      !keepSaleProduct && result.product_id && ctx.products.some((p) => p.id === result.product_id)
-        ? result.product_id
-        : (saveStep?.state.productId ?? previousSale.productId ?? conversation.product_id);
+    const currentSaleProduct = saveStep?.state.productId ?? previousSale.productId ?? conversation.product_id;
+    // Product explicitly saved by the current checkout wins over a model guess
+    // that may refer to an older product still present in chat history.
+    const detectedProduct = currentSaleProduct && ctx.products.some(p => p.id === currentSaleProduct)
+      ? currentSaleProduct
+      : (!keepSaleProduct && result.product_id && ctx.products.some(p => p.id === result.product_id)
+        ? result.product_id : null);
 
     // Segunda barrera anti-repetición:
     // si la IA intenta volver a mandar prácticamente el mismo copy largo del
@@ -2963,6 +2985,8 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
     const orderReady = financiallyReady && isOrderReady(result.order, detectedProduct) &&
       // Nombre verificado desde el mensaje del cliente, no solamente del JSON de IA.
       isValidCustomerName(verifiedSaleState.customerName) &&
+      (!isEncomiendaAdvanceOrder(ctx.training, result.order?.city, result.order?.departamento, result.order?.payment_method)
+        || !sellerRequiresEncomiendaCi(ctx.training) || isValidRecipientCi(verifiedSaleState.recipientCi)) &&
       (Boolean(saveStep?.state.cartLines?.length) || stateExpectedTotal !== null || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory)) &&
       (!isAdvance || hasReceiptForOrder);
     // La cédula del destinatario de encomienda se pide DESPUÉS de confirmar
@@ -3678,6 +3702,9 @@ export async function createOrderFromAi(args: {
       (!orderIsEncomienda && args.order.street && !isValidDeliveryAddress(args.order.street))) {
     throw new Error("Pedido incompleto: nombre, ciudad, cantidad o pago inválidos. No se registró la venta.");
   }
+  if (!isValidCustomerName(args.order.customer_name)) throw new Error("Nombre y apellido del destinatario inválidos: pedido no registrado.");
+  if (orderIsEncomienda && args.training && sellerRequiresEncomiendaCi(args.training) &&
+      !isValidRecipientCi(args.order.recipient_ci)) throw new Error("Cédula del destinatario pendiente: pedido no registrado.");
   const sourceMessageId = cleanOrderText(args.sourceMessageId);
 
   if (!sourceMessageId) {
