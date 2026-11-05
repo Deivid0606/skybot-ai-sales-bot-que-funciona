@@ -164,6 +164,8 @@ export async function retryDcanpForProductSku(workspaceId: string, productId: st
     return { enabled: false, sent: 0, loaded: 0, failed: 0 };
   }
   const result = await importWorkspace(ws as unknown as WorkspaceRow, productId);
-  return { enabled: true, sent: result.sent ?? 0, loaded: result.loaded ?? 0, failed: result.failed ?? 0,
+  return { enabled: true, sent: result.sent ?? 0,
+    loaded: "loaded" in result ? result.loaded ?? 0 : 0,
+    failed: "failed" in result ? result.failed ?? 0 : 0,
     status: "status" in result ? result.status : undefined };
 }
