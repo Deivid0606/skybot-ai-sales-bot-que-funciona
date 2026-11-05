@@ -1786,7 +1786,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     const { data: activeSale } = await supabaseAdmin.from("bot_sale_states").select("state")
       .eq("workspace_id", workspaceId).eq("conversation_id", conversation.id).maybeSingle();
     const activeProduct = (activeSale?.state as SaleState | undefined)?.productId ?? conversation.product_id;
-    if (activeProduct && activeProduct !== catalogResult.productId) {
+    if (activeProduct !== catalogResult.productId) {
       // A saved cycle boundary prevents historic product selections, names and
       // quantities from being replayed into this new sale.
       const { error: resetError } = await supabaseAdmin.from("bot_sale_states").upsert({
