@@ -7,6 +7,8 @@ type Product = AiContext["products"][number];
 type Option = Product["product_prices"][number];
 export type SaleState = {
   productId?: string | null;
+  /** Marks the customer message that started this product checkout; do not recover earlier products. */
+  cycleStartedAt?: string | null;
   optionId?: string | null;
   cartLines?: Array<{ optionId: string; quantity: number }>;
   quantity?: number | null;
