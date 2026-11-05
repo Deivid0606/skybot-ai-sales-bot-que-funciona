@@ -1489,7 +1489,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       wamid: message.id,
       status: "received",
     })
-    .select("id")
+    .select("id,created_at")
     .single();
   // Meta reenvía el mismo mensaje si tardamos en contestarle. Si otro intento
   // ya guardó este mensaje (índice único workspace_id + wamid), ese intento es
@@ -1787,8 +1787,13 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       .eq("workspace_id", workspaceId).eq("conversation_id", conversation.id).maybeSingle();
     const activeProduct = (activeSale?.state as SaleState | undefined)?.productId ?? conversation.product_id;
     if (activeProduct && activeProduct !== catalogResult.productId) {
-      const { error: resetError } = await supabaseAdmin.from("bot_sale_states").delete()
-        .eq("workspace_id", workspaceId).eq("conversation_id", conversation.id);
+      // A saved cycle boundary prevents historic product selections, names and
+      // quantities from being replayed into this new sale.
+      const { error: resetError } = await supabaseAdmin.from("bot_sale_states").upsert({
+        workspace_id: workspaceId, conversation_id: conversation.id,
+        state: { productId: catalogResult.productId, cycleStartedAt: savedMessage?.created_at ?? new Date().toISOString() },
+        updated_at: new Date().toISOString(),
+      }, { onConflict: "workspace_id,conversation_id" });
       if (resetError) throw resetError;
       console.info("[BOT_SKY_PRODUCT_SWITCH]", JSON.stringify({conversationId: conversation.id}));
     }
@@ -1802,12 +1807,15 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
   // No enviar además una respuesta IA duplicada; IA asume los turnos siguientes.
   if (catalogResult?.sent) return;
 
-  const { data: history } = await supabaseAdmin
-    .from("messages")
-    .select("sender, body")
-    .eq("conversation_id", conversation.id)
-    .order("created_at", { ascending: false })
-    .limit(24);
+  const { data: activeCycle } = await supabaseAdmin.from("bot_sale_states").select("state")
+    .eq("workspace_id", workspaceId).eq("conversation_id", conversation.id).maybeSingle();
+  const cycleStart = (activeCycle?.state as SaleState | null)?.cycleStartedAt;
+  let historyQuery = supabaseAdmin.from("messages").select("sender, body")
+    .eq("workspace_id", workspaceId).eq("conversation_id", conversation.id);
+  if (cycleStart && !Number.isNaN(Date.parse(cycleStart))) {
+    historyQuery = historyQuery.gte("created_at", cycleStart);
+  }
+  const { data: history } = await historyQuery.order("created_at", { ascending: false }).limit(24);
 
   const chatHistory = (history ?? [])
     .reverse()
@@ -2205,7 +2213,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       previousSale.productId && previousSale.cityVerified &&
       ((previousSale.receiptDocuments?.length ?? 0) > 0 || previousSale.receiptPath));
     const awaitingCheckoutDetail = Boolean(previousSale.productId &&
-      (["name", "details", "address", "quantity", "variant", "city"].includes(String(previousSale.awaiting ?? "")) ||
+      (["name", "recipient_ci", "details", "address", "quantity", "variant", "city"].includes(String(previousSale.awaiting ?? "")) ||
         hasPendingDocumentedCheckout) &&
       !/\b(?:gracias|chau|adios|no quiero|cancelar|reclamo|mi pedido|donde esta)\b/i.test(normalizeIntentText(body)));
     // Los archivos de pago forman parte del checkout activo aunque el clasificador
