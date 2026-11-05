@@ -55,15 +55,19 @@ async function setWorkspaceStatus(workspaceId: string, status: string) {
     .eq("id", workspaceId);
 }
 
-async function importWorkspace(ws: WorkspaceRow) {
+async function importWorkspace(ws: WorkspaceRow, onlyProductId?: string) {
   const since = new Date(new Date(ws.dcanp_auto_since ?? Date.now()).getTime() - BACKLOG_MS).toISOString();
   const retryBefore = new Date(Date.now() - RETRY_MS).toISOString();
-  const { data: orders, error } = await supabaseAdmin.from("orders")
+  // A corrected SKU may unlock a previously skipped sale. For an explicit
+  // SKU-edit retry, inspect only that product, even if it predates normal backlog.
+  let pendingQuery = supabaseAdmin.from("orders")
     .select("id,order_number,customer_name,phone,city,departamento,street,district,sku,product_title,quantity,total,payment_method,payment_status,receipt_url,observations,status,tags,ecommerce_sync_error,ecommerce_sync_attempted_at" as never)
     .eq("workspace_id", ws.id)
     .in("status", ["nuevo", "confirmado"])
-    .is("ecommerce_synced_at", null)
-    .gte("created_at", since)
+    .is("ecommerce_synced_at", null);
+  if (onlyProductId) pendingQuery = pendingQuery.eq("product_id", onlyProductId);
+  else pendingQuery = pendingQuery.gte("created_at", since);
+  const { data: orders, error } = await pendingQuery
     .order("created_at", { ascending: true })
     .limit(200);
   if (error) throw error;
@@ -75,7 +79,7 @@ async function importWorkspace(ws: WorkspaceRow) {
     !isAdvancePayment(order) &&
     String(order.sku ?? "").trim() !== "" &&
     !String(order.observations ?? "").includes("MULTIVARIANTE (MISMO PRODUCTO)") &&
-    (!order.ecommerce_sync_error || !order.ecommerce_sync_attempted_at || order.ecommerce_sync_attempted_at < retryBefore))
+    (Boolean(onlyProductId) || !order.ecommerce_sync_error || !order.ecommerce_sync_attempted_at || order.ecommerce_sync_attempted_at < retryBefore))
     .slice(0, BATCH);
 
   if (!rows.length) {
@@ -144,4 +148,22 @@ export async function runDcanpAutoImport() {
     }
   }
   return { workspaces: summary.length, summary };
+}
+
+/**
+ * Immediate targeted retry after changing a product SKU. This reuses the same
+ * DCANP importer, eligibility filters and source_order_id idempotency as cron.
+ * It never enrolls a seller who did not activate and verify the integration.
+ */
+export async function retryDcanpForProductSku(workspaceId: string, productId: string) {
+  const { data: ws, error } = await supabaseAdmin.from("workspaces")
+    .select("id,dcanp_email,dcanp_auto_since,dcanp_auto_import,dcanp_verified_at" as never)
+    .eq("id", workspaceId).maybeSingle();
+  if (error) throw error;
+  if (!ws || !(ws as any).dcanp_auto_import || !(ws as any).dcanp_verified_at || !(ws as any).dcanp_email) {
+    return { enabled: false, sent: 0, loaded: 0, failed: 0 };
+  }
+  const result = await importWorkspace(ws as unknown as WorkspaceRow, productId);
+  return { enabled: true, sent: result.sent ?? 0, loaded: result.loaded ?? 0, failed: result.failed ?? 0,
+    status: "status" in result ? result.status : undefined };
 }
