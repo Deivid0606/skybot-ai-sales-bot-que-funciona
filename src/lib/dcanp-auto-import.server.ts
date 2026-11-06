@@ -55,7 +55,7 @@ async function setWorkspaceStatus(workspaceId: string, status: string) {
     .eq("id", workspaceId);
 }
 
-async function importWorkspace(ws: WorkspaceRow, onlyProductId?: string) {
+async function importWorkspace(ws: WorkspaceRow, onlyProductId?: string, onlyOrderIds?: string[]) {
   const since = new Date(new Date(ws.dcanp_auto_since ?? Date.now()).getTime() - BACKLOG_MS).toISOString();
   const retryBefore = new Date(Date.now() - RETRY_MS).toISOString();
   // A corrected SKU may unlock a previously skipped sale. For an explicit
@@ -65,7 +65,8 @@ async function importWorkspace(ws: WorkspaceRow, onlyProductId?: string) {
     .eq("workspace_id", ws.id)
     .in("status", ["nuevo", "confirmado"])
     .is("ecommerce_synced_at", null);
-  if (onlyProductId) pendingQuery = pendingQuery.eq("product_id", onlyProductId);
+  if (onlyOrderIds?.length) pendingQuery = pendingQuery.in("id",onlyOrderIds);
+  else if (onlyProductId) pendingQuery = pendingQuery.eq("product_id", onlyProductId);
   else pendingQuery = pendingQuery.gte("created_at", since);
   const { data: orders, error } = await pendingQuery
     .order("created_at", { ascending: true })
@@ -93,7 +94,7 @@ async function importWorkspace(ws: WorkspaceRow, onlyProductId?: string) {
     (linesFor(order).length
       ? linesFor(order).every(line=>String(line.sku??"").trim()&&Number(line.quantity)>0&&Number(line.price)>0)
       : String(order.sku??"").trim()!=="" && !String(order.observations??"").includes("MULTIVARIANTE (MISMO PRODUCTO)")) &&
-    (Boolean(onlyProductId) || !order.ecommerce_sync_error || !order.ecommerce_sync_attempted_at || order.ecommerce_sync_attempted_at < retryBefore))
+    (Boolean(onlyProductId) || Boolean(onlyOrderIds?.length) || !order.ecommerce_sync_error || !order.ecommerce_sync_attempted_at || order.ecommerce_sync_attempted_at < retryBefore))
     .slice(0, BATCH);
 
   if (!rows.length) {
@@ -178,7 +179,19 @@ export async function retryDcanpForProductSku(workspaceId: string, productId: st
   if (!ws || !(ws as any).dcanp_auto_import || !(ws as any).dcanp_verified_at || !(ws as any).dcanp_email) {
     return { enabled: false, sent: 0, loaded: 0, failed: 0 };
   }
-  const result = await importWorkspace(ws as unknown as WorkspaceRow, productId);
+  // The changed SKU may belong to the second/third line in a multi-product order,
+  // not the legacy orders.product_id. Retry all matching line-item orders.
+  const [{data:lineOrders,error:lineError},{data:primaryOrders,error:primaryError}]=await Promise.all([
+    supabaseAdmin.from("order_items").select("order_id")
+      .eq("workspace_id",workspaceId).eq("product_id",productId),
+    supabaseAdmin.from("orders").select("id").eq("workspace_id",workspaceId)
+      .eq("product_id",productId).in("status",["nuevo","confirmado"]).is("ecommerce_synced_at",null),
+  ]);
+  if(lineError||primaryError)throw lineError??primaryError;
+  const ids=[...new Set([...(lineOrders??[]).map(x=>x.order_id),...(primaryOrders??[]).map(x=>x.id)])];
+  const result = ids.length
+    ? await importWorkspace(ws as unknown as WorkspaceRow, productId, ids.slice(0,200))
+    : {workspace:workspaceId,sent:0,loaded:0,failed:0};
   return { enabled: true, sent: result.sent ?? 0,
     loaded: "loaded" in result ? result.loaded ?? 0 : 0,
     failed: "failed" in result ? result.failed ?? 0 : 0,
