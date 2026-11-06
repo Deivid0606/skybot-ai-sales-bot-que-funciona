@@ -39,7 +39,7 @@ import { OrderEditDialog } from "@/components/order-edit-dialog";
 import { ORDER_STATES, ORDER_TAGS, orderStateLabel, buildEcommerceUrl } from "@/lib/orders";
 import type { Tables } from "@/integrations/supabase/types";
 
-type Order = Tables<"orders">;
+type Order = Tables<"orders"> & {order_items?: Array<{id:string;title:string;sku:string|null;quantity:number;price:number}>};
 
 function Field({ label, value }: { label: string; value?: string | number | null }) {
   return (
@@ -58,7 +58,9 @@ export function OrderCard({ order }: { order: Order }) {
   const [chatOpen, setChatOpen] = useState(false);
   const [receiptUrl, setReceiptUrl] = useState<string | null>(null);
   // Una compra con varias presentaciones no puede exportarse como un SKU único.
-  const isMixedVariantOrder = String(order.observations ?? "").includes(
+  const lineItems=order.order_items??[];
+  const hasSeveralItems=lineItems.length>1;
+  const isMixedVariantOrder = lineItems.length===0 && String(order.observations ?? "").includes(
     "MULTIVARIANTE (MISMO PRODUCTO)",
   );
 
@@ -161,7 +163,8 @@ export function OrderCard({ order }: { order: Order }) {
       `Ciudad: ${order.city ?? "—"} / ${order.departamento ?? "—"}`,
       `Dirección: ${order.street ?? "—"}, ${order.district ?? "—"}`,
       `Referencia: ${order.reference ?? "—"}`,
-      `Producto: ${order.product_title ?? "—"} (${order.sku ?? "s/ SKU"}) x${order.quantity}`,
+      ...(lineItems.length ? lineItems.map((item,i)=>`${i+1}. ${item.title} (${item.sku??"s/ SKU"}) x${item.quantity} = ${formatGs(Number(item.quantity)*Number(item.price))}`)
+        : [`Producto: ${order.product_title ?? "—"} (${order.sku ?? "s/ SKU"}) x${order.quantity}`]),
       `Precio: ${formatGs(order.price)}`,
       `Total: ${formatGs(order.total)}`,
       `Pago: ${order.payment_method ?? "—"} (${order.payment_status})`,
@@ -172,7 +175,7 @@ export function OrderCard({ order }: { order: Order }) {
   }
 
   function sendToEcommerce() {
-    if (isMixedVariantOrder) {
+    if (hasSeveralItems || isMixedVariantOrder) {
       toast.error("Este pedido contiene varias presentaciones. Cargá cada variante por separado en E-commerce para evitar productos o cantidades incorrectos.");
       return;
     }
@@ -216,15 +219,30 @@ export function OrderCard({ order }: { order: Order }) {
           <Field label="Calle" value={order.street} />
           <Field label="Barrio" value={order.district} />
           <Field label="Referencia" value={order.reference} />
-          <Field label="Producto" value={order.product_title} />
-          <Field label="SKU" value={order.sku} />
-          <Field label="Cantidad" value={order.quantity} />
-          <Field label="Precio" value={formatGs(order.price)} />
+          <Field label="Producto" value={hasSeveralItems?"Varios artículos":order.product_title} />
+          {!hasSeveralItems && <Field label="SKU" value={order.sku} />}
+          <Field label="Cantidad total" value={lineItems.length?lineItems.reduce((sum,line)=>sum+line.quantity,0):order.quantity} />
+          {!hasSeveralItems && <Field label="Precio" value={formatGs(order.price)} />}
           <Field label="Forma de pago" value={order.payment_method} />
           <Field label="Anuncio" value={order.ad_id} />
           <Field label="Comprobante" value={order.receipt_url ? "Sí" : "No"} />
         </div>
 
+        {lineItems.length>0 && (
+          <div className="space-y-2 rounded-lg border p-3">
+            <p className="text-xs font-semibold">Artículos del pedido · {lineItems.length} línea(s)</p>
+            {lineItems.map((item,i)=>(
+              <div key={item.id??i} className="flex flex-wrap justify-between gap-2 rounded-md bg-muted/40 p-2 text-sm">
+                <div className="min-w-0">
+                  <p className="font-medium">{i+1}. {item.title}</p>
+                  <p className="text-xs text-muted-foreground">SKU: {item.sku||"Sin SKU"} · Cantidad: {item.quantity} · Unitario: {formatGs(item.price)}</p>
+                </div>
+                <span className="font-semibold">{formatGs(item.quantity*item.price)}</span>
+              </div>
+            ))}
+            <p className="text-right text-sm font-semibold">Total: {formatGs(order.total)}</p>
+          </div>
+        )}
         {order.observations && (
           <div className="rounded-lg border border-border bg-muted/30 p-3">
             <p className="mb-1 text-xs font-semibold text-foreground">Observaciones y detalle del pedido</p>
@@ -290,7 +308,7 @@ export function OrderCard({ order }: { order: Order }) {
             </span>
           )}
 
-          <Button size="sm" onClick={sendToEcommerce} disabled={isMixedVariantOrder} title={isMixedVariantOrder ? "Variantes mezcladas: cargar manualmente en E-commerce" : "Cargar a E-commerce"}>
+          <Button size="sm" onClick={sendToEcommerce} disabled={isMixedVariantOrder || hasSeveralItems} title={hasSeveralItems ? "Usá la carga por lote de Pedidos para importar todos los artículos" : isMixedVariantOrder ? "Variantes antiguas: revisar manualmente" : "Cargar a E-commerce"}>
             <ShoppingCart className="mr-1 h-4 w-4" /> Ecommerce
           </Button>
           <Button
