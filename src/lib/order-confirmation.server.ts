@@ -16,6 +16,7 @@ type ConfirmationArgs = {
   productName: string;
   productOption?: string | null;
   packageCopy?: string | null;
+  items?: Array<{title:string;sku?:string|null;quantity:number;price:number}>;
   savedQuantity: number;
   paymentStatus?: string | null;
   deliveryMethod?: string | null;
@@ -39,6 +40,13 @@ export function buildRegisteredOrderConfirmation(args: ConfirmationArgs): string
   const optionLabel = String(args.productOption ?? "").trim();
   const boxLabel = /^(?:1|un|una)\s+caja\b/i.test(optionLabel);
   const packContainsTwoBases = boxLabel && /\b(?:1|una)\s+caja\s+(?:trae|contiene|incluye)\s+(?:2|dos)\s+bases\b/i.test(String(args.packageCopy ?? ""));
+  const multi = (args.items??[]).length>1;
+  const itemLines = multi ? (args.items??[]).flatMap((item,index)=>[
+    `📦 ${index+1}. ${item.title}`,
+    `🔢 Cantidad: ${item.quantity}`,
+    `💰 Subtotal: ${formatGs(Number(item.quantity)*Number(item.price))}`,
+    ...(item.sku ? [`SKU: ${item.sku}`] : []),
+  ]) : [];
   const quantityDescription = boxLabel && args.savedQuantity === 1
     ? packContainsTwoBases ? "1 caja (contiene 2 bases)" : optionLabel
     : `${args.savedQuantity} unidad${args.savedQuantity === 1 ? "" : "es"}`;
@@ -48,8 +56,7 @@ export function buildRegisteredOrderConfirmation(args: ConfirmationArgs): string
     `${isAdvance ? "👤 Destinatario" : "👤 Cliente"}: ${created.customer_name}`,
     ...(args.recipientCi && /^[0-9]{4,9}$/.test(args.recipientCi.replace(/[^0-9]/g,""))
       ? [`🪪 Cédula: ${args.recipientCi.replace(/[^0-9]/g,"")}`] : []),
-    `📦 Producto: ${product}`,
-    `🔢 Cantidad: ${quantityDescription}`,
+    ...(multi ? itemLines : [`📦 Producto: ${product}`,`🔢 Cantidad: ${quantityDescription}`]),
     `💰 Total: ${formatGs(created.total)}`,
     `📍 Ciudad: ${city}`,
     ...(address ? [`🏠 Dirección: ${address}`] : []),

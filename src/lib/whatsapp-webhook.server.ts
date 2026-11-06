@@ -9,6 +9,7 @@ import { formatGs } from "@/lib/format";
 import { parseReceiptFields } from "@/lib/media-ai.server";
 import { reconcileOrderWithSaleState, recoverSaleStateFromHistory, isValidCustomerName, isValidDeliveryAddress } from "@/lib/sale-reconciliation.server";
 import { buildRegisteredOrderConfirmation } from "@/lib/order-confirmation.server";
+import { resolveCartPricing, type MultiProductLine } from "@/lib/multi-product-cart";
 import { buildWorkspaceAiContext } from "@/lib/ai-context.server";
 import { generateAiReply, applyDynamicSellerTrainingReply, type AiContext } from "@/lib/ai.server";
 import { extractSaleWithAi, applyAiExtraction } from "@/lib/ai-extract.server";
@@ -1776,7 +1777,10 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
   // Un comprobante (su texto leído) no es una consulta de producto: no dispara catálogo.
   const isReceiptMedia = Boolean(media && (media.type === "image" || media.type === "document") &&
     (parseReceiptFields(transcript) || /^\s*COMPROBANTE\b/i.test(String(transcript ?? ""))));
-  const catalogResult = isReceiptMedia ? null : await sendCatalogByKeyword({
+  // An explicit multi-product purchase must reach the cart parser. A single
+  // product catalog template must not consume the whole WhatsApp turn.
+  const multiProductInquiry = /\b(?:quiero|quisiera|llevo|necesito|comprar|pedir|agrega|sumale)\b.{2,100}\by\b.{2,100}/i.test(normalizeIntentText(body));
+  const catalogResult = isReceiptMedia || multiProductInquiry ? null : await sendCatalogByKeyword({
     workspaceId, ownerId, conversationId: conversation.id,
     adId: attributedAdId, conn, phone, text: body,
   });
@@ -2957,7 +2961,16 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
     // por eso un pago correcto o de más nunca alcanzaba y el pedido no se registraba.
     const stateOptions = selectedCatalogProduct?.product_prices ?? [];
     let stateExpectedTotal: number | null = null;
-    if (paymentSaleState.cartLines?.length) {
+    const multiCartForPayment = paymentSaleState.multiProductLines?.length
+      ? resolveCartPricing(paymentSaleState.multiProductLines,ctx.products) : null;
+    if (multiCartForPayment?.length) {
+      stateExpectedTotal = multiCartForPayment.reduce((sum,line)=>sum+line.total,0);
+      if(result.order) {
+        result.order.quantity=multiCartForPayment.reduce((sum,line)=>sum+line.quantity,0);
+        result.order.product_price_id=multiCartForPayment[0].optionId;
+        result.order.promo_quantity=1;
+      }
+    } else if (paymentSaleState.cartLines?.length) {
       let sum = 0; let ok = true;
       for (const line of paymentSaleState.cartLines) {
         const opt = stateOptions.find(o => o.id === line.optionId);
@@ -2998,7 +3011,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       isValidCustomerName(verifiedSaleState.customerName) &&
       (!isEncomiendaAdvanceOrder(ctx.training, result.order?.city, result.order?.departamento, result.order?.payment_method)
         || !sellerRequiresEncomiendaCi(ctx.training) || isValidRecipientCi(verifiedSaleState.recipientCi)) &&
-      (Boolean(saveStep?.state.cartLines?.length) || stateExpectedTotal !== null || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory)) &&
+      (Boolean(saveStep?.state.cartLines?.length) || Boolean(multiCartForPayment?.length) || stateExpectedTotal !== null || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory)) &&
       (!isAdvance || hasReceiptForOrder);
     // La cédula del destinatario de encomienda se pide DESPUÉS de confirmar
     // (shouldAskPostSaleCi). Nunca bloquea el registro del pedido.
@@ -3062,6 +3075,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         order: completedOrder,
         products: ctx.products,
         cartLines: saveStep?.state.cartLines,
+        multiProductLines: paymentSaleState.multiProductLines,
         training: ctx.training,
         // Excedente del comprobante documentado; NO equivale a crédito acreditado.
         documentedReceiptTotal: isAdvance && financiallyReady ? receivedTotal : null,
@@ -3140,6 +3154,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         requestRecipientCi: shouldAskPostSaleCi(ctx.training,completedOrder,savedConfirmationOrder.observations),
         order: { ...completedOrder, payment_method: savedConfirmationOrder.payment_method },
         productName: createdProduct?.name ?? "Producto del pedido",
+        items: (await supabaseAdmin.from("order_items").select("title,sku,quantity,price").eq("order_id",createdOrder.id)).data ?? [],
         productOption: confirmedOption?.label ?? completedOrder.price_option_label,
         packageCopy: createdProduct?.sales_copy ?? createdProduct?.description ?? null,
         savedQuantity: Number(savedConfirmationOrder.quantity),
@@ -3686,6 +3701,7 @@ export async function createOrderFromAi(args: {
   sourceMessageId: string;
   order: NonNullable<Awaited<ReturnType<typeof generateAiReply>>["order"]>;
   cartLines?: Array<{ optionId: string; quantity: number }>;
+  multiProductLines?: MultiProductLine[];
   /** Importe documental de comprobantes únicos y compatibles (no pago acreditado). */
   documentedReceiptTotal?: number | null;
   /** Entrenamiento ACTIVO del workspace para validar requisitos por modalidad. */
@@ -3883,6 +3899,8 @@ export async function createOrderFromAi(args: {
 
   // El carrito se valida contra las opciones REALES del producto, nunca contra texto de IA.
   const cartLines = args.cartLines?.length ? args.cartLines : null;
+  const multiCart = args.multiProductLines?.length ? resolveCartPricing(args.multiProductLines,args.products) : null;
+  if(args.multiProductLines?.length && !multiCart) throw new Error("Pedido de varios productos incompleto: revisar cada artículo");
   const cartResolved = cartLines?.map(line=>{
     const option=priceOptions.find(o=>o.id===line.optionId);
     if(!option||!Number.isSafeInteger(line.quantity)||line.quantity<1||line.quantity>25||option.quantity!==1){
@@ -3894,7 +3912,7 @@ export async function createOrderFromAi(args: {
     throw new Error('Carrito multivariante incompleto o con artículos repetidos');
   }
   const selectedPrice = matchSelectedOption(args.order, priceOptions, selectionHistory);
-  if (priceOptions.length > 0 && !selectedPrice && !cartResolved) {
+  if (priceOptions.length > 0 && !selectedPrice && !cartResolved && !multiCart) {
     throw new Error(`No se puede cerrar pedido: falta seleccionar una variante válida de ${product.name}`);
   }
 
@@ -3920,7 +3938,12 @@ export async function createOrderFromAi(args: {
   let total: number;
   let selectedPriceLabel: string | null = null;
 
-  if (cartResolved) {
+  if (multiCart?.length) {
+    quantity=multiCart.reduce((sum,line)=>sum+line.quantity,0);
+    total=multiCart.reduce((sum,line)=>sum+line.total,0);
+    unitPrice=total/quantity;
+    selectedPriceLabel="Varios productos";
+  } else if (cartResolved) {
     quantity=cartResolved.reduce((sum,c)=>sum+c.quantity,0);
     total=cartResolved.reduce((sum,c)=>sum+c.quantity*c.price,0);
     unitPrice=total/quantity;
@@ -4035,7 +4058,9 @@ export async function createOrderFromAi(args: {
       Number(args.documentedReceiptTotal) > total &&
       /anticip|transfer|deposit|giro/i.test(args.order.payment_method ?? "")
       ? `SALDO A FAVOR DOCUMENTAL PENDIENTE DE ACREDITACION BANCARIA: ${(Number(args.documentedReceiptTotal) - total).toLocaleString('es-PY')} Gs.; comprobante ${(Number(args.documentedReceiptTotal)).toLocaleString('es-PY')} Gs.; total ${total.toLocaleString('es-PY')} Gs.; habilitar para futuras compras SOLO despues de validar acreditacion, sin duplicar el credito.` : null,
-    cartResolved
+    multiCart?.length
+      ? `PRODUCTOS DEL PEDIDO: ${multiCart.map(line=>`${line.quantity} x ${line.title} (${line.total.toLocaleString("es-PY")} Gs.)`).join(" + ")}. TOTAL: ${total.toLocaleString("es-PY")} Gs.`
+      : cartResolved
       ? `MULTIVARIANTE (MISMO PRODUCTO): ${cartResolved.map(c=>`${c.quantity} x ${c.label} (${c.price.toLocaleString('es-PY')} Gs. c/u)`).join(' + ')}. TOTAL: ${total.toLocaleString('es-PY')} Gs.`
       : selectedPriceLabel ? `Variante seleccionada: ${selectedPriceLabel}` : null,
   ]
@@ -4051,7 +4076,7 @@ export async function createOrderFromAi(args: {
    */
   // El pedido mixto NO representa un SKU único: bloquear exportación automática
   // para evitar que la plataforma de destino cargue la presentación equivocada.
-  const productSku = cartResolved ? null : (cleanOrderText(product.sku) || null);
+  const productSku = multiCart?.length || cartResolved ? null : (cleanOrderText(product.sku) || null);
 
   /*
    * El ad_id llega como snapshot desde el mensaje que está cerrando la venta.
@@ -4075,7 +4100,7 @@ export async function createOrderFromAi(args: {
     observations,
     payment_method: paymentMethod,
     product_id: args.productId,
-    product_title: product.name,
+    product_title: multiCart?.length ? multiCart.map(line=>line.title).join(" + ") : product.name,
     sku: productSku,
     quantity,
     price: unitPrice,
@@ -4084,10 +4109,23 @@ export async function createOrderFromAi(args: {
     payment_status: "pendiente" as const,
   };
 
-  // Database-level advisory transaction lock prevents two independent
-  // serverless invocations from inserting the same near-simultaneous checkout.
+  // Every new order, even single-product, has an atomic and complete line snapshot.
+  const itemRows = multiCart?.length
+    ? multiCart.map(line=>({
+        product_id:line.productId,title:line.title,
+        sku:cleanOrderText(args.products.find(p=>p.id===line.productId)?.sku)||null,
+        quantity:line.quantity,price:line.price,
+      }))
+    : cartResolved?.length
+      ? cartResolved.map(line=>({
+          product_id:product.id,title:`${product.name} — ${line.label}`,
+          sku:productSku,quantity:line.quantity,price:line.price,
+        }))
+      : [{product_id:product.id,title:product.name,sku:productSku,quantity,price:unitPrice}];
+  if(Math.abs(itemRows.reduce((sum,line)=>sum+line.quantity*line.price,0)-total)>0.01)
+    throw new Error("Los artículos no coinciden con el total del pedido; no se registra la venta");
   const { data: registration, error } = await (supabaseAdmin as any)
-    .rpc("bot_sky_register_order_once", { p_order: orderPayload });
+    .rpc("bot_sky_register_order_with_items", { p_order: orderPayload,p_items:itemRows });
   const created = registration?.order
     ? { ...registration.order, already_registered: registration.already_registered === true }
     : null;
