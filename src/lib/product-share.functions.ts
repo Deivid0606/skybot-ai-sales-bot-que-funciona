@@ -120,7 +120,16 @@ export const retryAfterProductSkuSave = createServerFn({method:"POST"})
     if (updateError) throw updateError;
     // A SKU correction must also repair the pending line snapshot used by
     // multi-product imports. Never rewrite lines on already synced orders.
-    const pendingIds=(updated??[]).map(row=>row.id);
+    const {data:referencedLines,error:lineLookupError}=await supabaseAdmin.from("order_items")
+      .select("order_id").eq("workspace_id",product.workspace_id).eq("product_id",product.id);
+    if(lineLookupError)throw lineLookupError;
+    const referencedIds=[...new Set((referencedLines??[]).map(row=>row.order_id))];
+    const {data:eligible,error:eligibleError}=referencedIds.length
+      ? await supabaseAdmin.from("orders").select("id").eq("workspace_id",product.workspace_id)
+          .in("id",referencedIds).in("status",["nuevo","confirmado"]).is("ecommerce_synced_at",null)
+      : {data:[],error:null};
+    if(eligibleError)throw eligibleError;
+    const pendingIds=[...new Set([...(updated??[]).map(row=>row.id),...(eligible??[]).map(row=>row.id)])];
     for(let index=0;index<pendingIds.length;index+=200){
       const batch=pendingIds.slice(index,index+200);
       if(!batch.length)continue;
