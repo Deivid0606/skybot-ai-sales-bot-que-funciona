@@ -46,19 +46,19 @@ function requestedCount(text:string):number{
   return Number.isSafeInteger(count)&&count>0&&count<=25?count:1;
 }
 function chooseOption(part:string,product:ProductForCart):{optionId:string;quantity:number}|null{
-  const options=(product.product_prices??[]).filter(p=>Number(p.price)>0&&p.quantity>0);
+  const options=(product.product_prices??[]).filter(p=>Number(p.price)>0&&Number(p.quantity)>0);
   if(!options.length)return null;
   const requested=requestedCount(part);
   const exact=options.filter(o=>o.quantity===requested);
-  // "2 unidades" with an explicitly priced bundle uses that bundle.
-  const candidate=exact.length===1?exact[0]:requested===1?
-    (options.length===1?options[0]:null):null;
-  if(!candidate)return null;
-  // Quantity is number of pieces except a priced box (one box may contain 2 bases).
-  const packaging=/\b(?:caja|pack|combo)\b/.test(norm(candidate.label));
-  if(requested>1 && candidate.quantity===requested && packaging && !/\b(?:cajas|packs|combos)\b/.test(norm(part)))
+  // Explicit quantity selects only one real catalog promotion, not an AI estimate.
+  const selected=exact.length===1 ? exact[0] : options.length===1 ? options[0] : null;
+  if(!selected)return null;
+  const isBox=/\b(?:caja|pack|combo)\b/.test(norm(selected.label));
+  if(selected.quantity>1&&!isBox&&requested>selected.quantity&&requested%selected.quantity!==0)
     return null;
-  return {optionId:candidate.id,quantity:requested};
+  // A single bundle of 2 pieces means 2 pieces, not one loose piece.
+  const quantity=selected.quantity>requested&&!isBox ? selected.quantity : requested;
+  return {optionId:selected.id,quantity};
 }
 /** Only literal buying intentions joined with "y" or "+" can create a multi-product cart. */
 export function resolveExplicitMultiProductCart(message:string,products:ProductForCart[]):MultiProductLine[]|null{
@@ -87,16 +87,18 @@ export function resolveCartPricing(lines:MultiProductLine[],products:ProductForC
     const o=p?.product_prices?.find(o=>o.id===line.optionId);
     if(!p||!o||!Number.isSafeInteger(line.quantity)||line.quantity<1||line.quantity>25||
        !Number.isFinite(Number(o.price))||Number(o.price)<=0)return null;
-    const count=Number(line.quantity);
-    const unitsPerPackage=Number(o.quantity);
-    // The explicitly priced "2 unidades" option represents two articles.
-    // "1 caja" is one transportable package, not two bases to charge twice.
-    const price=Number(o.price);
-    const unitPrice=unitsPerPackage===count && !/\b(?:caja|pack|combo)\b/.test(norm(o.label))
-      ?price/count:price;
-    const quantity=unitsPerPackage===count && !/\b(?:caja|pack|combo)\b/.test(norm(o.label))?count:count;
-    return {productId:p.id,optionId:o.id,title:p.name,quantity,price:unitPrice,total:price,
-      label:o.label};
+    const units=Number(o.quantity);
+    const box=/\b(?:caja|pack|combo)\b/.test(norm(o.label));
+    if(!Number.isSafeInteger(units)||units<1)return null;
+    const packs=box ? line.quantity : line.quantity/units;
+    if(!Number.isSafeInteger(packs)||packs<1)return null;
+    const total=Number(o.price)*packs;
+    // For a 2-piece bundle, store 2 units at half bundle price.
+    // For a box containing two bases, store 1 box at its full catalog price.
+    const quantity=line.quantity;
+    const price=total/quantity;
+    if(!Number.isFinite(price)||price<=0)return null;
+    return {productId:p.id,optionId:o.id,title:p.name,quantity,price,total,label:o.label};
   });
   if(resolved.some(x=>!x))return null;
   return resolved as NonNullable<typeof resolved[number]>[];
