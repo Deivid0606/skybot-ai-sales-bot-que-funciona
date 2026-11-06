@@ -118,6 +118,17 @@ export const retryAfterProductSkuSave = createServerFn({method:"POST"})
       .eq("product_id",product.id).in("status",["nuevo","confirmado"])
       .is("ecommerce_synced_at",null).select("id");
     if (updateError) throw updateError;
+    // A SKU correction must also repair the pending line snapshot used by
+    // multi-product imports. Never rewrite lines on already synced orders.
+    const pendingIds=(updated??[]).map(row=>row.id);
+    for(let index=0;index<pendingIds.length;index+=200){
+      const batch=pendingIds.slice(index,index+200);
+      if(!batch.length)continue;
+      const {error:itemsError}=await supabaseAdmin.from("order_items")
+        .update({sku:data.sku}).eq("workspace_id",product.workspace_id)
+        .eq("product_id",product.id).in("order_id",batch);
+      if(itemsError) throw itemsError;
+    }
     const {retryDcanpForProductSku}=await import("@/lib/dcanp-auto-import.server");
     const result=await retryDcanpForProductSku(product.workspace_id,product.id);
     return {...result,updated:(updated??[]).length};
