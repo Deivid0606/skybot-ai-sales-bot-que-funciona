@@ -60,6 +60,14 @@ function chooseOption(part:string,product:ProductForCart):{optionId:string;quant
   const quantity=selected.quantity>requested&&!isBox ? selected.quantity : requested;
   return {optionId:selected.id,quantity};
 }
+/** Identify an explicitly added item without relying on stale active-product context. */
+export function resolveNamedProductLine(message:string,products:ProductForCart[]):MultiProductLine|null{
+  const scores=products.map(p=>({p,score:productScore(message,p)})).filter(x=>x.score>0)
+    .sort((a,b)=>b.score-a.score);
+  if(!scores.length || scores.length>1 && scores[0].score===scores[1].score)return null;
+  const option=chooseOption(message,scores[0].p);
+  return option ? {productId:scores[0].p.id,optionId:option.optionId,quantity:option.quantity} : null;
+}
 /** Only literal buying intentions joined with "y" or "+" can create a multi-product cart. */
 export function resolveExplicitMultiProductCart(message:string,products:ProductForCart[]):MultiProductLine[]|null{
   const n=norm(message);
