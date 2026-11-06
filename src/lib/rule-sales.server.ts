@@ -2,7 +2,7 @@
 import type { AiContext } from "@/lib/ai.server";
 import { isValidDeliveryAddress, isValidCustomerName } from "@/lib/sale-reconciliation.server";
 import { PY_CITIES, findParaguayPlace, departmentIn } from "@/lib/py-cities";
-import { resolveExplicitMultiProductCart, resolveCartPricing, type MultiProductLine } from "@/lib/multi-product-cart";
+import { resolveExplicitMultiProductCart, resolveNamedProductLine, resolveCartPricing, type MultiProductLine } from "@/lib/multi-product-cart";
 
 type Product = AiContext["products"][number];
 type Option = Product["product_prices"][number];
@@ -636,12 +636,27 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   const fromMedia=/^\s*(?:\[(?:imagen|documento)\]\s*)?COMPROBANTE\b/i.test(text) || /^\s*\[(?:imagen|documento)\]/i.test(text);
   const requestedMulti = !fromMedia ? resolveExplicitMultiProductCart(text,ctx.products) : null;
   const direct=fromMedia && s.productId ? null : selectProduct(ctx,text);
+  const addOnCue=/^(?:y\s+|tambien\s+|ademas\s+|agregame\s+|agrega\s+|sumale\s+|sumame\s+)/.test(n);
+  const namedAddition=addOnCue && !fromMedia ? resolveNamedProductLine(text,ctx.products) : null;
   if (requestedMulti) {
     // A named multi-product selection is one cart, NOT an unrelated new checkout.
-    // Keep the recipient, city and verified receipt from this same cycle.
     s={...s,productId:requestedMulti[0].productId,optionId:requestedMulti[0].optionId,
       multiProductLines:requestedMulti,cartLines:undefined,
       quantity:requestedMulti.reduce((n,line)=>n+line.quantity,0)};
+  } else if(namedAddition && s.productId && namedAddition.productId!==s.productId
+      && !s.multiProductLines?.some(line=>line.productId===namedAddition.productId)){
+    // "Y un cepillo" after "1 caja de bases": one purchase with two distinct lines.
+    const first=s.multiProductLines?.length ? s.multiProductLines : (
+      s.optionId && Number(s.quantity)>0
+        ? [{productId:s.productId,optionId:s.optionId,quantity:Number(s.quantity)}] : []
+    );
+    const combined=[...first,namedAddition];
+    if(first.length && !s.cartLines?.length && resolveCartPricing(combined,ctx.products)){
+      s={...s,multiProductLines:combined,quantity:combined.reduce((sum,line)=>sum+line.quantity,0)};
+    }else{
+      // Insufficient evidence for a line: retain the original checkout and ask.
+      s.awaiting="variant";
+    }
   } else if (direct && direct.id!==s.productId && !s.multiProductLines?.some(line=>line.productId===direct.id)) {
     s={productId:direct.id};
   }
