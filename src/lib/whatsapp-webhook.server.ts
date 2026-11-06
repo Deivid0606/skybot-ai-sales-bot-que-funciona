@@ -1777,7 +1777,10 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
   // Un comprobante (su texto leído) no es una consulta de producto: no dispara catálogo.
   const isReceiptMedia = Boolean(media && (media.type === "image" || media.type === "document") &&
     (parseReceiptFields(transcript) || /^\s*COMPROBANTE\b/i.test(String(transcript ?? ""))));
-  const catalogResult = isReceiptMedia ? null : await sendCatalogByKeyword({
+  // An explicit multi-product purchase must reach the cart parser. A single
+  // product catalog template must not consume the whole WhatsApp turn.
+  const multiProductInquiry = /\b(?:quiero|quisiera|llevo|necesito|comprar|pedir|agrega|sumale)\b.{2,100}\by\b.{2,100}/i.test(normalizeIntentText(body));
+  const catalogResult = isReceiptMedia || multiProductInquiry ? null : await sendCatalogByKeyword({
     workspaceId, ownerId, conversationId: conversation.id,
     adId: attributedAdId, conn, phone, text: body,
   });
