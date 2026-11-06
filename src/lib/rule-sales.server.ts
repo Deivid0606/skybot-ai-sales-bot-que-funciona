@@ -2,6 +2,7 @@
 import type { AiContext } from "@/lib/ai.server";
 import { isValidDeliveryAddress, isValidCustomerName } from "@/lib/sale-reconciliation.server";
 import { PY_CITIES, findParaguayPlace, departmentIn } from "@/lib/py-cities";
+import { resolveExplicitMultiProductCart, resolveCartPricing, type MultiProductLine } from "@/lib/multi-product-cart";
 
 type Product = AiContext["products"][number];
 type Option = Product["product_prices"][number];
@@ -11,6 +12,7 @@ export type SaleState = {
   cycleStartedAt?: string | null;
   optionId?: string | null;
   cartLines?: Array<{ optionId: string; quantity: number }>;
+  multiProductLines?: MultiProductLine[];
   quantity?: number | null;
   city?: string | null;
   department?: string | null;
@@ -631,8 +633,17 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   // El texto leído de un comprobante o de una imagen («Concepto: ALARGUE CANILLA»)
   // nunca cambia el producto de la venta en curso.
   const fromMedia=/^\s*(?:\[(?:imagen|documento)\]\s*)?COMPROBANTE\b/i.test(text) || /^\s*\[(?:imagen|documento)\]/i.test(text);
+  const requestedMulti = !fromMedia ? resolveExplicitMultiProductCart(text,ctx.products) : null;
   const direct=fromMedia && s.productId ? null : selectProduct(ctx,text);
-  if(direct && direct.id!==s.productId) s={productId:direct.id};
+  if (requestedMulti) {
+    // A named multi-product selection is one cart, NOT an unrelated new checkout.
+    // Keep the recipient, city and verified receipt from this same cycle.
+    s={...s,productId:requestedMulti[0].productId,optionId:requestedMulti[0].optionId,
+      multiProductLines:requestedMulti,cartLines:undefined,
+      quantity:requestedMulti.reduce((n,line)=>n+line.quantity,0)};
+  } else if (direct && direct.id!==s.productId) {
+    s={productId:direct.id};
+  }
   const p=ctx.products.find(x=>x.id===s.productId)??(ctx.activeProductId?ctx.products.find(x=>x.id===ctx.activeProductId):undefined);
   if(!p)return null;
   s.productId=p.id;
@@ -711,7 +722,7 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     const proposed = variants.filter(v => norm(lastBot).includes(norm(v.label)));
     if (proposed.length === 1 && /[?¿]/.test(lastBot)) chosen = proposed[0];
   }
-  if(chosen) {
+  if(chosen && !s.multiProductLines?.length) {
     s.optionId=chosen.id;
     // Una opción etiquetada «N unidades» es un paquete, distinto de «N litros».
     if (/\b(?:unidad(?:es)?|piezas?|caja(?:s)?|pack(?:s)?)\b/.test(norm(chosen.label))) s.quantity=chosen.quantity;
@@ -725,11 +736,11 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     // el precio oficial del paquete. No pisar quantity de product_prices.
     const chosePackage = Boolean(chosen && /\b(?:caja(?:s)?|pack(?:s)?|combo(?:s)?)\b/.test(norm(chosen.label)) && chosen.quantity > 1);
     // Si eligió por precio («la de 98.000»), ese número es el precio, no una cantidad.
-    if(q && !s.cartLines?.length && !chosePackage && !chosenByPrice)s.quantity=q;
+    if(q && !s.cartLines?.length && !s.multiProductLines?.length && !chosePackage && !chosenByPrice)s.quantity=q;
   } else {
     // "uno de 5 litros" sí comunica cantidad 1 explícita.
     const match=n.match(/\b(un|uno|una|dos|tres|\d+)\s+de\s+\d+\s*(?:litros?|l|lts?)\b/);
-    if(match&&!s.cartLines?.length)s.quantity=({un:1,uno:1,una:1,dos:2,tres:3}[match[1]]??Number(match[1]));
+    if(match&&!s.cartLines?.length&&!s.multiProductLines?.length)s.quantity=({un:1,uno:1,dos:2,tres:3}[match[1]]??Number(match[1]));
   }
   // «Quiero uno» cuando solo hay paquetes de 2 y 3: no existe otra opción menor,
   // así que se toma el paquete MÍNIMO (la IA le explica al cliente el cambio).
@@ -952,13 +963,14 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   const needsAddress=s.paymentMethod==="contraentrega" && location?.addressRequired!==false;
   // La misma validación que exige el INSERT: un barrio suelto no es dirección.
   const hasValidAddress=isValidDeliveryAddress(s.street) || isValidDeliveryAddress(s.locationUrl);
+  const multiCart = s.multiProductLines?.length ? resolveCartPricing(s.multiProductLines,ctx.products) : null;
   const cartTotal=s.cartLines?.length
     ? s.cartLines.reduce<number|null>((sum,line)=>{
         const opt=variants.find(o=>o.id===line.optionId);
         return sum===null || !opt ? null : sum+opt.price*line.quantity;
       },0)
     : null;
-  const expectedTotal=cartTotal ?? (selected ? priceFor(p,selected,s.quantity??0)
+  const expectedTotal=multiCart?.length ? multiCart.reduce((sum,line)=>sum+line.total,0) : cartTotal ?? (selected ? priceFor(p,selected,s.quantity??0)
     : variants.length===0 && s.quantity ? priceFor(p,null,s.quantity) : null);
   const validPrice=Boolean(expectedTotal && expectedTotal>0);
   // Nunca usar un comprobante simplemente adjunto como validación del importe:
@@ -966,7 +978,8 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   const documentedTotal=(s.receiptDocuments??[]).reduce((sum,r)=>sum+r.amountGs,0);
   const receiptVerified=Boolean(s.receiptPath && !s.receiptReview && s.receiptDocuments?.length &&
     expectedTotal && documentedTotal>=expectedTotal);
-  if (variants.length>1 && !selected && !s.cartLines?.length) s.awaiting="variant";
+  if (s.multiProductLines?.length && !multiCart) s.awaiting="variant";
+  else if (variants.length>1 && !selected && !s.cartLines?.length && !s.multiProductLines?.length) s.awaiting="variant";
   else if (!s.city || !s.cityVerified || !s.department) s.awaiting="city";
   else if (!s.quantity || s.quantity<1 || !validPrice) s.awaiting="quantity";
   else if (!s.paymentMethod) s.awaiting="payment";
