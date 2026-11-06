@@ -317,6 +317,7 @@ function declaredDestination(text:string): {city:string;department:string}|null 
 /** Frases que NO son nombres de ciudad (pago, saludos, preguntas, pedidos). */
 export function isNonCityPhrase(text:string):boolean{
   const n=norm(text);
+  if (/\b(?:tsi|transportadora|transportista|encomienda|nasa|rutaexpress)\b/.test(n)) return true;
   // Colores, cortesías y reacciones sueltas no son lugares («Marrón», «Igualmente»).
   if (/^(?:negro|negra|blanco|blanca|marron|rojo|roja|azul|verde|rosa|rosado|gris|beige|dorado|plateado|celeste|amarillo|lila|violeta)$/.test(n) ||
       /\b(?:igualmente|genial|excelente|reaction|okey|oki|gracia|grasias|adios|chau)\b/.test(n)) return true;
@@ -546,7 +547,7 @@ function extractCheckoutDetails(raw:string, expecting:boolean, city?:string|null
   }
   const cleaned=text.replace(/(?:otro\s+n[uú]mero|n[uú]mero\s+alternativo|tel[eé]fono\s+alternativo|contacto\s+alternativo)\s*(?::|es)?\s*\+?\d[\d\s-]{7,17}\d/ig, "").trim();
   // Admite: "Juan Pérez, calle ...", "Soy Juan Pérez, vivo en ...", y campos etiquetados.
-  const nameLabel=cleaned.match(/(?:nombre(?:\s+y\s+apellido)?\s*[:=-]\s*|me\s+llamo\s+|soy\s+)([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+(?:[ '-]+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+){1,4})(?=\s*[,;\n]|\s+(?:direcci[oó]n|calle|av(?:enida)?\.?|vivo\s+en)\b|$)/i);
+  const nameLabel=cleaned.match(/(?:(?:mi\s+)?nombre(?:\s+y\s+apellido)?\s*[:=.\-]\s*|me\s+llamo\s+|soy\s+)([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+(?:[ '-]+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+){1,4})(?=\s*[,;\n]|\s+(?:direcci[oó]n|calle|av(?:enida)?\.?|vivo\s+en)\b|$)/i);
   // Un punto seguido de otra oración puede separar nombre y domicilio: "Bernardino Roa. Maskoy 1364".
   const parts=cleaned.split(/[,;\n]+|\.\s+(?=[A-Za-zÁÉÍÓÚÜÑáéíóúüñ])/).map(t=>t.trim()).filter(Boolean);
   const first=parts[0]?.replace(/^(?:mi\s+nombre\s+es|nombre\s*[:=-]|soy)\s*/i, "");
@@ -641,7 +642,7 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     s={...s,productId:requestedMulti[0].productId,optionId:requestedMulti[0].optionId,
       multiProductLines:requestedMulti,cartLines:undefined,
       quantity:requestedMulti.reduce((n,line)=>n+line.quantity,0)};
-  } else if (direct && direct.id!==s.productId) {
+  } else if (direct && direct.id!==s.productId && !s.multiProductLines?.some(line=>line.productId===direct.id)) {
     s={productId:direct.id};
   }
   const p=ctx.products.find(x=>x.id===s.productId)??(ctx.activeProductId?ctx.products.find(x=>x.id===ctx.activeProductId):undefined);
