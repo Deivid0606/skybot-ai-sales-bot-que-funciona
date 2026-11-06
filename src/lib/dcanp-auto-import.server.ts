@@ -71,14 +71,28 @@ async function importWorkspace(ws: WorkspaceRow, onlyProductId?: string) {
     .order("created_at", { ascending: true })
     .limit(200);
   if (error) throw error;
+  const orderIds = (orders ?? []).map(o=>o.id);
+  const { data: lineRows, error: lineError } = orderIds.length
+    ? await supabaseAdmin.from("order_items").select("order_id,title,sku,quantity,price")
+        .eq("workspace_id",ws.id).in("order_id",orderIds)
+    : {data:[],error:null};
+  if (lineError) throw lineError;
+  const linesByOrder = new Map<string,Array<{sku:string|null;title:string;quantity:number;price:number}>>();
+  for(const line of lineRows ?? []){
+    const found=linesByOrder.get(line.order_id)??[];
+    found.push({sku:line.sku,title:line.title,quantity:Number(line.quantity),price:Number(line.price)});
+    linesByOrder.set(line.order_id,found);
+  }
+  const linesFor=(order:any)=>linesByOrder.get(order.id) ?? [];
   const rows = ((orders ?? []) as any[]).filter(order =>
     // No van en la carga automática (quedan para cargar a mano):
     // - pagos anticipados;
     // - pedidos sin SKU;
     // - varias presentaciones del mismo producto (artículos separados).
     !isAdvancePayment(order) &&
-    String(order.sku ?? "").trim() !== "" &&
-    !String(order.observations ?? "").includes("MULTIVARIANTE (MISMO PRODUCTO)") &&
+    (linesFor(order).length
+      ? linesFor(order).every(line=>String(line.sku??"").trim()&&Number(line.quantity)>0&&Number(line.price)>0)
+      : String(order.sku??"").trim()!=="" && !String(order.observations??"").includes("MULTIVARIANTE (MISMO PRODUCTO)")) &&
     (Boolean(onlyProductId) || !order.ecommerce_sync_error || !order.ecommerce_sync_attempted_at || order.ecommerce_sync_attempted_at < retryBefore))
     .slice(0, BATCH);
 
@@ -98,6 +112,7 @@ async function importWorkspace(ws: WorkspaceRow, onlyProductId?: string) {
       source_order_id: o.id, order_number: o.order_number, customer_name: o.customer_name, phone: o.phone,
       city: o.city, departamento: o.departamento, street: o.street, district: o.district, email: "", obs: "",
       sku: o.sku, product_title: o.product_title, quantity: o.quantity, total: o.total,
+      ...(linesFor(o).length ? {items:linesFor(o)} : {}),
       payment_method: o.payment_method, payment_status: o.payment_status, receipt_url: o.receipt_url,
     })),
   });
