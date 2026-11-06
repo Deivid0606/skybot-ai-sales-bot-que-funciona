@@ -210,7 +210,7 @@ function OrdersPage() {
         const end = new Date(`${dateTo}T23:59:59.999`).toISOString();
         const all: NonNullable<Awaited<ReturnType<typeof loadPage>>> = [];
         async function loadPage(page: number) {
-          const { data, error } = await supabase.from("orders").select("*")
+          const { data, error } = await supabase.from("orders").select("*,order_items(id,title,sku,quantity,price)")
             .gte("created_at", start).lte("created_at", end)
             .order("created_at", { ascending: false })
             .range(page * 1000, page * 1000 + 999);
@@ -226,7 +226,7 @@ function OrdersPage() {
       }
       const { data, error } = await supabase
         .from("orders")
-        .select("*")
+        .select("*,order_items(id,title,sku,quantity,price)")
         .eq("workspace_id", workspaceId!)
         .order("created_at", {
           ascending: false,
@@ -261,7 +261,7 @@ function OrdersPage() {
       if (msg.type !== "READY" && msg.batchId !== active.batchId) return;
       if (msg.type === "READY") {
         const selected = (orders ?? []).filter(o => active.ids.includes(o.id));
-        if(selected.some(o=>String(o.observations??"").includes("MULTIVARIANTE (MISMO PRODUCTO)"))){
+        if(selected.some(o=>!o.order_items?.length && String(o.observations??"").includes("MULTIVARIANTE (MISMO PRODUCTO)"))){
           setImportReport("El lote contiene un pedido con varias presentaciones. Cargalo manualmente como artículos separados en E-commerce para evitar un SKU incorrecto.");
           setImporting(false);importRef.current=null;return;
         }
@@ -275,7 +275,10 @@ function OrdersPage() {
             departamento: o.departamento, street: o.street, district: o.district,
             email: o.email, obs: "", sku: o.sku, product_title: o.product_title,
             quantity: o.quantity, total: o.total, payment_method: o.payment_method,
-            payment_status: o.payment_status, receipt_url: o.receipt_url }))
+            payment_status: o.payment_status, receipt_url: o.receipt_url,
+            ...(o.order_items?.length ? {items:o.order_items.map(item=>({
+              sku:item.sku,title:item.title,quantity:item.quantity,price:item.price,
+            }))} : {}) }))
         }, ecommerceOrigin);
       }
       if (msg.type === "RESULT" && Array.isArray(msg.results)) {
@@ -303,7 +306,7 @@ function OrdersPage() {
   function startBulkImport() {
     if (importing || !selectedIds.length) return;
     const ids = selectedIds.filter(id => (orders ?? []).some(o => o.id === id && ["nuevo", "confirmado"].includes(o.status)));
-    if((orders??[]).some(o=>ids.includes(o.id)&&String(o.observations??"").includes("MULTIVARIANTE (MISMO PRODUCTO)"))){
+    if((orders??[]).some(o=>ids.includes(o.id)&&!o.order_items?.length && String(o.observations??"").includes("MULTIVARIANTE (MISMO PRODUCTO)"))){
       window.alert("Pedido con varias presentaciones: cargalo manualmente como artículos separados en E-commerce.");return;
     }
     if (!ids.length) { window.alert("Seleccioná pedidos nuevos o confirmados."); return; }
