@@ -21,7 +21,7 @@ export function isValidCustomerName(value: unknown): boolean {
   if (name.length < 5 || name.length > 160 || !/^[\p{L}]+(?:[ '\-]+[\p{L}]+){1,5}$/u.test(name)) return false;
   // Un destino escrito como "Para itaugua" no es nombre y apellido.
   // Rechazar también otras frases de entrega que pueden parecer nombres.
-  if (/^(?:para|en|a|hacia|desde|ciudad|vivo|estoy|mandar|enviar|entregar)\b/.test(n)) return false;
+  if (/^(?:para|en|a|de|del|hacia|desde|ciudad|vivo|estoy|mandar|enviar|entregar)\b/.test(n)) return false;
   if (/\b(?:itaugua|luque|lambare|cap iata|capiata|aregua|ypane|nemby|limpio|encarnacion|hernandarias|franco|mariano roque alonso|ciudad del este)\b/.test(n)) return false;
 
   if (/\b(?:estoy|en|aeropuerto|trabajo|oficina|salgo|almorzar|almuerzo|horas?|hasta|desde|avisa|traigas|aca|aqui|cada|unidades?|cajas?)\b/.test(n)) return false;
