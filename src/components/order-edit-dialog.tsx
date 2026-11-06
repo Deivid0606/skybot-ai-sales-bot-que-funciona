@@ -26,7 +26,7 @@ import {
 import { PAYMENT_STATES, DEPARTAMENTOS_PY, resolveDepartamento } from "@/lib/orders";
 import type { Tables } from "@/integrations/supabase/types";
 
-type Order = Tables<"orders">;
+type Order = Tables<"orders"> & {order_items?: Array<{id:string;title:string;sku:string|null;quantity:number;price:number}>};
 
 type Props = {
   order: Order;
@@ -37,6 +37,7 @@ type Props = {
 export function OrderEditDialog({ order, open, onOpenChange }: Props) {
   const queryClient = useQueryClient();
   const [form, setForm] = useState(order);
+  const hasLineSnapshot=Boolean(order.order_items?.length);
 
   useEffect(() => {
     if (open) setForm(order);
@@ -59,11 +60,12 @@ export function OrderEditDialog({ order, open, onOpenChange }: Props) {
           street: form.street,
           district: form.district,
           reference: form.reference,
-          product_title: form.product_title,
-          sku: form.sku,
-          quantity,
-          price,
-          total: quantity * price,
+          // Existing line snapshots are the canonical commercial record.
+          // Never change just the parent price/quantity without its items.
+          ...(!hasLineSnapshot ? {
+            product_title:form.product_title,sku:form.sku,
+            quantity,price,total:quantity*price,
+          } : {}),
           payment_method: form.payment_method,
           payment_status: form.payment_status,
           observations: form.observations,
@@ -84,7 +86,7 @@ export function OrderEditDialog({ order, open, onOpenChange }: Props) {
       <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Editar pedido {order.order_number}</DialogTitle>
-          <DialogDescription>Actualizá los datos del cliente y del producto.</DialogDescription>
+          <DialogDescription>Actualizá los datos del cliente. Los artículos registrados se mantienen completos y consistentes.</DialogDescription>
         </DialogHeader>
 
         <div className="grid gap-3 sm:grid-cols-2">
@@ -130,32 +132,41 @@ export function OrderEditDialog({ order, open, onOpenChange }: Props) {
             <Label>Referencia</Label>
             <Input value={form.reference ?? ""} onChange={(e) => set("reference", e.target.value)} />
           </div>
-          <div className="space-y-1.5">
-            <Label>Producto</Label>
-            <Input value={form.product_title ?? ""} onChange={(e) => set("product_title", e.target.value)} />
-          </div>
-          <div className="space-y-1.5">
-            <Label>SKU</Label>
-            <Input value={form.sku ?? ""} onChange={(e) => set("sku", e.target.value)} />
-          </div>
-          <div className="space-y-1.5">
-            <Label>Cantidad</Label>
-            <Input
-              type="number"
-              min={1}
-              value={form.quantity ?? 1}
-              onChange={(e) => set("quantity", Number(e.target.value))}
-            />
-          </div>
-          <div className="space-y-1.5">
-            <Label>Precio (₲)</Label>
-            <Input
-              type="number"
-              min={0}
-              value={form.price ?? 0}
-              onChange={(e) => set("price", Number(e.target.value))}
-            />
-          </div>
+          {hasLineSnapshot ? (
+            <div className="sm:col-span-2 space-y-2 rounded-lg border p-3">
+              <p className="text-sm font-semibold">Artículos registrados (detalle protegido)</p>
+              {order.order_items?.map(item=>(
+                <div key={item.id} className="flex justify-between gap-3 rounded-md bg-muted/40 p-2 text-sm">
+                  <div><p className="font-medium">{item.title}</p>
+                    <p className="text-xs text-muted-foreground">SKU: {item.sku||"Sin SKU"} · Cantidad: {item.quantity} · Unitario: {item.price}</p>
+                  </div>
+                  <span className="font-semibold">{(Number(item.price)*item.quantity).toLocaleString("es-PY")} Gs.</span>
+                </div>
+              ))}
+              <p className="text-xs text-muted-foreground">La cantidad y el precio de un artículo no se cambian desde esta ventana para evitar desajustes con la carga en DCANP.</p>
+            </div>
+          ) : (
+            <>
+              <div className="space-y-1.5">
+                <Label>Producto</Label>
+                <Input value={form.product_title ?? ""} onChange={(e) => set("product_title", e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>SKU</Label>
+                <Input value={form.sku ?? ""} onChange={(e) => set("sku", e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Cantidad</Label>
+                <Input type="number" min={1} value={form.quantity ?? 1}
+                  onChange={(e) => set("quantity", Number(e.target.value))} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Precio (₲)</Label>
+                <Input type="number" min={0} value={form.price ?? 0}
+                  onChange={(e) => set("price", Number(e.target.value))} />
+              </div>
+            </>
+          )}
           <div className="space-y-1.5">
             <Label>Forma de pago</Label>
             <Input value={form.payment_method ?? ""} onChange={(e) => set("payment_method", e.target.value)} />
