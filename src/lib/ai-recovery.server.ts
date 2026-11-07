@@ -108,7 +108,7 @@ export async function processAiRecoveryBatch() {
       }));
       const ctx=await buildWorkspaceAiContext(supabaseAdmin,item.workspace_id,history,
         st.productId??conversation.product_id,contact.phone,conversation.id);
-      const hasReceipt=Boolean(st.receiptPath||st.receiptDocuments?.length);
+      const hasReceipt=Boolean(st.emergencyReceiptPending||st.receiptPath||st.receiptDocuments?.length);
       const recoveryPrompt=hasReceipt
         ? "RECUPERACIÓN TRAS ERROR DE API: Hay un comprobante recibido de una compra anticipada. Respondé únicamente con IA, en español paraguayo y usando el entrenamiento vigente. No asegures que el dinero se acreditó ni que el pedido se registró. Si no existe una revisión bancaria verificable, indicá brevemente que el comprobante quedó recibido y requiere revisión de la tienda. No pidas otra transferencia ni inventes importes, número de pedido o saldo a favor. No confirmes venta."
         : "RECUPERACIÓN TRAS ERROR DE API: Respondé con el contexto del último mensaje de este cliente y el entrenamiento ACTIVO. No repitas copy, imagen o promociones ya enviadas ni preguntes datos que el cliente dio. Si falta algún dato concreto para el checkout, preguntá solo por eso. No confirmes ni registres pedidos: no se ha ejecutado la validación ni el INSERT en este turno. No inventes número de pedido ni condiciones de pago.";
