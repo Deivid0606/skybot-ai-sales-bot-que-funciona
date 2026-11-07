@@ -1608,7 +1608,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
 
   const { data: aiSettings } = await supabaseAdmin
     .from("ai_settings")
-    .select("ai_enabled, reply_delay_seconds, hybrid_mode, hybrid_fallback_enabled")
+    .select("ai_enabled, reply_delay_seconds, hybrid_mode, hybrid_fallback_enabled, emergency_mode, emergency_recover_pending, emergency_active_until")
     .eq("workspace_id", workspaceId)
     .maybeSingle();
 
@@ -1623,6 +1623,28 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       isClosed: Boolean(conversation.is_closed),
     });
     return;
+  }
+
+  const emergencyMode=(aiSettings?.emergency_mode??"automatico") as EmergencyMode;
+  const emergencyWindow=Boolean(aiSettings?.emergency_active_until &&
+    Date.parse(aiSettings.emergency_active_until)>Date.now());
+  if (emergencyMode==="forzado" || (emergencyMode==="automatico" && emergencyWindow)) {
+    const handled=await runEmergencySale({
+      conn,workspaceId,ownerId,conversationId:conversation.id,
+      contactId:contact.id,adId:attributedAdId,phone,wamid:message.id,
+      body,mediaPath,mediaType:media?.type??null,productId:conversation.product_id,
+      saleClosed:conversation.sale_closed,force:emergencyMode==="forzado",
+    });
+    if(handled)return;
+    if(emergencyMode==="forzado") {
+      await supabaseAdmin.from("notifications").insert({
+        workspace_id:workspaceId,user_id:ownerId,type:"ia",
+        title:`Venta por código necesita revisión · ${phone}`,
+        body:"No se pudo identificar con seguridad el producto, precio, ciudad o datos de pago.",
+        link:"/inbox",audience:"user",
+      });
+      return;
+    }
   }
 
   if (conversation.sale_closed) {
@@ -5050,7 +5072,7 @@ async function runEmergencySale(args:{
   if(codReady){
     const product=ctx.products.find(p=>p.id===st.productId);
     const option=product?.product_prices?.find(o=>o.id===st.optionId);
-    if(option && st.quantity!>=option.quantity && st.quantity!%option.quantity===0) {
+    if(option && st.quantity! >= option.quantity && st.quantity! % option.quantity === 0) {
       const order={customer_name:st.customerName!,city:st.city!,departamento:st.department!,
         street:st.street||st.locationUrl||undefined,quantity:st.quantity!,
         promo_quantity:st.quantity!/option.quantity,product_price_id:option.id,
@@ -5115,6 +5137,50 @@ async function sendSilenceFallback(args: {
     }, { onConflict: "workspace_id,wamid" });
   }
   const neutralNotice = "Recibimos tu mensaje. En este momento no podemos darte una respuesta automática. Tu consulta necesita revisión de la tienda. Gracias por tu paciencia.";
+  const settings=await loadEmergencySettings(args.workspaceId);
+  const outage=classifyAiOutage(args.reason);
+  const providerFailed=/\b(?:401|402|403|429|500|502|503|504)\b|insufficient_quota|resource_exhausted|credit_balance_exhausted|gemini_error|gemini_key_unavailable|openai HTTP|todos los proveedores fallaron|sin claves configuradas|quota exceeded/i.test(args.reason);
+  const {data:sourceMessage}=await supabaseAdmin.from("messages")
+    .select("body,media_url,media_type")
+    .eq("workspace_id",args.workspaceId).eq("wamid",args.wamid).maybeSingle();
+  const {data:convInfo}=await supabaseAdmin.from("conversations")
+    .select("contact_id,product_id,sale_closed")
+    .eq("workspace_id",args.workspaceId).eq("id",args.conversationId).maybeSingle();
+  const isReceipt=Boolean(sourceMessage?.media_url && (sourceMessage.media_type==="image"||sourceMessage.media_type==="document"));
+  const {data:pendingAdvance}=await supabaseAdmin.from("bot_sale_states").select("state")
+    .eq("workspace_id",args.workspaceId).eq("conversation_id",args.conversationId).maybeSingle();
+  const advance=(pendingAdvance?.state??{}) as SaleState;
+  const shouldMuteAdvance=(isReceipt && /anticip|transfer|deposit|giro/i.test(String(advance.paymentMethod??""))) ||
+    (/anticip|transfer|deposit|giro/i.test(String(advance.paymentMethod??"")) && Boolean(advance.receiptPath || advance.receiptDocuments?.length));
+  if(settings.mode==="automatico" && providerFailed){
+    await supabaseAdmin.from("ai_settings").update({
+      emergency_active_until:new Date(Date.now()+5*60*1000).toISOString(),
+    }).eq("workspace_id",args.workspaceId);
+  }
+  const notifyTitle=outage==="credit"?"Crédito de API de IA agotado":
+    outage==="rate_limit"?"Límite de solicitudes de IA alcanzado":
+    outage==="auth"?"Error de autenticación de API de IA":"Servicio de IA no disponible";
+  const {data:recentNotice}=await supabaseAdmin.from("notifications").select("id")
+    .eq("workspace_id",args.workspaceId).eq("type","ia")
+    .eq("title",notifyTitle).gte("created_at",new Date(Date.now()-60*60*1000).toISOString()).limit(1);
+  if(!recentNotice?.length) await supabaseAdmin.from("notifications").insert({
+    workspace_id:args.workspaceId,user_id:args.ownerId,type:"ia",
+    title:notifyTitle,body:`El proveedor no pudo responder. ${settings.mode==="desactivado"?"Respaldo desactivado.":"Modo de respaldo por código disponible."} Causa: ${args.reason.slice(0,130)}`,
+    link:"/inbox",audience:"user",
+  });
+  if(shouldMuteAdvance) return;
+  if(settings.mode!=="desactivado" && providerFailed) {
+    try {
+      const handled=await runEmergencySale({...args,
+        contactId:convInfo?.contact_id??null,productId:convInfo?.product_id??null,
+        saleClosed:convInfo?.sale_closed??false,body:sourceMessage?.body??"",
+        mediaPath:sourceMessage?.media_url??null,mediaType:sourceMessage?.media_type??null,
+      });
+      if(handled)return;
+    }catch(emergencyError){
+      console.error("[BOT_SKY_EMERGENCY_CHECKOUT_ERROR]",emergencyError);
+    }
+  }
   let responseSent = false;
   // No considerar como respuesta del mensaje ACTUAL un catálogo o promoción
   // que salió ANTES de que el cliente escribiera. Antes se usaban 45 s sin
@@ -5174,7 +5240,7 @@ async function sendSilenceFallback(args: {
       responseSent = true;
       await supabaseAdmin.from("messages").insert({
         workspace_id: args.workspaceId, user_id: args.ownerId, conversation_id: args.conversationId,
-        ad_id: args.adId ?? null, direction: "outbound", sender: "ai", response_origin: "ai",
+        ad_id: args.adId ?? null, direction: "outbound", sender: "ai", response_origin: "code",
         body: text, wamid, status: "sent",
       } as any);
       await supabaseAdmin.from("conversations").update({
@@ -5191,7 +5257,7 @@ async function sendSilenceFallback(args: {
         responseSent = true;
         await supabaseAdmin.from("messages").insert({
           workspace_id: args.workspaceId, user_id: args.ownerId, conversation_id: args.conversationId,
-          ad_id: args.adId ?? null, direction: "outbound", sender: "ai", response_origin: "ai",
+          ad_id: args.adId ?? null, direction: "outbound", sender: "ai", response_origin: "code",
           body: neutralNotice, wamid, status: "sent",
         } as any);
         await supabaseAdmin.from("conversations").update({
@@ -5202,12 +5268,7 @@ async function sendSilenceFallback(args: {
       }
     }
   }
-  await supabaseAdmin.from("notifications").insert({
-    workspace_id: args.workspaceId, user_id: args.ownerId, type: "ia",
-    title: `La IA no pudo responder · ${args.phone}`,
-    body: args.reason.slice(0, 240),
-    link: "/inbox", audience: "user",
-  });
+  // Alerta de proveedor clasificada arriba y deduplicada por tienda/hora.
 }
 
 
