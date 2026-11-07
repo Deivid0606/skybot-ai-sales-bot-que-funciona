@@ -4913,6 +4913,188 @@ async function generateAiReplyWithRetry(ctx: Parameters<typeof generateAiReply>[
   }
 }
 
+
+type EmergencyMode = "automatico" | "forzado" | "desactivado";
+function classifyAiOutage(reason: string): "credit" | "rate_limit" | "auth" | "provider" {
+  const message = reason.toLowerCase();
+  if (/insufficient[_ ]quota|credit_balance_exhausted|prepayment credits|billing|credit[s]? exhausted|no credits remaining|payment required|quota exceeded.*billing/.test(message)) return "credit";
+  if (/rate[_ -]?limit|resource[_ ]exhausted|\b429\b|quota exceeded/.test(message)) return "rate_limit";
+  if (/invalid[_ -]?api[_ -]?key|permission denied|unauthorized|\b401\b|\b403\b/.test(message)) return "auth";
+  return "provider";
+}
+async function loadEmergencySettings(workspaceId: string) {
+  const {data,error}=await supabaseAdmin.from("ai_settings")
+    .select("emergency_mode,emergency_recover_pending,emergency_active_until")
+    .eq("workspace_id",workspaceId).maybeSingle();
+  if(error) throw error;
+  return {mode:(data?.emergency_mode ?? "automatico") as EmergencyMode,
+    recover:data?.emergency_recover_pending !== false,
+    active:Boolean(data?.emergency_active_until && Date.parse(data.emergency_active_until)>Date.now())};
+}
+async function sendEmergencyText(args:{
+  conn:Conn; workspaceId:string; ownerId:string; conversationId:string;
+  adId:string|null; phone:string; text:string;
+}) {
+  const wamid=await sendWhatsAppText(args.conn,args.phone,args.text);
+  const {error}=await supabaseAdmin.from("messages").insert({
+    workspace_id:args.workspaceId,user_id:args.ownerId,conversation_id:args.conversationId,
+    ad_id:args.adId,direction:"outbound",sender:"ai",response_origin:"code",
+    body:args.text,wamid,status:"sent",
+  } as any);
+  if(error) console.error("[BOT_SKY_EMERGENCY_MESSAGE_SAVE]",error.message);
+  await supabaseAdmin.from("conversations").update({
+    last_message:args.text,last_message_at:new Date().toISOString(),
+  }).eq("workspace_id",args.workspaceId).eq("id",args.conversationId);
+}
+function emergencyMissingRequirements(st:SaleState, isAdvance:boolean) {
+  const missing:string[]=[];
+  if(!st.quantity || st.quantity<1 || !st.optionId) missing.push("🔢 Cantidad o presentación que querés");
+  if(!st.cityVerified) missing.push("📍 Ciudad donde querés recibir");
+  if(!isValidCustomerName(st.customerName)) missing.push("👤 Nombre y apellido");
+  if(!isAdvance && st.cityVerified && !isValidDeliveryAddress(st.street) && !isValidDeliveryAddress(st.locationUrl))
+    missing.push("🏠 Dirección con referencia o ubicación de Google Maps");
+  return missing;
+}
+async function runEmergencySale(args:{
+  conn:Conn; workspaceId:string; ownerId:string; conversationId:string; contactId?:string|null;
+  adId:string|null; phone:string; wamid:string; body:string; mediaPath?:string|null;
+  mediaType?:string|null; productId?:string|null; saleClosed?:boolean; force?:boolean;
+}):Promise<boolean> {
+  if(args.saleClosed) return true; // Nunca reiniciar postventa ni registrar duplicados por código.
+  const {data:row}=await supabaseAdmin.from("bot_sale_states").select("state")
+    .eq("workspace_id",args.workspaceId).eq("conversation_id",args.conversationId).maybeSingle();
+  const previous=(row?.state ?? {}) as SaleState;
+  // Una vez recibido el comprobante anticipado, NINGÚN texto puede salir del código.
+  const advanceAlreadyPaid=/anticip|transfer|deposit|giro/i.test(String(previous.paymentMethod??"")) &&
+    Boolean(previous.receiptPath || previous.receiptDocuments?.length);
+  if(advanceAlreadyPaid) return true;
+  const ctx=await buildWorkspaceAiContext(supabaseAdmin,args.workspaceId,[],previous.productId??args.productId??null,args.phone,args.conversationId);
+  const isDocument=(args.mediaType==="image"||args.mediaType==="document");
+  if(isDocument && /anticip|transfer|deposit|giro/i.test(String(previous.paymentMethod??""))) {
+    if(args.mediaPath){
+      const next={...previous,receiptPath:args.mediaPath,awaiting:"receipt"};
+      await supabaseAdmin.from("bot_sale_states").upsert({
+        workspace_id:args.workspaceId,conversation_id:args.conversationId,state:next,
+        updated_at:new Date().toISOString(),
+      },{onConflict:"workspace_id,conversation_id"});
+    }
+    // Incluso si no se pudo almacenar la imagen, jamás responder por código tras el comprobante.
+    return true;
+  }
+  // Reutiliza la publicidad y las fotos REALES de la tienda, no imágenes externas.
+  // El catálogo manda foto+copy y precios en mensajes separados.
+  if(!previous.productId && !args.productId && !isDocument){
+    const initial=await sendCatalogByKeyword({
+      workspaceId:args.workspaceId,ownerId:args.ownerId,
+      conversationId:args.conversationId,adId:args.adId,conn:args.conn,phone:args.phone,text:args.body,
+    });
+    if(initial?.sent && initial.productId) {
+      await supabaseAdmin.from("bot_sale_states").upsert({
+        workspace_id:args.workspaceId,conversation_id:args.conversationId,
+        state:{productId:initial.productId,cycleStartedAt:new Date().toISOString()},
+        updated_at:new Date().toISOString(),
+      },{onConflict:"workspace_id,conversation_id"});
+      await sendEmergencyText({...args,text:"😍 ¡Hacé tu pedido fácilmente!\n\n📋 Pasame estos datos:\n\n👤 Nombre y apellido\n📍 Ciudad de entrega\n🔢 Cantidad que querés\n\n🏠 Si es pago al recibir, también necesitaremos tu dirección con referencia o Google Maps.\n\n✅ Podés enviar todo junto o de a poco. 😊"});
+      return true;
+    }
+  }
+  const step=advanceRuleSale(ctx,args.body,{...previous,productId:previous.productId??args.productId??null});
+  if(!step){
+    // Sin producto verificado, no inventar precios ni una compra.
+    if(!previous.productId && !args.productId) return false;
+    const name=ctx.products.find(p=>p.id===(previous.productId??args.productId));
+    if(!name) return false;
+    const options=name.product_prices??[];
+    const text=options.length
+      ? `💰 *${name.name}*\n${options.map(o=>`• ${o.label}: ${formatGs(o.price)}`).join("\n")}\n\n📋 Para registrar tu pedido, pasame nombre y apellido, ciudad de entrega y cantidad. La dirección se solicita para pago al recibir.`
+      : "📋 Para continuar, pasame tu ciudad de entrega y la presentación que querés. 😊";
+    await sendEmergencyText({...args,text});
+    return true;
+  }
+  const st=step.state;
+  const policy=st.cityVerified?deliveryPolicyForCity(st.city,st.department,ctx.training):null;
+  const isAdvance=policy?.paymentMethod==="anticipado" ||
+    (st.cityVerified && st.coverageStatus==="uncovered" && sellerAllowsNationwideAdvance(ctx.training));
+  st.paymentMethod=isAdvance?"anticipado":policy?.paymentMethod??st.paymentMethod;
+  const {error:saveError}=await supabaseAdmin.from("bot_sale_states").upsert({
+    workspace_id:args.workspaceId,conversation_id:args.conversationId,
+    state:st,updated_at:new Date().toISOString(),
+  },{onConflict:"workspace_id,conversation_id"});
+  if(saveError) throw saveError;
+  if(isAdvance && (st.receiptPath || st.receiptDocuments?.length)) return true;
+  const missing=emergencyMissingRequirements(st,isAdvance);
+  if(isAdvance){
+    if(!st.cityVerified || !st.optionId || !st.quantity || !st.productId) {
+      await sendEmergencyText({...args,text:`📋 Para preparar tu envío, me falta:\n${missing.join("\n") || "🔢 Confirmar la cantidad"}\n\nPodés enviarme todo junto o de a poco. 😊`});
+      return true;
+    }
+    const product=ctx.products.find(p=>p.id===st.productId);
+    const opt=product?.product_prices?.find(o=>o.id===st.optionId);
+    if(!opt || !(opt.price>0) || !(st.quantity>0) || st.quantity%opt.quantity!==0) return false;
+    const total=opt.price*(st.quantity/opt.quantity);
+    const bank=sellerBankText(ctx.training);
+    const lines=bank.split("\n").map(x=>x.trim()).filter(x=>x &&
+      /^(?:-|•)?\s*(?:banco|entidad|servicio|titular|ci del titular|cédula|cedula|alias|número de cuenta|n° de cuenta|nº de cuenta|cuenta desde|cuenta para|cuenta bancaria)/i.test(x)).slice(0,12);
+    if(!lines.some(l=>/titular/i.test(l)) || !lines.some(l=>/cuenta/i.test(l))) return false;
+    if(!st.customerName){
+      // En el anticipo se permite pedir el nombre anticipadamente, sin impedir la transferencia.
+      // Se guarda el dato cuando llegue, pero la IA es quien confirma tras el comprobante.
+    }
+    await sendEmergencyText({...args,text:`🚚 Para ${st.city} trabajamos por encomienda con pago anticipado.\n\n📦 ${product?.name??"Producto"} — ${opt.label}\n🔢 Cantidad: ${st.quantity}\n💰 Total de productos: ${formatGs(total)}\n🚚 Costo de encomienda: sujeto a confirmación logística.\n\n🏦 Datos bancarios de la tienda:\n${lines.join("\n")}\n\n📎 Cuando realices la transferencia, enviame el comprobante por acá. La validación continuará con la IA. 😊`});
+    return true;
+  }
+  // Cierre de contraentrega solo con cobertura inequívoca y todos los requisitos.
+  const codReady=policy?.paymentMethod==="contraentrega" && step.complete &&
+    !missing.length && Boolean(args.contactId && st.productId && st.optionId && st.customerName && st.city &&
+      st.department && st.quantity && (isValidDeliveryAddress(st.street)||isValidDeliveryAddress(st.locationUrl)));
+  if(codReady){
+    const product=ctx.products.find(p=>p.id===st.productId);
+    const option=product?.product_prices?.find(o=>o.id===st.optionId);
+    if(option && st.quantity!>=option.quantity && st.quantity!%option.quantity===0) {
+      const order={customer_name:st.customerName!,city:st.city!,departamento:st.department!,
+        street:st.street||st.locationUrl||undefined,quantity:st.quantity!,
+        promo_quantity:st.quantity!/option.quantity,product_price_id:option.id,
+        payment_method:"contraentrega",phone:args.phone};
+      const created=await createOrderFromAi({
+        workspaceId:args.workspaceId,ownerId:args.ownerId,conversationId:args.conversationId,
+        contactId:args.contactId!,phone:args.phone,adId:args.adId,productId:st.productId!,
+        sourceMessageId:args.wamid,order,cartLines:st.cartLines,multiProductLines:st.multiProductLines,
+        products:ctx.products,training:ctx.training,
+      });
+      if(created.already_registered)return true;
+      const {data:saved}=await supabaseAdmin.from("orders").select("id,order_number,customer_name,phone,total,quantity,street,payment_method,payment_status,observations")
+        .eq("workspace_id",args.workspaceId).eq("id",created.id).single();
+      if(!saved)throw new Error("Pedido creado pero no disponible para confirmación");
+      await supabaseAdmin.from("conversations").update({sale_closed:true,status:"vendida"})
+        .eq("workspace_id",args.workspaceId).eq("id",args.conversationId);
+      await supabaseAdmin.from("bot_sale_states").delete().eq("workspace_id",args.workspaceId).eq("conversation_id",args.conversationId);
+      const confirmation=buildRegisteredOrderConfirmation({
+        created:saved,requestRecipientCi:false,order,
+        productName:product?.name??"Producto del pedido",
+        items:(await supabaseAdmin.from("order_items").select("title,sku,quantity,price").eq("order_id",created.id)).data??[],
+        productOption:option.label,packageCopy:product?.sales_copy??product?.description??null,
+        savedQuantity:Number(saved.quantity),recipientCi:null,address:saved.street,
+        paymentStatus:saved.payment_status,pendingCreditGs:0,deliveryMethod:policy.method,
+      });
+      await sendEmergencyText({...args,text:confirmation});
+      return true;
+    }
+  }
+  if(!st.productId)return false;
+  const product=ctx.products.find(p=>p.id===st.productId);
+  const options=product?.product_prices??[];
+  if(st.awaiting==="variant" || !st.optionId){
+    await sendEmergencyText({...args,text:options.length
+      ? `💰 Precios disponibles de *${product?.name}*:\n${options.map(o=>`• ${o.label}: ${formatGs(o.price)}`).join("\n")}\n\n¿Cuál opción querés?`
+      : "¿Qué cantidad querés llevar? 😊"});
+    return true;
+  }
+  await sendEmergencyText({...args,text:missing.length
+    ? `📋 ¡Perfecto! Para registrar tu pedido me falta:\n${missing.join("\n")}\n\n✅ Podés enviarme los datos juntos o de a poco. 😊`
+    : "Recibí los datos. El pedido necesita revisión antes de confirmarlo."});
+  return true;
+}
+
 /**
  * Cuando la IA no puede responder, el cliente recibe un aviso corto (una sola
  * vez seguida, sin repetirlo en cada mensaje) y el dueño recibe una
