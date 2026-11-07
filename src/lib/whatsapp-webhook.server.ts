@@ -5211,8 +5211,8 @@ async function sendSilenceFallback(args: {
     title:notifyTitle,body:`El proveedor no pudo responder. ${settings.mode==="desactivado"?"Respaldo desactivado.":"Modo de respaldo por código disponible."} Causa: ${args.reason.slice(0,130)}`,
     link:"/inbox",audience:"user",
   });
-  if(shouldMuteAdvance) return;
-  if(settings.mode!=="desactivado" && providerFailed) {
+  if(shouldMuteAdvance || settings.mode==="desactivado") return;
+  if(providerFailed) {
     try {
       const handled=await runEmergencySale({...args,
         contactId:convInfo?.contact_id??null,productId:convInfo?.product_id??null,
