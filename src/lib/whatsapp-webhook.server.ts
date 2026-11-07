@@ -4516,6 +4516,7 @@ async function sendCatalogByKeyword(args: {
   text: string;
   cityFirst?: boolean;
   identifyOnly?: boolean;
+  emergency?: boolean;
 }): Promise<CatalogKeywordResult | null> {
   const raw = (args.text ?? "").toLowerCase().trim();
   if (!raw) return null;
@@ -4624,7 +4625,7 @@ ${match.products.description ?? ""}`.trim();
   // Los precios se envían aparte, 5 segundos después del copy + imagen.
   const copy = baseCopy;
   const pricesMessage = options.length
-    ? `💰 *Precios disponibles:*\n${options.map((o) => `• *${o.label}* — Gs. ${Math.round(Number(o.price)).toLocaleString("es-PY")}`).join("\n")}\n\n¿Cuál te interesa? 😊`
+    ? `💰 *Precios disponibles:*\n${options.map((o) => `• *${o.label}* — Gs. ${Math.round(Number(o.price)).toLocaleString("es-PY")}`).join("\n")}${args.emergency ? "" : "\n\n¿Cuál te interesa? 😊"}`
     : null;
 
   const { sendWhatsAppMedia: sendWhatsAppMediaNow } = await import("@/lib/whatsapp.server");
@@ -5008,16 +5009,26 @@ async function runEmergencySale(args:{
   if(!previous.productId && !args.productId && !isDocument){
     const initial=await sendCatalogByKeyword({
       workspaceId:args.workspaceId,ownerId:args.ownerId,
-      conversationId:args.conversationId,adId:args.adId,conn:args.conn,phone:args.phone,text:args.body,
+      conversationId:args.conversationId,adId:args.adId,conn:args.conn,phone:args.phone,text:args.body,emergency:true,
     });
     if(initial?.sent && initial.productId) {
+      const initialStep=advanceRuleSale(ctx,args.body,{productId:initial.productId,cycleStartedAt:new Date().toISOString()});
       await supabaseAdmin.from("bot_sale_states").upsert({
         workspace_id:args.workspaceId,conversation_id:args.conversationId,
-        state:{productId:initial.productId,cycleStartedAt:new Date().toISOString()},
+        state:initialStep?.state??{productId:initial.productId,cycleStartedAt:new Date().toISOString()},
         updated_at:new Date().toISOString(),
       },{onConflict:"workspace_id,conversation_id"});
       await sendEmergencyText({...args,text:"😍 ¡Hacé tu pedido fácilmente!\n\n📋 Pasame estos datos:\n\n👤 Nombre y apellido\n📍 Ciudad de entrega\n🔢 Cantidad que querés\n\n🏠 Si es pago al recibir, también necesitaremos tu dirección con referencia o Google Maps.\n\n✅ Podés enviar todo junto o de a poco. 😊"});
+      if(initialStep?.complete) await runEmergencySale({...args,productId:initial.productId});
       return true;
+    }
+    if(!initial?.sent && /^\s*(?:hola|holaa+|buenas|buen dia|buen día|buenas tardes|buenas noches|informacion|información|info|catalogo|catálogo|precio)\s*[!?.]*$/i.test(args.body)){
+      const cat=ctx.training.map(t=>t.content).join("\n")
+        .match(/https:\/\/skybot-ai-sales-130022\.vercel\.app\/c\/[a-f0-9-]{24,}/i)?.[0];
+      if(cat){
+        await sendEmergencyText({...args,text:`¡Hola! 😊🛍️ Mirá nuestro catálogo de productos disponibles: \n\n${cat}\n\nDecime cuál te interesa y te paso sus precios y promociones.`});
+        return true;
+      }
     }
   }
   const step=advanceRuleSale(ctx,args.body,{...previous,productId:previous.productId??args.productId??null});
@@ -5054,14 +5065,16 @@ async function runEmergencySale(args:{
     const opt=product?.product_prices?.find(o=>o.id===st.optionId);
     if(!opt || !(opt.price>0) || !(st.quantity>0) || st.quantity%opt.quantity!==0) return false;
     const total=opt.price*(st.quantity/opt.quantity);
+    if(st.emergencyBankSentAt) return true; // Nunca repetir la cuenta ante mensajes adicionales.
     const bank=sellerBankText(ctx.training);
     const lines=bank.split("\n").map(x=>x.trim()).filter(x=>x &&
       /^(?:-|•)?\s*(?:banco|entidad|servicio|titular|ci del titular|cédula|cedula|alias|número de cuenta|n° de cuenta|nº de cuenta|cuenta desde|cuenta para|cuenta bancaria)/i.test(x)).slice(0,12);
     if(!lines.some(l=>/titular/i.test(l)) || !lines.some(l=>/cuenta/i.test(l))) return false;
-    if(!st.customerName){
-      // En el anticipo se permite pedir el nombre anticipadamente, sin impedir la transferencia.
-      // Se guarda el dato cuando llegue, pero la IA es quien confirma tras el comprobante.
-    }
+    await supabaseAdmin.from("bot_sale_states").upsert({
+      workspace_id:args.workspaceId,conversation_id:args.conversationId,
+      state:{...st,emergencyBankSentAt:new Date().toISOString()},
+      updated_at:new Date().toISOString(),
+    },{onConflict:"workspace_id,conversation_id"});
     await sendEmergencyText({...args,text:`🚚 Para ${st.city} trabajamos por encomienda con pago anticipado.\n\n📦 ${product?.name??"Producto"} — ${opt.label}\n🔢 Cantidad: ${st.quantity}\n💰 Total de productos: ${formatGs(total)}\n🚚 Costo de encomienda: sujeto a confirmación logística.\n\n🏦 Datos bancarios de la tienda:\n${lines.join("\n")}\n\n📎 Cuando realices la transferencia, enviame el comprobante por acá. La validación continuará con la IA. 😊`});
     return true;
   }
@@ -5072,10 +5085,11 @@ async function runEmergencySale(args:{
   if(codReady){
     const product=ctx.products.find(p=>p.id===st.productId);
     const option=product?.product_prices?.find(o=>o.id===st.optionId);
-    if(option && st.quantity! >= option.quantity && st.quantity! % option.quantity === 0) {
+    const multi=st.multiProductLines?.length ? resolveCartPricing(st.multiProductLines,ctx.products) : null;
+    if(option && (multi?.length || (st.quantity! >= option.quantity && st.quantity! % option.quantity === 0))) {
       const order={customer_name:st.customerName!,city:st.city!,departamento:st.department!,
-        street:st.street||st.locationUrl||undefined,quantity:st.quantity!,
-        promo_quantity:st.quantity!/option.quantity,product_price_id:option.id,
+        street:st.street||st.locationUrl||undefined,quantity:multi?.length?multi.reduce((n,x)=>n+x.quantity,0):st.quantity!,
+        promo_quantity:multi?.length?1:st.quantity!/option.quantity,product_price_id:option.id,
         payment_method:"contraentrega",phone:args.phone};
       const created=await createOrderFromAi({
         workspaceId:args.workspaceId,ownerId:args.ownerId,conversationId:args.conversationId,
