@@ -11,6 +11,7 @@ import { reconcileOrderWithSaleState, recoverSaleStateFromHistory, isValidCustom
 import { isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi, isValidRecipientCi, enforceVerifiedPaymentReply, type SaleState } from "@/lib/rule-sales.server";
 import { buildRegisteredOrderConfirmation } from "@/lib/order-confirmation.server";
 import { handlePostSaleRecipientCi, shouldAskPostSaleCi } from "./recipient-ci.server";
+import { safePostSaleReply } from "@/lib/post-sale-reply-guard";
 
 const SendInput = z.object({
   conversationId: z.string().uuid(),
@@ -328,17 +329,23 @@ export const aiReplyNow = createServerFn({ method: "POST" })
         .eq("workspace_id",conversation.workspace_id).maybeSingle();
       const phone = conversation.contacts?.phone;
       if(!phone || !conn?.phone_number_id || !conn.access_token)throw new Error("WhatsApp no conectado");
-      const wamid=await sendWhatsAppText(conn,phone,reply);
+      const {data:lastOrder}=await supabase.from("orders").select("order_number,status")
+        .eq("workspace_id",conversation.workspace_id).eq("conversation_id",conversation.id)
+        .order("created_at",{ascending:false}).limit(1).maybeSingle();
+      const checked=safePostSaleReply({reply,customerText:text,
+        orderNumber:lastOrder?.order_number,orderStatus:lastOrder?.status});
+      const wamid=await sendWhatsAppText(conn,phone,checked.reply);
       const {error:insertError}=await supabase.from("messages").insert({
         workspace_id:conversation.workspace_id,user_id:conversation.user_id,
-        conversation_id:conversation.id,direction:"outbound",sender:"ai",response_origin:"ai",body:reply,
+        conversation_id:conversation.id,direction:"outbound",sender:"ai",
+        response_origin:checked.corrected?"code":"ai",body:checked.reply,
         wamid,status:"sent",
       });
       if(insertError)throw insertError;
       await supabase.from("conversations").update({
-        last_message:reply,last_message_at:new Date().toISOString(),unread_count:0,
+        last_message:checked.reply,last_message_at:new Date().toISOString(),unread_count:0,
       }).eq("workspace_id",conversation.workspace_id).eq("id",conversation.id);
-      return {reply,orderId:null};
+      return {reply:checked.reply,orderId:null};
     }
     if(conversation.sale_closed) {
       const ciResult=await handlePostSaleRecipientCi({client:supabase,workspaceId:conversation.workspace_id,
@@ -361,11 +368,16 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       if(!reply)reply="Un asesor debe verificar el estado actual de tu pedido. Gracias por tu paciencia. 🙏";
       const {data:conn}=await supabase.from("whatsapp_connections").select("phone_number_id,access_token").eq("workspace_id",conversation.workspace_id).maybeSingle();
       if(!conn?.phone_number_id||!conn.access_token||!conversation.contacts?.phone)throw new Error("WhatsApp no conectado");
-      const wamid=await sendWhatsAppText(conn,conversation.contacts.phone,reply);
-      const {error:insertError}=await supabase.from("messages").insert({workspace_id:conversation.workspace_id,user_id:conversation.user_id,conversation_id:conversation.id,direction:"outbound",sender:"ai",body:reply,wamid,status:"sent"});
+      const {data:lastOrder}=await supabase.from("orders").select("order_number,status")
+        .eq("workspace_id",conversation.workspace_id).eq("conversation_id",conversation.id)
+        .order("created_at",{ascending:false}).limit(1).maybeSingle();
+      const checked=safePostSaleReply({reply,customerText:text,
+        orderNumber:lastOrder?.order_number,orderStatus:lastOrder?.status});
+      const wamid=await sendWhatsAppText(conn,conversation.contacts.phone,checked.reply);
+      const {error:insertError}=await supabase.from("messages").insert({workspace_id:conversation.workspace_id,user_id:conversation.user_id,conversation_id:conversation.id,direction:"outbound",sender:"ai",response_origin:checked.corrected?"code":"ai",body:checked.reply,wamid,status:"sent"});
       if(insertError)throw insertError;
-      await supabase.from("conversations").update({last_message:reply,last_message_at:new Date().toISOString(),unread_count:0}).eq("workspace_id",conversation.workspace_id).eq("id",conversation.id);
-      return {reply,orderId:null};
+      await supabase.from("conversations").update({last_message:checked.reply,last_message_at:new Date().toISOString(),unread_count:0}).eq("workspace_id",conversation.workspace_id).eq("id",conversation.id);
+      return {reply:checked.reply,orderId:null};
     }
     const intent = isGpsMessage ? "checkout" : classifyCustomerIntent(text);
     const reminderText=text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
