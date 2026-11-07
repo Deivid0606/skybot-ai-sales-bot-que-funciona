@@ -368,6 +368,13 @@ export function applyDeclaredCity(state: SaleState, hit: {city:string; departmen
 
 export function cityIn(text:string, coverage:Coverage[]): Coverage | null {
   const normalized=norm(text);
+  // Typing/voice aliases for "Ciudad del Este" ("ciudad de leste", "CDE").
+  // Only resolve a location present in this SELLER's current coverage table.
+  const cdeTypo= /\b(?:ciudad\s+de\s+leste|ciudad\s+del\s+este|ciudad\s+de\s+este|ciudad\s+deleste|cde)\b/.test(normalized);
+  if(cdeTypo){
+    const allowed=coverage.filter(place=>norm(place.city)==="ciudad del este" && norm(place.department)==="alto parana");
+    if(allowed.length===1)return allowed[0];
+  }
   // Preguntas sobre pago no son declaraciones de una ciudad.
   if (!normalized || /^(?:se paga|puedo pagar|pago al recibir|es contra entrega|envio gratis|cuanto cuesta)/.test(normalized)) return null;
   const exact=coverage.filter(c=>[c.city,...c.aliases].some(alias=>{
