@@ -4999,20 +4999,30 @@ async function runEmergencySale(args:{
     .eq("workspace_id",args.workspaceId).eq("conversation_id",args.conversationId).maybeSingle();
   const previous=(row?.state ?? {}) as SaleState;
   // Una vez recibido el comprobante anticipado, NINGÚN texto puede salir del código.
-  const advanceAlreadyPaid=/anticip|transfer|deposit|giro/i.test(String(previous.paymentMethod??"")) &&
-    Boolean(previous.receiptPath || previous.receiptDocuments?.length);
+  const advanceAlreadyPaid=Boolean(previous.emergencyReceiptPending) ||
+    (/anticip|transfer|deposit|giro/i.test(String(previous.paymentMethod??"")) &&
+      Boolean(previous.receiptPath || previous.receiptDocuments?.length));
   if(advanceAlreadyPaid) return true;
   const ctx=await buildWorkspaceAiContext(supabaseAdmin,args.workspaceId,[],previous.productId??args.productId??null,args.phone,args.conversationId);
   const isDocument=(args.mediaType==="image"||args.mediaType==="document");
   if(isDocument && /anticip|transfer|deposit|giro/i.test(String(previous.paymentMethod??""))) {
-    if(args.mediaPath){
-      const next={...previous,receiptPath:args.mediaPath,awaiting:"receipt"};
-      await supabaseAdmin.from("bot_sale_states").upsert({
-        workspace_id:args.workspaceId,conversation_id:args.conversationId,state:next,
-        updated_at:new Date().toISOString(),
-      },{onConflict:"workspace_id,conversation_id"});
+    const next={...previous,receiptPath:args.mediaPath??previous.receiptPath??null,
+      emergencyReceiptPending:true,awaiting:"receipt"};
+    const {error:pendingReceiptError}=await supabaseAdmin.from("bot_sale_states").upsert({
+      workspace_id:args.workspaceId,conversation_id:args.conversationId,state:next,
+      updated_at:new Date().toISOString(),
+    },{onConflict:"workspace_id,conversation_id"});
+    if(pendingReceiptError) throw pendingReceiptError;
+    if(!args.force) {
+      const {error:queueError}=await supabaseAdmin.from("ai_failed_messages").upsert({
+        workspace_id:args.workspaceId,user_id:args.ownerId,
+        conversation_id:args.conversationId,wamid:args.wamid,
+        error_message:"Comprobante anticipado recibido durante falla de IA: resource_exhausted",
+        status:"pending",updated_at:new Date().toISOString(),
+      },{onConflict:"workspace_id,wamid"});
+      if(queueError) console.error("[BOT_SKY_ADVANCE_RECEIPT_QUEUE]",queueError.message);
     }
-    // Incluso si no se pudo almacenar la imagen, jamás responder por código tras el comprobante.
+    // El archivo se guarda; nunca responder por código después del comprobante.
     return true;
   }
   // Reutiliza la publicidad y las fotos REALES de la tienda, no imágenes externas.
@@ -5065,7 +5075,7 @@ async function runEmergencySale(args:{
     state:st,updated_at:new Date().toISOString(),
   },{onConflict:"workspace_id,conversation_id"});
   if(saveError) throw saveError;
-  if(isAdvance && (st.receiptPath || st.receiptDocuments?.length)) return true;
+  if(isAdvance && (st.emergencyReceiptPending || st.receiptPath || st.receiptDocuments?.length)) return true;
   const missing=emergencyMissingRequirements(st,isAdvance);
   if(isAdvance){
     if(!st.cityVerified || !st.optionId || !st.quantity || !st.productId) {
@@ -5081,12 +5091,12 @@ async function runEmergencySale(args:{
     const lines=bank.split("\n").map(x=>x.trim()).filter(x=>x &&
       /^(?:-|•)?\s*(?:banco|entidad|servicio|titular|ci del titular|cédula|cedula|alias|número de cuenta|n° de cuenta|nº de cuenta|cuenta desde|cuenta para|cuenta bancaria)/i.test(x)).slice(0,12);
     if(!lines.some(l=>/titular/i.test(l)) || !lines.some(l=>/cuenta/i.test(l))) return false;
+    await sendEmergencyText({...args,text:`🚚 Para ${st.city} trabajamos por encomienda con pago anticipado.\n\n📦 ${product?.name??"Producto"} — ${opt.label}\n🔢 Cantidad: ${st.quantity}\n💰 Total de productos: ${formatGs(total)}\n🚚 Costo de encomienda: sujeto a confirmación logística.\n\n🏦 Datos bancarios de la tienda:\n${lines.join("\n")}\n\n📎 Cuando realices la transferencia, enviame el comprobante por acá. La validación continuará con la IA. 😊`});
     await supabaseAdmin.from("bot_sale_states").upsert({
       workspace_id:args.workspaceId,conversation_id:args.conversationId,
       state:{...st,emergencyBankSentAt:new Date().toISOString()},
       updated_at:new Date().toISOString(),
     },{onConflict:"workspace_id,conversation_id"});
-    await sendEmergencyText({...args,text:`🚚 Para ${st.city} trabajamos por encomienda con pago anticipado.\n\n📦 ${product?.name??"Producto"} — ${opt.label}\n🔢 Cantidad: ${st.quantity}\n💰 Total de productos: ${formatGs(total)}\n🚚 Costo de encomienda: sujeto a confirmación logística.\n\n🏦 Datos bancarios de la tienda:\n${lines.join("\n")}\n\n📎 Cuando realices la transferencia, enviame el comprobante por acá. La validación continuará con la IA. 😊`});
     return true;
   }
   // Cierre de contraentrega solo con cobertura inequívoca y todos los requisitos.
@@ -5180,7 +5190,8 @@ async function sendSilenceFallback(args: {
   const {data:pendingAdvance}=await supabaseAdmin.from("bot_sale_states").select("state")
     .eq("workspace_id",args.workspaceId).eq("conversation_id",args.conversationId).maybeSingle();
   const advance=(pendingAdvance?.state??{}) as SaleState;
-  const shouldMuteAdvance=(isReceipt && /anticip|transfer|deposit|giro/i.test(String(advance.paymentMethod??""))) ||
+  const shouldMuteAdvance=Boolean(advance.emergencyReceiptPending) ||
+    (isReceipt && /anticip|transfer|deposit|giro/i.test(String(advance.paymentMethod??""))) ||
     (/anticip|transfer|deposit|giro/i.test(String(advance.paymentMethod??"")) && Boolean(advance.receiptPath || advance.receiptDocuments?.length));
   if(settings.mode==="automatico" && providerFailed){
     await supabaseAdmin.from("ai_settings").update({
