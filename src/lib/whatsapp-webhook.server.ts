@@ -1432,6 +1432,14 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
   const attributedAdId = referral.adId ?? conversation.ad_id ?? null;
 
   if (media) {
+    // En pruebas forzadas y durante la emergencia, guardar comprobantes e
+    // imágenes sin ejecutar una API de visión que podría seguir sin saldo.
+    const {data:mediaMode}=await supabaseAdmin.from("ai_settings")
+      .select("emergency_mode,emergency_active_until")
+      .eq("workspace_id",workspaceId).maybeSingle();
+    const mediaEmergency=mediaMode?.emergency_mode==="forzado" ||
+      (mediaMode?.emergency_mode==="automatico" &&
+        Boolean(mediaMode.emergency_active_until && Date.parse(mediaMode.emergency_active_until)>Date.now()));
     if (!conn.access_token) {
       console.error("[WhatsApp media] La conexión no tiene access_token", {
         workspaceId,
@@ -1446,7 +1454,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         accessToken: conn.access_token,
         mediaId: media.part.id!,
         type: media.type,
-        allowAiInterpretation: true,
+        allowAiInterpretation: !mediaEmergency,
       });
 
       mediaPath = ingested.storagePath;
@@ -1608,7 +1616,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
 
   const { data: aiSettings } = await supabaseAdmin
     .from("ai_settings")
-    .select("ai_enabled, reply_delay_seconds, hybrid_mode, hybrid_fallback_enabled")
+    .select("ai_enabled, reply_delay_seconds, hybrid_mode, hybrid_fallback_enabled, emergency_mode, emergency_recover_pending, emergency_dry_run, emergency_active_until")
     .eq("workspace_id", workspaceId)
     .maybeSingle();
 
@@ -1623,6 +1631,29 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       isClosed: Boolean(conversation.is_closed),
     });
     return;
+  }
+
+  const emergencyMode=(aiSettings?.emergency_mode??"automatico") as EmergencyMode;
+  const emergencyWindow=Boolean(aiSettings?.emergency_active_until &&
+    Date.parse(aiSettings.emergency_active_until)>Date.now());
+  if (emergencyMode==="forzado" || (emergencyMode==="automatico" && emergencyWindow)) {
+    const handled=await runEmergencySale({
+      conn,workspaceId,ownerId,conversationId:conversation.id,
+      contactId:contact.id,adId:attributedAdId,phone,wamid:message.id,
+      body,mediaPath,mediaType:media?.type??null,productId:conversation.product_id,
+      saleClosed:conversation.sale_closed,force:emergencyMode==="forzado",
+      dryRun:aiSettings?.emergency_dry_run===true,
+    });
+    if(handled)return;
+    if(emergencyMode==="forzado") {
+      await supabaseAdmin.from("notifications").insert({
+        workspace_id:workspaceId,user_id:ownerId,type:"ia",
+        title:`Venta por código necesita revisión · ${phone}`,
+        body:"No se pudo identificar con seguridad el producto, precio, ciudad o datos de pago.",
+        link:"/inbox",audience:"user",
+      });
+      return;
+    }
   }
 
   if (conversation.sale_closed) {
@@ -2429,7 +2460,8 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
     // Si el motor ya verificó que el checkout está COMPLETO, no depender de
     // una nueva respuesta de Gemini para ejecutar el INSERT. El mensaje de
     // confirmación se construye únicamente tras registrar la orden real.
-    const checkoutCompleteByRules = Boolean(saveStep?.complete && !bypassSale && !conversation.sale_closed);
+    const checkoutCompleteByRules = Boolean(saveStep?.complete && !bypassSale && !conversation.sale_closed &&
+      !/anticip|transfer|deposit|giro/i.test(String(saveStep?.state.paymentMethod??"")));
     const responseOrigin = checkoutCompleteByRules ? "code" : "ai";
     // TURNO DEL COMPROBANTE: el sistema ya revisó el archivo. La IA redacta, pero
     // con el RESULTADO decidido como objetivo (nunca «voy a verificar»).
@@ -2706,7 +2738,8 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
           state:saveStep.state,updated_at:new Date().toISOString()},
           {onConflict:"workspace_id,conversation_id"});
       if(saveStateError) throw saveStateError;
-      if(saveStep.complete && !conversation.sale_closed && !bypassSale && !result.order) {
+      if(saveStep.complete && !conversation.sale_closed && !bypassSale && !result.order &&
+        !/anticip|transfer|deposit|giro/i.test(String(saveStep.state.paymentMethod??""))) {
         const st=saveStep.state;
         result = {reply:result.reply,product_id:saveStep.productId,sale_closed:true,
           order:{customer_name:st.customerName!,city:st.city!,departamento:st.department!,
@@ -4494,6 +4527,7 @@ async function sendCatalogByKeyword(args: {
   text: string;
   cityFirst?: boolean;
   identifyOnly?: boolean;
+  emergency?: boolean;
 }): Promise<CatalogKeywordResult | null> {
   const raw = (args.text ?? "").toLowerCase().trim();
   if (!raw) return null;
@@ -4602,7 +4636,7 @@ ${match.products.description ?? ""}`.trim();
   // Los precios se envían aparte, 5 segundos después del copy + imagen.
   const copy = baseCopy;
   const pricesMessage = options.length
-    ? `💰 *Precios disponibles:*\n${options.map((o) => `• *${o.label}* — Gs. ${Math.round(Number(o.price)).toLocaleString("es-PY")}`).join("\n")}\n\n¿Cuál te interesa? 😊`
+    ? `💰 *Precios disponibles:*\n${options.map((o) => `• *${o.label}* — Gs. ${Math.round(Number(o.price)).toLocaleString("es-PY")}`).join("\n")}${args.emergency ? "" : "\n\n¿Cuál te interesa? 😊"}`
     : null;
 
   const { sendWhatsAppMedia: sendWhatsAppMediaNow } = await import("@/lib/whatsapp.server");
@@ -4913,6 +4947,218 @@ async function generateAiReplyWithRetry(ctx: Parameters<typeof generateAiReply>[
   }
 }
 
+
+type EmergencyMode = "automatico" | "forzado" | "desactivado";
+function classifyAiOutage(reason: string): "credit" | "rate_limit" | "auth" | "provider" {
+  const message = reason.toLowerCase();
+  if (/insufficient[_ ]quota|credit_balance_exhausted|prepayment credits|billing|credit[s]? exhausted|no credits remaining|payment required|quota exceeded.*billing/.test(message)) return "credit";
+  if (/rate[_ -]?limit|resource[_ ]exhausted|\b429\b|quota exceeded/.test(message)) return "rate_limit";
+  if (/invalid[_ -]?api[_ -]?key|permission denied|unauthorized|\b401\b|\b403\b/.test(message)) return "auth";
+  return "provider";
+}
+async function loadEmergencySettings(workspaceId: string) {
+  const {data,error}=await supabaseAdmin.from("ai_settings")
+    .select("emergency_mode,emergency_recover_pending,emergency_dry_run,emergency_active_until")
+    .eq("workspace_id",workspaceId).maybeSingle();
+  if(error) throw error;
+  return {mode:(data?.emergency_mode ?? "automatico") as EmergencyMode,
+    recover:data?.emergency_recover_pending !== false,
+    dryRun:data?.emergency_dry_run===true,
+    active:Boolean(data?.emergency_active_until && Date.parse(data.emergency_active_until)>Date.now())};
+}
+async function sendEmergencyText(args:{
+  conn:Conn; workspaceId:string; ownerId:string; conversationId:string;
+  adId:string|null; phone:string; text:string;
+}) {
+  const wamid=await sendWhatsAppText(args.conn,args.phone,args.text);
+  const {error}=await supabaseAdmin.from("messages").insert({
+    workspace_id:args.workspaceId,user_id:args.ownerId,conversation_id:args.conversationId,
+    ad_id:args.adId,direction:"outbound",sender:"ai",response_origin:"code",
+    body:args.text,wamid,status:"sent",
+  } as any);
+  if(error) console.error("[BOT_SKY_EMERGENCY_MESSAGE_SAVE]",error.message);
+  await supabaseAdmin.from("conversations").update({
+    last_message:args.text,last_message_at:new Date().toISOString(),
+  }).eq("workspace_id",args.workspaceId).eq("id",args.conversationId);
+}
+function emergencyMissingRequirements(st:SaleState, isAdvance:boolean, needsAddress:boolean) {
+  const missing:string[]=[];
+  if(!st.quantity || st.quantity<1 || !st.optionId) missing.push("🔢 Cantidad o presentación que querés");
+  if(!st.cityVerified) missing.push("📍 Ciudad donde querés recibir");
+  if(!isValidCustomerName(st.customerName)) missing.push("👤 Nombre y apellido");
+  if(!isAdvance && needsAddress && st.cityVerified && !isValidDeliveryAddress(st.street) && !isValidDeliveryAddress(st.locationUrl))
+    missing.push("🏠 Dirección con referencia o ubicación de Google Maps");
+  return missing;
+}
+async function runEmergencySale(args:{
+  conn:Conn; workspaceId:string; ownerId:string; conversationId:string; contactId?:string|null;
+  adId:string|null; phone:string; wamid:string; body:string; mediaPath?:string|null;
+  mediaType?:string|null; productId?:string|null; saleClosed?:boolean; force?:boolean;
+  dryRun?:boolean;
+}):Promise<boolean> {
+  if(args.saleClosed) return true; // Nunca reiniciar postventa ni registrar duplicados por código.
+  const {data:row}=await supabaseAdmin.from("bot_sale_states").select("state")
+    .eq("workspace_id",args.workspaceId).eq("conversation_id",args.conversationId).maybeSingle();
+  const previous=(row?.state ?? {}) as SaleState;
+  // Una vez recibido el comprobante anticipado, NINGÚN texto puede salir del código.
+  const advanceAlreadyPaid=Boolean(previous.emergencyReceiptPending) ||
+    (/anticip|transfer|deposit|giro/i.test(String(previous.paymentMethod??"")) &&
+      Boolean(previous.receiptPath || previous.receiptDocuments?.length));
+  if(advanceAlreadyPaid) return true;
+  const ctx=await buildWorkspaceAiContext(supabaseAdmin,args.workspaceId,[],previous.productId??args.productId??null,args.phone,args.conversationId);
+  const isDocument=(args.mediaType==="image"||args.mediaType==="document");
+  if(isDocument && /anticip|transfer|deposit|giro/i.test(String(previous.paymentMethod??""))) {
+    const next={...previous,receiptPath:args.mediaPath??previous.receiptPath??null,
+      emergencyReceiptPending:true,awaiting:"receipt"};
+    const {error:pendingReceiptError}=await supabaseAdmin.from("bot_sale_states").upsert({
+      workspace_id:args.workspaceId,conversation_id:args.conversationId,state:next,
+      updated_at:new Date().toISOString(),
+    },{onConflict:"workspace_id,conversation_id"});
+    if(pendingReceiptError) throw pendingReceiptError;
+    if(!args.force) {
+      const {error:queueError}=await supabaseAdmin.from("ai_failed_messages").upsert({
+        workspace_id:args.workspaceId,user_id:args.ownerId,
+        conversation_id:args.conversationId,wamid:args.wamid,
+        error_message:"Comprobante anticipado recibido durante falla de IA: resource_exhausted",
+        status:"pending",updated_at:new Date().toISOString(),
+      },{onConflict:"workspace_id,wamid"});
+      if(queueError) console.error("[BOT_SKY_ADVANCE_RECEIPT_QUEUE]",queueError.message);
+    }
+    // El archivo se guarda; nunca responder por código después del comprobante.
+    return true;
+  }
+  // Reutiliza la publicidad y las fotos REALES de la tienda, no imágenes externas.
+  // El catálogo manda foto+copy y precios en mensajes separados.
+  if(!previous.productId && !args.productId && !isDocument){
+    const initial=await sendCatalogByKeyword({
+      workspaceId:args.workspaceId,ownerId:args.ownerId,
+      conversationId:args.conversationId,adId:args.adId,conn:args.conn,phone:args.phone,text:args.body,emergency:true,
+    });
+    if(initial?.sent && initial.productId) {
+      const initialStep=advanceRuleSale(ctx,args.body,{productId:initial.productId,cycleStartedAt:new Date().toISOString()});
+      await supabaseAdmin.from("bot_sale_states").upsert({
+        workspace_id:args.workspaceId,conversation_id:args.conversationId,
+        state:initialStep?.state??{productId:initial.productId,cycleStartedAt:new Date().toISOString()},
+        updated_at:new Date().toISOString(),
+      },{onConflict:"workspace_id,conversation_id"});
+      await sendEmergencyText({...args,text:"😍 ¡Hacé tu pedido fácilmente!\n\n📋 Pasame estos datos:\n\n👤 Nombre y apellido\n📍 Ciudad de entrega\n🔢 Cantidad que querés\n\n🏠 Si es pago al recibir, también necesitaremos tu dirección con referencia o Google Maps.\n\n✅ Podés enviar todo junto o de a poco. 😊"});
+      if(initialStep?.complete) await runEmergencySale({...args,productId:initial.productId});
+      return true;
+    }
+    if(!initial?.sent && /^\s*(?:hola|holaa+|buenas|buen dia|buen día|buenas tardes|buenas noches|informacion|información|info|catalogo|catálogo|precio)\s*[!?.]*$/i.test(args.body)){
+      const cat=ctx.training.map(t=>t.content).join("\n")
+        .match(/https:\/\/skybot-ai-sales-130022\.vercel\.app\/c\/[a-f0-9-]{24,}/i)?.[0];
+      if(cat){
+        await sendEmergencyText({...args,text:`¡Hola! 😊🛍️ Mirá nuestro catálogo de productos disponibles: \n\n${cat}\n\nDecime cuál te interesa y te paso sus precios y promociones.`});
+        return true;
+      }
+    }
+  }
+  const step=advanceRuleSale(ctx,args.body,{...previous,productId:previous.productId??args.productId??null});
+  if(!step){
+    // Sin producto verificado, no inventar precios ni una compra.
+    if(!previous.productId && !args.productId) return false;
+    const name=ctx.products.find(p=>p.id===(previous.productId??args.productId));
+    if(!name) return false;
+    const options=name.product_prices??[];
+    const text=options.length
+      ? `💰 *${name.name}*\n${options.map(o=>`• ${o.label}: ${formatGs(o.price)}`).join("\n")}\n\n📋 Para registrar tu pedido, pasame nombre y apellido, ciudad de entrega y cantidad. La dirección se solicita para pago al recibir.`
+      : "📋 Para continuar, pasame tu ciudad de entrega y la presentación que querés. 😊";
+    await sendEmergencyText({...args,text});
+    return true;
+  }
+  const st=step.state;
+  const policy=st.cityVerified?deliveryPolicyForCity(st.city,st.department,ctx.training):null;
+  const isAdvance=policy?.paymentMethod==="anticipado" ||
+    (st.cityVerified && st.coverageStatus==="uncovered" && sellerAllowsNationwideAdvance(ctx.training));
+  st.paymentMethod=isAdvance?"anticipado":policy?.paymentMethod??st.paymentMethod;
+  const {error:saveError}=await supabaseAdmin.from("bot_sale_states").upsert({
+    workspace_id:args.workspaceId,conversation_id:args.conversationId,
+    state:st,updated_at:new Date().toISOString(),
+  },{onConflict:"workspace_id,conversation_id"});
+  if(saveError) throw saveError;
+  if(isAdvance && (st.emergencyReceiptPending || st.receiptPath || st.receiptDocuments?.length)) return true;
+  const missing=emergencyMissingRequirements(st,isAdvance,policy?.addressRequired!==false);
+  if(isAdvance){
+    if(!st.cityVerified || !st.optionId || !st.quantity || !st.productId) {
+      await sendEmergencyText({...args,text:`📋 Para preparar tu envío, me falta:\n${missing.join("\n") || "🔢 Confirmar la cantidad"}\n\nPodés enviarme todo junto o de a poco. 😊`});
+      return true;
+    }
+    const product=ctx.products.find(p=>p.id===st.productId);
+    const opt=product?.product_prices?.find(o=>o.id===st.optionId);
+    if(!opt || !(opt.price>0) || !(st.quantity>0) || st.quantity%opt.quantity!==0) return false;
+    const total=opt.price*(st.quantity/opt.quantity);
+    if(st.emergencyBankSentAt) return true; // Nunca repetir la cuenta ante mensajes adicionales.
+    const bank=sellerBankText(ctx.training);
+    const lines=bank.split("\n").map(x=>x.trim()).filter(x=>x &&
+      /^(?:-|•)?\s*(?:banco|entidad|servicio|titular|ci del titular|cédula|cedula|alias|número de cuenta|n° de cuenta|nº de cuenta|cuenta desde|cuenta para|cuenta bancaria)/i.test(x)).slice(0,12);
+    if(!lines.some(l=>/titular/i.test(l)) || !lines.some(l=>/cuenta/i.test(l))) return false;
+    await sendEmergencyText({...args,text:`🚚 Para ${st.city} trabajamos por encomienda con pago anticipado.\n\n📦 ${product?.name??"Producto"} — ${opt.label}\n🔢 Cantidad: ${st.quantity}\n💰 Total de productos: ${formatGs(total)}\n🚚 Costo de encomienda: sujeto a confirmación logística.\n\n🏦 Datos bancarios de la tienda:\n${lines.join("\n")}\n\n📎 Cuando realices la transferencia, enviame el comprobante por acá. La validación continuará con la IA. 😊`});
+    await supabaseAdmin.from("bot_sale_states").upsert({
+      workspace_id:args.workspaceId,conversation_id:args.conversationId,
+      state:{...st,emergencyBankSentAt:new Date().toISOString()},
+      updated_at:new Date().toISOString(),
+    },{onConflict:"workspace_id,conversation_id"});
+    return true;
+  }
+  // Cierre de contraentrega solo con cobertura inequívoca y todos los requisitos.
+  const codReady=policy?.paymentMethod==="contraentrega" && step.complete &&
+    !missing.length && Boolean(args.contactId && st.productId && st.optionId && st.customerName && st.city &&
+      st.department && st.quantity && (policy.addressRequired===false || isValidDeliveryAddress(st.street)||isValidDeliveryAddress(st.locationUrl)));
+  if(codReady){
+    const product=ctx.products.find(p=>p.id===st.productId);
+    const option=product?.product_prices?.find(o=>o.id===st.optionId);
+    const multi=st.multiProductLines?.length ? resolveCartPricing(st.multiProductLines,ctx.products) : null;
+    if(option && (multi?.length || (st.quantity! >= option.quantity && st.quantity! % option.quantity === 0))) {
+      if(args.force && args.dryRun){
+        const qty=multi?.length?multi.reduce((n,x)=>n+x.quantity,0):st.quantity!;
+        await sendEmergencyText({...args,text:`🧪 *SIMULACIÓN DE VENTA POR CÓDIGO*\n\n👤 ${st.customerName}\n📦 ${multi?.length?`${multi.length} productos del catálogo`:product?.name}\n🔢 Cantidad: ${qty}\n📍 ${st.city}\n🏠 ${st.street||st.locationUrl}\n💵 Pago al recibir\n\n✅ Validación completada. *No se registró ningún pedido real.*`});
+        return true;
+      }
+      const order={customer_name:st.customerName!,city:st.city!,departamento:st.department!,
+        street:st.street||st.locationUrl||undefined,quantity:multi?.length?multi.reduce((n,x)=>n+x.quantity,0):st.quantity!,
+        promo_quantity:multi?.length?1:st.quantity!/option.quantity,product_price_id:option.id,
+        payment_method:"contraentrega",phone:args.phone};
+      const created=await createOrderFromAi({
+        workspaceId:args.workspaceId,ownerId:args.ownerId,conversationId:args.conversationId,
+        contactId:args.contactId!,phone:args.phone,adId:args.adId,productId:st.productId!,
+        sourceMessageId:args.wamid,order,cartLines:st.cartLines,multiProductLines:st.multiProductLines,
+        products:ctx.products,training:ctx.training,
+      });
+      if(created.already_registered)return true;
+      const {data:saved}=await supabaseAdmin.from("orders").select("id,order_number,customer_name,phone,total,quantity,street,payment_method,payment_status,observations")
+        .eq("workspace_id",args.workspaceId).eq("id",created.id).single();
+      if(!saved)throw new Error("Pedido creado pero no disponible para confirmación");
+      await supabaseAdmin.from("conversations").update({sale_closed:true,status:"vendida"})
+        .eq("workspace_id",args.workspaceId).eq("id",args.conversationId);
+      await supabaseAdmin.from("bot_sale_states").delete().eq("workspace_id",args.workspaceId).eq("conversation_id",args.conversationId);
+      const confirmation=buildRegisteredOrderConfirmation({
+        created:saved,requestRecipientCi:false,order,
+        productName:product?.name??"Producto del pedido",
+        items:(await supabaseAdmin.from("order_items").select("title,sku,quantity,price").eq("order_id",created.id)).data??[],
+        productOption:option.label,packageCopy:product?.sales_copy??product?.description??null,
+        savedQuantity:Number(saved.quantity),recipientCi:null,address:saved.street,
+        paymentStatus:saved.payment_status,pendingCreditGs:0,deliveryMethod:policy.method,
+      });
+      await sendEmergencyText({...args,text:confirmation});
+      return true;
+    }
+  }
+  if(!st.productId)return false;
+  const product=ctx.products.find(p=>p.id===st.productId);
+  const options=product?.product_prices??[];
+  if(st.awaiting==="variant" || !st.optionId){
+    await sendEmergencyText({...args,text:options.length
+      ? `💰 Precios disponibles de *${product?.name}*:\n${options.map(o=>`• ${o.label}: ${formatGs(o.price)}`).join("\n")}\n\n¿Cuál opción querés?`
+      : "¿Qué cantidad querés llevar? 😊"});
+    return true;
+  }
+  await sendEmergencyText({...args,text:missing.length
+    ? `📋 ¡Perfecto! Para registrar tu pedido me falta:\n${missing.join("\n")}\n\n✅ Podés enviarme los datos juntos o de a poco. 😊`
+    : "Recibí los datos. El pedido necesita revisión antes de confirmarlo."});
+  return true;
+}
+
 /**
  * Cuando la IA no puede responder, el cliente recibe un aviso corto (una sola
  * vez seguida, sin repetirlo en cada mensaje) y el dueño recibe una
@@ -4933,6 +5179,51 @@ async function sendSilenceFallback(args: {
     }, { onConflict: "workspace_id,wamid" });
   }
   const neutralNotice = "Recibimos tu mensaje. En este momento no podemos darte una respuesta automática. Tu consulta necesita revisión de la tienda. Gracias por tu paciencia.";
+  const settings=await loadEmergencySettings(args.workspaceId);
+  const outage=classifyAiOutage(args.reason);
+  const providerFailed=/\b(?:401|402|403|429|500|502|503|504)\b|insufficient_quota|resource_exhausted|credit_balance_exhausted|gemini_error|gemini_key_unavailable|openai HTTP|todos los proveedores fallaron|sin claves configuradas|quota exceeded/i.test(args.reason);
+  const {data:sourceMessage}=await supabaseAdmin.from("messages")
+    .select("body,media_url,media_type")
+    .eq("workspace_id",args.workspaceId).eq("wamid",args.wamid).maybeSingle();
+  const {data:convInfo}=await supabaseAdmin.from("conversations")
+    .select("contact_id,product_id,sale_closed")
+    .eq("workspace_id",args.workspaceId).eq("id",args.conversationId).maybeSingle();
+  const isReceipt=Boolean(sourceMessage?.media_url && (sourceMessage.media_type==="image"||sourceMessage.media_type==="document"));
+  const {data:pendingAdvance}=await supabaseAdmin.from("bot_sale_states").select("state")
+    .eq("workspace_id",args.workspaceId).eq("conversation_id",args.conversationId).maybeSingle();
+  const advance=(pendingAdvance?.state??{}) as SaleState;
+  const shouldMuteAdvance=Boolean(advance.emergencyReceiptPending) ||
+    (isReceipt && /anticip|transfer|deposit|giro/i.test(String(advance.paymentMethod??""))) ||
+    (/anticip|transfer|deposit|giro/i.test(String(advance.paymentMethod??"")) && Boolean(advance.receiptPath || advance.receiptDocuments?.length));
+  if(settings.mode==="automatico" && providerFailed){
+    await supabaseAdmin.from("ai_settings").update({
+      emergency_active_until:new Date(Date.now()+5*60*1000).toISOString(),
+    }).eq("workspace_id",args.workspaceId);
+  }
+  const notifyTitle=outage==="credit"?"Crédito de API de IA agotado":
+    outage==="rate_limit"?"Límite de solicitudes de IA alcanzado":
+    outage==="auth"?"Error de autenticación de API de IA":"Servicio de IA no disponible";
+  const {data:recentNotice}=await supabaseAdmin.from("notifications").select("id")
+    .eq("workspace_id",args.workspaceId).eq("type","ia")
+    .eq("title",notifyTitle).gte("created_at",new Date(Date.now()-60*60*1000).toISOString()).limit(1);
+  if(!recentNotice?.length) await supabaseAdmin.from("notifications").insert({
+    workspace_id:args.workspaceId,user_id:args.ownerId,type:"ia",
+    title:notifyTitle,body:`El proveedor no pudo responder. ${settings.mode==="desactivado"?"Respaldo desactivado.":"Modo de respaldo por código disponible."} Causa: ${args.reason.slice(0,130)}`,
+    link:"/inbox",audience:"user",
+  });
+  if(shouldMuteAdvance || settings.mode==="desactivado") return;
+  if(providerFailed) {
+    try {
+      const handled=await runEmergencySale({...args,
+        contactId:convInfo?.contact_id??null,productId:convInfo?.product_id??null,
+        saleClosed:convInfo?.sale_closed??false,body:sourceMessage?.body??"",
+        mediaPath:sourceMessage?.media_url??null,mediaType:sourceMessage?.media_type??null,
+      });
+      if(handled)return;
+    }catch(emergencyError){
+      console.error("[BOT_SKY_EMERGENCY_CHECKOUT_ERROR]",emergencyError);
+    }
+  }
   let responseSent = false;
   // No considerar como respuesta del mensaje ACTUAL un catálogo o promoción
   // que salió ANTES de que el cliente escribiera. Antes se usaban 45 s sin
@@ -4992,7 +5283,7 @@ async function sendSilenceFallback(args: {
       responseSent = true;
       await supabaseAdmin.from("messages").insert({
         workspace_id: args.workspaceId, user_id: args.ownerId, conversation_id: args.conversationId,
-        ad_id: args.adId ?? null, direction: "outbound", sender: "ai", response_origin: "ai",
+        ad_id: args.adId ?? null, direction: "outbound", sender: "ai", response_origin: "code",
         body: text, wamid, status: "sent",
       } as any);
       await supabaseAdmin.from("conversations").update({
@@ -5009,7 +5300,7 @@ async function sendSilenceFallback(args: {
         responseSent = true;
         await supabaseAdmin.from("messages").insert({
           workspace_id: args.workspaceId, user_id: args.ownerId, conversation_id: args.conversationId,
-          ad_id: args.adId ?? null, direction: "outbound", sender: "ai", response_origin: "ai",
+          ad_id: args.adId ?? null, direction: "outbound", sender: "ai", response_origin: "code",
           body: neutralNotice, wamid, status: "sent",
         } as any);
         await supabaseAdmin.from("conversations").update({
@@ -5020,12 +5311,7 @@ async function sendSilenceFallback(args: {
       }
     }
   }
-  await supabaseAdmin.from("notifications").insert({
-    workspace_id: args.workspaceId, user_id: args.ownerId, type: "ia",
-    title: `La IA no pudo responder · ${args.phone}`,
-    body: args.reason.slice(0, 240),
-    link: "/inbox", audience: "user",
-  });
+  // Alerta de proveedor clasificada arriba y deduplicada por tienda/hora.
 }
 
 

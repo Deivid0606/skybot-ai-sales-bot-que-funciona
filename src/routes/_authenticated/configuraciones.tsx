@@ -70,6 +70,9 @@ function SettingsPage() {
     ai_enabled: true,
     hybrid_mode: "hybrid" as "hybrid" | "ai_first" | "rules_only",
     hybrid_fallback_enabled: true,
+    emergency_mode: "automatico" as "automatico" | "forzado" | "desactivado",
+    emergency_recover_pending: true,
+    emergency_dry_run: false,
     model: "gemini-3.5-flash-lite",
     system_instruction: "",
     reply_delay_seconds: 3,
@@ -121,6 +124,9 @@ function SettingsPage() {
         ai_enabled: data.ai.ai_enabled,
         hybrid_mode: (["hybrid", "ai_first", "rules_only"].includes(data.ai.hybrid_mode) ? data.ai.hybrid_mode : "hybrid") as "hybrid" | "ai_first" | "rules_only",
         hybrid_fallback_enabled: data.ai.hybrid_fallback_enabled !== false,
+        emergency_mode: (["automatico","forzado","desactivado"].includes(data.ai.emergency_mode) ? data.ai.emergency_mode : "automatico") as "automatico" | "forzado" | "desactivado",
+        emergency_recover_pending: data.ai.emergency_recover_pending !== false,
+        emergency_dry_run: data.ai.emergency_dry_run === true,
         model: normalizeGeminiModel(data.ai.model),
         system_instruction: data.ai.system_instruction,
         reply_delay_seconds: data.ai.reply_delay_seconds,
@@ -242,6 +248,9 @@ function SettingsPage() {
           ai_enabled: ai.ai_enabled,
           hybrid_mode: ai.hybrid_mode,
           hybrid_fallback_enabled: ai.hybrid_fallback_enabled,
+          emergency_mode: ai.emergency_mode,
+          emergency_recover_pending: ai.emergency_recover_pending,
+          emergency_dry_run: ai.emergency_dry_run,
           model: ai.autodetect_model
             ? "gemini-3.5-flash-lite"
             : normalizeGeminiModel(ai.model),
@@ -485,6 +494,33 @@ function SettingsPage() {
                   <Label>Responder con reglas seguras si todas las APIs fallan</Label>
                 </div>
                 <p className="text-xs text-muted-foreground">El código resuelve saludos iniciales, precios, stock y preguntas entrenadas de coincidencia exacta. Las ventas complejas siguen pasando por la función habitual de pedidos; el respaldo no confirma ventas ni pagos que no pudo verificar. Los audios e imágenes pueden seguir usando servicios de IA independientes.</p>
+              </div>
+              <div className="space-y-3 rounded-lg border border-primary/25 p-4">
+                <p className="text-sm font-semibold">Ventas por código — respaldo de emergencia</p>
+                <p className="text-xs text-muted-foreground">Configuración independiente para esta tienda. El modo automático mantiene la IA normal y activa código solo al detectar una falla.</p>
+                <Label htmlFor="emergency-mode">Modo de atención</Label>
+                <select id="emergency-mode" className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  value={ai.emergency_mode} onChange={e => setAi(prev => ({...prev, emergency_mode:e.target.value as typeof prev.emergency_mode}))}>
+                  <option value="automatico">Automático: IA normal, código al fallar (recomendado)</option>
+                  <option value="forzado">Forzar código para pruebas (sin IA de texto)</option>
+                  <option value="desactivado">Solo IA: desactivar respaldo comercial</option>
+                </select>
+                <div className="flex items-center gap-2">
+                  <Switch checked={ai.emergency_recover_pending}
+                    onCheckedChange={v => setAi(prev => ({...prev, emergency_recover_pending:v}))}/>
+                  <Label>Retomar conversaciones pendientes cuando vuelva la IA</Label>
+                </div>
+                {ai.emergency_mode==="forzado" && (
+                  <div className="flex items-start gap-2 rounded-md bg-amber-500/10 p-3">
+                    <Switch checked={ai.emergency_dry_run}
+                      onCheckedChange={v => setAi(prev => ({...prev, emergency_dry_run:v}))}/>
+                    <div>
+                      <Label>Modo simulación: probar sin crear pedidos reales</Label>
+                      <p className="text-xs text-muted-foreground">Desactivalo solo cuando quieras probar un cierre real. Forzar código afecta a los mensajes de todos los clientes de esta tienda.</p>
+                    </div>
+                  </div>
+                )}
+                <p className="text-xs text-muted-foreground">Al recibir un comprobante anticipado el código guarda el archivo y queda en silencio. La IA o una persona autorizada debe verificar el pago antes de confirmar.</p>
               </div>
               <div className="space-y-1.5">
                 <Label>Tiempo de respuesta del bot</Label>
