@@ -1740,6 +1740,27 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     }
   }
 
+  // Si una dirección llega DESPUÉS de despachar, nunca editar la logística
+  // silenciosamente: avisar al vendedor para que confirme la actualización.
+  if(conversation.sale_closed &&
+     /\b(?:calle|avenida|avda|barrio|casa\s*\d+|esquina|casi|frente|referencia|domicilio|direcci[oó]n)\b/i.test(body)) {
+    const {data:lastShipped}=await supabaseAdmin.from("orders")
+      .select("id,order_number,status").eq("workspace_id",workspaceId)
+      .eq("conversation_id",conversation.id).order("created_at",{ascending:false}).limit(1).maybeSingle();
+    if(lastShipped && ["enviado","entregado","despachado","cargado"].includes(String(lastShipped.status).toLowerCase())){
+      const {data:recentNotice}=await supabaseAdmin.from("notifications")
+        .select("id").eq("workspace_id",workspaceId)
+        .eq("title",`Revisar dirección · ${lastShipped.order_number}`)
+        .gte("created_at",new Date(Date.now()-30*60*1000).toISOString()).limit(1);
+      if(!recentNotice?.length)await supabaseAdmin.from("notifications").insert({
+        workspace_id:workspaceId,user_id:ownerId,type:"pedido",
+        title:`Revisar dirección · ${lastShipped.order_number}`,
+        body:"El cliente envió una dirección nueva después del registro/despacho. Revisá el chat y coordiná el cambio con logística antes de prometerlo.",
+        link:"/pedidos",audience:"user",
+      });
+    }
+  }
+
   // POSTVENTA GENERAL: una venta cerrada no vuelve al catálogo por un saludo,
   // reclamo, consulta logística o mensaje ambiguo. Solo una intención inequívoca
   // de COMPRA NUEVA puede reabrir la venta (decidido antes, al cargar conversación).
