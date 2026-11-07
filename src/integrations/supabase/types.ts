@@ -77,6 +77,7 @@ export type Database = {
           ai_enabled: boolean
           emergency_mode: string
           emergency_recover_pending: boolean
+          emergency_dry_run: boolean
           emergency_active_until: string | null
           autodetect_model: boolean
           created_at: string
@@ -94,6 +95,7 @@ export type Database = {
           ai_enabled?: boolean
           emergency_mode?: string
           emergency_recover_pending?: boolean
+          emergency_dry_run?: boolean
           emergency_active_until?: string | null
           autodetect_model?: boolean
           created_at?: string
@@ -111,6 +113,7 @@ export type Database = {
           ai_enabled?: boolean
           emergency_mode?: string
           emergency_recover_pending?: boolean
+          emergency_dry_run?: boolean
           emergency_active_until?: string | null
           autodetect_model?: boolean
           created_at?: string
