@@ -5104,7 +5104,7 @@ async function runEmergencySale(args:{
   // Cierre de contraentrega solo con cobertura inequívoca y todos los requisitos.
   const codReady=policy?.paymentMethod==="contraentrega" && step.complete &&
     !missing.length && Boolean(args.contactId && st.productId && st.optionId && st.customerName && st.city &&
-      st.department && st.quantity && (policy.addressRequired===false || isValidDeliveryAddress(st.street)||isValidDeliveryAddress(st.locationUrl))));
+      st.department && st.quantity && (policy.addressRequired===false || isValidDeliveryAddress(st.street)||isValidDeliveryAddress(st.locationUrl)));
   if(codReady){
     const product=ctx.products.find(p=>p.id===st.productId);
     const option=product?.product_prices?.find(o=>o.id===st.optionId);
