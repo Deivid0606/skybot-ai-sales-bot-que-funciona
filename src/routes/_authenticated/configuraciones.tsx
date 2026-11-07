@@ -70,6 +70,8 @@ function SettingsPage() {
     ai_enabled: true,
     hybrid_mode: "hybrid" as "hybrid" | "ai_first" | "rules_only",
     hybrid_fallback_enabled: true,
+    emergency_mode: "automatico" as "automatico" | "forzado" | "desactivado",
+    emergency_recover_pending: true,
     model: "gemini-3.5-flash-lite",
     system_instruction: "",
     reply_delay_seconds: 3,
@@ -121,6 +123,8 @@ function SettingsPage() {
         ai_enabled: data.ai.ai_enabled,
         hybrid_mode: (["hybrid", "ai_first", "rules_only"].includes(data.ai.hybrid_mode) ? data.ai.hybrid_mode : "hybrid") as "hybrid" | "ai_first" | "rules_only",
         hybrid_fallback_enabled: data.ai.hybrid_fallback_enabled !== false,
+        emergency_mode: (["automatico","forzado","desactivado"].includes(data.ai.emergency_mode) ? data.ai.emergency_mode : "automatico") as "automatico" | "forzado" | "desactivado",
+        emergency_recover_pending: data.ai.emergency_recover_pending !== false,
         model: normalizeGeminiModel(data.ai.model),
         system_instruction: data.ai.system_instruction,
         reply_delay_seconds: data.ai.reply_delay_seconds,
@@ -242,6 +246,8 @@ function SettingsPage() {
           ai_enabled: ai.ai_enabled,
           hybrid_mode: ai.hybrid_mode,
           hybrid_fallback_enabled: ai.hybrid_fallback_enabled,
+          emergency_mode: ai.emergency_mode,
+          emergency_recover_pending: ai.emergency_recover_pending,
           model: ai.autodetect_model
             ? "gemini-3.5-flash-lite"
             : normalizeGeminiModel(ai.model),
@@ -485,6 +491,23 @@ function SettingsPage() {
                   <Label>Responder con reglas seguras si todas las APIs fallan</Label>
                 </div>
                 <p className="text-xs text-muted-foreground">El código resuelve saludos iniciales, precios, stock y preguntas entrenadas de coincidencia exacta. Las ventas complejas siguen pasando por la función habitual de pedidos; el respaldo no confirma ventas ni pagos que no pudo verificar. Los audios e imágenes pueden seguir usando servicios de IA independientes.</p>
+              </div>
+              <div className="space-y-3 rounded-lg border border-primary/25 p-4">
+                <p className="text-sm font-semibold">Ventas por código — respaldo de emergencia</p>
+                <p className="text-xs text-muted-foreground">Configuración independiente para esta tienda. El modo automático mantiene la IA normal y activa código solo al detectar una falla.</p>
+                <Label htmlFor="emergency-mode">Modo de atención</Label>
+                <select id="emergency-mode" className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  value={ai.emergency_mode} onChange={e => setAi(prev => ({...prev, emergency_mode:e.target.value as typeof prev.emergency_mode}))}>
+                  <option value="automatico">Automático: IA normal, código al fallar (recomendado)</option>
+                  <option value="forzado">Forzar código para pruebas (sin IA de texto)</option>
+                  <option value="desactivado">Solo IA: desactivar respaldo comercial</option>
+                </select>
+                <div className="flex items-center gap-2">
+                  <Switch checked={ai.emergency_recover_pending}
+                    onCheckedChange={v => setAi(prev => ({...prev, emergency_recover_pending:v}))}/>
+                  <Label>Conservar pendientes para recuperar con IA</Label>
+                </div>
+                <p className="text-xs text-muted-foreground">Si llega un comprobante de pago anticipado, el código guarda la información y no responde ni confirma. No se generan pedidos de prueba ficticios: un pedido completo contra entrega puede registrarse realmente.</p>
               </div>
               <div className="space-y-1.5">
                 <Label>Tiempo de respuesta del bot</Label>
