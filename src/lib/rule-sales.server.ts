@@ -27,6 +27,8 @@ export type SaleState = {
   paymentMethod?: string | null;
   awaiting?: string | null;
   receiptPath?: string | null;
+  /** Fecha del primer envío de cuenta bancaria por código; evita cobros repetidos. */
+  emergencyBankSentAt?: string | null;
   /** Documentos recibidos de esta compra. No representan pagos acreditados. */
   receiptDocuments?: Array<{path:string; amountGs:number; operation:string|null}>;
   receiptAnalysisAttemptedPaths?: string[];
