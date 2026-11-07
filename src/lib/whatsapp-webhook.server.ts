@@ -2460,7 +2460,8 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
     // Si el motor ya verificó que el checkout está COMPLETO, no depender de
     // una nueva respuesta de Gemini para ejecutar el INSERT. El mensaje de
     // confirmación se construye únicamente tras registrar la orden real.
-    const checkoutCompleteByRules = Boolean(saveStep?.complete && !bypassSale && !conversation.sale_closed);
+    const checkoutCompleteByRules = Boolean(saveStep?.complete && !bypassSale && !conversation.sale_closed &&
+      !/anticip|transfer|deposit|giro/i.test(String(saveStep?.state.paymentMethod??"")));
     const responseOrigin = checkoutCompleteByRules ? "code" : "ai";
     // TURNO DEL COMPROBANTE: el sistema ya revisó el archivo. La IA redacta, pero
     // con el RESULTADO decidido como objetivo (nunca «voy a verificar»).
@@ -2737,7 +2738,8 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
           state:saveStep.state,updated_at:new Date().toISOString()},
           {onConflict:"workspace_id,conversation_id"});
       if(saveStateError) throw saveStateError;
-      if(saveStep.complete && !conversation.sale_closed && !bypassSale && !result.order) {
+      if(saveStep.complete && !conversation.sale_closed && !bypassSale && !result.order &&
+        !/anticip|transfer|deposit|giro/i.test(String(saveStep.state.paymentMethod??""))) {
         const st=saveStep.state;
         result = {reply:result.reply,product_id:saveStep.productId,sale_closed:true,
           order:{customer_name:st.customerName!,city:st.city!,departamento:st.department!,
