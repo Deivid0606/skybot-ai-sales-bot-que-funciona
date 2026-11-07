@@ -4979,12 +4979,12 @@ async function sendEmergencyText(args:{
     last_message:args.text,last_message_at:new Date().toISOString(),
   }).eq("workspace_id",args.workspaceId).eq("id",args.conversationId);
 }
-function emergencyMissingRequirements(st:SaleState, isAdvance:boolean) {
+function emergencyMissingRequirements(st:SaleState, isAdvance:boolean, needsAddress:boolean) {
   const missing:string[]=[];
   if(!st.quantity || st.quantity<1 || !st.optionId) missing.push("🔢 Cantidad o presentación que querés");
   if(!st.cityVerified) missing.push("📍 Ciudad donde querés recibir");
   if(!isValidCustomerName(st.customerName)) missing.push("👤 Nombre y apellido");
-  if(!isAdvance && st.cityVerified && !isValidDeliveryAddress(st.street) && !isValidDeliveryAddress(st.locationUrl))
+  if(!isAdvance && needsAddress && st.cityVerified && !isValidDeliveryAddress(st.street) && !isValidDeliveryAddress(st.locationUrl))
     missing.push("🏠 Dirección con referencia o ubicación de Google Maps");
   return missing;
 }
@@ -5076,7 +5076,7 @@ async function runEmergencySale(args:{
   },{onConflict:"workspace_id,conversation_id"});
   if(saveError) throw saveError;
   if(isAdvance && (st.emergencyReceiptPending || st.receiptPath || st.receiptDocuments?.length)) return true;
-  const missing=emergencyMissingRequirements(st,isAdvance);
+  const missing=emergencyMissingRequirements(st,isAdvance,policy?.addressRequired!==false);
   if(isAdvance){
     if(!st.cityVerified || !st.optionId || !st.quantity || !st.productId) {
       await sendEmergencyText({...args,text:`📋 Para preparar tu envío, me falta:\n${missing.join("\n") || "🔢 Confirmar la cantidad"}\n\nPodés enviarme todo junto o de a poco. 😊`});
@@ -5102,7 +5102,7 @@ async function runEmergencySale(args:{
   // Cierre de contraentrega solo con cobertura inequívoca y todos los requisitos.
   const codReady=policy?.paymentMethod==="contraentrega" && step.complete &&
     !missing.length && Boolean(args.contactId && st.productId && st.optionId && st.customerName && st.city &&
-      st.department && st.quantity && (isValidDeliveryAddress(st.street)||isValidDeliveryAddress(st.locationUrl)));
+      st.department && st.quantity && (policy.addressRequired===false || isValidDeliveryAddress(st.street)||isValidDeliveryAddress(st.locationUrl))));
   if(codReady){
     const product=ctx.products.find(p=>p.id===st.productId);
     const option=product?.product_prices?.find(o=>o.id===st.optionId);
