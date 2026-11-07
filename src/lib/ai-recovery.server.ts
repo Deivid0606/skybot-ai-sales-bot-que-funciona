@@ -33,6 +33,7 @@ export async function processAiRecoveryBatch() {
   const {data:records,error}=await supabaseAdmin.from("ai_failed_messages")
     .select("id,workspace_id,user_id,conversation_id,wamid,created_at,error_message")
     .eq("status","pending")
+    .lte("updated_at",new Date(Date.now()-2*60*1000).toISOString())
     .gte("created_at",new Date(Date.now()-SERVICE_WINDOW_MS).toISOString())
     .order("created_at",{ascending:true}).limit(CLAIM_LIMIT);
   if(error) throw error;
@@ -65,7 +66,7 @@ export async function processAiRecoveryBatch() {
       if(!conversation || !inbound || conversation.ai_paused || conversation.is_closed ||
          conversation.sale_closed || isCustomerOptOut(inbound.body??"") ||
          Date.now()-Date.parse(inbound.created_at)>SERVICE_WINDOW_MS){
-        await supabaseAdmin.from("ai_failed_messages").update({status:"skipped",updated_at:new Date().toISOString()})
+        await supabaseAdmin.from("ai_failed_messages").update({status:"resolved",updated_at:new Date().toISOString()})
           .eq("id",item.id).eq("workspace_id",item.workspace_id);
         outcome.skipped++;continue;
       }
@@ -74,7 +75,7 @@ export async function processAiRecoveryBatch() {
         .eq("workspace_id",item.workspace_id).eq("conversation_id",item.conversation_id)
         .gt("created_at",inbound.created_at).limit(1);
       if(laterMessages?.length){
-        await supabaseAdmin.from("ai_failed_messages").update({status:"skipped",updated_at:new Date().toISOString()})
+        await supabaseAdmin.from("ai_failed_messages").update({status:"resolved",updated_at:new Date().toISOString()})
           .eq("id",item.id).eq("workspace_id",item.workspace_id);
         outcome.skipped++;continue;
       }
@@ -115,7 +116,7 @@ export async function processAiRecoveryBatch() {
           body:"La IA volvió a responder, pero no se envió un mensaje inseguro al cliente.",
           link:"/inbox",audience:"user",
         });
-        await supabaseAdmin.from("ai_failed_messages").update({status:"skipped",updated_at:new Date().toISOString()})
+        await supabaseAdmin.from("ai_failed_messages").update({status:"resolved",updated_at:new Date().toISOString()})
           .eq("id",item.id).eq("workspace_id",item.workspace_id);
         outcome.skipped++;continue;
       }
@@ -124,7 +125,7 @@ export async function processAiRecoveryBatch() {
         .eq("workspace_id",item.workspace_id).eq("conversation_id",item.conversation_id)
         .gt("created_at",inbound.created_at).limit(1);
       if(newer?.length){
-        await supabaseAdmin.from("ai_failed_messages").update({status:"skipped",updated_at:new Date().toISOString()})
+        await supabaseAdmin.from("ai_failed_messages").update({status:"resolved",updated_at:new Date().toISOString()})
           .eq("id",item.id).eq("workspace_id",item.workspace_id);
         outcome.skipped++;continue;
       }
@@ -137,7 +138,7 @@ export async function processAiRecoveryBatch() {
       await supabaseAdmin.from("conversations").update({
         last_message:response,last_message_at:new Date().toISOString(),
       }).eq("workspace_id",item.workspace_id).eq("id",item.conversation_id);
-      await supabaseAdmin.from("ai_failed_messages").update({status:"recovered",updated_at:new Date().toISOString()})
+      await supabaseAdmin.from("ai_failed_messages").update({status:"resolved",updated_at:new Date().toISOString()})
         .eq("id",item.id).eq("workspace_id",item.workspace_id);
       await supabaseAdmin.from("ai_settings").update({emergency_active_until:null})
         .eq("workspace_id",item.workspace_id);
