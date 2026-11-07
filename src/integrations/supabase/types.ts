@@ -75,6 +75,9 @@ export type Database = {
       ai_settings: {
         Row: {
           ai_enabled: boolean
+          emergency_mode: string
+          emergency_recover_pending: boolean
+          emergency_active_until: string | null
           autodetect_model: boolean
           created_at: string
           gemini_api_key: string | null
@@ -89,6 +92,9 @@ export type Database = {
         }
         Insert: {
           ai_enabled?: boolean
+          emergency_mode?: string
+          emergency_recover_pending?: boolean
+          emergency_active_until?: string | null
           autodetect_model?: boolean
           created_at?: string
           gemini_api_key?: string | null
@@ -103,6 +109,9 @@ export type Database = {
         }
         Update: {
           ai_enabled?: boolean
+          emergency_mode?: string
+          emergency_recover_pending?: boolean
+          emergency_active_until?: string | null
           autodetect_model?: boolean
           created_at?: string
           gemini_api_key?: string | null
