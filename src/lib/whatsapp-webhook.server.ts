@@ -4,6 +4,7 @@ function isAiQuotaFailure(error: unknown): boolean {
   return e?.status === 429 || /(?:insufficient[_ ]quota|resource[_ ]exhausted|quota exceeded|rate[_ -]?limit|credit[s]? exhausted|sin cr[eé]ditos|saldo de ia|429)/i.test(msg);
 }
 import { handlePostSaleRecipientCi, shouldAskPostSaleCi } from "./recipient-ci.server";
+import { safePostSaleReply } from "@/lib/post-sale-reply-guard";
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { formatGs } from "@/lib/format";
 import { parseReceiptFields } from "@/lib/media-ai.server";
@@ -1721,11 +1722,17 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       try {
         const gpsReply=(await generateAiReply({...gpsVerified,systemInstruction:gpsVerified.systemInstruction+
           `\nHECHO VERIFICADO DEL ÚLTIMO MENSAJE: ubicación GPS ${attached?"ASOCIADA AL PEDIDO EN SUPABASE":"RECIBIDA, PERO NO SE PUDO ASOCIAR AL PEDIDO"}. Respondé natural y brevemente; no afirmes haber guardado la ubicación si no se pudo.`})).reply;
-        const gpsWamid=await sendWhatsAppText(conn,phone,gpsReply);
+        const {data:gpsOrder}=await supabaseAdmin.from("orders")
+          .select("order_number,status").eq("workspace_id",workspaceId)
+          .eq("conversation_id",conversation.id).order("created_at",{ascending:false}).limit(1).maybeSingle();
+        const checkedGps=safePostSaleReply({reply:gpsReply,customerText:body,
+          orderNumber:gpsOrder?.order_number,orderStatus:gpsOrder?.status});
+        if(checkedGps.corrected)console.warn("[BOT_SKY_POSTSALE_RECONFIRM_BLOCKED]",{conversationId:conversation.id,source:"gps"});
+        const gpsWamid=await sendWhatsAppText(conn,phone,checkedGps.reply);
         await supabaseAdmin.from("messages").insert({workspace_id:workspaceId,user_id:ownerId,
           conversation_id:conversation.id,ad_id:attributedAdId,direction:"outbound",sender:"ai",
-          response_origin:"ai",body:gpsReply,wamid:gpsWamid,status:"sent"} as any);
-        await supabaseAdmin.from("conversations").update({last_message:gpsReply,
+          response_origin:checkedGps.corrected?"code":"ai",body:checkedGps.reply,wamid:gpsWamid,status:"sent"} as any);
+        await supabaseAdmin.from("conversations").update({last_message:checkedGps.reply,
           last_message_at:new Date().toISOString(),unread_count:0})
           .eq("workspace_id",workspaceId).eq("id",conversation.id);
       } catch(error){console.error("[BOT SKY postventa] Respuesta IA pendiente",error);}
@@ -1796,9 +1803,15 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         reason:"La IA devolvió una respuesta vacía en postventa", reply:"El cliente ya compró. Respondé su último mensaje sobre el pedido sin inventar estados de entrega."});
       return;
     }
-    const wamid=await sendWhatsAppText(conn,phone,reply);
-    await supabaseAdmin.from("messages").insert({workspace_id:workspaceId,user_id:ownerId,conversation_id:conversation.id,ad_id:attributedAdId,direction:"outbound",sender:"ai",body:reply,wamid,status:"sent"});
-    await supabaseAdmin.from("conversations").update({last_message:reply,last_message_at:new Date().toISOString(),unread_count:0}).eq("workspace_id",workspaceId).eq("id",conversation.id);
+    const {data:lastPersisted}=await supabaseAdmin.from("orders")
+      .select("order_number,status").eq("workspace_id",workspaceId)
+      .eq("conversation_id",conversation.id).order("created_at",{ascending:false}).limit(1).maybeSingle();
+    const safe=safePostSaleReply({reply,customerText:body,
+      orderNumber:lastPersisted?.order_number,orderStatus:lastPersisted?.status});
+    if(safe.corrected)console.warn("[BOT_SKY_POSTSALE_RECONFIRM_BLOCKED]",{conversationId:conversation.id,source:"general"});
+    const wamid=await sendWhatsAppText(conn,phone,safe.reply);
+    await supabaseAdmin.from("messages").insert({workspace_id:workspaceId,user_id:ownerId,conversation_id:conversation.id,ad_id:attributedAdId,direction:"outbound",sender:"ai",response_origin:safe.corrected?"code":"ai",body:safe.reply,wamid,status:"sent"});
+    await supabaseAdmin.from("conversations").update({last_message:safe.reply,last_message_at:new Date().toISOString(),unread_count:0}).eq("workspace_id",workspaceId).eq("id",conversation.id);
     return;
   }
 
