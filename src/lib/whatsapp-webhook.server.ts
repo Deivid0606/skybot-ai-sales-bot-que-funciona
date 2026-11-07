@@ -1432,6 +1432,14 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
   const attributedAdId = referral.adId ?? conversation.ad_id ?? null;
 
   if (media) {
+    // En pruebas forzadas y durante la emergencia, guardar comprobantes e
+    // imágenes sin ejecutar una API de visión que podría seguir sin saldo.
+    const {data:mediaMode}=await supabaseAdmin.from("ai_settings")
+      .select("emergency_mode,emergency_active_until")
+      .eq("workspace_id",workspaceId).maybeSingle();
+    const mediaEmergency=mediaMode?.emergency_mode==="forzado" ||
+      (mediaMode?.emergency_mode==="automatico" &&
+        Boolean(mediaMode.emergency_active_until && Date.parse(mediaMode.emergency_active_until)>Date.now()));
     if (!conn.access_token) {
       console.error("[WhatsApp media] La conexión no tiene access_token", {
         workspaceId,
@@ -1446,7 +1454,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         accessToken: conn.access_token,
         mediaId: media.part.id!,
         type: media.type,
-        allowAiInterpretation: true,
+        allowAiInterpretation: !mediaEmergency,
       });
 
       mediaPath = ingested.storagePath;
@@ -1608,7 +1616,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
 
   const { data: aiSettings } = await supabaseAdmin
     .from("ai_settings")
-    .select("ai_enabled, reply_delay_seconds, hybrid_mode, hybrid_fallback_enabled, emergency_mode, emergency_recover_pending, emergency_active_until")
+    .select("ai_enabled, reply_delay_seconds, hybrid_mode, hybrid_fallback_enabled, emergency_mode, emergency_recover_pending, emergency_dry_run, emergency_active_until")
     .eq("workspace_id", workspaceId)
     .maybeSingle();
 
@@ -1634,6 +1642,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       contactId:contact.id,adId:attributedAdId,phone,wamid:message.id,
       body,mediaPath,mediaType:media?.type??null,productId:conversation.product_id,
       saleClosed:conversation.sale_closed,force:emergencyMode==="forzado",
+      dryRun:aiSettings?.emergency_dry_run===true,
     });
     if(handled)return;
     if(emergencyMode==="forzado") {
@@ -4947,11 +4956,12 @@ function classifyAiOutage(reason: string): "credit" | "rate_limit" | "auth" | "p
 }
 async function loadEmergencySettings(workspaceId: string) {
   const {data,error}=await supabaseAdmin.from("ai_settings")
-    .select("emergency_mode,emergency_recover_pending,emergency_active_until")
+    .select("emergency_mode,emergency_recover_pending,emergency_dry_run,emergency_active_until")
     .eq("workspace_id",workspaceId).maybeSingle();
   if(error) throw error;
   return {mode:(data?.emergency_mode ?? "automatico") as EmergencyMode,
     recover:data?.emergency_recover_pending !== false,
+    dryRun:data?.emergency_dry_run===true,
     active:Boolean(data?.emergency_active_until && Date.parse(data.emergency_active_until)>Date.now())};
 }
 async function sendEmergencyText(args:{
@@ -4982,6 +4992,7 @@ async function runEmergencySale(args:{
   conn:Conn; workspaceId:string; ownerId:string; conversationId:string; contactId?:string|null;
   adId:string|null; phone:string; wamid:string; body:string; mediaPath?:string|null;
   mediaType?:string|null; productId?:string|null; saleClosed?:boolean; force?:boolean;
+  dryRun?:boolean;
 }):Promise<boolean> {
   if(args.saleClosed) return true; // Nunca reiniciar postventa ni registrar duplicados por código.
   const {data:row}=await supabaseAdmin.from("bot_sale_states").select("state")
@@ -5087,6 +5098,11 @@ async function runEmergencySale(args:{
     const option=product?.product_prices?.find(o=>o.id===st.optionId);
     const multi=st.multiProductLines?.length ? resolveCartPricing(st.multiProductLines,ctx.products) : null;
     if(option && (multi?.length || (st.quantity! >= option.quantity && st.quantity! % option.quantity === 0))) {
+      if(args.force && args.dryRun){
+        const qty=multi?.length?multi.reduce((n,x)=>n+x.quantity,0):st.quantity!;
+        await sendEmergencyText({...args,text:`🧪 *SIMULACIÓN DE VENTA POR CÓDIGO*\n\n👤 ${st.customerName}\n📦 ${multi?.length?`${multi.length} productos del catálogo`:product?.name}\n🔢 Cantidad: ${qty}\n📍 ${st.city}\n🏠 ${st.street||st.locationUrl}\n💵 Pago al recibir\n\n✅ Validación completada. *No se registró ningún pedido real.*`});
+        return true;
+      }
       const order={customer_name:st.customerName!,city:st.city!,departamento:st.department!,
         street:st.street||st.locationUrl||undefined,quantity:multi?.length?multi.reduce((n,x)=>n+x.quantity,0):st.quantity!,
         promo_quantity:multi?.length?1:st.quantity!/option.quantity,product_price_id:option.id,
