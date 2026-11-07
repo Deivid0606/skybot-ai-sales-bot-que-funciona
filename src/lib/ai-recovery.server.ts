@@ -25,6 +25,11 @@ function isFalseConfirmation(text: string) {
 function reasonIsProviderFailure(reason: string) {
   return /gemini_error|gemini_key_unavailable|openai HTTP|todos los proveedores fallaron|insufficient_quota|resource_exhausted|quota exceeded|credit_balance_exhausted|\b(?:401|402|403|429|500|502|503|504)\b/i.test(reason);
 }
+const NEUTRAL_FAILURE_NOTICE="Recibimos tu mensaje. En este momento no podemos darte una respuesta automática. Tu consulta necesita revisión de la tienda. Gracias por tu paciencia.";
+function hasAdvancedSinceFailure(items: Array<{ direction?: string|null; body?: string|null; response_origin?: string|null; sender?: string|null; }> | null | undefined) {
+  return Boolean(items?.some(x=>!(x.direction==="outbound" &&
+    x.response_origin==="code" && String(x.body??"").trim()===NEUTRAL_FAILURE_NOTICE)));
+}
 function isCustomerOptOut(text: string) {
   return /\b(?:no me (?:escribas|escriban|contactes|contacten)|no quiero (?:mas|más) mensajes|no me contacten|no me molesten|dejen de escribirme|cancelar pedido)\b/i.test(text);
 }
@@ -71,10 +76,11 @@ export async function processAiRecoveryBatch() {
         outcome.skipped++;continue;
       }
       // Never write after this turn if seller, client or another bot message has advanced.
-      const {data:laterMessages}=await supabaseAdmin.from("messages").select("id")
+      const {data:laterMessages}=await supabaseAdmin.from("messages")
+        .select("direction,body,response_origin,sender")
         .eq("workspace_id",item.workspace_id).eq("conversation_id",item.conversation_id)
-        .gt("created_at",inbound.created_at).limit(1);
-      if(laterMessages?.length){
+        .gt("created_at",inbound.created_at).limit(8);
+      if(hasAdvancedSinceFailure(laterMessages)){
         await supabaseAdmin.from("ai_failed_messages").update({status:"resolved",updated_at:new Date().toISOString()})
           .eq("id",item.id).eq("workspace_id",item.workspace_id);
         outcome.skipped++;continue;
@@ -121,10 +127,11 @@ export async function processAiRecoveryBatch() {
         outcome.skipped++;continue;
       }
       // Repeat the concurrency check immediately before sending to Meta.
-      const {data:newer}=await supabaseAdmin.from("messages").select("id")
+      const {data:newer}=await supabaseAdmin.from("messages")
+        .select("direction,body,response_origin,sender")
         .eq("workspace_id",item.workspace_id).eq("conversation_id",item.conversation_id)
-        .gt("created_at",inbound.created_at).limit(1);
-      if(newer?.length){
+        .gt("created_at",inbound.created_at).limit(8);
+      if(hasAdvancedSinceFailure(newer)){
         await supabaseAdmin.from("ai_failed_messages").update({status:"resolved",updated_at:new Date().toISOString()})
           .eq("id",item.id).eq("workspace_id",item.workspace_id);
         outcome.skipped++;continue;
@@ -142,6 +149,15 @@ export async function processAiRecoveryBatch() {
         .eq("id",item.id).eq("workspace_id",item.workspace_id);
       await supabaseAdmin.from("ai_settings").update({emergency_active_until:null})
         .eq("workspace_id",item.workspace_id);
+      const {data:restored}=await supabaseAdmin.from("notifications").select("id")
+        .eq("workspace_id",item.workspace_id).eq("title","IA restablecida")
+        .gte("created_at",new Date(Date.now()-60*60*1000).toISOString()).limit(1);
+      if(!restored?.length)await supabaseAdmin.from("notifications").insert({
+        workspace_id:item.workspace_id,user_id:item.user_id,type:"ia",
+        title:"IA restablecida",
+        body:"La API volvió a responder y se retomó una conversación pendiente. El modo automático puede volver a usar IA.",
+        link:"/inbox",audience:"user",
+      });
       outcome.recovered++;
     }catch(e){
       const detail=e instanceof Error?e.message:String(e);
