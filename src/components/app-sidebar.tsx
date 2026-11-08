@@ -20,6 +20,7 @@ import {
   Megaphone,
   MapPin,
   Landmark,
+  Store,
 } from "lucide-react";
 import {
   Sidebar,
@@ -42,6 +43,7 @@ const sellerItems = [
   { title: "Reclamos", url: "/reclamos", icon: AlertTriangle },
   { title: "Contactos", url: "/contactos", icon: Contact },
   { title: "Entrenamiento", url: "/entrenamiento", icon: Bot },
+  { title: "Mi negocio", url: "/negocio", icon: Store },
   { title: "Zonas de cobertura", url: "/cobertura", icon: MapPin },
   { title: "Datos bancarios", url: "/datos-bancarios", icon: Landmark },
   { title: "Notificaciones", url: "/notificaciones", icon: Bell },

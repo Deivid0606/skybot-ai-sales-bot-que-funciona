@@ -1,4 +1,5 @@
 import { coverageTrainingEntry, bankTrainingEntry } from "@/lib/managed-coverage";
+import { assistantNameFromTraining, businessProfileInstruction, profileFromRow, suggestedProfile } from "@/lib/business-profile";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { AiContext } from "@/lib/ai.server";
 import type { SaleState } from "@/lib/rule-sales.server";
@@ -45,7 +46,7 @@ export async function buildWorkspaceAiContext(
   customerPhone: string | null = null,
   conversationId: string | null = null,
 ): Promise<AiContext> {
-  const [aiSettingsResult, settingsResult, productsResult, trainingResult, saleResult, coverageResult, bankResult] = await Promise.all([
+  const [aiSettingsResult, settingsResult, productsResult, trainingResult, saleResult, coverageResult, bankResult, profileResult, workspaceResult] = await Promise.all([
     supabase.from("ai_settings").select("system_instruction, gemini_api_key, gemini_api_key_2, gemini_api_key_3, openai_api_key, provider_order, provider_models, model, autodetect_model").eq("workspace_id", workspaceId).maybeSingle(),
     supabase.from("user_settings").select("business_name, currency").eq("workspace_id", workspaceId).maybeSingle(),
     supabase.from("products").select(`
@@ -57,6 +58,9 @@ export async function buildWorkspaceAiContext(
     // Pestañas «Zonas de cobertura» y «Datos bancarios» (cargadas por el vendedor).
     (supabase as any).from("workspace_coverage").select("city, department, method, shipping_fee, address_required, note").eq("workspace_id", workspaceId),
     (supabase as any).from("workspace_bank_accounts").select("bank, holder, account_number, alias, document, note, active, sort_order").eq("workspace_id", workspaceId).order("sort_order"),
+    // Pestaña «Mi negocio» (identidad y horarios).
+    (supabase as any).from("workspace_business_profile").select("*").eq("workspace_id", workspaceId).maybeSingle(),
+    supabase.from("workspaces").select("name").eq("id", workspaceId).maybeSingle(),
   ]);
   for (const result of [aiSettingsResult, settingsResult, productsResult, trainingResult, saleResult]) {
     if (result.error) throw result.error;
@@ -69,6 +73,14 @@ export async function buildWorkspaceAiContext(
     shipping_fee: r.shipping_fee == null ? null : Number(r.shipping_fee), address_required: r.address_required !== false, note: r.note,
   })));
   const bankEntry = bankResult?.error ? null : bankTrainingEntry(bankResult?.data ?? []);
+  // Identidad: con los datos sugeridos si el vendedor no completó la pestaña;
+  // los horarios de entrega solo cuando el vendedor los guardó.
+  const fallbackProfile = suggestedProfile(workspaceId,
+    String(settingsResult.data?.business_name ?? "").trim() || String((workspaceResult as any)?.data?.name ?? "").trim(),
+    assistantNameFromTraining([String(aiSettingsResult.data?.system_instruction ?? ""), ...(trainingResult.data ?? []).map(t => String(t.content ?? ""))]));
+  const profileRow = (profileResult as any)?.error ? null : (profileResult as any)?.data ?? null;
+  const businessProfile = profileFromRow(profileRow, fallbackProfile);
+  const profileInstruction = businessProfileInstruction(businessProfile, Boolean(profileRow));
   const training = [...(coverageEntry ? [coverageEntry] : []), ...(bankEntry ? [bankEntry] : []), ...(trainingResult.data ?? [])] as AiContext["training"];
   const products = (productsResult.data ?? []).map(product => {
     const productPrices = [...(product.product_prices ?? [])].map(option => ({
@@ -93,7 +105,7 @@ export async function buildWorkspaceAiContext(
     };
   });
   return {
-    systemInstruction: [currentTimeInstruction(), "INSTRUCCIONES GENERALES DEL NEGOCIO:", aiSettingsResult.data?.system_instruction ?? "", "PRIORIDAD DE DATOS: el catálogo, la cobertura y el entrenamiento se obtienen únicamente del workspace_id de este vendedor. Las ciudades y modalidades ajenas nunca se reutilizan. Para preparar un pedido, verificá primero la ciudad de entrega y luego solicitá solo los datos requeridos por esa cobertura; respondé consultas intercaladas sin perder el contexto.", sellerAllowsNationwideAdvance(training)
+    systemInstruction: [currentTimeInstruction(), profileInstruction, "INSTRUCCIONES GENERALES DEL NEGOCIO:", aiSettingsResult.data?.system_instruction ?? "", "PRIORIDAD DE DATOS: el catálogo, la cobertura y el entrenamiento se obtienen únicamente del workspace_id de este vendedor. Las ciudades y modalidades ajenas nunca se reutilizan. Para preparar un pedido, verificá primero la ciudad de entrega y luego solicitá solo los datos requeridos por esa cobertura; respondé consultas intercaladas sin perder el contexto.", sellerAllowsNationwideAdvance(training)
       ? (coverageEntry
         ? "POLÍTICA VERIFICADA DEL VENDEDOR (pestaña Zonas de cobertura): cada ciudad tiene su modalidad fija: CONTRAENTREGA (pago al recibir), ENCOMIENDA con pago anticipado o SIN ENVÍO. Usá exactamente la de la ciudad del cliente; una ciudad que no figura no tiene envío. No prometas despacho ni costos que no figuren."
         : "POLÍTICA VERIFICADA DEL VENDEDOR: la lista de ZONAS CON COBERTURA es de CONTRAENTREGA, NO una lista de todos los destinos de encomienda. Para ciudades paraguayas no incluidas en contraentrega, SÍ se permite OFRECER encomienda con pago anticipado, sujeto a disponibilidad real de transportista y costo por verificar. NO digas 'no enviamos' por estar fuera de la lista. Identificá ciudad y departamento; si faltan, pedí solo ese dato antes del pago. No prometas despacho, envío gratis ni cobro sin confirmar logística."
@@ -112,7 +124,7 @@ export async function buildWorkspaceAiContext(
     providerModels: aiSettingsResult.data?.provider_models ?? null,
     model: aiSettingsResult.data?.autodetect_model ? null : aiSettingsResult.data?.model ?? null,
     customerPhone,
-    businessName: settingsResult.data?.business_name ?? "",
+    businessName: businessProfile.store_name ?? settingsResult.data?.business_name ?? "",
     currency: settingsResult.data?.currency ?? "PYG",
     products, training, history,
     activeProductId: activeProductId ?? (saleResult.data?.state as SaleState | null)?.productId ?? null,
