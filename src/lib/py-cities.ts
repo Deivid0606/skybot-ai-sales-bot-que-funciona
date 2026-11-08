@@ -77,7 +77,7 @@ const RAW: Record<string, string[]> = {
     "Yby Pytã", "Laurel", "Maracaná", "Puerto Adela",
   ],
   "Presidente Hayes": [
-    "Villa Hayes", "Benjamín Aceval", "Puerto Pinasco", "Nanawa", "José Falcón",
+    "Villa Hayes", "Remansito", "Benjamín Aceval", "Puerto Pinasco", "Nanawa", "José Falcón",
     "Teniente Primero Manuel Irala Fernández", "Teniente Esteban Martínez", "General José María Bruguez",
   ],
   "Boquerón": ["Filadelfia", "Loma Plata", "Mariscal Estigarribia", "Boquerón"],
@@ -158,6 +158,11 @@ export function departmentIn(text: string): string | null {
   const hits = DEPARTMENTS.filter(d => t.includes(` ${key(d)} `));
   // «Alto Paraná» contiene «Paraná» pero no otro departamento; «San Pedro» puede ser ciudad: se acepta igual.
   return hits.length === 1 ? hits[0] : hits.sort((a, b) => key(b).length - key(a).length)[0] ?? null;
+}
+
+/** Formas populares de escribir una ciudad («CDE», «Santaní», «PJC»…). */
+export function cityAliases(city: string): string[] {
+  return POPULAR[city] ?? [];
 }
 
 type Place = PyCity & { alias: string };

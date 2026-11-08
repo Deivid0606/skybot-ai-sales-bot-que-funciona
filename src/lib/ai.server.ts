@@ -52,6 +52,8 @@ export type AiContext = {
   training: {
     title: string;
     content: string;
+    /** Versión corta solo para el prompt (p. ej. la cobertura de la pestaña). */
+    prompt_content?: string | null;
     category: string;
     priority: number;
     /** Metadatos del entrenamiento: usados SOLO para seleccionar instrucciones de IA. */
@@ -257,7 +259,7 @@ ${variants || `    - precio_unitario_heredado:${product.promo_price ?? product.p
     category === "correccion" || category === "reglas";
 
   const formatTraining = (entry: AiContext["training"][number]) =>
-    `- [${entry.category || "general"} | prioridad ${Number(entry.priority) || 0}] ${entry.title}: ${entry.content}`;
+    `- [${entry.category || "general"} | prioridad ${Number(entry.priority) || 0}] ${entry.title}: ${entry.prompt_content ?? entry.content}`;
 
   // No hacer depender la presencia de un entrenamiento de palabras del título,
   // categoría ni prioridad: la IA necesita ver también Objeciones, Cierre,

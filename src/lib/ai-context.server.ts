@@ -1,3 +1,4 @@
+import { coverageTrainingEntry, bankTrainingEntry } from "@/lib/managed-coverage";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { AiContext } from "@/lib/ai.server";
 import type { SaleState } from "@/lib/rule-sales.server";
@@ -44,7 +45,7 @@ export async function buildWorkspaceAiContext(
   customerPhone: string | null = null,
   conversationId: string | null = null,
 ): Promise<AiContext> {
-  const [aiSettingsResult, settingsResult, productsResult, trainingResult, saleResult] = await Promise.all([
+  const [aiSettingsResult, settingsResult, productsResult, trainingResult, saleResult, coverageResult, bankResult] = await Promise.all([
     supabase.from("ai_settings").select("system_instruction, gemini_api_key, gemini_api_key_2, gemini_api_key_3, openai_api_key, provider_order, provider_models, model, autodetect_model").eq("workspace_id", workspaceId).maybeSingle(),
     supabase.from("user_settings").select("business_name, currency").eq("workspace_id", workspaceId).maybeSingle(),
     supabase.from("products").select(`
@@ -53,10 +54,22 @@ export async function buildWorkspaceAiContext(
     `).eq("workspace_id", workspaceId).eq("is_active", true),
     supabase.from("training_entries").select("title, content, category, priority, scope, product_id, keywords, created_at").eq("workspace_id", workspaceId).eq("is_active", true).order("priority", { ascending: false }).order("created_at", { ascending: false }),
     conversationId ? supabase.from("bot_sale_states").select("state").eq("workspace_id", workspaceId).eq("conversation_id", conversationId).maybeSingle() : Promise.resolve({ data: null, error: null }),
+    // Pestañas «Zonas de cobertura» y «Datos bancarios» (cargadas por el vendedor).
+    (supabase as any).from("workspace_coverage").select("city, department, method, shipping_fee, address_required, note").eq("workspace_id", workspaceId),
+    (supabase as any).from("workspace_bank_accounts").select("bank, holder, account_number, alias, document, note, active, sort_order").eq("workspace_id", workspaceId).order("sort_order"),
   ]);
   for (const result of [aiSettingsResult, settingsResult, productsResult, trainingResult, saleResult]) {
     if (result.error) throw result.error;
   }
+  // Lo cargado en las pestañas va PRIMERO y es la fuente oficial: la cobertura
+  // reemplaza la lista de ciudades del entrenamiento y la cuenta bancaria, los
+  // datos bancarios escritos a mano. Sin filas, el entrenamiento sigue igual.
+  const coverageEntry = coverageResult?.error ? null : coverageTrainingEntry((coverageResult?.data ?? []).map((r: any) => ({
+    city: String(r.city), department: String(r.department), method: r.method,
+    shipping_fee: r.shipping_fee == null ? null : Number(r.shipping_fee), address_required: r.address_required !== false, note: r.note,
+  })));
+  const bankEntry = bankResult?.error ? null : bankTrainingEntry(bankResult?.data ?? []);
+  const training = [...(coverageEntry ? [coverageEntry] : []), ...(bankEntry ? [bankEntry] : []), ...(trainingResult.data ?? [])] as AiContext["training"];
   const products = (productsResult.data ?? []).map(product => {
     const productPrices = [...(product.product_prices ?? [])].map(option => ({
       id: option.id,
@@ -80,10 +93,15 @@ export async function buildWorkspaceAiContext(
     };
   });
   return {
-    systemInstruction: [currentTimeInstruction(), "INSTRUCCIONES GENERALES DEL NEGOCIO:", aiSettingsResult.data?.system_instruction ?? "", "PRIORIDAD DE DATOS: el catálogo, la cobertura y el entrenamiento se obtienen únicamente del workspace_id de este vendedor. Las ciudades y modalidades ajenas nunca se reutilizan. Para preparar un pedido, verificá primero la ciudad de entrega y luego solicitá solo los datos requeridos por esa cobertura; respondé consultas intercaladas sin perder el contexto.", sellerAllowsNationwideAdvance(trainingResult.data ?? [])
-      ? "POLÍTICA VERIFICADA DEL VENDEDOR: la lista de ZONAS CON COBERTURA es de CONTRAENTREGA, NO una lista de todos los destinos de encomienda. Para ciudades paraguayas no incluidas en contraentrega, SÍ se permite OFRECER encomienda con pago anticipado, sujeto a disponibilidad real de transportista y costo por verificar. NO digas 'no enviamos' por estar fuera de la lista. Identificá ciudad y departamento; si faltan, pedí solo ese dato antes del pago. No prometas despacho, envío gratis ni cobro sin confirmar logística."
-      : "POLÍTICA DE ESTE VENDEDOR: no se ha encontrado autorización de encomienda nacional. No ofrecerla por defecto.",
-      sellerRequiresEncomiendaCi(trainingResult.data ?? [])
+    systemInstruction: [currentTimeInstruction(), "INSTRUCCIONES GENERALES DEL NEGOCIO:", aiSettingsResult.data?.system_instruction ?? "", "PRIORIDAD DE DATOS: el catálogo, la cobertura y el entrenamiento se obtienen únicamente del workspace_id de este vendedor. Las ciudades y modalidades ajenas nunca se reutilizan. Para preparar un pedido, verificá primero la ciudad de entrega y luego solicitá solo los datos requeridos por esa cobertura; respondé consultas intercaladas sin perder el contexto.", sellerAllowsNationwideAdvance(training)
+      ? (coverageEntry
+        ? "POLÍTICA VERIFICADA DEL VENDEDOR (pestaña Zonas de cobertura): cada ciudad tiene su modalidad fija: CONTRAENTREGA (pago al recibir), ENCOMIENDA con pago anticipado o SIN ENVÍO. Usá exactamente la de la ciudad del cliente; una ciudad que no figura no tiene envío. No prometas despacho ni costos que no figuren."
+        : "POLÍTICA VERIFICADA DEL VENDEDOR: la lista de ZONAS CON COBERTURA es de CONTRAENTREGA, NO una lista de todos los destinos de encomienda. Para ciudades paraguayas no incluidas en contraentrega, SÍ se permite OFRECER encomienda con pago anticipado, sujeto a disponibilidad real de transportista y costo por verificar. NO digas 'no enviamos' por estar fuera de la lista. Identificá ciudad y departamento; si faltan, pedí solo ese dato antes del pago. No prometas despacho, envío gratis ni cobro sin confirmar logística."
+      )
+      : coverageEntry
+        ? "POLÍTICA VERIFICADA DEL VENDEDOR (pestaña Zonas de cobertura): este vendedor NO hace encomienda. Solo envía a las ciudades de CONTRAENTREGA de su cobertura; a cualquier otra ciudad no hay envío."
+        : "POLÍTICA DE ESTE VENDEDOR: no se ha encontrado autorización de encomienda nacional. No ofrecerla por defecto.",
+      sellerRequiresEncomiendaCi(training)
       ? "REQUISITO EXPLÍCITO DE ENCOMIENDA DE ESTE VENDEDOR: NO solicitar calle, dirección, barrio, referencia ni GPS. SOLO DESPUÉS de recibir un comprobante REAL guardado y documentalmente compatible, pedir nombre y apellido si faltan. Con ciudad, nombre completo y comprobante documentalmente suficiente el pedido se registra; NO pedir la cédula antes del registro. Recién DESPUÉS de la confirmación del pedido el backend pide el NÚMERO de cédula del destinatario, sin fotografía. Nunca tomar la CI del titular de la cuenta bancaria ni el alias como cédula del destinatario. El backend registra y confirma el pedido solo tras INSERT exitoso; acreditación bancaria pendiente de verificación humana."
       : "ENCOMIENDA: usar exclusivamente los datos exigidos por el entrenamiento activo de este vendedor; no imponer por defecto requisitos de otras tiendas."].join("\n\n"),
     geminiApiKey: aiSettingsResult.data?.gemini_api_key ?? null,
@@ -96,7 +114,7 @@ export async function buildWorkspaceAiContext(
     customerPhone,
     businessName: settingsResult.data?.business_name ?? "",
     currency: settingsResult.data?.currency ?? "PYG",
-    products, training: trainingResult.data ?? [], history,
+    products, training, history,
     activeProductId: activeProductId ?? (saleResult.data?.state as SaleState | null)?.productId ?? null,
     saleState: (saleResult.data?.state ?? null) as SaleState | null,
   };
