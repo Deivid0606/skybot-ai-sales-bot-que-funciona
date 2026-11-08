@@ -264,6 +264,18 @@ export function managedNoShipping(city: string | null | undefined, department: s
 
 /** Ajusta el estado: ciudad sin envío ⇒ sin modalidad de pago ni pedido posible. */
 export function normalizeNoShipping(state: SaleState, training: AiContext["training"]): SaleState {
+  // Con la pestaña de cobertura, solo un lugar REAL cuenta como ciudad: una frase
+  // como «Estoy en Paraguay» nunca queda como ciudad verificada; se vuelve a preguntar.
+  if (state.cityVerified && training.some(t => t.category === COVERAGE_CATEGORY)) {
+    const coverage = parseCoverage(training);
+    const real = (state.city && state.department ? verifiedCoverage(state.city, state.department, coverage) : null) ??
+      (state.city ? cityIn(state.city, coverage) ?? findParaguayPlace(state.city) : null);
+    if (!real) {
+      state.city = null; state.department = null; state.cityVerified = false;
+      state.coverageStatus = "unknown"; state.paymentMethod = null; state.awaiting = "city";
+      return state;
+    }
+  }
   if (state.cityVerified && managedNoShipping(state.city, state.department, training)) {
     state.coverageStatus = "none";
     state.paymentMethod = null;
@@ -360,6 +372,8 @@ export function isNonCityPhrase(text:string):boolean{
   const n=norm(text);
   if (/\b(?:tsi|transportadora|transportista|encomienda|nasa|rutaexpress)\b/.test(n)) return true;
   // Colores, cortesías y reacciones sueltas no son lugares («Marrón», «Igualmente»).
+  // «Estoy en Paraguay», «acá en el país»: no nombran una ciudad.
+  if (/\b(?:paraguay|pais|estoy|aca|aqui|ahi|interior)\b/.test(n) && !findParaguayPlace(text)) return true;
   if (/^(?:negro|negra|blanco|blanca|marron|rojo|roja|azul|verde|rosa|rosado|gris|beige|dorado|plateado|celeste|amarillo|lila|violeta)$/.test(n) ||
       /\b(?:igualmente|genial|excelente|reaction|okey|oki|gracia|grasias|adios|chau)\b/.test(n)) return true;
   return !n || /\b(?:paga|pago|pagar|pagas|recibir|contra ?entrega|anticipado|transferencia|efectivo|envio|gratis|delivery|precio|costo|cuanto|quiero|gracias|hola|buenas|buen dia|si|no|ok|dale|listo|perfecto|litros?|caja|cajas|unidad|unidades|pedido|confirmo|cuando|como|donde|tienen|hacen|llega|casa|domicilio)\b/.test(n) ||
