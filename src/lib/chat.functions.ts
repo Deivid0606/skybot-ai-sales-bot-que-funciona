@@ -457,6 +457,10 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     let step=!bypassSale?advanceRuleSale(ctx,saleText,previous, (newest.media_type === "image" || newest.media_type === "document") ? newest.media_url : null,previous.locationUrl):null;
     let result: Awaited<ReturnType<typeof generateAiReply>>;
     const verifiedSale=step?.state??previous;
+    {
+      const {normalizeNoShipping}=await import("@/lib/rule-sales.server");
+      normalizeNoShipping(verifiedSale, ctx.training);
+    }
     const aiContext={...answerContext,saleState:verifiedSale,
       systemInstruction:answerContext.systemInstruction+
         `\nDATOS TÉCNICOS DEL PEDIDO ACTUAL: ${JSON.stringify({productId:verifiedSale.productId,
@@ -473,6 +477,10 @@ export const aiReplyNow = createServerFn({ method: "POST" })
       : "\nNo existe autorización para encomienda nacional en el entrenamiento disponible.";
     if(policy?.paymentMethod)aiContext.systemInstruction+=
       `\nModalidad VERIFICADA para ${policy.city}: ${policy.method}; pago ${policy.paymentMethod}.`;
+    {
+      const {noShippingInstruction}=await import("@/lib/rule-sales.server");
+      aiContext.systemInstruction+=noShippingInstruction(verifiedSale);
+    }
     try {result=await generateAiReply(aiContext);}
     catch(error){console.error("[BOT SKY Inbox] IA no disponible",error);return {skipped:true,reason:"IA no disponible; respuesta pendiente"};}
     // Corregir rechazos comerciales que contradicen la encomienda nacional

@@ -2,6 +2,7 @@
 import type { AiContext } from "@/lib/ai.server";
 import { isValidDeliveryAddress, isValidCustomerName } from "@/lib/sale-reconciliation.server";
 import { PY_CITIES, findParaguayPlace, departmentIn } from "@/lib/py-cities";
+import { COVERAGE_CATEGORY } from "@/lib/managed-coverage";
 import { resolveExplicitMultiProductCart, resolveNamedProductLine, resolveCartPricing, type MultiProductLine } from "@/lib/multi-product-cart";
 
 type Product = AiContext["products"][number];
@@ -17,7 +18,8 @@ export type SaleState = {
   city?: string | null;
   department?: string | null;
   cityVerified?: boolean;
-  coverageStatus?: "covered" | "uncovered" | "unknown";
+  /** "none": la ciudad NO tiene envío según la pestaña Zonas de cobertura. */
+  coverageStatus?: "covered" | "uncovered" | "unknown" | "none";
   customerName?: string | null;
   /** CI real del destinatario, proveniente únicamente del cliente. */
   recipientCi?: string | null;
@@ -59,9 +61,12 @@ const units = (s: string) => s.match(/\b\d+(?:[.,]\d+)?\s*(?:litros?|lts?|l|ml|k
 export type Coverage = { city:string; department:string; aliases:string[]; active:boolean; method:string; addressRequired:boolean };
 /** Extrae SOLAMENTE bloques explícitos de la sección de cobertura activa del workspace. */
 export function parseCoverage(training: AiContext["training"]): Coverage[] {
+  // La pestaña «Zonas de cobertura» es la fuente OFICIAL cuando el vendedor la cargó:
+  // reemplaza la cobertura escrita a mano en el entrenamiento.
+  const managed = training.filter(t => t.category === COVERAGE_CATEGORY);
   // Leer solamente el entrenamiento ACTIVO del workspace; no inventar ciudades.
   // Algunos exportadores agregan números/emojis al título o separadores a los encabezados.
-  const entries = training.filter(t => {
+  const entries = managed.length ? managed : training.filter(t => {
     const title = norm(t.title);
     const body = String(t.content ?? "");
     return (/ciudades? y cobertura|cobertura de ciudades|zonas? de cobertura/.test(title) ||
@@ -236,11 +241,43 @@ export function isEncomiendaAdvanceOrder(training: AiContext["training"], city: 
 
 /** Solo el entrenamiento ACTIVO del vendedor puede autorizar encomienda nacional. */
 export function sellerAllowsNationwideAdvance(training: AiContext["training"]): boolean {
+  // Con la pestaña de cobertura: hay encomienda solo si el vendedor marcó ciudades por encomienda.
+  const managed = training.find(t => t.category === COVERAGE_CATEGORY);
+  if (managed) return /MODALIDAD:\s*ENCOMIENDA/i.test(String(managed.content ?? ""));
   return training.some(entry => {
     const body = String(entry.content ?? "");
     return /(?:todo\s+(?:el\s+)?paraguay|(?:cualquier|todas\s+las)\s+ciudad(?:es)?\s+(?:del\s+)?paraguay|encomienda\s+nacional|encomienda\s+a\s+todo\s+paraguay|ciudad(?:es)?\s+(?:de\s+)?paraguay\s+(?:que|sin|fuera)|(?:al|el|del|para\s+el)\s+interior(?:\s+del\s+pa[ií]s)?)/i.test(body) &&
       /encomienda/i.test(body) && /(?:anticipado|transferencia|pagar\s+antes)/i.test(body);
   });
+}
+
+/**
+ * Con la pestaña «Zonas de cobertura», una ciudad marcada «Sin envío» (o que no
+ * figura) NO tiene envío: ni contraentrega ni encomienda.
+ */
+export function managedNoShipping(city: string | null | undefined, department: string | null | undefined, training: AiContext["training"]): boolean {
+  if (!city || !training.some(t => t.category === COVERAGE_CATEGORY)) return false;
+  const coverage = parseCoverage(training);
+  const place = (department ? verifiedCoverage(city, department, coverage) : null) ?? cityIn(city, coverage);
+  return !place || !/contra ?entrega|encomienda|anticipad/i.test(norm(place.method));
+}
+
+/** Ajusta el estado: ciudad sin envío ⇒ sin modalidad de pago ni pedido posible. */
+export function normalizeNoShipping(state: SaleState, training: AiContext["training"]): SaleState {
+  if (state.cityVerified && managedNoShipping(state.city, state.department, training)) {
+    state.coverageStatus = "none";
+    state.paymentMethod = null;
+  } else if (state.coverageStatus === "none") {
+    state.coverageStatus = state.cityVerified ? "uncovered" : "unknown";
+  }
+  return state;
+}
+
+/** Instrucción para la IA cuando la ciudad no tiene envío según la pestaña. */
+export function noShippingInstruction(state: SaleState): string {
+  return state.coverageStatus === "none" && state.city
+    ? `\nSIN ENVÍO (pestaña Zonas de cobertura del vendedor): la tienda NO hace envíos a ${state.city}. Informalo con amabilidad usando el estilo del entrenamiento. NO ofrezcas contraentrega, encomienda ni pago anticipado, no pidas nombre ni dirección y no registres pedido. Si el cliente puede recibir en otra ciudad, preguntale cuál.`
+    : "";
 }
 
 /** Referencia geográfica: identificar localidades no incluidas en la lista de
@@ -368,6 +405,7 @@ export function applyDeclaredCity(state: SaleState, hit: {city:string; departmen
   const policy = deliveryPolicyForCity(state.city, state.department, training);
   if (policy?.paymentMethod) state.paymentMethod = policy.paymentMethod;
   else if (!hit.listed?.active && sellerAllowsNationwideAdvance(training)) state.paymentMethod = "anticipado";
+  normalizeNoShipping(state, training);
 }
 
 export function cityIn(text:string, coverage:Coverage[]): Coverage | null {

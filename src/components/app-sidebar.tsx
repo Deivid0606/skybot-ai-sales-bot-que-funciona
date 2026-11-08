@@ -18,6 +18,8 @@ import {
   Wallet,
   Receipt,
   Megaphone,
+  MapPin,
+  Landmark,
 } from "lucide-react";
 import {
   Sidebar,
@@ -40,6 +42,8 @@ const sellerItems = [
   { title: "Reclamos", url: "/reclamos", icon: AlertTriangle },
   { title: "Contactos", url: "/contactos", icon: Contact },
   { title: "Entrenamiento", url: "/entrenamiento", icon: Bot },
+  { title: "Zonas de cobertura", url: "/cobertura", icon: MapPin },
+  { title: "Datos bancarios", url: "/datos-bancarios", icon: Landmark },
   { title: "Notificaciones", url: "/notificaciones", icon: Bell },
   { title: "Novedades", url: "/novedades", icon: Megaphone },
   { title: "Pedidos", url: "/pedidos", icon: ShoppingCart },

@@ -1,6 +1,6 @@
 import { getGeminiCandidates, wellFormedJson, isKeyTemporarilyUnavailable, markKeyUnavailable, type AiContext } from "@/lib/ai.server";
 import { findParaguayPlace } from "@/lib/py-cities";
-import { cityIn, parseCoverage, nationwideDestinationFromText, deliveryPolicyForCity, sellerAllowsNationwideAdvance, type SaleState } from "@/lib/rule-sales.server";
+import { normalizeNoShipping, cityIn, parseCoverage, nationwideDestinationFromText, deliveryPolicyForCity, sellerAllowsNationwideAdvance, type SaleState } from "@/lib/rule-sales.server";
 import { isValidCustomerName, isValidDeliveryAddress } from "@/lib/sale-reconciliation.server";
 
 /**
@@ -50,7 +50,7 @@ function historyText(ctx: AiContext): string {
   return ctx.history.slice(-16).map(h => `${h.role === "user" ? "CLIENTE" : "BOT"}: ${h.content.slice(0, 600)}`).join("\n");
 }
 
-async function callJson(ctx: AiContext, system: string, user: string): Promise<string> {
+export async function callJson(ctx: AiContext, system: string, user: string, maxTokens = 400): Promise<string> {
   const failures: string[] = [];
   const providers: Array<[string, string | null | undefined]> = [
     ["gemini", ctx.geminiApiKey], ["gemini", ctx.geminiApiKey2], ["gemini", ctx.geminiApiKey3], ["openai", ctx.openaiApiKey]];
@@ -67,7 +67,7 @@ async function callJson(ctx: AiContext, system: string, user: string): Promise<s
         const res = await fetch("https://api.openai.com/v1/chat/completions", {
           method: "POST", signal: controller.signal,
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-          body: wellFormedJson({ model, temperature: 0, max_completion_tokens: 400, response_format: { type: "json_object" },
+          body: wellFormedJson({ model, temperature: 0, max_completion_tokens: maxTokens, response_format: { type: "json_object" },
             messages: [{ role: "system", content: system }, { role: "user", content: user }] }),
         });
         if (!res.ok) throw new Error(`openai ${res.status}`);
@@ -81,7 +81,7 @@ async function callJson(ctx: AiContext, system: string, user: string): Promise<s
           method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json" },
           body: wellFormedJson({ systemInstruction: { parts: [{ text: system }] },
             contents: [{ role: "user", parts: [{ text: user }] }],
-            generationConfig: { maxOutputTokens: 400, temperature: 0, responseMimeType: "application/json" } }),
+            generationConfig: { maxOutputTokens: maxTokens, temperature: 0, responseMimeType: "application/json" } }),
         });
         if (!res.ok) throw new Error(`gemini ${res.status}`);
         const data = await res.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>; usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number } };
@@ -166,6 +166,7 @@ export function applyAiExtraction(ctx: AiContext, state: SaleState, ext: AiSaleE
       if (policy?.paymentMethod) state.paymentMethod = policy.paymentMethod;
       // Fuera de la cobertura: pago anticipado solo si el entrenamiento del vendedor lo permite.
       else if (state.coverageStatus === "uncovered" && sellerAllowsNationwideAdvance(ctx.training)) state.paymentMethod = "anticipado";
+      normalizeNoShipping(state, ctx.training);
     }
   }
   // 3) Nombre: tiene que estar escrito por el cliente y ser un nombre válido.
