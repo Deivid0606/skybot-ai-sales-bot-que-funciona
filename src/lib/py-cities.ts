@@ -29,7 +29,7 @@ const RAW: Record<string, string[]> = {
     "Piribebuy", "Primero de Marzo", "San Bernardino", "San José Obrero", "Santa Elena", "Tobatí", "Valenzuela",
   ],
   "Guairá": [
-    "Villarrica", "Borja", "Capitán Mauricio José Troche", "Coronel Martínez", "Félix Pérez Cardozo",
+    "Villarrica", "Borja", "Mauricio José Troche", "Coronel Martínez", "Félix Pérez Cardozo",
     "General Eugenio A. Garay", "Colonia Independencia", "Independencia", "Itapé", "Iturbe", "José A. Fassardi",
     "Mbocayaty", "Natalicio Talavera", "Ñumí", "San Salvador", "Yataity", "Doctor Bottrell", "Paso Yobái", "Tebicuary",
   ],
@@ -106,6 +106,7 @@ export function findPyCity(value: string): PyCity | null {
 const POPULAR: Record<string, string[]> = {
   "Ciudad del Este": ["cde", "c d e", "ciudad del este"],
   "San Estanislao": ["santani"],
+  "Mauricio José Troche": ["capitan mauricio jose troche", "cap mauricio jose troche", "troche"],
   "Doctor Juan Eulogio Estigarribia": ["campo 9", "campo nueve", "j eulogio estigarribia", "juan eulogio estigarribia",
     "jota eulogio", "eulogio estigarribia", "dr j eulogio estigarribia"],
   "J. Augusto Saldívar": ["j augusto saldivar", "augusto saldivar", "jota augusto", "j a saldivar"],
