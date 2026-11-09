@@ -185,6 +185,15 @@ function oneEdit(a: string, b: string): boolean {
 
 const PLACE_CUE = /\b(?:vivo en|soy de|estoy en|estoy n|desde|para|ciudad|ciudad de|departamento|dpto|depto|dto|barrio|zona|en|de la ciudad|localidad|distrito|envian|envias|envio|envios|mandan|llega|llegan|delivery|deliveri|cobertura|entregan)\b/;
 
+/** Ciudades que también son apellidos o palabras comunes («Maciel», «Escobar», «Limpio»). */
+export function isAmbiguousPlaceName(name: string): boolean {
+  return AMBIGUOUS.has(key(name));
+}
+/** El texto trae una señal de lugar («soy de», «para», «envían a», «ciudad»…). */
+export function hasPlaceCue(text: string): boolean {
+  return PLACE_CUE.test(key(text));
+}
+
 /**
  * Ciudad real de Paraguay nombrada en el texto (en cualquier posición), o null
  * si no hay ninguna o es ambigua. Un barrio junto a la ciudad («Concepción
