@@ -1,6 +1,6 @@
 import type { AiContext, AiOrder } from "@/lib/ai.server";
 import type { SaleState } from "@/lib/rule-sales.server";
-import { verifiedCoverage, parseCoverage, sellerAllowsNationwideAdvance, nationwideDestinationFromText, extractRecipientCiFromCustomerText, isValidRecipientCi, isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi } from "@/lib/rule-sales.server";
+import { looksLikePersonName, verifiedCoverage, parseCoverage, sellerAllowsNationwideAdvance, nationwideDestinationFromText, extractRecipientCiFromCustomerText, isValidRecipientCi, isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi } from "@/lib/rule-sales.server";
 
 type ChatLine = { role: "user" | "assistant"; content: string };
 const normal = (s: string) => String(s ?? "").toLowerCase().normalize("NFD")
@@ -149,7 +149,9 @@ export function recoverSaleStateFromHistory(ctx: AiContext, previous: SaleState,
         state.department = bare; state.cityVerified = true;
         state.coverageStatus = "uncovered";
       } else if (asksCity && isCityReply(raw, lastQuestion) && !state.cityVerified &&
-                 bare.split(/\s+/).length <= 5 && /^[\p{L} .'-]{3,55}$/u.test(bare)) {
+                 bare.split(/\s+/).length <= 5 && /^[\p{L} .'-]{3,55}$/u.test(bare) &&
+                 // Un nombre de persona («Juan antonio ruiz diaz») no es una ciudad.
+                 !looksLikePersonName(bare)) {
         state.city = bare; state.department = null;
         state.cityVerified = false; state.coverageStatus = "unknown";
       }
@@ -167,7 +169,10 @@ export function recoverSaleStateFromHistory(ctx: AiContext, previous: SaleState,
       const candidate = validName(raw);
       if (candidate) state.customerName = candidate;
     }
-    if (!state.street && /(?:direccion|ubicacion|domicilio|referencia|numero de casa)/.test(lastQuestion)
+    // Solo con ciudad confirmada y cuando el bot PIDIÓ la dirección (no si solo
+    // mencionó «tu ubicación» o preguntó la ciudad).
+    if (!state.street && state.cityVerified && /(?:direccion|domicilio|referencia|numero de casa|ubicacion (?:por|de) google|google maps)/.test(lastQuestion)
+      && !/(?:que ciudad|en que ciudad)/.test(lastQuestion)
       && isValidDeliveryAddress(raw) && uniqueHits.length === 0 &&
       // Una ubicación compartida (enlace de Maps) se guarda como GPS, no como calle.
       !/https?:\/\/|ubicaci[oó]n compartida/i.test(raw)) state.street = raw;

@@ -2323,7 +2323,10 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     // la deduzca por su cuenta.
     if (!conversation.sale_closed && !asksAboutSeller && !previousSale.cityVerified) {
       const recentCustomer = (ctx.history ?? []).filter(h => h.role === "user").slice(-4).map(h => h.content);
-      const declared = declaredCityFromTexts(ctx.training, isGpsMessage ? recentCustomer : [...recentCustomer, body]);
+      // El GPS de WhatsApp a veces trae la dirección escrita («…, Asunción, PY»).
+      const gpsAddressText = [locationName, locationAddress].filter(Boolean).join(", ");
+      const declared = declaredCityFromTexts(ctx.training, isGpsMessage
+        ? [...recentCustomer, ...(gpsAddressText ? [gpsAddressText] : [])] : [...recentCustomer, body]);
       if (declared) {
         applyDeclaredCity(previousSale, declared, ctx.training);
         const { error: askedCityError } = await (supabaseAdmin.from("bot_sale_states") as any).upsert({
@@ -2937,6 +2940,8 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
           cityVerified:verifiedSaleState.cityVerified, training:ctx.training}).corrected ||
         (policy?.paymentMethod === "contraentrega" && (BANK_RE.test(text) || /\bencomienda\b|pago anticipado|total a transferir/i.test(text))) ||
         hasTemplatePlaceholder(text) || prematureBank || claimsRegisteredOrder(text) ||
+        // Sin ciudad confirmada no se pide comprobante, transferencia ni cuenta.
+        (!verifiedSaleState.cityVerified && !conversation.sale_closed && /(?:comprobante|transfer|total a transferir|datos de la cuenta|\bbanco\b|\balias\b)/i.test(text)) ||
         (WAITING_REPLY_RE.test(text) && !/[?¿]/.test(text));
     };
     // Solo el bloque posterior al INSERT puede confirmar; el resto nunca.
@@ -2956,6 +2961,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
           ? `Para ${verifiedSaleState.city} la modalidad VERIFICADA es CONTRAENTREGA (${policy.method}): el cliente paga al recibir. PROHIBIDO decir encomienda o pago anticipado, mostrar datos bancarios o pedir comprobante.`
           : policy?.paymentMethod === "anticipado"
             ? `Para ${verifiedSaleState.city} la modalidad VERIFICADA es pago anticipado; no prometas pago al recibir.` : "",
+        !verifiedSaleState.cityVerified ? "Todavía NO sabemos la ciudad de entrega: NO pidas comprobante, transferencia ni datos bancarios. Respondé lo que dijo el cliente y preguntá en qué ciudad quiere recibir el pedido." : "",
         verifiedSaleState.awaiting === "variant" ? "El cliente todavía no eligió una opción válida: mostrá las opciones reales con sus precios y preguntá cuál prefiere; no pidas pago." : "",
         "Nunca uses marcadores como [PRECIO] o [TOTAL]: usá los precios reales del catálogo.",
         WAITING_REPLY_RE.test(text) ? "No digas «un momento», «voy a verificar» ni «te aviso»: el sistema ya revisó todo en este turno; respondé con el resultado y el siguiente paso." : "",
