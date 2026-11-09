@@ -275,6 +275,12 @@ export function managedNoShipping(city: string | null | undefined, department: s
 export function normalizeNoShipping(state: SaleState, training: AiContext["training"]): SaleState {
   // Con la pestaña de cobertura, solo un lugar REAL cuenta como ciudad: una frase
   // como «Estoy en Paraguay» nunca queda como ciudad verificada; se vuelve a preguntar.
+  // Con la pestaña: una «ciudad» sin verificar que no es un lugar real (un nombre,
+  // una frase) se borra para que no confunda a la IA.
+  if (!state.cityVerified && state.city && training.some(t => t.category === COVERAGE_CATEGORY) &&
+      !cityIn(state.city, parseCoverage(training)) && !findParaguayPlace(state.city)) {
+    state.city = null; state.department = null;
+  }
   if (state.cityVerified && training.some(t => t.category === COVERAGE_CATEGORY)) {
     const coverage = parseCoverage(training);
     const real = (state.city && state.department ? verifiedCoverage(state.city, state.department, coverage) : null) ??
@@ -672,6 +678,12 @@ const COMMON_FIRST_NAMES = new Set(("juan jose maria ana luis carlos jorge migue
   "fatima gabriela gladys graciela isabel jessica johana josefina julia laura leticia liliana lorena lourdes lucia luz " +
   "marcela margarita mariana marta melina mirian miriam monica nancy natalia nelly noelia norma olga pamela patricia paola " +
   "raquel rocio rosa rosana ruth sandra sara silvia sofia sonia susana teresa valeria veronica viviana yolanda zulma").split(" "));
+
+/** «Juan antonio ruiz diaz»: parece un nombre de persona (nombre de pila conocido + 1 a 3 palabras). */
+export function looksLikePersonName(text: string): boolean {
+  const t = String(text ?? "").trim();
+  return /^[\p{L}]+(?:\s+[\p{L}]+){1,4}$/u.test(t) && COMMON_FIRST_NAMES.has(norm(t).split(" ")[0]) && !findParaguayPlace(t);
+}
 
 /** Política configurable por workspace: nunca aplica globalmente a otras tiendas. */
 export function sellerUsesFirstOffer(ctx: Pick<AiContext, "training">): boolean {
