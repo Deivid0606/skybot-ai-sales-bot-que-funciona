@@ -15,7 +15,12 @@ export type AiSaleExtraction = {
   place_kind: "city" | "barrio" | null;
   customer_name: string | null;
   address: string | null;
+  /** Qué contiene el ÚLTIMO mensaje del cliente (análisis previo a responder). */
+  last_kinds?: string[];
+  phone?: string | null;
 };
+
+export const MESSAGE_KINDS = ["ciudad", "nombre", "direccion", "telefono", "ubicacion", "cantidad", "producto", "pregunta", "pago", "saludo", "otro"] as const;
 
 const norm = (s: unknown) => String(s ?? "").toLowerCase().normalize("NFD")
   .replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
@@ -37,12 +42,14 @@ ${options || "-"}
 DATOS YA GUARDADOS: ${known}
 
 Devolvé SOLO un objeto JSON con estas claves:
-{"option_id":null,"city":null,"place_kind":null,"customer_name":null,"address":null}
+{"option_id":null,"city":null,"place_kind":null,"customer_name":null,"address":null,"phone":null,"last_kinds":[]}
 - option_id: el id de la opción que el cliente ELIGIÓ o aceptó («3 seria», «la de 99 mil», «el de 2», «sí» a una opción que el bot le propuso, «quiero 1» cuando existe una opción de 1 unidad). null si no eligió ninguna o si pidió una cantidad que no existe.
 - city: la ciudad donde el cliente quiere RECIBIR el pedido, escrita completa y correcta (ej. «CDE» → «Ciudad del Este», «Mariano» → «Mariano Roque Alonso»). null si no la dijo. Una pregunta como «¿envían a Luque?» también cuenta como destino. La ciudad de la tienda o una ciudad que solo nombró el bot NO cuentan.
 - place_kind: "barrio" si lo que dio es un barrio, zona, compañía o asentamiento y no una ciudad; "city" si es una ciudad; null si no dio lugar.
 - customer_name: nombre y apellido de quien recibe, copiado TAL COMO lo escribió el cliente. null si no lo dio. Nunca uses el nombre del perfil, del titular bancario ni del comprobante.
 - address: la dirección de entrega con referencia, copiada como la escribió el cliente (calle, barrio con referencia, punto conocido). null si no la dio. «No estoy», horarios, «te paso después» o una ciudad sola NO son dirección.
+- phone: otro número de teléfono que el cliente dio para la entrega, tal cual; null si no dio.
+- last_kinds: ANALIZÁ SOLO EL ÚLTIMO MENSAJE DEL CLIENTE y listá qué datos contiene, usando estas etiquetas: "ciudad" (nombra la ciudad donde quiere recibir), "nombre" (su nombre y apellido), "direccion" (calle, barrio con referencia, punto de referencia de entrega), "telefono", "ubicacion" (GPS o enlace de mapa), "cantidad", "producto" (elige o nombra producto/opción), "pregunta", "pago" (forma de pago), "saludo", "otro". Un nombre de persona NUNCA es "ciudad" aunque un apellido coincida con una ciudad («Jorge Maciel» es nombre). Una frase como «ya hice mi pedido número 38» es "otro", no "direccion". Ejemplo: «Juan Pérez, Luque, calle Brasil casi Ruta 2» → ["nombre","ciudad","direccion"].
 Usá solo mensajes del CLIENTE como fuente. Si un dato cambió, devolvé el último que dio.`;
 }
 
@@ -102,7 +109,6 @@ export async function callJson(ctx: AiContext, system: string, user: string, max
 }
 
 export async function extractSaleWithAi(ctx: AiContext, state: SaleState): Promise<AiSaleExtraction | null> {
-  if (!state.productId) return null;
   const raw = await callJson(ctx, buildPrompt(ctx, state), `CONVERSACIÓN (la última línea es el mensaje actual):\n${historyText(ctx)}`);
   const json = raw.replace(/^```(?:json)?\s*|\s*```$/g, "").trim();
   const parsed = JSON.parse(json.slice(json.indexOf("{"), json.lastIndexOf("}") + 1)) as Record<string, unknown>;
@@ -113,6 +119,10 @@ export async function extractSaleWithAi(ctx: AiContext, state: SaleState): Promi
     place_kind: kind === "barrio" ? "barrio" : kind === "city" ? "city" : null,
     customer_name: str(parsed.customer_name),
     address: str(parsed.address),
+    phone: str(parsed.phone),
+    last_kinds: Array.isArray(parsed.last_kinds)
+      ? (parsed.last_kinds as unknown[]).map(k => String(k).toLowerCase()).filter(k => (MESSAGE_KINDS as readonly string[]).includes(k))
+      : undefined,
   };
 }
 
@@ -183,4 +193,55 @@ export function applyAiExtraction(ctx: AiContext, state: SaleState, ext: AiSaleE
     if (words.length && hits / words.length >= 0.8) { state.street = ext.address.trim(); applied.push("address"); }
   }
   return applied;
+}
+
+
+/**
+ * «Primero analizar, después responder»: un dato que las reglas de código
+ * cambiaron en ESTE turno (ciudad, dirección o nombre) solo se acepta si el
+ * análisis de la IA lo respalda: el último mensaje trae ese tipo de dato, o la
+ * IA entiende ese mismo valor para la compra. Si no, se vuelve al valor anterior.
+ * Si el último mensaje cambia de ciudad y la IA entendió una ciudad real, gana la IA.
+ */
+export function vetoUnsupportedChanges(ctx: AiContext, stored: SaleState, next: SaleState, ext: AiSaleExtraction | null, said: string[]): string[] {
+  if (!ext || !Array.isArray(ext.last_kinds)) return [];
+  const kinds = new Set(ext.last_kinds);
+  const reverted: string[] = [];
+  const same = (a: unknown, b: unknown) => norm(a) !== "" && norm(a) === norm(b);
+  const sameCity = (a: unknown, b: unknown) => {
+    if (same(a, b)) return true;
+    const pa = findParaguayPlace(String(a ?? "")); const pb = findParaguayPlace(String(b ?? ""));
+    return Boolean(pa && pb && pa.city === pb.city);
+  };
+  // Ciudad
+  if (!same(next.city, stored.city) && next.city && !kinds.has("ciudad") && !sameCity(ext.city, next.city)) {
+    next.city = stored.city ?? null; next.department = stored.department ?? null;
+    next.cityVerified = stored.cityVerified; next.coverageStatus = stored.coverageStatus;
+    next.paymentMethod = stored.paymentMethod ?? null; next.pendingPlace = stored.pendingPlace ?? null;
+    reverted.push("ciudad");
+  }
+  // Cambio de ciudad en el último mensaje: gana lo que entendió la IA (si es real).
+  if (kinds.has("ciudad") && ext.city && ext.place_kind !== "barrio" && next.cityVerified && !sameCity(ext.city, next.city)) {
+    const coverage = parseCoverage(ctx.training);
+    const place = findParaguayPlace(ext.city);
+    const listed = cityIn(ext.city, coverage) ?? (place ? cityIn(place.city, coverage) : null);
+    const lastSaid = ` ${norm(said[said.length - 1] ?? "")} `;
+    if ((listed || place) && norm(ext.city).split(" ").filter(w => w.length >= 3).some(w => lastSaid.includes(` ${w} `))) {
+      next.city = listed?.city ?? place!.city; next.department = listed?.department ?? place!.department;
+      next.cityVerified = true; next.coverageStatus = listed?.active ? "covered" : "uncovered";
+      const policy = deliveryPolicyForCity(next.city, next.department, ctx.training);
+      next.paymentMethod = policy?.paymentMethod ?? (sellerAllowsNationwideAdvance(ctx.training) && !listed?.active ? "anticipado" : null);
+      reverted.push("ciudad→ia");
+    }
+  }
+  // Dirección
+  if (!same(next.street, stored.street) && next.street && next.street !== next.locationUrl &&
+      !kinds.has("direccion") && !kinds.has("ubicacion") && !same(ext.address, next.street)) {
+    next.street = stored.street; reverted.push("direccion");
+  }
+  // Nombre
+  if (!same(next.customerName, stored.customerName) && next.customerName && !kinds.has("nombre") && !same(ext.customer_name, next.customerName)) {
+    next.customerName = stored.customerName; reverted.push("nombre");
+  }
+  return reverted;
 }

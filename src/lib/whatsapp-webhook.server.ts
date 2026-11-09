@@ -13,7 +13,7 @@ import { buildRegisteredOrderConfirmation } from "@/lib/order-confirmation.serve
 import { resolveCartPricing, type MultiProductLine } from "@/lib/multi-product-cart";
 import { buildWorkspaceAiContext } from "@/lib/ai-context.server";
 import { generateAiReply, applyDynamicSellerTrainingReply, type AiContext } from "@/lib/ai.server";
-import { extractSaleWithAi, applyAiExtraction } from "@/lib/ai-extract.server";
+import { extractSaleWithAi, applyAiExtraction, vetoUnsupportedChanges } from "@/lib/ai-extract.server";
 import { advanceRuleSale, cityIn, sellerUsesFirstOffer, isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi, isValidRecipientCi, type SaleState } from "@/lib/rule-sales.server";
 import { classifyCustomerIntent, addVerifiedOrderContext, addPendingSaleContext } from "@/lib/hybrid-intent.server";
 import { coordinatesFromText, validCoords } from "@/lib/hybrid-intent.server";
@@ -1915,8 +1915,11 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     const previousSale = recoverSaleStateFromHistory(ctx, (saleRow?.state ?? {}) as SaleState, chatHistory);
     // La IA lee la compra EN PARALELO mientras se revisan comprobantes y estado.
     const extractState: SaleState = {...previousSale, productId: previousSale.productId ?? conversation.product_id};
+    // PRIMERO ANALIZAR: la IA lee cada mensaje (también antes de elegir producto)
+    // y dice qué datos trae; después se responde.
+    const storedSaleState = { ...((saleRow?.state ?? {}) as SaleState) };
     const extractionPromise = !conversation.sale_closed && !isLocation && body.trim() &&
-        !(media && (media.type === "image" || media.type === "document")) && extractState.productId
+        !(media && (media.type === "image" || media.type === "document"))
       ? extractSaleWithAi(ctx, extractState).catch(extractError => {
           console.warn("[BOT_SKY_AI_EXTRACT] sin extracción", extractError instanceof Error ? extractError.message.slice(0, 200) : extractError);
           return null;
@@ -2236,7 +2239,9 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       const customerTexts = chatHistory.filter(h => h.role === "user").slice(-16).map(h => h.content);
       aiApplied = applyAiExtraction(ctx, current, extraction, customerTexts);
       if (aiApplied.length) Object.assign(previousSale, current);
-      console.info("[BOT_SKY_AI_EXTRACT]", JSON.stringify({conversationId:conversation.id, extraction, applied:aiApplied}));
+      // Lo que las reglas «adivinaron» del historial sin respaldo del análisis se descarta.
+      const vetoed = vetoUnsupportedChanges(ctx, storedSaleState, previousSale, extraction, customerTexts);
+      console.info("[BOT_SKY_AI_EXTRACT]", JSON.stringify({conversationId:conversation.id, extraction, applied:aiApplied, vetoed}));
     }
     // Persistir recuperación antes de que la IA vuelva a intervenir.
     if (!conversation.sale_closed) {
@@ -2336,11 +2341,19 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         if (askedCityError) throw askedCityError;
       }
     }
+    const beforeRules: SaleState = { ...previousSale };
     const ruleStep = !bypassSale
       ? advanceRuleSale(ctx, saleInput, previousSale, media && (media.type === "image" || media.type === "document") ? mediaPath : null, gpsUrl)
       : null;
     // Inyectar a la IA solo datos de venta efectivamente reconocidos por código.
     const verifiedSaleState = ruleStep?.state ?? previousSale;
+    // Las reglas de este mensaje tampoco pueden cambiar ciudad, dirección o nombre
+    // si el análisis de la IA dice que el mensaje no trae ese dato.
+    if (extraction) {
+      const vetoedRules = vetoUnsupportedChanges(ctx, beforeRules, verifiedSaleState, extraction,
+        chatHistory.filter(h => h.role === "user").slice(-16).map(h => h.content));
+      if (vetoedRules.length) console.info("[BOT_SKY_ANALYSIS_VETO]", JSON.stringify({conversationId:conversation.id, vetoed:vetoedRules, kinds:extraction.last_kinds}));
+    }
     // Pestaña «Zonas de cobertura»: ciudad marcada «Sin envío» ⇒ no hay modalidad ni pedido.
     normalizeNoShipping(verifiedSaleState, ctx.training);
     // Fuente autoritativa: cobertura del vendedor, nunca una inferencia de IA.
