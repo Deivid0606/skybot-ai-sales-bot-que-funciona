@@ -251,6 +251,15 @@ export function sellerAllowsNationwideAdvance(training: AiContext["training"]): 
   });
 }
 
+/** Costo de envío de la ciudad según la cobertura (pestaña o entrenamiento). 0 = gratis o sin costo fijo. */
+export function shippingFeeForCity(city: string | null | undefined, department: string | null | undefined, training: AiContext["training"]): number {
+  const policy = deliveryPolicyForCity(city, department, training);
+  if (!policy || /gratis|a confirmar/i.test(policy.method)) return 0;
+  const m = policy.method.match(/(?:DELIVERY|COSTO DE ENV[IÍ]O|ENV[IÍ]O)[^0-9]{0,12}(?:GS\.?|₲)?\s*([0-9]{1,3}(?:[.,][0-9]{3})+|[0-9]{4,7})/i);
+  const fee = m ? Number(m[1].replace(/\D/g, "")) : 0;
+  return Number.isSafeInteger(fee) && fee >= 1000 ? fee : 0;
+}
+
 /**
  * Con la pestaña «Zonas de cobertura», una ciudad marcada «Sin envío» (o que no
  * figura) NO tiene envío: ni contraentrega ni encomienda.
