@@ -1,7 +1,7 @@
 /** BOT SKY: extractor/validador de estado. No redacta preguntas comerciales. */
 import type { AiContext } from "@/lib/ai.server";
 import { isValidDeliveryAddress, isValidCustomerName } from "@/lib/sale-reconciliation.server";
-import { PY_CITIES, findParaguayPlace, departmentIn } from "@/lib/py-cities";
+import { PY_CITIES, findParaguayPlace, departmentIn, isAmbiguousPlaceName, hasPlaceCue } from "@/lib/py-cities";
 import { COVERAGE_CATEGORY } from "@/lib/managed-coverage";
 import { resolveExplicitMultiProductCart, resolveNamedProductLine, resolveCartPricing, type MultiProductLine } from "@/lib/multi-product-cart";
 
@@ -432,6 +432,15 @@ export function applyDeclaredCity(state: SaleState, hit: {city:string; departmen
 }
 
 export function cityIn(text:string, coverage:Coverage[]): Coverage | null {
+  const hit = cityInList(text, coverage);
+  // «Jorge Andrés Maciel», «Escobar», «la de Santiago»: ciudades que también son
+  // apellidos o palabras comunes solo cuentan con una señal clara de lugar.
+  if (hit && isAmbiguousPlaceName(hit.city) && !hasPlaceCue(text) &&
+      ![hit.city, ...hit.aliases].some(a => norm(a) === norm(text))) return null;
+  return hit;
+}
+
+function cityInList(text:string, coverage:Coverage[]): Coverage | null {
   const normalized=norm(text);
   // Typing/voice aliases for "Ciudad del Este" ("ciudad de leste", "CDE").
   // Only resolve a location present in this SELLER's current coverage table.
@@ -781,7 +790,20 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   // p.ej. «2 para Capiatá». Separarlas ANTES de reconocer la variante evita
   // perder la elección y NO genera preguntas ni mensajes comerciales.
   const coverage=parseCoverage(ctx.training);
-  const match=cityIn(text,coverage);
+  let match=cityIn(text,coverage);
+  // Un NOMBRE de persona («Jorge Andrés Maciel») nunca cambia la ciudad, y una
+  // ciudad ya confirmada solo cambia si el cliente lo dice claramente.
+  {
+    const words = norm(text).split(" ");
+    const nameLike = /^[\p{L}]+(?:\s+[\p{L}]+){1,3}$/u.test(text.trim()) && COMMON_FIRST_NAMES.has(words[0]);
+    const changeCue = /\b(?:para|soy de|vivo en|estoy en|envia(?:lo|me)? a|enviar a|mandar a|mandalo a|en realidad|mejor (?:a|en|para)|cambi\w*|otra ciudad|recib\w* en)\b/.test(norm(text));
+    const sameAsText = match ? [match.city, ...match.aliases].some(a => norm(a) === norm(text)) : false;
+    if (match && (nameLike ||
+        (existing.awaiting === "name" && !changeCue && !sameAsText) ||
+        (existing.cityVerified && existing.city && norm(existing.city) !== norm(match.city) && !changeCue && !sameAsText))) {
+      match = null;
+    }
+  }
   // «David Alcaraz» cuando se esperaba la ciudad es un NOMBRE, no una localidad.
   const personName = !match && !gpsUrl && /^[\p{L}]+(?:\s+[\p{L}]+){1,3}$/u.test(text.trim()) &&
     COMMON_FIRST_NAMES.has(norm(text).split(" ")[0]) && isValidCustomerName(text.trim()) &&

@@ -2941,7 +2941,9 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
     };
     // Solo el bloque posterior al INSERT puede confirmar; el resto nunca.
     function claimsRegisteredOrder(text: string) {
-      return /(?:pedido\s+(?:confirmado|registrado)|pedido\s+n\.?\s*[º°o]|n[uú]mero\s+de\s+pedido|\bBS-[A-F0-9]{6,}|gracias\s+por\s+tu\s+compra|tu\s+pedido\s+(?:ya\s+)?(?:qued[oó]|est[aá])\s+(?:confirmado|registrado|listo))/i.test(text);
+      return /(?:pedido\s+(?:confirmado|registrado)|pedido\s+n\.?\s*[º°o]|n[uú]mero\s+de\s+pedido|\bBS-[A-F0-9]{6,}|gracias\s+por\s+tu\s+compra|tu\s+pedido\s+(?:ya\s+)?(?:qued[oó]|est[aá])\s+(?:confirmado|registrado|listo))/i.test(text) ||
+        // «Tu pedido del Guante … está registrado»: con palabras en el medio.
+        /(?:pedido|compra)[^.!?\n]{0,80}\b(?:est[aá]|qued[oó]|fue|ya\s+est[aá])\s+(?:confirmad|registrad|agendad)/i.test(text);
     }
     const finalPolicyGate = async (text: string): Promise<string> => {
       if (!text.trim() || !violatesVerifiedFacts(text)) return text;
@@ -3542,7 +3544,12 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
           }
           if (invented.length) {
             const cleaned = dropInventedSentences(outgoingText, allowed);
-            if (cleaned) outgoingText = cleaned;
+            // Nunca mandar un fragmento suelto (ej. solo «🔢 Cuenta: …»).
+            if (cleaned && cleaned.replace(/[^\p{L}]/gu, "").length >= 25) outgoingText = cleaned;
+            else {
+              const safe = await aiCompose(aiAnswerContext, `Respondé el último mensaje del cliente en 1 o 2 frases. Si hablás de precios usá SOLO estos: ${real}. No calcules totales nuevos.`);
+              if (safe && !inventedAmounts(safe, allowed).length) outgoingText = safe;
+            }
           }
         }
       }
