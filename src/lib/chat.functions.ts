@@ -478,8 +478,10 @@ export const aiReplyNow = createServerFn({ method: "POST" })
     if(policy?.paymentMethod)aiContext.systemInstruction+=
       `\nModalidad VERIFICADA para ${policy.city}: ${policy.method}; pago ${policy.paymentMethod}.`;
     {
-      const {noShippingInstruction}=await import("@/lib/rule-sales.server");
+      const {noShippingInstruction,shippingFeeForCity}=await import("@/lib/rule-sales.server");
       aiContext.systemInstruction+=noShippingInstruction(verifiedSale);
+      const fee=verifiedSale.cityVerified?shippingFeeForCity(verifiedSale.city,verifiedSale.department,ctx.training):0;
+      if(fee>0)aiContext.systemInstruction+=`\nCOSTO DE ENVÍO a ${verifiedSale.city}: Gs. ${fee.toLocaleString("es-PY")}. Al dar precio o total, decí SIEMPRE el costo de envío y el TOTAL CON ENVÍO (precio + envío).`;
     }
     try {result=await generateAiReply(aiContext);}
     catch(error){console.error("[BOT SKY Inbox] IA no disponible",error);return {skipped:true,reason:"IA no disponible; respuesta pendiente"};}
@@ -644,6 +646,7 @@ export const aiReplyNow = createServerFn({ method: "POST" })
         address:savedOrder.street,
         paymentStatus:savedOrder.payment_status,
         deliveryMethod:orderCoverage?.method,
+        shippingFee:(await import("@/lib/rule-sales.server")).shippingFeeForCity(result.order.city, result.order.departamento, ctx.training),
       });
     }
     const savedCheckoutState = step?.state ?? previous;

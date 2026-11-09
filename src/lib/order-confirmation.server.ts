@@ -23,6 +23,8 @@ type ConfirmationArgs = {
   address?: string | null;
   requestRecipientCi?: boolean;
   recipientCi?: string | null;
+  /** Costo de envío incluido en el total (pestaña Zonas de cobertura). */
+  shippingFee?: number;
   /** Excedente DOCUMENTADO, aún no disponible para gastar hasta verificar acreditación. */
   pendingCreditGs?: number;
 };
@@ -57,7 +59,9 @@ export function buildRegisteredOrderConfirmation(args: ConfirmationArgs): string
     ...(args.recipientCi && /^[0-9]{4,9}$/.test(args.recipientCi.replace(/[^0-9]/g,""))
       ? [`🪪 Cédula: ${args.recipientCi.replace(/[^0-9]/g,"")}`] : []),
     ...(multi ? itemLines : [`📦 Producto: ${product}`,`🔢 Cantidad: ${quantityDescription}`]),
-    `💰 Total: ${formatGs(created.total)}`,
+    ...(Number(args.shippingFee) > 0 && Number(created.total) > Number(args.shippingFee)
+      ? [`🛍️ Productos: ${formatGs(Number(created.total) - Number(args.shippingFee))}`, `🚚 Costo de envío: ${formatGs(Number(args.shippingFee))}`] : []),
+    `💰 Total${Number(args.shippingFee) > 0 ? " con envío" : ""}: ${formatGs(created.total)}`,
     `📍 Ciudad: ${city}`,
     ...(address ? [`🏠 Dirección: ${address}`] : []),
     `📱 Teléfono: ${created.phone}`,

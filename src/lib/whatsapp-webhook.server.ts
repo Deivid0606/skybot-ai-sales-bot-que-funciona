@@ -17,7 +17,7 @@ import { extractSaleWithAi, applyAiExtraction } from "@/lib/ai-extract.server";
 import { advanceRuleSale, cityIn, sellerUsesFirstOffer, isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi, isValidRecipientCi, type SaleState } from "@/lib/rule-sales.server";
 import { classifyCustomerIntent, addVerifiedOrderContext, addPendingSaleContext } from "@/lib/hybrid-intent.server";
 import { coordinatesFromText, validCoords } from "@/lib/hybrid-intent.server";
-import { normalizeNoShipping, noShippingInstruction, declaredCityFromTexts, applyDeclaredCity, parseCoverage, verifiedCoverage, sellerAllowsNationwideAdvance, deliveryPolicyForCity, hasTemplatePlaceholder, stripBankDetailsForCod, enforceVerifiedPaymentReply, isNonCityPhrase, sellerBankText, cleanReplyForPolicy } from "@/lib/rule-sales.server";
+import { shippingFeeForCity, normalizeNoShipping, noShippingInstruction, declaredCityFromTexts, applyDeclaredCity, parseCoverage, verifiedCoverage, sellerAllowsNationwideAdvance, deliveryPolicyForCity, hasTemplatePlaceholder, stripBankDetailsForCod, enforceVerifiedPaymentReply, isNonCityPhrase, sellerBankText, cleanReplyForPolicy } from "@/lib/rule-sales.server";
 import { resolveDepartamento } from "@/lib/orders";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { sendWhatsAppText as sendWhatsAppTextNow } from "@/lib/whatsapp.server";
@@ -2354,12 +2354,16 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       paymentMethod:verifiedSaleState.paymentMethod,receiptCount:verifiedSaleState.receiptDocuments?.length??0,
       receiptReview:verifiedSaleState.receiptReview??null}));
     // Ciudad sin envío (pestaña Zonas de cobertura): solo vale la instrucción de «sin envío».
+    const cityShippingFee = verifiedSaleState.cityVerified ? shippingFeeForCity(verifiedSaleState.city, verifiedSaleState.department, ctx.training) : 0;
+    const shippingFeeInstruction = cityShippingFee > 0
+      ? `\nCOSTO DE ENVÍO a ${verifiedSaleState.city}: ${formatGs(cityShippingFee)} (pestaña Zonas de cobertura). Cuando des precio o total, decí SIEMPRE el costo de envío y el TOTAL CON ENVÍO (precio del producto + ${formatGs(cityShippingFee)}). Formato: «[precio del catálogo] + delivery ${formatGs(cityShippingFee)} = total [suma exacta]», usando SOLO precios reales del catálogo.`
+      : "";
     const officialPolicyInstruction = verifiedSaleState.coverageStatus === "none" ? "" : officialDelivery?.paymentMethod
       ? `\nCOBERTURA DEL VENDEDOR COMPROBADA: ciudad ${officialDelivery.city}, departamento ${officialDelivery.department}; modalidad EXACTA ${officialDelivery.method}; pago permitido ${officialDelivery.paymentMethod}. Esta información es obligatoria, no la reemplaces con pago anticipado ni preguntes cómo quiere pagar cuando el vendedor exige una modalidad. No confundas envío con modalidad de pago.`
       : `\n${sellerAllowsNationwideAdvance(ctx.training) ? "ENCOMIENDA NACIONAL AUTORIZADA: fuera de contraentrega se puede ofrecer pago anticipado sujeto a verificar logística; NO negar todo envío por ausencia en la lista. " : ""}COBERTURA PENDIENTE: la CIUDAD DE ENTREGA es el primer dato logístico obligatorio; NO solicites nombre, dirección, GPS, método de pago ni transferencia antes de verificarla. La ciudad debe estar en la cobertura activa de este vendedor o resolverse según su política de encomienda. No deduzcas municipio desde GPS ni barrio. Si el cliente hace otra consulta, respondela primero sin repetir automáticamente la pregunta de ciudad y conservá la venta.`;
     const aiAnswerContext = {
       ...answerContext,
-      systemInstruction: answerContext.systemInstruction + officialPolicyInstruction + noShippingInstruction(verifiedSaleState) + `\nMODO IA + ENTRENAMIENTO BOT SKY, PRIORIDAD ALTA: Las respuestas comerciales las generás vos usando únicamente catálogo y entrenamiento de esta tienda. CONVERSÁ VOS con el comprador de forma natural: resolvé una sola pregunta por vez y no repitas catálogo/precios completos ni datos ya recibidos. Cantidad y variante se capturan mediante código y deben respetarse. No confirmes pedidos sin número real generado por Supabase. El cliente puede comprar varias veces. DATOS VERIFICADOS DEL CICLO ACTUAL (no mezclar con pedidos previos): ${JSON.stringify({productId:verifiedSaleState.productId,optionId:verifiedSaleState.optionId,quantity:verifiedSaleState.quantity,city:verifiedSaleState.city,department:verifiedSaleState.department,cityVerified:verifiedSaleState.cityVerified===true,coverageStatus:verifiedSaleState.coverageStatus,customerName:verifiedSaleState.customerName,hasAddress:Boolean(verifiedSaleState.street),gpsReceived:Boolean(verifiedSaleState.locationUrl),paymentMethod:verifiedSaleState.paymentMethod,awaiting:verifiedSaleState.awaiting})}. COBERTURA: si cityVerified no es true, NUNCA digas que tenemos cobertura; cuando nombres la ciudad escribila SIEMPRE exactamente como figura en el campo city de los datos verificados (bien escrita, con tildes y ñ), nunca copies cómo la escribió el cliente; consultá la ciudad si falta. GPS no prueba por sí mismo ninguna ciudad. Si recibiste GPS no vuelvas a solicitarlo. El GPS es dirección suficiente si la configuración de la ciudad admite dirección por ubicación. Respetá el orden de preguntas definido en el entrenamiento del vendedor; nunca repitas hechos conocidos. Si no tenés precio/variante sin ambigüedad pedí aclaración. Si está completo, el código registrará el pedido; no inventes un número de orden ni digas que está confirmado.
+      systemInstruction: answerContext.systemInstruction + officialPolicyInstruction + shippingFeeInstruction + noShippingInstruction(verifiedSaleState) + `\nMODO IA + ENTRENAMIENTO BOT SKY, PRIORIDAD ALTA: Las respuestas comerciales las generás vos usando únicamente catálogo y entrenamiento de esta tienda. CONVERSÁ VOS con el comprador de forma natural: resolvé una sola pregunta por vez y no repitas catálogo/precios completos ni datos ya recibidos. Cantidad y variante se capturan mediante código y deben respetarse. No confirmes pedidos sin número real generado por Supabase. El cliente puede comprar varias veces. DATOS VERIFICADOS DEL CICLO ACTUAL (no mezclar con pedidos previos): ${JSON.stringify({productId:verifiedSaleState.productId,optionId:verifiedSaleState.optionId,quantity:verifiedSaleState.quantity,city:verifiedSaleState.city,department:verifiedSaleState.department,cityVerified:verifiedSaleState.cityVerified===true,coverageStatus:verifiedSaleState.coverageStatus,customerName:verifiedSaleState.customerName,hasAddress:Boolean(verifiedSaleState.street),gpsReceived:Boolean(verifiedSaleState.locationUrl),paymentMethod:verifiedSaleState.paymentMethod,awaiting:verifiedSaleState.awaiting})}. COBERTURA: si cityVerified no es true, NUNCA digas que tenemos cobertura; cuando nombres la ciudad escribila SIEMPRE exactamente como figura en el campo city de los datos verificados (bien escrita, con tildes y ñ), nunca copies cómo la escribió el cliente; consultá la ciudad si falta. GPS no prueba por sí mismo ninguna ciudad. Si recibiste GPS no vuelvas a solicitarlo. El GPS es dirección suficiente si la configuración de la ciudad admite dirección por ubicación. Respetá el orden de preguntas definido en el entrenamiento del vendedor; nunca repitas hechos conocidos. Si no tenés precio/variante sin ambigüedad pedí aclaración. Si está completo, el código registrará el pedido; no inventes un número de orden ni digas que está confirmado.
 AVANCE DEL CIERRE, OBLIGATORIO EN EL MISMO TURNO: si ya identificaste producto, variante, cantidad y ciudad, NO termines una respuesta mostrando solo el detalle o preguntando «¿seguimos?», «¿está bien?» o «¿confirmás?»; pedí inmediatamente el SIGUIENTE dato faltante del estado técnico. Si awaiting="name", solicitá nombre Y apellido en ese mismo mensaje, aun cuando acabes de explicar el pago al recibir y el total. Cuando te respondan el nombre, si awaiting="address", pedí dirección o ubicación. Si awaiting="receipt" para encomienda, explicá las instrucciones de pago SOLO desde los datos bancarios reales de este vendedor y decí que envíe el comprobante; no pidas dirección ni GPS. ORDEN DE CADA RESPUESTA: PRIMERO respondé lo que el cliente preguntó o comentó en su último mensaje (dudas del producto, precio, objeciones como «es caro», envío, garantía, uso) usando el catálogo y el entrenamiento; RECIÉN DESPUÉS, en el mismo mensaje, pedí el dato pendiente sin repetir lo ya dicho. Nunca ignores una consulta para pedir datos. Nunca digas «pedido confirmado» antes de que el servidor lo registre.
 Respetá el estilo, productos y condiciones del entrenamiento particular del vendedor; el backend solamente asegura que la venta NO se estanque sin pedir el siguiente dato obligatorio.`
     };
@@ -2428,7 +2432,8 @@ Respetá el estilo, productos y condiciones del entrenamiento particular del ven
       const productForReceipt = ctx.products.find(p => p.id === verifiedSaleState.productId);
       const chosenOption = productForReceipt?.product_prices?.find(
         o => o.id === verifiedSaleState.optionId);
-      const expectedReceiptTotal = chosenOption ? Number(chosenOption.price) : null;
+      const expectedReceiptTotal = chosenOption
+        ? Number(chosenOption.price) + shippingFeeForCity(verifiedSaleState.city, verifiedSaleState.department, ctx.training) : null;
       const documentedReceiptTotal = (verifiedSaleState.receiptDocuments ?? [])
         .reduce((sum, document) => sum + document.amountGs, 0);
       const isEncomiendaReceipt = isEncomiendaAdvanceOrder(ctx.training,
@@ -3068,7 +3073,10 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
     const explicitPromos = Number(result.order?.promo_quantity ?? 1);
     const aiExpectedTotal = selectedCatalogOption && Number.isSafeInteger(explicitPromos) && explicitPromos>0
       ? Number(selectedCatalogOption.price)*explicitPromos : null;
-    const expectedTotal = stateExpectedTotal ?? aiExpectedTotal;
+    const baseExpectedTotal = stateExpectedTotal ?? aiExpectedTotal;
+    // El comprobante tiene que cubrir también el costo de envío fijo de la ciudad.
+    const expectedTotal = baseExpectedTotal === null ? null
+      : baseExpectedTotal + shippingFeeForCity(verifiedSaleState.city, verifiedSaleState.department, ctx.training);
     const receivedTotal = (paymentSaleState.receiptDocuments ?? []).reduce((n,r)=>n+r.amountGs,0);
     const financiallyReady = !isAdvance || Boolean(paymentSaleState.receiptPath &&
       !paymentSaleState.receiptReview && expectedTotal !== null && Number.isFinite(expectedTotal) &&
@@ -3224,6 +3232,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         requestRecipientCi: shouldAskPostSaleCi(ctx.training,completedOrder,savedConfirmationOrder.observations),
         order: { ...completedOrder, payment_method: savedConfirmationOrder.payment_method },
         productName: createdProduct?.name ?? "Producto del pedido",
+        shippingFee: shippingFeeForCity(completedOrder.city, completedOrder.departamento, ctx.training),
         items: (await supabaseAdmin.from("order_items").select("title,sku,quantity,price").eq("order_id",createdOrder.id)).data ?? [],
         productOption: confirmedOption?.label ?? completedOrder.price_option_label,
         packageCopy: createdProduct?.sales_copy ?? createdProduct?.description ?? null,
@@ -4093,6 +4102,11 @@ export async function createOrderFromAi(args: {
     throw error;
   }
 
+  // Costo de envío de la ciudad (pestaña Zonas de cobertura o entrenamiento):
+  // se SUMA al total del pedido; los artículos siguen valiendo solo el producto.
+  const productsTotal = total;
+  const shippingFee = shippingFeeForCity(String(args.order.city ?? ""), String(args.order.departamento ?? ""), args.training ?? []);
+  total = productsTotal + shippingFee;
   // Verificación definitiva contra el total calculado para el INSERT (no
   // contra un estimado de la IA). El excedente solo existe si ambos importes
   // son coherentes y el comprobante es documentalmente compatible.
@@ -4118,6 +4132,7 @@ export async function createOrderFromAi(args: {
     cleanOrderText(args.order.observations) || null;
 
   const observations = [
+    shippingFee > 0 ? `ENVÍO: ${shippingFee.toLocaleString("es-PY")} Gs. (productos ${productsTotal.toLocaleString("es-PY")} Gs. + envío = total ${total.toLocaleString("es-PY")} Gs.)` : null,
     // Guardar la CI de encomienda en la columna existente; no imprimirla en logs.
     orderIsEncomienda && isValidRecipientCi(args.order.recipient_ci)
       ? `C.I. destinatario encomienda: ${String(args.order.recipient_ci).replace(/\D/g,"")}` : null,
@@ -4192,7 +4207,7 @@ export async function createOrderFromAi(args: {
           sku:productSku,quantity:line.quantity,price:line.price,
         }))
       : [{product_id:product.id,title:product.name,sku:productSku,quantity,price:unitPrice}];
-  if(Math.abs(itemRows.reduce((sum,line)=>sum+line.quantity*line.price,0)-total)>0.01)
+  if(Math.abs(itemRows.reduce((sum,line)=>sum+line.quantity*line.price,0)-productsTotal)>0.01)
     throw new Error("Los artículos no coinciden con el total del pedido; no se registra la venta");
   const { data: registration, error } = await (supabaseAdmin as any)
     .rpc("bot_sky_register_order_with_items", { p_order: orderPayload,p_items:itemRows });
@@ -5172,6 +5187,7 @@ async function runEmergencySale(args:{
       const confirmation=buildRegisteredOrderConfirmation({
         created:saved,requestRecipientCi:false,order,
         productName:product?.name??"Producto del pedido",
+        shippingFee:shippingFeeForCity(order.city, order.departamento, ctx.training),
         items:(await supabaseAdmin.from("order_items").select("title,sku,quantity,price").eq("order_id",created.id)).data??[],
         productOption:option.label,packageCopy:product?.sales_copy??product?.description??null,
         savedQuantity:Number(saved.quantity),recipientCi:null,address:saved.street,
