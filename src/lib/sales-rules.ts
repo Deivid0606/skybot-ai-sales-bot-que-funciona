@@ -9,7 +9,8 @@
 export const SALES_RULES_CATEGORY = "reglas_tienda";
 
 export type SalesRules = {
-  invoice: { enabled: boolean };
+  /** pending: la tienda todavía no lo sabe; el bot dice que lo consulta. */
+  invoice: { enabled: boolean; pending?: boolean };
   card: { enabled: boolean; link: string };
   qr: { enabled: boolean };
   encomienda_ci: { enabled: boolean };
@@ -50,12 +51,17 @@ const num = (v: unknown, min: number, max: number) => {
   return v === null || v === "" || !Number.isFinite(n) ? null : Math.min(max, Math.max(min, Math.round(n)));
 };
 
+const cleanMessage = (v: string) => v
+  .replace(/https?:\/\/\S+/g, "").replace(/\[[^\]]*\]/g, "")
+  .replace(/^[^\n]*cat[aá]logo[^\n]*:\s*$/gim, "")
+  .replace(/\n{3,}/g, "\n\n").trim();
+
 /** Normaliza lo guardado (o lo que propuso la IA) al formato completo de las fichas. */
 export function normalizeSalesRules(raw: unknown): SalesRules {
   const d = defaultSalesRules();
   const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, any>;
   return {
-    invoice: { enabled: bool(r.invoice?.enabled, d.invoice.enabled) },
+    invoice: { enabled: bool(r.invoice?.enabled, d.invoice.enabled) && r.invoice?.pending !== true, pending: r.invoice?.pending === true },
     card: { enabled: bool(r.card?.enabled, d.card.enabled), link: text(r.card?.link, 500) },
     qr: { enabled: bool(r.qr?.enabled, d.qr.enabled) },
     encomienda_ci: { enabled: bool(r.encomienda_ci?.enabled, d.encomienda_ci.enabled) },
@@ -65,7 +71,8 @@ export function normalizeSalesRules(raw: unknown): SalesRules {
     warranty: { enabled: bool(r.warranty?.enabled, false), days: num(r.warranty?.days, 1, 3650), note: text(r.warranty?.note) },
     discounts: { enabled: bool(r.discounts?.enabled, false), max_percent: num(r.discounts?.max_percent, 1, 90) },
     wholesale: { enabled: bool(r.wholesale?.enabled, false), min_qty: num(r.wholesale?.min_qty, 2, 100000), note: text(r.wholesale?.note) },
-    not_sold_message: text(r.not_sold_message, 500) || d.not_sold_message,
+    // Sin links ni marcadores: el catálogo correcto de ESTA tienda lo agrega el sistema.
+    not_sold_message: cleanMessage(text(r.not_sold_message, 500)) || d.not_sold_message,
     human_handoff: { enabled: bool(r.human_handoff?.enabled, false), phone: text(r.human_handoff?.phone, 40), when: text(r.human_handoff?.when, 200) },
   };
 }
@@ -84,8 +91,10 @@ export function salesRulesTrainingEntry(rules: SalesRules, catalogUrl: string | 
   const r = rules;
   const lines: string[] = [
     "REGLAS DE LA TIENDA (fichas de la pestaña Entrenamiento; tienen prioridad sobre cualquier otro texto del entrenamiento):",
-    r.invoice.enabled
-      ? "🧾 FACTURA LEGAL: SÍ emitimos factura legal. Si el cliente la quiere, pedir RUC y razón social y anotarlos en el pedido. No inventar timbrado ni decir que ya se emitió. La factura no cambia el total ni frena el pedido."
+    r.invoice.pending
+      ? "🧾 FACTURA LEGAL: todavía no está confirmado. Si la piden, decir con amabilidad que se consulta con el encargado y seguir con la venta. No decir que sí ni que no."
+      : r.invoice.enabled
+      ? "🧾 FACTURA LEGAL: SÍ emitimos factura legal. Si el cliente la quiere, pedir el RUC (y la razón social si la da) y anotarlo en el pedido. No inventar timbrado ni decir que ya se emitió. La factura no cambia el total ni frena el pedido."
       : "🧾 FACTURA LEGAL: NO emitimos factura legal. Si la piden, decirlo con amabilidad y seguir con la venta. Nunca prometer factura.",
     r.card.enabled
       ? `💳 TARJETA DE CRÉDITO: SÍ, con link de pago.${r.card.link ? ` Link oficial: ${r.card.link}` : " Si no hay un link para el pedido, ofrecer que el responsable lo gestiona; nunca inventar un link."} Nunca pedir foto de la tarjeta, números, CVV ni códigos. Un link enviado no es un pago confirmado. No prometer cuotas.`

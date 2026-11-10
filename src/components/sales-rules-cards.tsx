@@ -15,10 +15,10 @@ import {
 import { defaultSalesRules, normalizeSalesRules, type SalesRules } from "@/lib/sales-rules";
 
 /** Una ficha: título, interruptor opcional y datos que aparecen al prenderla. */
-function Ficha({ icon, title, hint, checked, onChange, children }: {
-  icon: string; title: string; hint: string; checked?: boolean; onChange?: (v: boolean) => void; children?: ReactNode;
+function Ficha({ icon, title, hint, checked, onChange, children, alwaysShow }: {
+  icon: string; title: string; hint: string; checked?: boolean; onChange?: (v: boolean) => void; children?: ReactNode; alwaysShow?: boolean;
 }) {
-  const showChildren = children && (onChange ? checked : true);
+  const showChildren = children && (onChange && !alwaysShow ? checked : true);
   return (
     <div className="rounded-lg border p-3">
       <div className="flex items-start justify-between gap-3">
@@ -130,7 +130,7 @@ export function SalesRulesCards({ workspaceId, activeTrainingCount }: { workspac
               {importTraining.isPending ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Wand2 className="mr-1 h-4 w-4" />}
               Completar con mi entrenamiento
             </Button>
-            <Button size="sm" disabled={save.isPending} onClick={() => save.mutate()}>
+            <Button size="sm" disabled={save.isPending || importTraining.isPending} onClick={() => save.mutate()}>
               {save.isPending && <Loader2 className="mr-1 h-4 w-4 animate-spin" />} Guardar fichas
             </Button>
           </div>
@@ -144,8 +144,16 @@ export function SalesRulesCards({ workspaceId, activeTrainingCount }: { workspac
         )}
 
         <div className="grid gap-3 lg:grid-cols-2">
-          <Ficha icon="🧾" title="Factura legal" hint="Si es SÍ, el bot pide RUC y razón social solo a quien la quiere."
-            checked={rules.invoice.enabled} onChange={v => set("invoice", { enabled: v })} />
+          <Ficha icon="🧾" alwaysShow title="Factura legal" hint="Si es SÍ, el bot pide el RUC solo a quien quiere factura."
+            checked={rules.invoice.enabled} onChange={v => set("invoice", { enabled: v, pending: false })}>
+            {!rules.invoice.enabled && (
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <input type="checkbox" checked={Boolean(rules.invoice.pending)}
+                  onChange={e => set("invoice", { enabled: false, pending: e.target.checked })} />
+                Todavía no lo sé: el bot dice que lo consulta con el encargado
+              </label>
+            )}
+          </Ficha>
           <Ficha icon="💳" title="Tarjeta de crédito" hint="Con link de pago. Nunca pide datos de la tarjeta."
             checked={rules.card.enabled} onChange={v => set("card", { ...rules.card, enabled: v })}>
             <Input placeholder="Link de pago (opcional)" value={rules.card.link} maxLength={500}
