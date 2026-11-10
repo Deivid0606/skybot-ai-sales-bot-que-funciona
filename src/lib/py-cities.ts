@@ -135,6 +135,13 @@ const POPULAR: Record<string, string[]> = {
   "General José Eduvigis Díaz": ["general diaz"],
   "Santa Rosa del Aguaray": ["aguaray"],
   "San Juan Bautista": ["san juan misiones"],
+  // Barrios muy conocidos que los clientes dan como si fueran la ciudad («para Reducto»).
+  // Solo barrios con un nombre que no se repite como ciudad ni como apellido común.
+  "San Lorenzo": ["reducto", "barcequillo"],
+  "Asunción": ["villa morra", "recoleta", "sajonia", "mburucuya", "carmelitas", "tembetary",
+    "zeballos cue", "tablada nueva", "chacarita", "loma pyta", "ycua sati", "pinoza", "banado sur", "manora",
+    "ytay", "villa aurelia"],
+  "Luque": ["mora cue", "itapuami"],
 };
 
 /**
