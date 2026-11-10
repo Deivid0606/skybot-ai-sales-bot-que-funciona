@@ -3178,6 +3178,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         training: ctx.training,
         // Excedente del comprobante documentado; NO equivale a crédito acreditado.
         documentedReceiptTotal: isAdvance && financiallyReady ? receivedTotal : null,
+        deliveryNotes: saveStep?.state.deliveryNotes ?? paymentSaleState.deliveryNotes ?? null,
       });
       if (createdOrder.already_registered) {
         // Another webhook already inserted and confirmed the same checkout.
@@ -3809,6 +3810,8 @@ export async function createOrderFromAi(args: {
   multiProductLines?: MultiProductLine[];
   /** Importe documental de comprobantes únicos y compatibles (no pago acreditado). */
   documentedReceiptTotal?: number | null;
+  /** Día u horario de entrega que dijo el cliente («a partir del miércoles, de 7 a 13 hs»). */
+  deliveryNotes?: string | null;
   /** Entrenamiento ACTIVO del workspace para validar requisitos por modalidad. */
   training?: AiContext["training"];
   products: {
@@ -4163,6 +4166,7 @@ export async function createOrderFromAi(args: {
     orderIsEncomienda && isValidRecipientCi(args.order.recipient_ci)
       ? `C.I. destinatario encomienda: ${String(args.order.recipient_ci).replace(/\D/g,"")}` : null,
     baseObservations,
+    cleanOrderText(args.deliveryNotes) ? `ENTREGA: ${cleanOrderText(args.deliveryNotes)}` : null,
     // Conservar la diferencia en el pedido para revisión del vendedor.
     // Esto NO crea un saldo bancariamente acreditado ni autoriza su consumo.
     Number.isSafeInteger(args.documentedReceiptTotal) &&
@@ -5201,7 +5205,7 @@ async function runEmergencySale(args:{
         workspaceId:args.workspaceId,ownerId:args.ownerId,conversationId:args.conversationId,
         contactId:args.contactId!,phone:args.phone,adId:args.adId,productId:st.productId!,
         sourceMessageId:args.wamid,order,cartLines:st.cartLines,multiProductLines:st.multiProductLines,
-        products:ctx.products,training:ctx.training,
+        products:ctx.products,training:ctx.training,deliveryNotes:st.deliveryNotes??null,
       });
       if(created.already_registered)return true;
       const {data:saved}=await supabaseAdmin.from("orders").select("id,order_number,customer_name,phone,total,quantity,street,payment_method,payment_status,observations")

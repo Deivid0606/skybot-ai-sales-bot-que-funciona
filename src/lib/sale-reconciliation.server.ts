@@ -30,6 +30,7 @@ export function isValidCustomerName(value: unknown): boolean {
   if (/\b(?:es|son|un|una|uno|unos|poco|muy|mas|menos|alto|alta|caro|cara|barato|barata|solo|sola|nomas|o|y|que|eso|esto|esta|este|todo|nada|algo|ya|tambien|pero|porque|bueno|buena|mejor|peor|igual|tal|vez|creo|puede|seria|hay|tiene|tengo|quiero|necesito|me|te|se|lo|le|les|mi|tu|su|ahi|asi)\b/.test(n)) return false;
   // Referencias de dirección («Caballero casi Rca. de Colombia») no son nombres.
   if (/\b(?:casi|esq|esquina|entre|frente|detras|cerca|km|ruta|rca|republica|mcal|mariscal|tte|gral|cnel|nro|numero|casa|edificio|piso|depto|manzana|lote|villa|sobre)\b/.test(n)) return false;
+  if (/\b(?:av|avd|avda|avenida|pje|pasaje)\b/.test(n)) return false;
   if (/\b(?:barrio|ciudad|calle|avenida|avda|ruta|esquina|zona|centro|obrero|direccion|ubicacion|departamento|pedido|entrega|lunes|martes|miercoles|jueves|viernes|sabado|domingo|mañana|manana|hoy|precio|quiero|gracias|okey|perfecto|confirmo|asuncion|central|paraguay)\b/.test(n)) return false;
   if (/\b(?:pago|pagos|pagar|pago al recibir|recibir|recibo|transferencia|transferir|efectivo|contado|contra|contraentrega|deposito|giro|comprobante|tarjeta|cuota|cuotas|envio|delivery|direccion|dirección|avenida|avda|calle|si|no|ok|dale|listo|gracias|hola|buenas|precio|costo|cuanto|foto|disponible|unidad|und|quiero|tenes|tienen)\b/.test(n)) return false;
   if (/\d/.test(name)) return false;
@@ -55,10 +56,12 @@ export function isValidDeliveryAddress(value: unknown): boolean {
   // Calle, avenida, número o referencia inequívoca. Un barrio aislado no basta.
   if (/\b(?:\d{1,2}\s*[:.]\s*\d{2}|\d{1,2}\s*(?:hs|horas?)|de\s+\d{1,2}\s+a\s+\d{1,2}|almorzar|almuerzo|salgo|horario|hasta las)\b/.test(n) && !/\b(?:calle|avenida|ruta|casa|aeropuerto|trabajo|oficina|frente|esquina)\b/.test(n)) return false;
   // Frases vagas sin calle ni referencia ("voy a estar en mi casa", "en casa", "mi domicilio").
-  const hasConcreteRef = /(?:\b(?:calle|avenida|avda|av\.|ruta|nro|numero|manzana|lote|pasaje|esquina|casi|frente|al lado|detras|entre|barrio|maps)\b|\d{1,5})/.test(n);
+  const hasConcreteRef = /(?:\b(?:calle|avenida|avda|avd|av|av\.|ruta|nro|numero|manzana|lote|pasaje|esquina|casi|frente|al lado|detras|entre|barrio|maps)\b|\d{1,5})/.test(n);
   if (!hasConcreteRef && /\b(?:mi casa|en casa|mi domicilio|mi hogar|donde vivo|voy a estar|estoy en|ahi en|aca en|lo de siempre)\b/.test(n)) return false;
+  // «Asunción en mi trabajo a partir del miércoles»: un día u horario sin calle ni número no es dirección.
+  if (!hasConcreteRef && /\b(?:a partir|lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/.test(n)) return false;
   if (/\b(?:aeropuerto|trabajo|oficina|empresa|shopping|colegio|escuela|universidad|hospital|sanatorio|terminal|supermercado|estacion|iglesia|plaza)\b/.test(n)) return true;
-  return /(?:\b(?:calle|avenida|avda|av\.|ruta|numero|nro|casa|manzana|lote|pasaje|esquina|casi|frente|al lado|detras|detrás|entre)\b|\d{1,5}|\b(?:maps|ubicacion exacta)\b)/i.test(n);
+  return /(?:\b(?:calle|avenida|avda|avd|av|av\.|ruta|numero|nro|casa|manzana|lote|pasaje|esquina|casi|frente|al lado|detras|detrás|entre)\b|\d{1,5}|\b(?:maps|ubicacion exacta)\b)/i.test(n);
 }
 
 const validName = (raw: string): string | null => {
@@ -104,7 +107,7 @@ export function recoverSaleStateFromHistory(ctx: AiContext, previous: SaleState,
     const raw = String(item.content ?? "").trim();
     const n = normal(raw);
     if (!n || /^\[(?:image|imagen|audio|document|documento|video)/i.test(raw)) continue;
-    const ci=extractRecipientCiFromCustomerText(raw, /(?:c[eé]dula|c\.?i\.?|documento de identidad)/i.test(lastQuestion));
+    const ci=extractRecipientCiFromCustomerText(raw, /\b(?:cedula|c\.?\s?i)\b|documento de identidad/.test(lastQuestion));
     if(ci)state.recipientCi=ci;
     const hits = coverage.filter(c => [c.city, ...c.aliases].some(alias => exactToken(raw, alias)));
     const uniqueHits = hits.filter((c,i)=>hits.findIndex(x=>normal(x.city)===normal(c.city) && normal(x.department)===normal(c.department))===i);
