@@ -1,5 +1,6 @@
 import { coverageTrainingEntry, bankTrainingEntry } from "@/lib/managed-coverage";
 import { assistantNameFromTraining, businessProfileInstruction, profileFromRow, suggestedProfile } from "@/lib/business-profile";
+import { catalogUrlFor, normalizeSalesRules, salesRulesTrainingEntry } from "@/lib/sales-rules";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { AiContext } from "@/lib/ai.server";
 import type { SaleState } from "@/lib/rule-sales.server";
@@ -46,7 +47,7 @@ export async function buildWorkspaceAiContext(
   customerPhone: string | null = null,
   conversationId: string | null = null,
 ): Promise<AiContext> {
-  const [aiSettingsResult, settingsResult, productsResult, trainingResult, saleResult, coverageResult, bankResult, profileResult, workspaceResult] = await Promise.all([
+  const [aiSettingsResult, settingsResult, productsResult, trainingResult, saleResult, coverageResult, bankResult, profileResult, workspaceResult, rulesResult] = await Promise.all([
     supabase.from("ai_settings").select("system_instruction, gemini_api_key, gemini_api_key_2, gemini_api_key_3, openai_api_key, provider_order, provider_models, model, autodetect_model").eq("workspace_id", workspaceId).maybeSingle(),
     supabase.from("user_settings").select("business_name, currency").eq("workspace_id", workspaceId).maybeSingle(),
     supabase.from("products").select(`
@@ -61,6 +62,8 @@ export async function buildWorkspaceAiContext(
     // Pestaña «Mi negocio» (identidad y horarios).
     (supabase as any).from("workspace_business_profile").select("*").eq("workspace_id", workspaceId).maybeSingle(),
     supabase.from("workspaces").select("name").eq("id", workspaceId).maybeSingle(),
+    // Fichas de la pestaña «Entrenamiento» (reglas de la tienda).
+    (supabase as any).from("workspace_sales_rules").select("rules").eq("workspace_id", workspaceId).maybeSingle(),
   ]);
   for (const result of [aiSettingsResult, settingsResult, productsResult, trainingResult, saleResult]) {
     if (result.error) throw result.error;
@@ -81,7 +84,11 @@ export async function buildWorkspaceAiContext(
   const profileRow = (profileResult as any)?.error ? null : (profileResult as any)?.data ?? null;
   const businessProfile = profileFromRow(profileRow, fallbackProfile);
   const profileInstruction = businessProfileInstruction(businessProfile, Boolean(profileRow));
-  const training = [...(coverageEntry ? [coverageEntry] : []), ...(bankEntry ? [bankEntry] : []), ...(trainingResult.data ?? [])] as AiContext["training"];
+  // Fichas guardadas: van primero y tienen prioridad sobre el texto libre.
+  const rulesRow = (rulesResult as any)?.error ? null : (rulesResult as any)?.data ?? null;
+  const catalogBase = process.env.PUBLIC_SITE_URL?.trim() || "https://skybot-ai-sales-130022.vercel.app";
+  const rulesEntry = rulesRow ? salesRulesTrainingEntry(normalizeSalesRules(rulesRow.rules), catalogUrlFor(workspaceId, catalogBase)) : null;
+  const training = [...(rulesEntry ? [rulesEntry] : []), ...(coverageEntry ? [coverageEntry] : []), ...(bankEntry ? [bankEntry] : []), ...(trainingResult.data ?? [])] as AiContext["training"];
   const products = (productsResult.data ?? []).map(product => {
     const productPrices = [...(product.product_prices ?? [])].map(option => ({
       id: option.id,

@@ -29,6 +29,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useAuth } from "@/lib/auth";
+import { SalesRulesCards } from "@/components/sales-rules-cards";
 
 export const Route = createFileRoute("/_authenticated/entrenamiento")({
   head: () => ({
@@ -448,7 +449,7 @@ function TrainingPage() {
     <PageShell>
       <PageHeader
         title="Entrenamiento de IA"
-        description="Todo lo que agregues aquí se convierte en el conocimiento de tu vendedor virtual."
+        description="Prendé las reglas de tu tienda con las fichas. Los productos se cargan en la pestaña Productos."
         actions={
           <div className="flex flex-wrap items-center justify-end gap-2">
             <input
@@ -481,6 +482,13 @@ function TrainingPage() {
           </div>
         }
       />
+
+      <SalesRulesCards workspaceId={workspaceId} activeTrainingCount={(entries ?? []).filter(e => e.is_active).length} />
+
+      <div>
+        <p className="font-semibold">Notas extra (opcional)</p>
+        <p className="text-sm text-muted-foreground">Solo para algo muy particular de tu tienda. Si una nota contradice una ficha, gana la ficha.</p>
+      </div>
 
       {selectionMode && !!entries?.length && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3">

@@ -3,6 +3,7 @@ import type { AiContext } from "@/lib/ai.server";
 import { isValidDeliveryAddress, isValidCustomerName } from "@/lib/sale-reconciliation.server";
 import { PY_CITIES, findParaguayPlace, departmentIn, isAmbiguousPlaceName, hasPlaceCue } from "@/lib/py-cities";
 import { COVERAGE_CATEGORY } from "@/lib/managed-coverage";
+import { SALES_RULES_CATEGORY } from "@/lib/sales-rules";
 import { resolveExplicitMultiProductCart, resolveNamedProductLine, resolveCartPricing, type MultiProductLine } from "@/lib/multi-product-cart";
 
 type Product = AiContext["products"][number];
@@ -204,6 +205,9 @@ export function enforceVerifiedPaymentReply(args: {
 
 /** Requisito configurado por entrenamiento para encomienda; se recoge DESPUÉS del comprobante y ANTES del INSERT. */
 export function sellerRequiresEncomiendaCi(training: AiContext["training"]): boolean {
+  // Con las fichas guardadas, manda la ficha «Cédula en encomienda» (no el texto libre).
+  const rules = training.find(entry => entry.category === SALES_RULES_CATEGORY);
+  if (rules) return /CÉDULA EN ENCOMIENDA: en encomienda es requisito obligatorio/.test(String(rules.content ?? ""));
   return training.some(entry => /encomienda/i.test(entry.content) &&
     /(?:n[uú]mero de c[eé]dula del destinatario|c[eé]dula de identidad del destinatario|c[eé]dula del destinatario)/i.test(entry.content) &&
     /(?:obligatori[oa]|requisito|exigir|solicitar|pedir|datos obligatorios)/i.test(entry.content));
