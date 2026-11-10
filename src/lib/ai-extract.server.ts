@@ -18,6 +18,8 @@ export type AiSaleExtraction = {
   /** Qué contiene el ÚLTIMO mensaje del cliente (análisis previo a responder). */
   last_kinds?: string[];
   phone?: string | null;
+  /** Día u horario en que el cliente puede recibir («a partir del miércoles de 7 a 13 hs»). */
+  delivery_note?: string | null;
 };
 
 export const MESSAGE_KINDS = ["ciudad", "nombre", "direccion", "telefono", "ubicacion", "cantidad", "producto", "pregunta", "pago", "saludo", "otro"] as const;
@@ -42,14 +44,15 @@ ${options || "-"}
 DATOS YA GUARDADOS: ${known}
 
 Devolvé SOLO un objeto JSON con estas claves:
-{"option_id":null,"city":null,"place_kind":null,"customer_name":null,"address":null,"phone":null,"last_kinds":[]}
+{"option_id":null,"city":null,"place_kind":null,"customer_name":null,"address":null,"phone":null,"delivery_note":null,"last_kinds":[]}
 - option_id: el id de la opción que el cliente ELIGIÓ o aceptó («3 seria», «la de 99 mil», «el de 2», «sí» a una opción que el bot le propuso, «quiero 1» cuando existe una opción de 1 unidad). null si no eligió ninguna o si pidió una cantidad que no existe.
 - city: la ciudad donde el cliente quiere RECIBIR el pedido, escrita completa y correcta (ej. «CDE» → «Ciudad del Este», «Mariano» → «Mariano Roque Alonso»). null si no la dijo. Una pregunta como «¿envían a Luque?» también cuenta como destino. La ciudad de la tienda o una ciudad que solo nombró el bot NO cuentan.
 - place_kind: "barrio" si lo que dio es un barrio, zona, compañía o asentamiento y no una ciudad; "city" si es una ciudad; null si no dio lugar.
 - customer_name: nombre y apellido de quien recibe, copiado TAL COMO lo escribió el cliente. null si no lo dio. Nunca uses el nombre del perfil, del titular bancario ni del comprobante.
 - address: la dirección de entrega con referencia, copiada como la escribió el cliente (calle, barrio con referencia, punto conocido). null si no la dio. «No estoy», horarios, «te paso después» o una ciudad sola NO son dirección.
+- delivery_note: día u horario en que el cliente puede recibir el pedido, juntando lo que dijo en varios mensajes («a partir del miércoles, de 7 a 13 hs»). null si no dijo.
 - phone: otro número de teléfono que el cliente dio para la entrega, tal cual; null si no dio.
-- last_kinds: ANALIZÁ SOLO EL ÚLTIMO MENSAJE DEL CLIENTE y listá qué datos contiene, usando estas etiquetas: "ciudad" (nombra la ciudad donde quiere recibir), "nombre" (su nombre y apellido), "direccion" (calle, barrio con referencia, punto de referencia de entrega), "telefono", "ubicacion" (GPS o enlace de mapa), "cantidad", "producto" (elige o nombra producto/opción), "pregunta", "pago" (forma de pago), "saludo", "otro". Un nombre de persona NUNCA es "ciudad" aunque un apellido coincida con una ciudad («Jorge Maciel» es nombre). Una frase como «ya hice mi pedido número 38» es "otro", no "direccion". Ejemplo: «Juan Pérez, Luque, calle Brasil casi Ruta 2» → ["nombre","ciudad","direccion"].
+- last_kinds: ANALIZÁ SOLO EL ÚLTIMO MENSAJE DEL CLIENTE y listá qué datos contiene, usando estas etiquetas: "ciudad" (nombra la ciudad donde quiere recibir), "nombre" (su nombre y apellido), "direccion" (calle, barrio con referencia, punto de referencia de entrega), "telefono", "ubicacion" (GPS o enlace de mapa), "cantidad", "producto" (elige o nombra producto/opción), "pregunta", "pago" (forma de pago), "saludo", "otro". Un nombre de persona NUNCA es "ciudad" aunque un apellido coincida con una ciudad («Jorge Maciel» es nombre). Una frase como «ya hice mi pedido número 38» es "otro", no "direccion". Una calle o avenida («Avd Fernando de la Mora», «2998» como número de casa) es "direccion", nunca "nombre". Ejemplo: «Juan Pérez, Luque, calle Brasil casi Ruta 2» → ["nombre","ciudad","direccion"].
 Usá solo mensajes del CLIENTE como fuente. Si un dato cambió, devolvé el último que dio.`;
 }
 
@@ -120,6 +123,7 @@ export async function extractSaleWithAi(ctx: AiContext, state: SaleState): Promi
     customer_name: str(parsed.customer_name),
     address: str(parsed.address),
     phone: str(parsed.phone),
+    delivery_note: str(parsed.delivery_note),
     last_kinds: Array.isArray(parsed.last_kinds)
       ? (parsed.last_kinds as unknown[]).map(k => String(k).toLowerCase()).filter(k => (MESSAGE_KINDS as readonly string[]).includes(k))
       : undefined,
@@ -242,6 +246,29 @@ export function vetoUnsupportedChanges(ctx: AiContext, stored: SaleState, next: 
   // Nombre
   if (!same(next.customerName, stored.customerName) && next.customerName && !kinds.has("nombre") && !same(ext.customer_name, next.customerName)) {
     next.customerName = stored.customerName; reverted.push("nombre");
+  }
+  // El último mensaje trae el nombre y la IA lo entendió: gana sobre lo que adivinó una regla
+  // («Avd fernandonde la Mora» guardado como nombre y después «Richard Mendez»).
+  const lastSaid = ` ${norm(said[said.length - 1] ?? "")} `;
+  const recentSaid = ` ${norm(said.slice(-6).join(" "))} `;
+  const words = (v: string) => norm(v).split(" ").filter(w => w.length >= 2);
+  if (kinds.has("nombre") && ext.customer_name && isValidCustomerName(ext.customer_name) && !same(ext.customer_name, next.customerName) &&
+      words(ext.customer_name).every(w => lastSaid.includes(` ${w} `)) && !cityIn(ext.customer_name, parseCoverage(ctx.training))) {
+    next.customerName = ext.customer_name.replace(/\s+/g, " ").trim(); reverted.push("nombre→ia");
+  }
+  // Dirección dicha en uno o varios mensajes seguidos («Avd fernandonde la Mora» + «2998»).
+  if (kinds.has("direccion") && ext.address && isValidDeliveryAddress(ext.address) && !same(ext.address, next.street)) {
+    const w = norm(ext.address).split(" ").filter(x => x.length >= 3 || /^\d+$/.test(x));
+    if (w.length && w.filter(x => recentSaid.includes(` ${x} `)).length / w.length >= 0.75) {
+      next.street = ext.address.trim(); reverted.push("direccion→ia");
+    }
+  }
+  // Horario o día de entrega: se anota para el pedido; nunca es la dirección.
+  if (ext.delivery_note && !(next.deliveryNotes ?? "").includes(ext.delivery_note)) {
+    const w = norm(ext.delivery_note).split(" ").filter(x => x.length >= 3);
+    if (w.length && w.filter(x => recentSaid.includes(` ${x} `) || ` ${norm(said.join(" "))} `.includes(` ${x} `)).length / w.length >= 0.6) {
+      next.deliveryNotes = ext.delivery_note.slice(0, 200);
+    }
   }
   return reverted;
 }
