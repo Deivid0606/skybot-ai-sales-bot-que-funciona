@@ -2955,7 +2955,9 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         hasTemplatePlaceholder(text) || prematureBank || claimsRegisteredOrder(text) ||
         // Sin ciudad confirmada no se pide comprobante, transferencia ni cuenta.
         (!verifiedSaleState.cityVerified && !conversation.sale_closed && /(?:comprobante|transfer|total a transferir|datos de la cuenta|\bbanco\b|\balias\b)/i.test(text)) ||
-        (WAITING_REPLY_RE.test(text) && !/[?¿]/.test(text));
+        (WAITING_REPLY_RE.test(text) && !/[?¿]/.test(text)) ||
+        // «No realizamos envíos a Reducto»: solo la pestaña de cobertura puede negar un envío.
+        (deniesShipping(text) && verifiedSaleState.coverageStatus !== "none");
     };
     // Solo el bloque posterior al INSERT puede confirmar; el resto nunca.
     function claimsRegisteredOrder(text: string) {
@@ -2978,6 +2980,8 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         verifiedSaleState.awaiting === "variant" ? "El cliente todavía no eligió una opción válida: mostrá las opciones reales con sus precios y preguntá cuál prefiere; no pidas pago." : "",
         "Nunca uses marcadores como [PRECIO] o [TOTAL]: usá los precios reales del catálogo.",
         WAITING_REPLY_RE.test(text) ? "No digas «un momento», «voy a verificar» ni «te aviso»: el sistema ya revisó todo en este turno; respondé con el resultado y el siguiente paso." : "",
+        deniesShipping(text) && verifiedSaleState.coverageStatus !== "none"
+          ? `No está verificado que no haya envío${verifiedSaleState.city ? ` a ${verifiedSaleState.city}` : ""}: NO digas que no enviamos. Si el cliente nombró un barrio, zona o compañía, preguntale con amabilidad a qué ciudad pertenece; si no dio lugar, preguntá en qué ciudad quiere recibir el pedido.` : "",
         claimsRegisteredOrder(text) ? "El pedido TODAVÍA NO está registrado en el sistema: no digas que está confirmado, no muestres número de pedido ni agradezcas la compra; pedí el dato que falte." : "",
       ].filter(Boolean).join(" ");
       const again = await aiCompose({...aiAnswerContext, promptMode: "revision"}, `${facts} Tu borrador anterior violaba estas reglas: «${text.slice(0, 1200)}». Reescribí la respuesta correcta.`);
@@ -2993,7 +2997,8 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         if (policy?.paymentMethod === "contraentrega") out = cleanReplyForPolicy(stripBankDetailsForCod(out), "contraentrega");
         else if (verifiedSaleState.awaiting === "variant") out = stripBankDetailsForCod(out);
         out = stripWaitingSentences(out);
-        return out.split("\n").filter(line => !hasTemplatePlaceholder(line) && !claimsRegisteredOrder(line)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+        return out.split("\n").filter(line => !hasTemplatePlaceholder(line) && !claimsRegisteredOrder(line) &&
+          !(deniesShipping(line) && verifiedSaleState.coverageStatus !== "none")).join("\n").replace(/\n{3,}/g, "\n\n").trim();
       };
       let cleaned = scrub(again ?? text);
       // Nunca quedar en silencio por la depuración: pedir a la IA una respuesta
@@ -4920,6 +4925,10 @@ function oneDigitApart(a: string, b: string): boolean {
 }
 
 /** Respuestas de espera que el bot nunca cumple (no hay trabajo posterior). */
+/** La respuesta niega el envío («no realizamos envíos a Reducto», «no llegamos a…»). */
+function deniesShipping(text: string): boolean {
+  return /\bno\s+(?:realizamos|hacemos|tenemos|contamos\s+con|ofrecemos|disponemos\s+de)\s+(?:env[ií]os?|cobertura|delivery|entregas?)\b|\bno\s+(?:enviamos|llegamos|despachamos|entregamos|cubrimos)\b|\b(?:fuera\s+de|sin)\s+(?:nuestra\s+)?cobertura\b|\bno\s+(?:est[aá]|se\s+encuentra)\s+(?:dentro\s+de\s+)?(?:nuestra|la)\s+(?:zona|cobertura)/i.test(text);
+}
 const WAITING_REPLY_RE = /\b(?:un momento|un momentito|aguard[aá]|esper[aá] (?:un|unos)|voy a verificar|vamos a verificar|proceder[eé]? a verificar|verificaremos|te aviso|le avisaremos|estoy guardando|estoy verificando|estoy revisando|necesito verificar|debo verificar|tengo que verificar|antes de continuar con tu pedido|proceder[eé]? a validar|voy a validar|vamos a validar|estoy validando|validar[eé] la informaci[oó]n|en breve te confirmo|te confirmo en breve|ahora (?:reviso|verifico|revisar[eé]|verificar[eé]))\b/i;
 
 function stripWaitingSentences(text: string): string {
