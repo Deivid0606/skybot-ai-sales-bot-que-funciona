@@ -1111,12 +1111,24 @@ export async function handleWhatsAppWebhook(payload: WebhookPayload) {
         continue;
       }
 
-      // El id del evento es la cuenta de WhatsApp Business: se guarda si falta
-      // (lo pide Meta para atribuir las ventas a los anuncios).
+      // El id del evento ES la cuenta de WhatsApp Business del número (fuente oficial).
+      // Si falta o quedó otro guardado, se corrige: Meta exige que coincida con la del
+      // clic del anuncio para atribuir las ventas («no coincide con el identificador de clic»).
       const wabaFromEvent = String((entry as any)?.id ?? "").trim();
-      if (!(conn as any).waba_id && /^\d{6,25}$/.test(wabaFromEvent)) {
-        await supabaseAdmin.from("whatsapp_connections").update({ waba_id: wabaFromEvent } as any)
-          .eq("phone_number_id", phoneNumberId).then(() => undefined, () => undefined);
+      if (/^\d{6,25}$/.test(wabaFromEvent) && String((conn as any).waba_id ?? "").trim() !== wabaFromEvent) {
+        const previousWaba = String((conn as any).waba_id ?? "").trim() || null;
+        const { error: wabaError } = await supabaseAdmin.from("whatsapp_connections").update({ waba_id: wabaFromEvent } as any)
+          .eq("phone_number_id", phoneNumberId);
+        if (!wabaError) {
+          (conn as any).waba_id = wabaFromEvent;
+          console.info("[BOT_SKY_WABA_SYNC]", JSON.stringify({ workspaceId: conn.workspace_id, previousWaba, wabaFromEvent }));
+          try {
+            const { resyncAfterWabaChange } = await import("@/lib/meta-capi.server");
+            await resyncAfterWabaChange(conn.workspace_id);
+          } catch (syncError) {
+            console.warn("[BOT_SKY_WABA_SYNC] sin reenvío", syncError instanceof Error ? syncError.message : syncError);
+          }
+        }
       }
 
       // Aislar cada mensaje: un error de un contacto no debe impedir el

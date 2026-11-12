@@ -153,5 +153,50 @@ export async function sendTestPurchase(workspaceId: string, testCode: string): P
   if (!realClid && /ctwa_clid/i.test(detail)) {
     return { ok: true, message: note + " ✅ Conexión correcta: Meta aceptó tu token, tu conjunto de datos y tu cuenta de WhatsApp. Todavía no hay clientes que hayan llegado desde un anuncio; cuando entre el primero, vas a poder repetir la prueba y ver la compra en «Probar eventos». Las ventas reales ya se informan solas." };
   }
+  if (/2804117|no coincide con el identificador de clic/i.test(res.body)) {
+    return { ok: false, message: "El ID de tu cuenta de WhatsApp Business guardado en el bot no es el de tu número. El bot lo corrige solo con el próximo mensaje que reciba tu WhatsApp (y reenvía las ventas que fallaron). Probá de nuevo en unos minutos." };
+  }
   return { ok: false, message: `Meta respondió ${res.status}: ${detail}` };
+}
+
+
+/** Meta acepta eventos de hasta 7 días: se reenvían las ventas que fallaron. */
+export async function retryFailedPurchases(workspaceId: string): Promise<{ retried: number; sent: number }> {
+  const since = new Date(Date.now() - 6.5 * 24 * 3600 * 1000).toISOString();
+  const { data: failed } = await (supabaseAdmin as any).from("meta_capi_events")
+    .select("order_id, conversation_id").eq("workspace_id", workspaceId).eq("status", "error").gte("created_at", since).limit(200);
+  const { cfg, datasetId, token, wabaId } = await loadSetup(workspaceId);
+  if (!failed?.length || !cfg || cfg.enabled === false || !datasetId || !token || !wabaId) return { retried: 0, sent: 0 };
+  let sent = 0;
+  for (const row of failed as Array<{ order_id: string; conversation_id: string | null }>) {
+    const { data: order } = await (supabaseAdmin as any).from("orders").select("id, total, phone, created_at, conversation_id, status")
+      .eq("id", row.order_id).maybeSingle();
+    if (!order || order.status === "cancelado") continue;
+    const convId = row.conversation_id ?? order.conversation_id;
+    const { data: conv } = convId
+      ? await (supabaseAdmin as any).from("conversations").select("ctwa_clid").eq("id", convId).maybeSingle()
+      : { data: null };
+    const ctwaClid = String(conv?.ctwa_clid ?? "").trim();
+    if (!ctwaClid) continue;
+    const event = buildPurchaseEvent({ orderId: order.id, total: Number(order.total) || 0, currency: "PYG", ctwaClid, wabaId,
+      phone: order.phone ?? null, eventTime: Math.floor(new Date(order.created_at).getTime() / 1000) });
+    const res = await postEvents(datasetId, token, [event], cfg.test_event_code?.trim() || null);
+    await record({ order_id: order.id, workspace_id: workspaceId, conversation_id: convId, status: res.ok ? "enviado" : "error",
+      http_status: res.status, detail: res.ok ? null : res.body, value: Number(order.total) || 0 });
+    if (res.ok) sent++;
+  }
+  return { retried: failed.length, sent };
+}
+
+/**
+ * La cuenta de WhatsApp Business guardada no era la del número: se pide a Meta el
+ * conjunto de datos de la cuenta correcta y se reenvían las ventas que fallaron.
+ */
+export async function resyncAfterWabaChange(workspaceId: string): Promise<void> {
+  const { data: cfg } = await (supabaseAdmin as any).from("workspace_meta_capi").select("dataset_id, enabled").eq("workspace_id", workspaceId).maybeSingle();
+  if (!cfg || cfg.enabled === false) return;
+  const linked = await ensureWabaDataset(workspaceId);
+  if (!linked.ok) { console.warn("[BOT_SKY_META_CAPI_RESYNC]", JSON.stringify({ workspaceId, message: linked.message.slice(0, 200) })); return; }
+  const result = await retryFailedPurchases(workspaceId);
+  console.info("[BOT_SKY_META_CAPI_RESYNC]", JSON.stringify({ workspaceId, datasetId: linked.datasetId, ...result }));
 }
