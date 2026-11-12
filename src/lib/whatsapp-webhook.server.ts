@@ -1095,7 +1095,7 @@ export async function handleWhatsAppWebhook(payload: WebhookPayload) {
 
       const { data: conn, error: connectionError } = await supabaseAdmin
         .from("whatsapp_connections")
-        .select("workspace_id, user_id, phone_number_id, access_token")
+        .select("workspace_id, user_id, phone_number_id, access_token, waba_id")
         .eq("phone_number_id", phoneNumberId)
         .maybeSingle();
       if (connectionError) {
@@ -1109,6 +1109,14 @@ export async function handleWhatsAppWebhook(payload: WebhookPayload) {
           phoneNumberId, messages: messages.length,
         });
         continue;
+      }
+
+      // El id del evento es la cuenta de WhatsApp Business: se guarda si falta
+      // (lo pide Meta para atribuir las ventas a los anuncios).
+      const wabaFromEvent = String((entry as any)?.id ?? "").trim();
+      if (!(conn as any).waba_id && /^\d{6,25}$/.test(wabaFromEvent)) {
+        await supabaseAdmin.from("whatsapp_connections").update({ waba_id: wabaFromEvent } as any)
+          .eq("phone_number_id", phoneNumberId).then(() => undefined, () => undefined);
       }
 
       // Aislar cada mensaje: un error de un contacto no debe impedir el
