@@ -87,16 +87,27 @@ export async function reportWhatsAppPurchase(args: {
   }
 }
 
-/** Botón «Enviar evento de prueba»: manda una compra de prueba con el código de prueba de Meta. */
+/**
+ * Botón «Enviar evento de prueba». Meta solo acepta códigos de clic (ctwa_clid)
+ * reales, así que se usa el del último cliente que llegó desde un anuncio. Si
+ * todavía no hay ninguno, un rechazo SOLO por el ctwa_clid confirma que el
+ * token, el conjunto de datos y la cuenta de WhatsApp están bien.
+ */
 export async function sendTestPurchase(workspaceId: string, testCode: string): Promise<{ ok: boolean; message: string }> {
   const { cfg, datasetId, token, wabaId } = await loadSetup(workspaceId);
   if (!cfg || !datasetId) return { ok: false, message: "Guardá primero el ID del conjunto de datos." };
   if (!token) return { ok: false, message: "Falta el token de acceso (y tampoco hay token de WhatsApp conectado)." };
-  if (!wabaId) return { ok: false, message: "Tu conexión de WhatsApp no tiene el ID de la cuenta de WhatsApp Business." };
-  const event = buildPurchaseEvent({ orderId: `prueba-${Date.now()}`, total: 1000, currency: "PYG", ctwaClid: "PRUEBA_BOT_SKY", wabaId, phone: null });
+  if (!wabaId) return { ok: false, message: "Tu conexión de WhatsApp todavía no tiene el ID de la cuenta de WhatsApp Business. Se guarda solo con el próximo mensaje que reciba el bot; probá de nuevo después." };
+  const { data: lastAdChat } = await (supabaseAdmin as any).from("conversations").select("ctwa_clid")
+    .eq("workspace_id", workspaceId).not("ctwa_clid", "is", null).order("updated_at", { ascending: false }).limit(1).maybeSingle();
+  const realClid = String(lastAdChat?.ctwa_clid ?? "").trim();
+  const event = buildPurchaseEvent({ orderId: `prueba-${Date.now()}`, total: 1000, currency: "PYG", ctwaClid: realClid || "PRUEBA_BOT_SKY", wabaId, phone: null });
   const res = await postEvents(datasetId, token, [event], testCode);
-  if (res.ok) return { ok: true, message: "Meta recibió el evento de prueba. Miralo en Administrador de eventos → Probar eventos." };
+  if (res.ok) return { ok: true, message: "✅ Meta recibió la compra de prueba. Mirala en Administrador de eventos → Probar eventos." };
   let detail = res.body;
-  try { detail = JSON.parse(res.body)?.error?.error_user_msg || JSON.parse(res.body)?.error?.message || res.body; } catch { /* texto */ }
+  try { const err = JSON.parse(res.body)?.error; detail = err?.error_user_msg || err?.message || res.body; } catch { /* texto */ }
+  if (!realClid && /ctwa_clid/i.test(detail)) {
+    return { ok: true, message: "✅ Conexión correcta: Meta aceptó tu token, tu conjunto de datos y tu cuenta de WhatsApp. Todavía no hay clientes que hayan llegado desde un anuncio; cuando entre el primero, vas a poder repetir la prueba y ver la compra en «Probar eventos». Las ventas reales ya se informan solas." };
+  }
   return { ok: false, message: `Meta respondió ${res.status}: ${detail}` };
 }
