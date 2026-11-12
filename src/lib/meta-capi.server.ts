@@ -33,6 +33,35 @@ export function buildPurchaseEvent(args: {
   };
 }
 
+/** Datos del cliente cifrados (SHA-256) como pide Meta para unir la venta con la persona. */
+function hashedCustomer(phone: string | null, customerName?: string | null) {
+  const digits = String(phone ?? "").replace(/\D/g, "");
+  const parts = String(customerName ?? "").toLowerCase().normalize("NFC").replace(/[^\p{L}\s'-]/gu, " ").trim().split(/\s+/).filter(Boolean);
+  return {
+    ...(digits.length >= 8 ? { ph: [sha256(digits)], external_id: [sha256(digits)] } : {}),
+    ...(parts.length >= 1 && parts[0] !== "cliente" ? { fn: [sha256(parts[0])] } : {}),
+    ...(parts.length >= 2 ? { ln: [sha256(parts[parts.length - 1])] } : {}),
+    country: [sha256("py")],
+  };
+}
+
+/**
+ * Venta SIN código de clic (el cliente escribió directo o el anuncio no lo mandó):
+ * igual se informa como compra por chat, con el teléfono y el nombre cifrados.
+ */
+export function buildChatPurchaseEvent(args: {
+  orderId: string; total: number; currency: string; phone: string | null; customerName?: string | null; eventTime?: number;
+}) {
+  return {
+    event_name: "Purchase",
+    event_time: args.eventTime ?? Math.floor(Date.now() / 1000),
+    event_id: args.orderId,
+    action_source: "chat",
+    user_data: hashedCustomer(args.phone, args.customerName),
+    custom_data: { currency: args.currency, value: Math.round(Number(args.total) || 0) },
+  };
+}
+
 async function postEvents(datasetId: string, token: string, events: unknown[], testCode: string | null) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 6000);
@@ -60,7 +89,9 @@ async function loadSetup(workspaceId: string) {
 }
 
 /** Meta: «el conjunto de datos no tiene ninguna cuenta de WhatsApp Business vinculada». */
-const NOT_LINKED = /2804132|ninguna cuenta de WhatsApp Business vinculada|no WhatsApp Business account/i;
+const NOT_LINKED = /2804132|ninguna cuenta de WhatsApp Business vinculada|no WhatsApp Business account|Unsupported post request|does not exist, cannot be loaded/i;
+/** Meta: la cuenta de WhatsApp no coincide con la del clic. */
+const CLID_MISMATCH = /2804117|no coincide con el identificador de clic/i;
 
 /**
  * Pide a Meta el conjunto de datos PROPIO de la cuenta de WhatsApp Business
@@ -95,29 +126,63 @@ async function record(row: { order_id: string; workspace_id: string; conversatio
   await (supabaseAdmin as any).from("meta_capi_events").upsert(row, { onConflict: "order_id" });
 }
 
-/** Se llama una sola vez por pedido nuevo. Nunca lanza errores. */
+type OrderForMeta = { id: string; total: number | string | null; phone: string | null; customer_name: string | null; created_at: string; conversation_id: string | null; status?: string | null };
+
+/**
+ * Informa UNA venta a Meta. Con código de clic → compra atribuida al anuncio
+ * (business_messaging). Sin código → compra por chat con datos cifrados.
+ * Corrige solo el conjunto de datos si no es el de la cuenta de WhatsApp.
+ */
+async function deliverOrder(workspaceId: string, order: OrderForMeta, setup?: Awaited<ReturnType<typeof loadSetup>>): Promise<string | null> {
+  const st = setup ?? await loadSetup(workspaceId);
+  const { cfg, token, wabaId } = st;
+  let datasetId = st.datasetId;
+  if (!cfg || cfg.enabled === false || !datasetId) return null; // la tienda no lo activó
+  const base = { order_id: order.id, workspace_id: workspaceId, conversation_id: order.conversation_id, value: Number(order.total) || 0 };
+  if (!token) { await record({ ...base, status: "error", detail: "Falta el token de acceso." }); return "error"; }
+  const { data: conv } = order.conversation_id
+    ? await (supabaseAdmin as any).from("conversations").select("ctwa_clid").eq("id", order.conversation_id).maybeSingle()
+    : { data: null };
+  const ctwaClid = String(conv?.ctwa_clid ?? "").trim();
+  const eventTime = Math.min(Math.floor(Date.now() / 1000), Math.floor(new Date(order.created_at).getTime() / 1000) || Math.floor(Date.now() / 1000));
+  const chatEvent = buildChatPurchaseEvent({ orderId: order.id, total: Number(order.total) || 0, currency: "PYG", phone: order.phone, customerName: order.customer_name, eventTime });
+  let event: unknown = ctwaClid && wabaId
+    ? { ...buildPurchaseEvent({ orderId: order.id, total: Number(order.total) || 0, currency: "PYG", ctwaClid, wabaId, phone: order.phone, eventTime }),
+        user_data: { ...hashedCustomer(order.phone, order.customer_name), whatsapp_business_account_id: wabaId, ctwa_clid: ctwaClid } }
+    : chatEvent;
+  let withClick = event !== chatEvent;
+  const testCode = cfg.test_event_code?.trim() || null;
+  let res = await postEvents(datasetId, token, [event], testCode);
+  if (!res.ok && NOT_LINKED.test(res.body)) {
+    const linked = await ensureWabaDataset(workspaceId);
+    if (linked.ok && linked.datasetId) { datasetId = linked.datasetId; res = await postEvents(datasetId, token, [event], testCode); }
+  }
+  // El clic no coincide con la cuenta: igual se informa la venta (sin atribución directa al anuncio).
+  if (!res.ok && withClick && CLID_MISMATCH.test(res.body)) {
+    event = chatEvent; withClick = false;
+    res = await postEvents(datasetId, token, [event], testCode);
+  }
+  const status = res.ok ? (withClick ? "enviado" : "enviado_sin_anuncio") : "error";
+  await record({ ...base, status, http_status: res.status, detail: res.ok ? null : res.body });
+  if (!res.ok) console.warn("[BOT_SKY_META_CAPI]", JSON.stringify({ workspaceId, orderId: order.id, status: res.status }));
+  return status;
+}
+
+/** Se llama una sola vez por pedido nuevo. Nunca lanza errores ni frena el pedido. */
 export async function reportWhatsAppPurchase(args: {
   workspaceId: string; orderId: string; conversationId: string | null; total: number; phone: string | null; currency?: string | null;
 }): Promise<void> {
   try {
-    const { cfg, datasetId, token, wabaId } = await loadSetup(args.workspaceId);
-    if (!cfg || cfg.enabled === false || !datasetId) return; // el vendedor no lo activó
-    const { data: conv } = args.conversationId
-      ? await (supabaseAdmin as any).from("conversations").select("ctwa_clid").eq("id", args.conversationId).maybeSingle()
-      : { data: null };
-    const ctwaClid = String(conv?.ctwa_clid ?? "").trim();
-    const base = { order_id: args.orderId, workspace_id: args.workspaceId, conversation_id: args.conversationId, value: Number(args.total) || 0 };
-    if (!ctwaClid) { await record({ ...base, status: "sin_anuncio", detail: "El cliente no llegó desde un anuncio de WhatsApp." }); return; }
-    if (!token || !wabaId) { await record({ ...base, status: "error", detail: !wabaId ? "Falta el ID de la cuenta de WhatsApp Business." : "Falta el token de acceso." }); return; }
-    const event = buildPurchaseEvent({ orderId: args.orderId, total: args.total, currency: args.currency || "PYG", ctwaClid, wabaId, phone: args.phone });
-    let res = await postEvents(datasetId, token, [event], cfg.test_event_code?.trim() || null);
-    // Conjunto de datos sin la cuenta de WhatsApp: se pide el correcto a Meta y se reintenta una vez.
-    if (!res.ok && NOT_LINKED.test(res.body)) {
-      const linked = await ensureWabaDataset(args.workspaceId);
-      if (linked.ok && linked.datasetId) res = await postEvents(linked.datasetId, token, [event], cfg.test_event_code?.trim() || null);
-    }
-    await record({ ...base, status: res.ok ? "enviado" : "error", http_status: res.status, detail: res.ok ? null : res.body });
-    if (!res.ok) console.warn("[BOT_SKY_META_CAPI]", JSON.stringify({ workspaceId: args.workspaceId, orderId: args.orderId, status: res.status }));
+    const setup = await loadSetup(args.workspaceId);
+    if (!setup.cfg || setup.cfg.enabled === false || !setup.datasetId) return;
+    const { data: order } = await (supabaseAdmin as any).from("orders")
+      .select("id, total, phone, customer_name, created_at, conversation_id, status").eq("id", args.orderId).maybeSingle();
+    await deliverOrder(args.workspaceId, order ?? {
+      id: args.orderId, total: args.total, phone: args.phone, customer_name: null,
+      created_at: new Date().toISOString(), conversation_id: args.conversationId,
+    }, setup);
+    // De paso, reintentar pocas ventas que hayan quedado sin enviar.
+    await retryFailedPurchases(args.workspaceId, 2);
   } catch (error) {
     console.warn("[BOT_SKY_META_CAPI]", error instanceof Error ? error.message : String(error));
     try { await record({ order_id: args.orderId, workspace_id: args.workspaceId, conversation_id: args.conversationId, status: "error", detail: error instanceof Error ? error.message.slice(0, 300) : "Error" }); } catch { /* sin efecto en la venta */ }
@@ -160,32 +225,24 @@ export async function sendTestPurchase(workspaceId: string, testCode: string): P
 }
 
 
-/** Meta acepta eventos de hasta 7 días: se reenvían las ventas que fallaron. */
-export async function retryFailedPurchases(workspaceId: string): Promise<{ retried: number; sent: number }> {
+/** Meta acepta eventos de hasta 7 días: se reenvían las ventas que quedaron con error o sin enviar. */
+export async function retryFailedPurchases(workspaceId: string, limit = 200): Promise<{ retried: number; sent: number }> {
   const since = new Date(Date.now() - 6.5 * 24 * 3600 * 1000).toISOString();
-  const { data: failed } = await (supabaseAdmin as any).from("meta_capi_events")
-    .select("order_id, conversation_id").eq("workspace_id", workspaceId).eq("status", "error").gte("created_at", since).limit(200);
-  const { cfg, datasetId, token, wabaId } = await loadSetup(workspaceId);
-  if (!failed?.length || !cfg || cfg.enabled === false || !datasetId || !token || !wabaId) return { retried: 0, sent: 0 };
+  const { data: pending } = await (supabaseAdmin as any).from("meta_capi_events")
+    .select("order_id").eq("workspace_id", workspaceId).in("status", ["error", "sin_anuncio"]).gte("created_at", since)
+    .order("created_at", { ascending: true }).limit(limit);
+  if (!pending?.length) return { retried: 0, sent: 0 };
+  const setup = await loadSetup(workspaceId);
+  if (!setup.cfg || setup.cfg.enabled === false || !setup.datasetId) return { retried: 0, sent: 0 };
   let sent = 0;
-  for (const row of failed as Array<{ order_id: string; conversation_id: string | null }>) {
-    const { data: order } = await (supabaseAdmin as any).from("orders").select("id, total, phone, created_at, conversation_id, status")
-      .eq("id", row.order_id).maybeSingle();
+  for (const row of pending as Array<{ order_id: string }>) {
+    const { data: order } = await (supabaseAdmin as any).from("orders")
+      .select("id, total, phone, customer_name, created_at, conversation_id, status").eq("id", row.order_id).maybeSingle();
     if (!order || order.status === "cancelado") continue;
-    const convId = row.conversation_id ?? order.conversation_id;
-    const { data: conv } = convId
-      ? await (supabaseAdmin as any).from("conversations").select("ctwa_clid").eq("id", convId).maybeSingle()
-      : { data: null };
-    const ctwaClid = String(conv?.ctwa_clid ?? "").trim();
-    if (!ctwaClid) continue;
-    const event = buildPurchaseEvent({ orderId: order.id, total: Number(order.total) || 0, currency: "PYG", ctwaClid, wabaId,
-      phone: order.phone ?? null, eventTime: Math.floor(new Date(order.created_at).getTime() / 1000) });
-    const res = await postEvents(datasetId, token, [event], cfg.test_event_code?.trim() || null);
-    await record({ order_id: order.id, workspace_id: workspaceId, conversation_id: convId, status: res.ok ? "enviado" : "error",
-      http_status: res.status, detail: res.ok ? null : res.body, value: Number(order.total) || 0 });
-    if (res.ok) sent++;
+    const status = await deliverOrder(workspaceId, order, setup);
+    if (status?.startsWith("enviado")) sent++;
   }
-  return { retried: failed.length, sent };
+  return { retried: pending.length, sent };
 }
 
 /**
