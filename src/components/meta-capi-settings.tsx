@@ -11,7 +11,7 @@ import { Switch } from "@/components/ui/switch";
 
 type Form = { dataset_id: string; access_token: string; enabled: boolean };
 const STATUS_LABEL: Record<string, string> = {
-  enviado: "Enviada a Meta", sin_anuncio: "No vino de un anuncio", error: "Error",
+  enviado: "Enviada a Meta (con clic del anuncio)", enviado_sin_anuncio: "Enviada a Meta (sin clic)", sin_anuncio: "Pendiente de reenviar", error: "Error",
 };
 
 /** Pestaña «Ventas a Meta»: cada venta registrada se informa a Meta (API de Conversiones). */
@@ -64,6 +64,22 @@ export function MetaCapiSettings({ workspaceId }: { workspaceId: string | null }
       setForm(f => f ? { ...f, dataset_id: r.datasetId! } : f);
       queryClient.invalidateQueries({ queryKey: ["meta-capi"] });
       toast.success(r.message ?? "Listo");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const retry = useMutation({
+    mutationFn: async () => {
+      const { data: session } = await supabase.auth.getSession();
+      const res = await fetch("/api/meta-capi/retry", { method: "POST", headers: { Authorization: `Bearer ${session.session?.access_token ?? ""}` } });
+      const result = await res.json().catch(() => null) as { ok?: boolean; retried?: number; sent?: number; error?: string } | null;
+      if (!res.ok || !result?.ok) throw new Error(result?.error ?? "No se pudo reenviar");
+      return result;
+    },
+    onSuccess: (r) => {
+      queryClient.invalidateQueries({ queryKey: ["meta-capi"] });
+      queryClient.invalidateQueries({ queryKey: ["orders"] });
+      toast.success(r.retried ? `Reenviadas ${r.sent} de ${r.retried} ventas pendientes.` : "No hay ventas pendientes de enviar.");
     },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -139,12 +155,17 @@ export function MetaCapiSettings({ workspaceId }: { workspaceId: string | null }
 
         {!!data?.events.length && (
           <div className="space-y-2">
-            <p className="text-sm font-semibold">Últimas ventas informadas</p>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-sm font-semibold">Últimas ventas informadas</p>
+              <Button size="sm" variant="outline" disabled={retry.isPending} onClick={() => retry.mutate()}>
+                {retry.isPending && <Loader2 className="mr-1 h-4 w-4 animate-spin" />} Reenviar ventas pendientes
+              </Button>
+            </div>
             <div className="divide-y rounded-lg border text-sm">
               {data.events.map(e => (
                 <div key={e.order_id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
                   <span className="flex items-center gap-2">
-                    {e.status === "enviado" ? <CheckCircle2 className="h-4 w-4 text-emerald-600" /> : <XCircle className={`h-4 w-4 ${e.status === "error" ? "text-destructive" : "text-muted-foreground"}`} />}
+                    {String(e.status).startsWith("enviado") ? <CheckCircle2 className="h-4 w-4 text-emerald-600" /> : <XCircle className={`h-4 w-4 ${e.status === "error" ? "text-destructive" : "text-muted-foreground"}`} />}
                     {STATUS_LABEL[e.status] ?? e.status}
                   </span>
                   <span className="text-muted-foreground">Gs. {Math.round(Number(e.value) || 0).toLocaleString("es-PY")} · {new Date(e.created_at).toLocaleString("es-PY")}</span>
