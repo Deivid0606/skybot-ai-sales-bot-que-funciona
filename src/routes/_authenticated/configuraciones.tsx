@@ -20,6 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/lib/auth";
 import ActivarNotificacionesBotSky from "@/components/ActivarNotificacionesBotSky";
+import { MetaCapiSettings } from "@/components/meta-capi-settings";
 
 export const Route = createFileRoute("/_authenticated/configuraciones")({
   head: () => ({
@@ -301,11 +302,12 @@ function SettingsPage() {
       <PageHeader title="Configuraciones" description="Conexión, inteligencia artificial y negocio." />
 
       <Tabs defaultValue="avisos">
-        <TabsList>
+        <TabsList className="h-auto flex-wrap">
           <TabsTrigger value="avisos">Notificaciones al celular</TabsTrigger>
           <TabsTrigger value="whatsapp">WhatsApp</TabsTrigger>
           <TabsTrigger value="ia">Inteligencia artificial</TabsTrigger>
           <TabsTrigger value="negocio">Negocio</TabsTrigger>
+          <TabsTrigger value="meta">Ventas a Meta</TabsTrigger>
         </TabsList>
 
         <TabsContent value="avisos" className="mt-4">
@@ -733,6 +735,10 @@ function SettingsPage() {
               </Button>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="meta" className="mt-4">
+          <MetaCapiSettings workspaceId={profile?.workspace_id ?? null} />
         </TabsContent>
       </Tabs>
     </PageShell>
