@@ -170,6 +170,8 @@ type IncomingMessage = {
     video_url?: string;
     thumbnail_url?: string;
     media_type?: string;
+    /** Código del clic del anuncio «Enviar mensaje por WhatsApp» (atribución en Meta). */
+    ctwa_clid?: string;
   };
   image?: MediaPart;
   audio?: MediaPart;
@@ -218,6 +220,7 @@ type ReferralData = {
   adUrl: string | null;
   mediaUrl: string | null;
   mediaType: "image" | "video" | null;
+  ctwaClid?: string | null;
 };
 
 function referralOf(message: IncomingMessage): ReferralData {
@@ -253,6 +256,7 @@ function referralOf(message: IncomingMessage): ReferralData {
     adUrl: referral.source_url?.trim() || null,
     mediaUrl: videoUrl ?? imageUrl,
     mediaType,
+    ctwaClid: referral.ctwa_clid?.trim() || null,
   };
 }
 
@@ -1342,7 +1346,8 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
           ad_url: referral.adUrl,
           ad_media_url: referral.mediaUrl,
           ad_media_type: referral.mediaType,
-        })
+          ...(referral.ctwaClid ? { ctwa_clid: referral.ctwaClid } : {}),
+        } as any)
         .select("id, ai_paused, product_id, is_closed, sale_closed, ad_id")
         .single();
 
@@ -1410,7 +1415,8 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         ...(referral.adUrl ? { ad_url: referral.adUrl } : {}),
         ...(referral.mediaUrl ? { ad_media_url: referral.mediaUrl } : {}),
         ...(referral.mediaType ? { ad_media_type: referral.mediaType } : {}),
-      })
+        ...(referral.ctwaClid ? { ctwa_clid: referral.ctwaClid } : {}),
+      } as any)
       .eq("id", conversation.id)
       .eq("workspace_id", workspaceId)
       .select("id, ai_paused, product_id, is_closed, sale_closed, ad_id")
@@ -4269,6 +4275,12 @@ export async function createOrderFromAi(args: {
   if (created.already_registered) {
     console.warn("[BOT_SKY_ORDER_DEDUPED]", JSON.stringify({conversationId: args.conversationId, orderNumber: created.order_number}));
     return created;
+  }
+  // «Ventas a Meta»: avisar la compra (solo si el vendedor lo activó). Nunca frena el pedido.
+  {
+    const { reportWhatsAppPurchase } = await import("@/lib/meta-capi.server");
+    await reportWhatsAppPurchase({ workspaceId: args.workspaceId, orderId: created.id, conversationId: args.conversationId,
+      total: Number(created.total) || total, phone: args.phone });
   }
 
   const { error: conversationError } = await supabaseAdmin
