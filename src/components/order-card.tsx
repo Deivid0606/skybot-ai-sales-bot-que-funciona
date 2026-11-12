@@ -299,6 +299,19 @@ export function OrderCard({ order }: { order: Order }) {
             </span>
           )}
 
+          {(() => {
+            // «Ventas a Meta»: estado del aviso de esta venta (pestaña Configuraciones → Ventas a Meta).
+            const raw = (order as Order & { meta_capi_events?: unknown }).meta_capi_events;
+            const meta = (Array.isArray(raw) ? raw[0] : raw) as { status?: string; detail?: string | null } | null | undefined;
+            if (!meta?.status) return null;
+            const look = meta.status === "enviado"
+              ? { text: "✅ Enviado a Meta", cls: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300", title: "Meta recibió esta venta y la atribuye al anuncio del que vino el cliente." }
+              : meta.status === "error"
+                ? { text: "⚠️ Meta: error", cls: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300", title: meta.detail ?? "Meta no aceptó la venta." }
+                : { text: "Sin anuncio", cls: "border-dashed text-muted-foreground", title: "El cliente no llegó desde un anuncio de WhatsApp: Meta no la puede atribuir." };
+            return <span className={`inline-flex h-8 items-center rounded-md border px-2 text-xs ${look.cls}`} title={look.title}>{look.text}</span>;
+          })()}
+
           {(order as Order & { ecommerce_status?: string | null }).ecommerce_status && (
             <span
               className="inline-flex h-8 items-center rounded-md border border-dashed px-2 text-xs text-muted-foreground"

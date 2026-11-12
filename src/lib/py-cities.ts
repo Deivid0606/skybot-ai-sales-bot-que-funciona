@@ -112,7 +112,7 @@ const POPULAR: Record<string, string[]> = {
   "J. Augusto Saldívar": ["j augusto saldivar", "augusto saldivar", "jota augusto", "j a saldivar"],
   "Pedro Juan Caballero": ["pedro juan", "pjc"],
   "Mariano Roque Alonso": ["mra", "mariano r alonso"],
-  "Fernando de la Mora": ["fdo de la mora", "fernando de la mora"],
+  "Fernando de la Mora": ["fdo de la mora", "fernando de la mora", "fdo mora", "fdm", "f d la mora", "fernando zona norte", "fernando zona sur"],
   "General Francisco Isidoro Resquín": ["isidoro resquin", "general resquin", "gral resquin", "resquin"],
   "Coronel Oviedo": ["cnel oviedo", "oviedo"],
   "Juan León Mallorquín": ["mallorquin", "km 41"],
@@ -179,8 +179,20 @@ const PLACES: Place[] = PY_CITIES.flatMap(c => {
   // «Doctor …», «General …», «Coronel …»: también se escriben sin el título.
   const bare = key(c.city).replace(/^(?:doctor|dr|general|gral|coronel|cnel|capitan|cap|mayor|teniente|sargento|mariscal|mcal|presidente|pdte)\s+/, "");
   if (bare.split(" ").length >= 2 && bare.length >= 8) aliases.add(bare);
+  // Con la inicial: «F de la Mora», «S Lorenzo», «M Roque Alonso» (solo si el resto es largo y único).
+  for (const name of [key(c.city), bare]) {
+    const [first, ...rest] = name.split(" ");
+    const tail = rest.join(" ");
+    if (first.length >= 3 && tail.replace(/^(?:de|del|de la|de los)\s+/, "").length >= 5 && !/^\d/.test(first)) aliases.add(`${first[0]} ${tail}`);
+  }
   return [...aliases].filter(a => a.length >= 3).map(alias => ({ ...c, alias }));
 });
+// Una inicial que coincide con DOS ciudades («S Antonio»…) no sirve: se descarta.
+{
+  const count = new Map<string, number>();
+  for (const p of PLACES) count.set(p.alias, (count.get(p.alias) ?? 0) + (/^[a-z] /.test(p.alias) ? 1 : 0));
+  for (let i = PLACES.length - 1; i >= 0; i--) if ((count.get(PLACES[i].alias) ?? 0) > 1) PLACES.splice(i, 1);
+}
 
 function oneEdit(a: string, b: string): boolean {
   if (Math.abs(a.length - b.length) > 1) return false;
