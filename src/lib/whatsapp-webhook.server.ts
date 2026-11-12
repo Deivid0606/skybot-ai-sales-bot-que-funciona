@@ -2971,7 +2971,9 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         (!verifiedSaleState.cityVerified && !conversation.sale_closed && /(?:comprobante|transfer|total a transferir|datos de la cuenta|\bbanco\b|\balias\b)/i.test(text)) ||
         (WAITING_REPLY_RE.test(text) && !/[?¿]/.test(text)) ||
         // «No realizamos envíos a Reducto»: solo la pestaña de cobertura puede negar un envío.
-        (deniesShipping(text) && verifiedSaleState.coverageStatus !== "none");
+        (deniesShipping(text) && verifiedSaleState.coverageStatus !== "none") ||
+        // «Te avisaremos cuando el pedido esté en camino» sin pedido registrado = venta perdida.
+        (!conversation.sale_closed && promisesShipment(text));
     };
     // Solo el bloque posterior al INSERT puede confirmar; el resto nunca.
     function claimsRegisteredOrder(text: string) {
@@ -2996,6 +2998,8 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         WAITING_REPLY_RE.test(text) ? "No digas «un momento», «voy a verificar» ni «te aviso»: el sistema ya revisó todo en este turno; respondé con el resultado y el siguiente paso." : "",
         deniesShipping(text) && verifiedSaleState.coverageStatus !== "none"
           ? `No está verificado que no haya envío${verifiedSaleState.city ? ` a ${verifiedSaleState.city}` : ""}: NO digas que no enviamos. Si el cliente nombró un barrio, zona o compañía, preguntale con amabilidad a qué ciudad pertenece; si no dio lugar, preguntá en qué ciudad quiere recibir el pedido.` : "",
+        !conversation.sale_closed && promisesShipment(text)
+          ? "Todavía NO hay pedido registrado: no digas que se envía, que está en camino ni que le avisarán. Pedí el dato que falta para registrarlo (por ejemplo la ciudad de entrega)." : "",
         claimsRegisteredOrder(text) ? "El pedido TODAVÍA NO está registrado en el sistema: no digas que está confirmado, no muestres número de pedido ni agradezcas la compra; pedí el dato que falte." : "",
       ].filter(Boolean).join(" ");
       const again = await aiCompose({...aiAnswerContext, promptMode: "revision"}, `${facts} Tu borrador anterior violaba estas reglas: «${text.slice(0, 1200)}». Reescribí la respuesta correcta.`);
@@ -3012,7 +3016,8 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         else if (verifiedSaleState.awaiting === "variant") out = stripBankDetailsForCod(out);
         out = stripWaitingSentences(out);
         return out.split("\n").filter(line => !hasTemplatePlaceholder(line) && !claimsRegisteredOrder(line) &&
-          !(deniesShipping(line) && verifiedSaleState.coverageStatus !== "none")).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+          !(deniesShipping(line) && verifiedSaleState.coverageStatus !== "none") &&
+          !(!conversation.sale_closed && promisesShipment(line))).join("\n").replace(/\n{3,}/g, "\n\n").trim();
       };
       let cleaned = scrub(again ?? text);
       // Nunca quedar en silencio por la depuración: pedir a la IA una respuesta
@@ -4945,6 +4950,11 @@ function oneDigitApart(a: string, b: string): boolean {
 }
 
 /** Respuestas de espera que el bot nunca cumple (no hay trabajo posterior). */
+/** La respuesta da por hecho un envío («te avisaremos cuando el pedido esté en camino», «te lo enviamos hoy»). */
+function promisesShipment(text: string): boolean {
+  return /\b(?:te|le)\s+avis(?:aremos|amos|o)\s+cuando\s+(?:el|tu|su)\s+pedido\b|\b(?:tu|el|su)\s+pedido\s+(?:ya\s+)?(?:est[aá]|va|sale|sali[oó])\s+(?:en\s+camino|hoy|ma[ñn]ana)\b|\bte\s+lo\s+(?:enviamos|mandamos|llevamos)\s+(?:hoy|ma[ñn]ana)\b/i.test(text);
+}
+
 /** La respuesta niega el envío («no realizamos envíos a Reducto», «no llegamos a…»). */
 function deniesShipping(text: string): boolean {
   return /\bno\s+(?:realizamos|hacemos|tenemos|contamos\s+con|ofrecemos|disponemos\s+de)\s+(?:env[ií]os?|cobertura|delivery|entregas?)\b|\bno\s+(?:enviamos|llegamos|despachamos|entregamos|cubrimos)\b|\b(?:fuera\s+de|sin)\s+(?:nuestra\s+)?cobertura\b|\bno\s+(?:est[aá]|se\s+encuentra)\s+(?:dentro\s+de\s+)?(?:nuestra|la)\s+(?:zona|cobertura)/i.test(text);
