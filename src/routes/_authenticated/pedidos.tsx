@@ -210,7 +210,7 @@ function OrdersPage() {
         const end = new Date(`${dateTo}T23:59:59.999`).toISOString();
         const all: NonNullable<Awaited<ReturnType<typeof loadPage>>> = [];
         async function loadPage(page: number) {
-          const { data, error } = await supabase.from("orders").select("*,order_items(id,title,sku,quantity,price)")
+          const { data, error } = await supabase.from("orders").select("*,order_items(id,title,sku,quantity,price),meta_capi_events(status,detail)" as unknown as "*,order_items(id,title,sku,quantity,price)")
             .gte("created_at", start).lte("created_at", end)
             .order("created_at", { ascending: false })
             .range(page * 1000, page * 1000 + 999);
@@ -226,7 +226,7 @@ function OrdersPage() {
       }
       const { data, error } = await supabase
         .from("orders")
-        .select("*,order_items(id,title,sku,quantity,price)")
+        .select("*,order_items(id,title,sku,quantity,price),meta_capi_events(status,detail)" as unknown as "*,order_items(id,title,sku,quantity,price)")
         .eq("workspace_id", workspaceId!)
         .order("created_at", {
           ascending: false,
