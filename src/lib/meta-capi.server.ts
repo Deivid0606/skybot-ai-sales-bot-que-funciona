@@ -59,6 +59,38 @@ async function loadSetup(workspaceId: string) {
   return { cfg: cfg as CapiConfig | null, datasetId, token, wabaId };
 }
 
+/** Meta: «el conjunto de datos no tiene ninguna cuenta de WhatsApp Business vinculada». */
+const NOT_LINKED = /2804132|ninguna cuenta de WhatsApp Business vinculada|no WhatsApp Business account/i;
+
+/**
+ * Pide a Meta el conjunto de datos PROPIO de la cuenta de WhatsApp Business
+ * (POST /{waba_id}/dataset: lo devuelve o lo crea) y lo guarda para la tienda.
+ * Usa el token de WhatsApp, que tiene permiso sobre esa cuenta.
+ */
+export async function ensureWabaDataset(workspaceId: string): Promise<{ ok: boolean; datasetId?: string; message: string }> {
+  const { data: conn } = await (supabaseAdmin as any).from("whatsapp_connections").select("waba_id, access_token")
+    .eq("workspace_id", workspaceId).limit(1).maybeSingle();
+  const wabaId = String(conn?.waba_id ?? "").trim();
+  const token = String(conn?.access_token ?? "").trim();
+  if (!wabaId) return { ok: false, message: "Tu conexión de WhatsApp todavía no tiene el ID de la cuenta de WhatsApp Business. Se guarda solo con el próximo mensaje que reciba el bot; probá de nuevo después." };
+  if (!token) return { ok: false, message: "Tu WhatsApp no tiene token conectado." };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  try {
+    const res = await fetch(`https://graph.facebook.com/${GRAPH_VERSION}/${encodeURIComponent(wabaId)}/dataset`, {
+      method: "POST", signal: controller.signal, headers: { Authorization: `Bearer ${token}` },
+    });
+    const body = await res.json().catch(() => null) as { id?: string; error?: { message?: string; error_user_msg?: string } } | null;
+    const datasetId = String(body?.id ?? "").trim();
+    if (!res.ok || !/^\d+$/.test(datasetId)) {
+      return { ok: false, message: `Meta respondió ${res.status}: ${body?.error?.error_user_msg || body?.error?.message || "sin conjunto de datos"}` };
+    }
+    await (supabaseAdmin as any).from("workspace_meta_capi").upsert(
+      { workspace_id: workspaceId, dataset_id: datasetId, updated_at: new Date().toISOString() }, { onConflict: "workspace_id" });
+    return { ok: true, datasetId, message: `✅ Listo: el conjunto de datos de tu WhatsApp es ${datasetId} y ya quedó guardado.` };
+  } finally { clearTimeout(timer); }
+}
+
 async function record(row: { order_id: string; workspace_id: string; conversation_id: string | null; status: string; http_status?: number | null; detail?: string | null; value?: number | null }) {
   await (supabaseAdmin as any).from("meta_capi_events").upsert(row, { onConflict: "order_id" });
 }
@@ -78,7 +110,12 @@ export async function reportWhatsAppPurchase(args: {
     if (!ctwaClid) { await record({ ...base, status: "sin_anuncio", detail: "El cliente no llegó desde un anuncio de WhatsApp." }); return; }
     if (!token || !wabaId) { await record({ ...base, status: "error", detail: !wabaId ? "Falta el ID de la cuenta de WhatsApp Business." : "Falta el token de acceso." }); return; }
     const event = buildPurchaseEvent({ orderId: args.orderId, total: args.total, currency: args.currency || "PYG", ctwaClid, wabaId, phone: args.phone });
-    const res = await postEvents(datasetId, token, [event], cfg.test_event_code?.trim() || null);
+    let res = await postEvents(datasetId, token, [event], cfg.test_event_code?.trim() || null);
+    // Conjunto de datos sin la cuenta de WhatsApp: se pide el correcto a Meta y se reintenta una vez.
+    if (!res.ok && NOT_LINKED.test(res.body)) {
+      const linked = await ensureWabaDataset(args.workspaceId);
+      if (linked.ok && linked.datasetId) res = await postEvents(linked.datasetId, token, [event], cfg.test_event_code?.trim() || null);
+    }
     await record({ ...base, status: res.ok ? "enviado" : "error", http_status: res.status, detail: res.ok ? null : res.body });
     if (!res.ok) console.warn("[BOT_SKY_META_CAPI]", JSON.stringify({ workspaceId: args.workspaceId, orderId: args.orderId, status: res.status }));
   } catch (error) {
@@ -102,12 +139,19 @@ export async function sendTestPurchase(workspaceId: string, testCode: string): P
     .eq("workspace_id", workspaceId).not("ctwa_clid", "is", null).order("updated_at", { ascending: false }).limit(1).maybeSingle();
   const realClid = String(lastAdChat?.ctwa_clid ?? "").trim();
   const event = buildPurchaseEvent({ orderId: `prueba-${Date.now()}`, total: 1000, currency: "PYG", ctwaClid: realClid || "PRUEBA_BOT_SKY", wabaId, phone: null });
-  const res = await postEvents(datasetId, token, [event], testCode);
-  if (res.ok) return { ok: true, message: "✅ Meta recibió la compra de prueba. Mirala en Administrador de eventos → Probar eventos." };
+  let res = await postEvents(datasetId, token, [event], testCode);
+  let note = "";
+  if (!res.ok && NOT_LINKED.test(res.body)) {
+    const linked = await ensureWabaDataset(workspaceId);
+    if (!linked.ok) return { ok: false, message: `El conjunto de datos no está vinculado a tu WhatsApp y no se pudo obtener el correcto. ${linked.message}` };
+    note = ` Cambié el conjunto de datos por el de tu WhatsApp (${linked.datasetId}): buscá la prueba ahí.`;
+    res = await postEvents(linked.datasetId!, token, [event], testCode);
+  }
+  if (res.ok) return { ok: true, message: "✅ Meta recibió la compra de prueba. Mirala en Administrador de eventos → Probar eventos." + note };
   let detail = res.body;
   try { const err = JSON.parse(res.body)?.error; detail = err?.error_user_msg || err?.message || res.body; } catch { /* texto */ }
   if (!realClid && /ctwa_clid/i.test(detail)) {
-    return { ok: true, message: "✅ Conexión correcta: Meta aceptó tu token, tu conjunto de datos y tu cuenta de WhatsApp. Todavía no hay clientes que hayan llegado desde un anuncio; cuando entre el primero, vas a poder repetir la prueba y ver la compra en «Probar eventos». Las ventas reales ya se informan solas." };
+    return { ok: true, message: note + " ✅ Conexión correcta: Meta aceptó tu token, tu conjunto de datos y tu cuenta de WhatsApp. Todavía no hay clientes que hayan llegado desde un anuncio; cuando entre el primero, vas a poder repetir la prueba y ver la compra en «Probar eventos». Las ventas reales ya se informan solas." };
   }
   return { ok: false, message: `Meta respondió ${res.status}: ${detail}` };
 }

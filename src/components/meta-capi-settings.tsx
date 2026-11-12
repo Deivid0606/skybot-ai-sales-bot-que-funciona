@@ -52,6 +52,22 @@ export function MetaCapiSettings({ workspaceId }: { workspaceId: string | null }
     onError: (e: Error) => toast.error(e.message),
   });
 
+  const link = useMutation({
+    mutationFn: async () => {
+      const { data: session } = await supabase.auth.getSession();
+      const res = await fetch("/api/meta-capi/link", { method: "POST", headers: { Authorization: `Bearer ${session.session?.access_token ?? ""}` } });
+      const result = await res.json().catch(() => null) as { ok?: boolean; datasetId?: string; message?: string; error?: string } | null;
+      if (!res.ok || !result?.ok || !result.datasetId) throw new Error(result?.message ?? result?.error ?? "No se pudo obtener");
+      return result;
+    },
+    onSuccess: (r) => {
+      setForm(f => f ? { ...f, dataset_id: r.datasetId! } : f);
+      queryClient.invalidateQueries({ queryKey: ["meta-capi"] });
+      toast.success(r.message ?? "Listo");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
   const test = useMutation({
     mutationFn: async () => {
       const { data: session } = await supabase.auth.getSession();
@@ -84,9 +100,17 @@ export function MetaCapiSettings({ workspaceId }: { workspaceId: string | null }
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-1.5">
             <Label>ID del conjunto de datos (dataset)</Label>
-            <Input inputMode="numeric" placeholder="Ej. 1234567890123456" value={form.dataset_id}
-              onChange={e => setForm({ ...form, dataset_id: e.target.value })} />
-            <p className="text-xs text-muted-foreground">Administrador de eventos → tu conjunto de datos de WhatsApp → Configuración.</p>
+            <div className="flex flex-wrap gap-2">
+              <Input className="min-w-[12rem] flex-1" inputMode="numeric" placeholder="Ej. 1234567890123456" value={form.dataset_id}
+                onChange={e => setForm({ ...form, dataset_id: e.target.value })} />
+              <Button type="button" variant="outline" disabled={link.isPending} onClick={() => link.mutate()}>
+                {link.isPending && <Loader2 className="mr-1 h-4 w-4 animate-spin" />} Obtener el de mi WhatsApp
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Recomendado: tocá «Obtener el de mi WhatsApp». Meta exige el conjunto de datos vinculado a tu cuenta de WhatsApp Business
+              (un píxel de tu web no sirve).
+            </p>
           </div>
           <div className="space-y-1.5">
             <Label>Token de acceso (opcional)</Label>
