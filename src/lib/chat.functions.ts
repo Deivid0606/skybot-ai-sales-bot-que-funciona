@@ -151,7 +151,8 @@ export const registerPendingSale = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     const { supabase, userId } = context;
     const { buildWorkspaceAiContext } = await import("@/lib/ai-context.server");
-    const { verifiedCoverage, parseCoverage } = await import("@/lib/rule-sales.server");
+    const { verifiedCoverage, parseCoverage, sellerAllowsNationwideAdvance } = await import("@/lib/rule-sales.server");
+    const { findParaguayPlace } = await import("@/lib/py-cities");
     const { createOrderFromAi } = await import("@/lib/whatsapp-webhook.server");
     const { data: convo, error: convoError } = await supabase.from("conversations")
       .select("id,workspace_id,user_id,contact_id,ad_id,contacts(phone)")
@@ -177,31 +178,65 @@ export const registerPendingSale = createServerFn({ method: "POST" })
     const ctx=await buildWorkspaceAiContext(supabase,convo.workspace_id,[],data.productId,convo.contacts.phone);
     const product=ctx.products.find(p=>p.id===data.productId);
     if(!product)throw new Error("Producto no activo en este vendedor");
-    const match=verifiedCoverage(data.city,data.department,parseCoverage(ctx.training));
-    if(!match)throw new Error("La ciudad y el departamento no coinciden con la lista del vendedor");
-    if(!match.active && !(data.paymentMethod==="anticipado" && /ANTICIPADO|TRANSFERENCIA/i.test(match.method)))
-      throw new Error("No hay modalidad habilitada para esta ciudad. Configurá la encomienda en cobertura antes de registrar.");
-    if(data.paymentMethod==="contraentrega" && !match.active)
-      throw new Error("No hay contraentrega para esta ciudad");
-    if(match.addressRequired && !isEncomiendaAdvanceOrder(ctx.training,data.city,data.department,data.paymentMethod) && !isValidDeliveryAddress(data.street))
-      throw new Error("La dirección es obligatoria para esta ciudad según tu entrenamiento");
+    // Misma regla que el bot: ciudad de la cobertura (aunque el departamento venga distinto),
+    // o encomienda nacional si el vendedor la tiene habilitada.
+    const coverage=parseCoverage(ctx.training);
+    const norm=(v:string)=>String(v??"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9\s]/g," ").replace(/\s+/g," ").trim();
+    const place=findParaguayPlace(data.city);
+    let match=verifiedCoverage(data.city,data.department,coverage)
+      ?? (place ? verifiedCoverage(place.city,place.department,coverage) : null);
+    if(!match){
+      const byCity=coverage.filter(c=>[c.city,...c.aliases].some(a=>norm(a)===norm(place?.city??data.city)));
+      if(byCity.length===1)match=byCity[0];
+    }
+    const nationwide=sellerAllowsNationwideAdvance(ctx.training);
+    let city=match?.city ?? place?.city ?? data.city.trim();
+    let department=match?.department ?? place?.department ?? data.department.trim();
+    let paymentMethod=data.paymentMethod;
+    if(match && /SIN ENV[IÍ]O/i.test(match.method))throw new Error(`${match.city} figura SIN ENVÍO en tus Zonas de cobertura.`);
+    if(match){
+      if(match.active){
+        // Ciudad con contraentrega: se respeta lo elegido (al recibir o anticipado).
+      }else if(/ANTICIPADO|TRANSFERENCIA|ENCOMIENDA/i.test(match.method)){
+        paymentMethod="anticipado"; // ciudad por encomienda: siempre pago anticipado
+      }else{
+        throw new Error(`No hay envío habilitado para ${match.city}. Revisá tus Zonas de cobertura.`);
+      }
+    }else if(nationwide && place){
+      paymentMethod="anticipado"; // encomienda nacional del vendedor
+    }else if(!place){
+      throw new Error("No reconozco esa ciudad. Elegila de la lista.");
+    }else{
+      throw new Error(`${place.city} no figura en tu cobertura y no tenés encomienda al resto del país.`);
+    }
+    const encomienda=isEncomiendaAdvanceOrder(ctx.training,city,department,paymentMethod) || (!match && nationwide);
+    // Dirección: si quedó vacía se usa la ubicación GPS que mandó el cliente.
+    let street=data.street;
+    if(!encomienda && !isValidDeliveryAddress(street)){
+      const { data: gps }=await (supabase as any).from("messages").select("latitude,longitude")
+        .eq("conversation_id",convo.id).not("latitude","is",null).order("created_at",{ascending:false}).limit(1).maybeSingle();
+      if(gps?.latitude!=null && gps?.longitude!=null)street=`https://www.google.com/maps/search/?api=1&query=${gps.latitude},${gps.longitude}`;
+    }
+    if(match?.addressRequired && !encomienda && !isValidDeliveryAddress(street))
+      throw new Error("Para esta ciudad hace falta la dirección con referencia o la ubicación de Google Maps.");
     const options=[...(product.product_prices??[])].sort((a,b)=>a.sort_order-b.sort_order);
     const option=options.find(o=>o.id===data.optionId)??null;
     if(options.length && !option)throw new Error("Seleccioná una presentación válida del catálogo");
     if(!options.length && data.optionId)throw new Error("Este producto no tiene esa promoción");
     const units=(option?.quantity??1)*data.promoCount;
     if (!isValidCustomerName(data.customerName)) throw new Error("Ingresá nombre y apellido reales del cliente");
-    if (data.street && !isEncomiendaAdvanceOrder(ctx.training,data.city,data.department,data.paymentMethod) && !isValidDeliveryAddress(data.street))
+    if (street && !encomienda && !isValidDeliveryAddress(street))
       throw new Error("Dirección inválida: ingresá calle/referencia concreta o ubicación Google Maps");
     const order={customer_name:data.customerName,phone:convo.contacts.phone,
-      city:match.city,departamento:match.department,      street:isEncomiendaAdvanceOrder(ctx.training,data.city,data.department,data.paymentMethod) ? undefined : data.street||undefined,
+      city,departamento:department,      street:encomienda ? undefined : street||undefined,
       quantity:units,promo_quantity:data.promoCount,product_price_id:option?.id,
-      price_option_label:option?.label,payment_method:data.paymentMethod,
+      price_option_label:option?.label,payment_method:paymentMethod,
       observations:"Pedido recuperado manualmente desde Inbox; revisar conversación original"};
     const created=await createOrderFromAi({workspaceId:convo.workspace_id,ownerId:convo.user_id,
       conversationId:convo.id,contactId:convo.contact_id,phone:convo.contacts.phone,
       adId:convo.ad_id??null,productId:data.productId,
-      sourceMessageId:`manual-recovery:${data.sourceMessageId}`,order,products:ctx.products,training:ctx.training});
+      sourceMessageId:`manual-recovery:${data.sourceMessageId}`,order,products:ctx.products,training:ctx.training,
+      allowMissingRecipientCi:true});
     const {error: stateError}=await supabase.from("bot_sale_states").delete()
       .eq("workspace_id",convo.workspace_id).eq("conversation_id",convo.id);
     if(stateError)console.error("Se registró el pedido, pero no se pudo limpiar el estado",stateError);

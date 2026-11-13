@@ -3848,6 +3848,8 @@ export async function createOrderFromAi(args: {
   documentedReceiptTotal?: number | null;
   /** Día u horario de entrega que dijo el cliente («a partir del miércoles, de 7 a 13 hs»). */
   deliveryNotes?: string | null;
+  /** Registro manual desde Inbox: la cédula de encomienda se pide después, no frena el registro. */
+  allowMissingRecipientCi?: boolean;
   /** Entrenamiento ACTIVO del workspace para validar requisitos por modalidad. */
   training?: AiContext["training"];
   products: {
@@ -3881,7 +3883,7 @@ export async function createOrderFromAi(args: {
     throw new Error("Pedido incompleto: nombre, ciudad, cantidad o pago inválidos. No se registró la venta.");
   }
   if (!isValidCustomerName(args.order.customer_name)) throw new Error("Nombre y apellido del destinatario inválidos: pedido no registrado.");
-  if (orderIsEncomienda && args.training && sellerRequiresEncomiendaCi(args.training) &&
+  if (orderIsEncomienda && args.training && sellerRequiresEncomiendaCi(args.training) && !args.allowMissingRecipientCi &&
       !isValidRecipientCi(args.order.recipient_ci)) throw new Error("Cédula del destinatario pendiente: pedido no registrado.");
   const sourceMessageId = cleanOrderText(args.sourceMessageId);
 
