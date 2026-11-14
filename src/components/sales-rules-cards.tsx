@@ -143,6 +143,22 @@ export function SalesRulesCards({ workspaceId, activeTrainingCount }: { workspac
           </div>
         )}
 
+        <p className="text-sm font-semibold">💰 Formas de pago</p>
+        <div className="grid gap-3 lg:grid-cols-2">
+          <Ficha icon="💵" title="Efectivo al recibir" hint="En las ciudades marcadas «Contraentrega» en Zonas de cobertura. Se cambia allá, ciudad por ciudad." />
+          <Ficha icon="🏦" title="Transferencia en encomienda" hint="Siempre por transferencia anticipada, con la cuenta de la pestaña Datos bancarios." />
+          <Ficha icon="💳" title="Tarjeta de crédito" hint="Con link de pago. Nunca pide datos de la tarjeta."
+            checked={rules.card.enabled} onChange={v => set("card", { ...rules.card, enabled: v })}>
+            <Input placeholder="Link de pago (opcional)" value={rules.card.link} maxLength={500}
+              onChange={e => set("card", { ...rules.card, link: e.target.value })} />
+          </Ficha>
+          <Ficha icon="🔄" title="Transferencia también donde se paga al recibir" hint="Si el cliente lo pide, paga por transferencia y se le envía igual a domicilio. Por defecto paga al recibir."
+            checked={rules.cod_transfer.enabled} onChange={v => set("cod_transfer", { enabled: v })} />
+          <Ficha icon="📲" title="Pago con QR" hint="El cliente puede pagar escaneando un QR."
+            checked={rules.qr.enabled} onChange={v => set("qr", { enabled: v })} />
+        </div>
+
+        <p className="text-sm font-semibold">📋 Otras reglas</p>
         <div className="grid gap-3 lg:grid-cols-2">
           <Ficha icon="🧾" alwaysShow title="Factura legal" hint="Si es SÍ, el bot pide el RUC solo a quien quiere factura."
             checked={rules.invoice.enabled} onChange={v => set("invoice", { enabled: v, pending: false })}>
@@ -154,13 +170,6 @@ export function SalesRulesCards({ workspaceId, activeTrainingCount }: { workspac
               </label>
             )}
           </Ficha>
-          <Ficha icon="💳" title="Tarjeta de crédito" hint="Con link de pago. Nunca pide datos de la tarjeta."
-            checked={rules.card.enabled} onChange={v => set("card", { ...rules.card, enabled: v })}>
-            <Input placeholder="Link de pago (opcional)" value={rules.card.link} maxLength={500}
-              onChange={e => set("card", { ...rules.card, link: e.target.value })} />
-          </Ficha>
-          <Ficha icon="📲" title="Pago con QR" hint="El cliente puede pagar escaneando un QR."
-            checked={rules.qr.enabled} onChange={v => set("qr", { enabled: v })} />
           <Ficha icon="🪪" title="Cédula en encomienda" hint="Se pide el número de cédula de quien recibe, siempre después de confirmar el pedido."
             checked={rules.encomienda_ci.enabled} onChange={v => set("encomienda_ci", { enabled: v })} />
           <Ficha icon="📦" title="Catálogo al saludar" hint="Si el cliente saluda sin nombrar un producto, el bot le manda tu catálogo."
