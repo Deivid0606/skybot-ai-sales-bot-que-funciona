@@ -1,5 +1,6 @@
 import type { AiContext, AiOrder } from "@/lib/ai.server";
 import type { SaleState } from "@/lib/rule-sales.server";
+import { isAmbiguousPlaceName, hasPlaceCue } from "@/lib/py-cities";
 import { looksLikePersonName, verifiedCoverage, parseCoverage, sellerAllowsNationwideAdvance, nationwideDestinationFromText, extractRecipientCiFromCustomerText, isValidRecipientCi, isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi } from "@/lib/rule-sales.server";
 
 type ChatLine = { role: "user" | "assistant"; content: string };
@@ -109,7 +110,12 @@ export function recoverSaleStateFromHistory(ctx: AiContext, previous: SaleState,
     if (!n || /^\[(?:image|imagen|audio|document|documento|video)/i.test(raw)) continue;
     const ci=extractRecipientCiFromCustomerText(raw, /\b(?:cedula|c\.?\s?i)\b|documento de identidad/.test(lastQuestion));
     if(ci)state.recipientCi=ci;
-    const hits = coverage.filter(c => [c.city, ...c.aliases].some(alias => exactToken(raw, alias)));
+    // «Daniel Caballero», «Jorge Maciel»: un nombre de persona (o la respuesta a «¿tu nombre?»)
+    // nunca es una ciudad, aunque el apellido coincida con una localidad.
+    const askedName = /(?:nombre|apellido|como te llamas)/.test(lastQuestion) && !/(?:ciudad|donde)/.test(lastQuestion);
+    const personLike = looksLikePersonName(raw) || (askedName && !hasPlaceCue(raw));
+    const hits = personLike ? [] : coverage.filter(c => [c.city, ...c.aliases].some(alias => exactToken(raw, alias)))
+      .filter(c => !isAmbiguousPlaceName(c.city) || normal(raw) === normal(c.city) || hasPlaceCue(raw));
     const uniqueHits = hits.filter((c,i)=>hits.findIndex(x=>normal(x.city)===normal(c.city) && normal(x.department)===normal(c.department))===i);
     // La última ciudad explícita del cliente gana; no confundir referencias de dirección.
     if (uniqueHits.length === 1 && isCityReply(raw, lastQuestion) && !/(?:calle|esquina|casi|referencia|barrio)/.test(n)) {
@@ -127,7 +133,7 @@ export function recoverSaleStateFromHistory(ctx: AiContext, previous: SaleState,
     // Identificar localidades paraguayas conocidas fuera de contraentrega.
     // La localidad es un hecho geográfico; la habilitación de encomienda debe
     // provenir siempre del entrenamiento del mismo workspace.
-    if (!uniqueHits.length && sellerAllowsNationwideAdvance(ctx.training) &&
+    if (!uniqueHits.length && !personLike && sellerAllowsNationwideAdvance(ctx.training) &&
         !/(?:calle|esquina|casi|referencia|barrio|ruta|direcci[oó]n)/i.test(raw)) {
       const destination = nationwideDestinationFromText(raw);
       if (destination) {
