@@ -17,7 +17,7 @@ import { extractSaleWithAi, applyAiExtraction, vetoUnsupportedChanges } from "@/
 import { advanceRuleSale, cityIn, sellerUsesFirstOffer, isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi, isValidRecipientCi, type SaleState } from "@/lib/rule-sales.server";
 import { classifyCustomerIntent, addVerifiedOrderContext, addPendingSaleContext } from "@/lib/hybrid-intent.server";
 import { coordinatesFromText, validCoords } from "@/lib/hybrid-intent.server";
-import { shippingFeeForCity, normalizeNoShipping, noShippingInstruction, declaredCityFromTexts, applyDeclaredCity, parseCoverage, verifiedCoverage, sellerAllowsNationwideAdvance, deliveryPolicyForCity, hasTemplatePlaceholder, stripBankDetailsForCod, enforceVerifiedPaymentReply, isNonCityPhrase, sellerBankText, cleanReplyForPolicy } from "@/lib/rule-sales.server";
+import { shippingFeeForCity, normalizeNoShipping, noShippingInstruction, declaredCityFromTexts, applyDeclaredCity, parseCoverage, verifiedCoverage, sellerAllowsNationwideAdvance, deliveryPolicyForCity, hasTemplatePlaceholder, stripBankDetailsForCod, enforceVerifiedPaymentReply, isNonCityPhrase, sellerBankText, cleanReplyForPolicy, codTransferAllowed, customerWantsTransfer } from "@/lib/rule-sales.server";
 import { resolveDepartamento } from "@/lib/orders";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { sendWhatsAppText as sendWhatsAppTextNow } from "@/lib/whatsapp.server";
@@ -2382,6 +2382,12 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     }
     // Pestaña «Zonas de cobertura»: ciudad marcada «Sin envío» ⇒ no hay modalidad ni pedido.
     normalizeNoShipping(verifiedSaleState, ctx.training);
+    // «¿Tienen para transferencia?», «te transfiero»: en ciudades con pago al recibir el
+    // cliente puede elegir transferencia (si la tienda lo acepta); el envío sigue a domicilio.
+    {
+      const wantsTransfer = customerWantsTransfer(body);
+      if (wantsTransfer !== null) verifiedSaleState.payByTransfer = wantsTransfer && codTransferAllowed(ctx.training);
+    }
     // Fuente autoritativa: cobertura del vendedor, nunca una inferencia de IA.
     const officialDelivery = verifiedSaleState.cityVerified
       ? deliveryPolicyForCity(verifiedSaleState.city,verifiedSaleState.department,ctx.training) : null;
@@ -2397,6 +2403,13 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       receiptReview:verifiedSaleState.receiptReview??null}));
     // Ciudad sin envío (pestaña Zonas de cobertura): solo vale la instrucción de «sin envío».
     const cityShippingFee = verifiedSaleState.cityVerified ? shippingFeeForCity(verifiedSaleState.city, verifiedSaleState.department, ctx.training) : 0;
+    const codTransferActive = Boolean(verifiedSaleState.payByTransfer) && codTransferAllowed(ctx.training) &&
+      deliveryPolicyForCity(verifiedSaleState.city, verifiedSaleState.department, ctx.training)?.paymentMethod === "contraentrega";
+    const codTransferInstruction = codTransferActive
+      ? `\nPAGO POR TRANSFERENCIA (lo pidió el cliente; la tienda lo acepta): el envío a ${verifiedSaleState.city} sigue siendo a domicilio, con la dirección o ubicación. Pasale los datos bancarios oficiales de la tienda y el total; que mande el comprobante cuando transfiera. NO digas encomienda. El pedido se registra igual con nombre y dirección, aunque todavía no haya mandado el comprobante.`
+      : (deliveryPolicyForCity(verifiedSaleState.city, verifiedSaleState.department, ctx.training)?.paymentMethod === "contraentrega" && codTransferAllowed(ctx.training)
+        ? "\nSi el cliente pregunta si puede pagar por transferencia: SÍ puede (envío igual a domicilio). Por defecto paga al recibir; no ofrezcas transferencia si no la pide."
+        : "");
     const shippingFeeInstruction = cityShippingFee > 0
       ? `\nCOSTO DE ENVÍO a ${verifiedSaleState.city}: ${formatGs(cityShippingFee)} (pestaña Zonas de cobertura). Cuando des precio o total, decí SIEMPRE el costo de envío y el TOTAL CON ENVÍO (precio del producto + ${formatGs(cityShippingFee)}). Formato: «[precio del catálogo] + delivery ${formatGs(cityShippingFee)} = total [suma exacta]», usando SOLO precios reales del catálogo.`
       : "";
@@ -2405,7 +2418,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       : `\n${sellerAllowsNationwideAdvance(ctx.training) ? "ENCOMIENDA NACIONAL AUTORIZADA: fuera de contraentrega se puede ofrecer pago anticipado sujeto a verificar logística; NO negar todo envío por ausencia en la lista. " : ""}COBERTURA PENDIENTE: la CIUDAD DE ENTREGA es el primer dato logístico obligatorio; NO solicites nombre, dirección, GPS, método de pago ni transferencia antes de verificarla. La ciudad debe estar en la cobertura activa de este vendedor o resolverse según su política de encomienda. No deduzcas municipio desde GPS ni barrio. Si el cliente hace otra consulta, respondela primero sin repetir automáticamente la pregunta de ciudad y conservá la venta.`;
     const aiAnswerContext = {
       ...answerContext,
-      systemInstruction: answerContext.systemInstruction + officialPolicyInstruction + shippingFeeInstruction + noShippingInstruction(verifiedSaleState) + `\nMODO IA + ENTRENAMIENTO BOT SKY, PRIORIDAD ALTA: Las respuestas comerciales las generás vos usando únicamente catálogo y entrenamiento de esta tienda. CONVERSÁ VOS con el comprador de forma natural: resolvé una sola pregunta por vez y no repitas catálogo/precios completos ni datos ya recibidos. Cantidad y variante se capturan mediante código y deben respetarse. No confirmes pedidos sin número real generado por Supabase. El cliente puede comprar varias veces. DATOS VERIFICADOS DEL CICLO ACTUAL (no mezclar con pedidos previos): ${JSON.stringify({productId:verifiedSaleState.productId,optionId:verifiedSaleState.optionId,quantity:verifiedSaleState.quantity,city:verifiedSaleState.city,department:verifiedSaleState.department,cityVerified:verifiedSaleState.cityVerified===true,coverageStatus:verifiedSaleState.coverageStatus,customerName:verifiedSaleState.customerName,hasAddress:Boolean(verifiedSaleState.street),gpsReceived:Boolean(verifiedSaleState.locationUrl),paymentMethod:verifiedSaleState.paymentMethod,awaiting:verifiedSaleState.awaiting})}. COBERTURA: si cityVerified no es true, NUNCA digas que tenemos cobertura; cuando nombres la ciudad escribila SIEMPRE exactamente como figura en el campo city de los datos verificados (bien escrita, con tildes y ñ), nunca copies cómo la escribió el cliente; consultá la ciudad si falta. GPS no prueba por sí mismo ninguna ciudad. Si recibiste GPS no vuelvas a solicitarlo. El GPS es dirección suficiente si la configuración de la ciudad admite dirección por ubicación. Respetá el orden de preguntas definido en el entrenamiento del vendedor; nunca repitas hechos conocidos. Si no tenés precio/variante sin ambigüedad pedí aclaración. Si está completo, el código registrará el pedido; no inventes un número de orden ni digas que está confirmado.
+      systemInstruction: answerContext.systemInstruction + officialPolicyInstruction + shippingFeeInstruction + noShippingInstruction(verifiedSaleState) + codTransferInstruction + `\nMODO IA + ENTRENAMIENTO BOT SKY, PRIORIDAD ALTA: Las respuestas comerciales las generás vos usando únicamente catálogo y entrenamiento de esta tienda. CONVERSÁ VOS con el comprador de forma natural: resolvé una sola pregunta por vez y no repitas catálogo/precios completos ni datos ya recibidos. Cantidad y variante se capturan mediante código y deben respetarse. No confirmes pedidos sin número real generado por Supabase. El cliente puede comprar varias veces. DATOS VERIFICADOS DEL CICLO ACTUAL (no mezclar con pedidos previos): ${JSON.stringify({productId:verifiedSaleState.productId,optionId:verifiedSaleState.optionId,quantity:verifiedSaleState.quantity,city:verifiedSaleState.city,department:verifiedSaleState.department,cityVerified:verifiedSaleState.cityVerified===true,coverageStatus:verifiedSaleState.coverageStatus,customerName:verifiedSaleState.customerName,hasAddress:Boolean(verifiedSaleState.street),gpsReceived:Boolean(verifiedSaleState.locationUrl),paymentMethod:verifiedSaleState.paymentMethod,awaiting:verifiedSaleState.awaiting})}. COBERTURA: si cityVerified no es true, NUNCA digas que tenemos cobertura; cuando nombres la ciudad escribila SIEMPRE exactamente como figura en el campo city de los datos verificados (bien escrita, con tildes y ñ), nunca copies cómo la escribió el cliente; consultá la ciudad si falta. GPS no prueba por sí mismo ninguna ciudad. Si recibiste GPS no vuelvas a solicitarlo. El GPS es dirección suficiente si la configuración de la ciudad admite dirección por ubicación. Respetá el orden de preguntas definido en el entrenamiento del vendedor; nunca repitas hechos conocidos. Si no tenés precio/variante sin ambigüedad pedí aclaración. Si está completo, el código registrará el pedido; no inventes un número de orden ni digas que está confirmado.
 AVANCE DEL CIERRE, OBLIGATORIO EN EL MISMO TURNO: si ya identificaste producto, variante, cantidad y ciudad, NO termines una respuesta mostrando solo el detalle o preguntando «¿seguimos?», «¿está bien?» o «¿confirmás?»; pedí inmediatamente el SIGUIENTE dato faltante del estado técnico. Si awaiting="name", solicitá nombre Y apellido en ese mismo mensaje, aun cuando acabes de explicar el pago al recibir y el total. Cuando te respondan el nombre, si awaiting="address", pedí dirección o ubicación. Si awaiting="receipt" para encomienda, explicá las instrucciones de pago SOLO desde los datos bancarios reales de este vendedor y decí que envíe el comprobante; no pidas dirección ni GPS. ORDEN DE CADA RESPUESTA: PRIMERO respondé lo que el cliente preguntó o comentó en su último mensaje (dudas del producto, precio, objeciones como «es caro», envío, garantía, uso) usando el catálogo y el entrenamiento; RECIÉN DESPUÉS, en el mismo mensaje, pedí el dato pendiente sin repetir lo ya dicho. Nunca ignores una consulta para pedir datos. Nunca digas «pedido confirmado» antes de que el servidor lo registre.
 Respetá el estilo, productos y condiciones del entrenamiento particular del vendedor; el backend solamente asegura que la venta NO se estanque sin pedir el siguiente dato obligatorio.`
     };
@@ -2906,6 +2919,8 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
 
     result.order=applySellerFirstOffer(result.order,detectedProduct,ctx.products,ctx.training,chatHistory);
     result.order = reconcileOrderWithSaleState(result.order, saveStep?.state ?? previousSale, ctx.training);
+    // Ciudad con pago al recibir y el cliente eligió transferencia: el pedido lo dice.
+    if (result.order && codTransferActive) result.order.payment_method = "transferencia";
     // Garantía final para la persistencia: ninguna salida del modelo ni un estado
     // antiguo puede imponer transferencia en una ciudad con contraentrega.
     if (result.order && verifiedSaleState.cityVerified) {
@@ -2976,8 +2991,9 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         ? deliveryPolicyForCity(verifiedSaleState.city, verifiedSaleState.department, ctx.training) : null;
       const prematureBank = verifiedSaleState.awaiting === "variant" && BANK_RE.test(text);
       return enforceVerifiedPaymentReply({reply:text, city:verifiedSaleState.city, department:verifiedSaleState.department,
-          cityVerified:verifiedSaleState.cityVerified, training:ctx.training}).corrected ||
-        (policy?.paymentMethod === "contraentrega" && (BANK_RE.test(text) || /\bencomienda\b|pago anticipado|total a transferir/i.test(text))) ||
+          cityVerified:verifiedSaleState.cityVerified, training:ctx.training, saleState:verifiedSaleState}).corrected ||
+        (policy?.paymentMethod === "contraentrega" && (codTransferActive ? /\bencomienda\b/i.test(text)
+          : (BANK_RE.test(text) || /\bencomienda\b|pago anticipado|total a transferir/i.test(text)))) ||
         hasTemplatePlaceholder(text) || prematureBank || claimsRegisteredOrder(text) ||
         // Sin ciudad confirmada no se pide comprobante, transferencia ni cuenta.
         (!verifiedSaleState.cityVerified && !conversation.sale_closed && /(?:comprobante|transfer|total a transferir|datos de la cuenta|\bbanco\b|\balias\b)/i.test(text)) ||
@@ -3000,7 +3016,9 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       console.warn("[BOT_SKY_FINAL_POLICY_GATE]", JSON.stringify({conversationId:conversation.id,
         city:verifiedSaleState.city, paymentMethod:policy?.paymentMethod ?? null, awaiting:verifiedSaleState.awaiting}));
       const facts = [
-        policy?.paymentMethod === "contraentrega"
+        policy?.paymentMethod === "contraentrega" && codTransferActive
+          ? `Para ${verifiedSaleState.city} el envío es a domicilio y el cliente eligió pagar por TRANSFERENCIA: podés pasar los datos bancarios oficiales y el total. PROHIBIDO decir encomienda.`
+          : policy?.paymentMethod === "contraentrega"
           ? `Para ${verifiedSaleState.city} la modalidad VERIFICADA es CONTRAENTREGA (${policy.method}): el cliente paga al recibir. PROHIBIDO decir encomienda o pago anticipado, mostrar datos bancarios o pedir comprobante.`
           : policy?.paymentMethod === "anticipado"
             ? `Para ${verifiedSaleState.city} la modalidad VERIFICADA es pago anticipado; no prometas pago al recibir.` : "",
@@ -3024,7 +3042,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         // las líneas que confirman el pago al recibir. Sin opción elegida (y sin
         // contraentrega) solo se quitan los datos bancarios: decir que una ciudad
         // es por encomienda es correcto y no debe borrar toda la respuesta.
-        if (policy?.paymentMethod === "contraentrega") out = cleanReplyForPolicy(stripBankDetailsForCod(out), "contraentrega");
+        if (policy?.paymentMethod === "contraentrega" && !codTransferActive) out = cleanReplyForPolicy(stripBankDetailsForCod(out), "contraentrega");
         else if (verifiedSaleState.awaiting === "variant") out = stripBankDetailsForCod(out);
         out = stripWaitingSentences(out);
         return out.split("\n").filter(line => !hasTemplatePlaceholder(line) && !claimsRegisteredOrder(line) &&
@@ -3041,7 +3059,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       if (!cleaned) console.warn("[BOT_SKY_FINAL_POLICY_GATE_EMPTY]", JSON.stringify({conversationId:conversation.id, draft:(again ?? text).slice(0, 300)}));
       return cleaned;
     };
-    if (codPolicy?.paymentMethod === "contraentrega" && BANK_RE.test(finalReply)) {
+    if (codPolicy?.paymentMethod === "contraentrega" && !codTransferActive && BANK_RE.test(finalReply)) {
       const rewritten = await generateAiReplyWithRetry({...aiAnswerContext,
         systemInstruction: aiAnswerContext.systemInstruction +
           `\nPara ${verifiedSaleState.city} el pago es AL RECIBIR (contraentrega). NO envíes datos bancarios, cuentas, alias ni pidas comprobante. Pedí solo el siguiente dato faltante (nombre y apellido, dirección).`});
@@ -3070,7 +3088,9 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
     // Primero validar e insertar. Nunca enviar la respuesta libre del modelo antes del INSERT.
     // Pago anticipado: no registrar si todavía no hay archivo de comprobante.
     // La recepción del archivo NO equivale a dinero acreditado.
-    const isAdvance = /anticip|transfer|deposit|giro/i.test(result.order?.payment_method ?? "");
+    // Transferencia en ciudad con pago al recibir: el pedido se registra con la dirección,
+    // sin esperar el comprobante (que puede llegar después).
+    const isAdvance = /anticip|transfer|deposit|giro/i.test(result.order?.payment_method ?? "") && !codTransferActive;
     // El archivo debe pertenecer al pago pendiente del ciclo actual.
     // Nunca tomar una imagen antigua de producto como comprobante.
     const hasReceiptForOrder = Boolean((saveStep?.state.receiptDocuments?.length ?? 0)>0 || (previousSale.receiptDocuments?.length ?? 0)>0);
@@ -3482,7 +3502,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       // La modalidad proviene exclusivamente de la cobertura de este vendedor.
       const paymentQuestionPolicy = verifiedSaleState.cityVerified
         ? deliveryPolicyForCity(verifiedSaleState.city, verifiedSaleState.department, ctx.training) : null;
-      if (!conversation.sale_closed && verifiedSaleState.productId && paymentQuestionPolicy?.paymentMethod === "contraentrega" &&
+      if (!conversation.sale_closed && verifiedSaleState.productId && paymentQuestionPolicy?.paymentMethod === "contraentrega" && !codTransferActive &&
           /(?:\b(?:cuenta|cta|alias|titular|transferencia|transferir|depositar)\b)/i.test(body) &&
           /(?:\?|\b(?:quien|quién|donde|dónde|cual|cuál|pas[aá]me|a la|a qu[eé])\b)/i.test(body)) {
         const next = requiredCheckoutPrompt(verifiedSaleState, isValidCustomerName(verifiedSaleState.customerName));

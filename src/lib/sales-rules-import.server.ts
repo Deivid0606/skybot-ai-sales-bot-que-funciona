@@ -18,10 +18,11 @@ export async function suggestSalesRulesFromTraining(workspaceId: string): Promis
   const ctx = await buildWorkspaceAiContext(supabaseAdmin, workspaceId, [], null);
   const system = `Leés el entrenamiento escrito por una tienda de Paraguay y completás sus REGLAS tal como las escribió el vendedor. No inventes: si el entrenamiento no lo dice, dejá el valor por defecto indicado.
 Devolvé SOLO JSON con esta forma:
-{"invoice":{"enabled":false,"pending":false},"card":{"enabled":false,"link":""},"qr":{"enabled":false},"encomienda_ci":{"enabled":false},"catalog_on_greeting":{"enabled":false},"pickup":{"enabled":false,"address":"","hours":""},"store_location":"","warranty":{"enabled":false,"days":null,"note":""},"discounts":{"enabled":false,"max_percent":null},"wholesale":{"enabled":false,"min_qty":null,"note":""},"not_sold_message":"","human_handoff":{"enabled":false,"phone":"","when":""}}
+{"invoice":{"enabled":false,"pending":false},"card":{"enabled":false,"link":""},"qr":{"enabled":false},"cod_transfer":{"enabled":true},"encomienda_ci":{"enabled":false},"catalog_on_greeting":{"enabled":false},"pickup":{"enabled":false,"address":"","hours":""},"store_location":"","warranty":{"enabled":false,"days":null,"note":""},"discounts":{"enabled":false,"max_percent":null},"wholesale":{"enabled":false,"min_qty":null,"note":""},"not_sold_message":"","human_handoff":{"enabled":false,"phone":"","when":""}}
 - invoice.enabled: true si dice que emite factura legal. Si dice que todavía no está confirmado o que se consulta, enabled false y "pending": true.
 - card: true si acepta tarjeta de crédito; link solo si escribió un link de pago real.
 - qr: true si acepta pago con QR.
+- cod_transfer: false solo si dice que en ciudades con contraentrega NO se acepta transferencia; si no lo dice, true.
 - encomienda_ci: true si exige la cédula del destinatario en encomienda.
 - catalog_on_greeting: true si manda el catálogo cuando el cliente saluda.
 - pickup: true solo si dice que se puede retirar en un local; address y hours tal cual.

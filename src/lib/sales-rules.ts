@@ -13,6 +13,8 @@ export type SalesRules = {
   invoice: { enabled: boolean; pending?: boolean };
   card: { enabled: boolean; link: string };
   qr: { enabled: boolean };
+  /** En ciudades con pago al recibir, el cliente también puede pagar por transferencia si lo pide. */
+  cod_transfer: { enabled: boolean };
   encomienda_ci: { enabled: boolean };
   catalog_on_greeting: { enabled: boolean };
   pickup: { enabled: boolean; address: string; hours: string };
@@ -32,6 +34,7 @@ export function defaultSalesRules(): SalesRules {
     invoice: { enabled: false },
     card: { enabled: false, link: "" },
     qr: { enabled: false },
+    cod_transfer: { enabled: true },
     encomienda_ci: { enabled: false },
     catalog_on_greeting: { enabled: true },
     pickup: { enabled: false, address: "", hours: "" },
@@ -64,6 +67,7 @@ export function normalizeSalesRules(raw: unknown): SalesRules {
     invoice: { enabled: bool(r.invoice?.enabled, d.invoice.enabled) && r.invoice?.pending !== true, pending: r.invoice?.pending === true },
     card: { enabled: bool(r.card?.enabled, d.card.enabled), link: text(r.card?.link, 500) },
     qr: { enabled: bool(r.qr?.enabled, d.qr.enabled) },
+    cod_transfer: { enabled: bool(r.cod_transfer?.enabled, d.cod_transfer.enabled) },
     encomienda_ci: { enabled: bool(r.encomienda_ci?.enabled, d.encomienda_ci.enabled) },
     catalog_on_greeting: { enabled: bool(r.catalog_on_greeting?.enabled, d.catalog_on_greeting.enabled) },
     pickup: { enabled: bool(r.pickup?.enabled, false), address: text(r.pickup?.address), hours: text(r.pickup?.hours, 120) },
@@ -100,6 +104,9 @@ export function salesRulesTrainingEntry(rules: SalesRules, catalogUrl: string | 
       ? `💳 TARJETA DE CRÉDITO: SÍ, con link de pago.${r.card.link ? ` Link oficial: ${r.card.link}` : " Si no hay un link para el pedido, ofrecer que el responsable lo gestiona; nunca inventar un link."} Nunca pedir foto de la tarjeta, números, CVV ni códigos. Un link enviado no es un pago confirmado. No prometer cuotas.`
       : "💳 TARJETA DE CRÉDITO: NO aceptamos tarjeta. Ofrecer los otros medios de pago.",
     r.qr.enabled ? "📲 PAGO CON QR: SÍ aceptamos pago con QR." : "📲 PAGO CON QR: NO.",
+    r.cod_transfer.enabled
+      ? "🏦 TRANSFERENCIA EN CIUDADES CON PAGO AL RECIBIR: SÍ. Si el cliente lo pide, puede pagar por transferencia con los datos bancarios oficiales; el envío sigue siendo a domicilio con su dirección y el pedido se registra igual. Nunca la exijas: por defecto paga al recibir."
+      : "🏦 TRANSFERENCIA EN CIUDADES CON PAGO AL RECIBIR: NO. En esas ciudades solo se paga al recibir; la transferencia es solo para encomienda.",
     r.encomienda_ci.enabled
       ? "🪪 CÉDULA EN ENCOMIENDA: en encomienda es requisito obligatorio pedir el número de cédula del destinatario, siempre DESPUÉS de que el sistema confirme el pedido. Nunca antes."
       : "🪪 CÉDULA EN ENCOMIENDA: no se pide cédula.",

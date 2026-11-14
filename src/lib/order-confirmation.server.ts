@@ -33,8 +33,14 @@ type ConfirmationArgs = {
 export function buildRegisteredOrderConfirmation(args: ConfirmationArgs): string {
   const { created, order } = args;
   const isAdvance = /anticip|transfer|deposit|giro/i.test(order.payment_method ?? "");
-  const payment = isAdvance ? "Anticipado por transferencia" : "Al recibir";
-  const shipping = args.deliveryMethod?.trim() || (isAdvance ? "Encomienda / modalidad habilitada" : "Contraentrega");
+  // «transferencia» = ciudad con pago al recibir donde el cliente eligió transferir (envío a domicilio).
+  const payment = /^transferencia$/i.test(String(order.payment_method ?? "").trim())
+    ? "Transferencia (mandanos el comprobante por acá cuando transfieras)"
+    : isAdvance ? "Anticipado por transferencia" : "Al recibir";
+  const codTransfer = /^transferencia$/i.test(String(order.payment_method ?? "").trim());
+  const shipping = codTransfer
+    ? (args.deliveryMethod?.trim().replace(/\s*CONTRA\s*ENTREGA,?\s*PAGO AL RECIBIR/i, " A DOMICILIO").trim() || "Envío a domicilio")
+    : args.deliveryMethod?.trim() || (isAdvance ? "Encomienda / modalidad habilitada" : "Contraentrega");
   const product = [args.productName, args.productOption?.trim()].filter(Boolean).join(" — ");
   const city = [order.city, order.departamento].filter(Boolean).join(" — ");
   const address = args.address?.trim() || order.street?.trim() || "";

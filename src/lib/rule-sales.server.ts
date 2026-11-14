@@ -38,6 +38,8 @@ export type SaleState = {
   receiptDocuments?: Array<{path:string; amountGs:number; operation:string|null}>;
   receiptAnalysisAttemptedPaths?: string[];
   receiptReview?: string | null;
+  /** Ciudad con pago al recibir, pero el cliente eligió pagar por transferencia (envío igual a domicilio). */
+  payByTransfer?: boolean;
   /** Horario o indicaciones de entrega dichas por el cliente (no es dirección). */
   deliveryNotes?: string | null;
   /** Cantidad que pidió el cliente cuando era menor que el paquete mínimo (se tomó el mínimo). */
@@ -197,10 +199,32 @@ export function enforceVerifiedPaymentReply(args: {
     ? deliveryPolicyForCity(args.city,args.department,args.training):null;
   const normalized=norm(reply);
   const promisesCod=/\b(?:tenemos|contamos|disponemos|ofrecemos|hay|podes|podras|paga|pagas|pagar|se paga)\b.{0,95}\b(?:contra entrega|contraentrega|pago al recibir|al recibir|cuando recibas|cuando llegue|al delivery)\b|\b(?:pago al recibir|contra entrega|contraentrega)\b.{0,80}\b(?:disponible|habilitado|para (?:tu|esa|esta) (?:zona|ciudad))\b/.test(normalized);
-  const wrongCod=policy?.paymentMethod==="contraentrega" &&
+  // El cliente eligió pagar por transferencia y la tienda lo acepta: datos bancarios permitidos (nunca «encomienda»).
+  const codTransfer=policy?.paymentMethod==="contraentrega" && Boolean(args.saleState?.payByTransfer) && codTransferAllowed(args.training);
+  const wrongCod=policy?.paymentMethod==="contraentrega" && codTransfer ? /\b(?:encomienda|no tenemos contra entrega|no hay contra entrega)\b/.test(normalized) :
+    policy?.paymentMethod==="contraentrega" &&
     /\b(?:encomienda|pago anticipado|pagar por transferencia|transferencia obligatoria|total a transferir|monto a transferir|importe a transferir|debes transferir|tenes que transferir|transferis a|datos bancarios|cuenta bancaria|no tenemos contra entrega|no hay contra entrega|comprobante de transferencia|comprobante de pago|comprobante|banco|titular|alias eko|cuenta desde|nro de cuenta|realices el pago)\b/.test(normalized);
   const wrongAdvance=policy?.paymentMethod==="anticipado" && promisesCod;
   return {reply,corrected:Boolean((promisesCod && policy?.paymentMethod!=="contraentrega")||wrongCod||wrongAdvance),paymentMethod:policy?.paymentMethod??null};
+}
+
+/**
+ * ¿La tienda acepta transferencia en ciudades con pago al recibir? Lo decide la
+ * ficha; sin fichas, sí cuando la tienda tiene datos bancarios cargados.
+ */
+export function codTransferAllowed(training: AiContext["training"]): boolean {
+  const rules = training.find(entry => entry.category === SALES_RULES_CATEGORY);
+  if (rules && /TRANSFERENCIA EN CIUDADES CON PAGO AL RECIBIR:/.test(String(rules.content ?? "")))
+    return /TRANSFERENCIA EN CIUDADES CON PAGO AL RECIBIR: SÍ/.test(String(rules.content ?? ""));
+  return Boolean(sellerBankText(training).trim());
+}
+
+/** El cliente pide o pregunta por pagar con transferencia («¿tienen para transferencia?», «te transfiero»). */
+export function customerWantsTransfer(text: string): boolean | null {
+  const n = norm(text);
+  if (/\bno\s+(?:tengo|puedo|hago|quiero|voy a)\b.{0,30}\btransfer|\btransferencias?\s+no\s+(?:tengo|puedo)|\bsin\s+transfer|\b(?:mejor|prefiero)\s+(?:al recibir|contra ?entrega|en efectivo|efectivo)/.test(n)) return false;
+  if (/\btransfer\w*|\btransfiero\b|\bgiro\b|\bdeposit\w*|\bpago\s+(?:por\s+)?(?:banco|alias)\b/.test(n)) return true;
+  return null;
 }
 
 /** Requisito configurado por entrenamiento para encomienda; se recoge DESPUÉS del comprobante y ANTES del INSERT. */
