@@ -2367,6 +2367,15 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         if (askedCityError) throw askedCityError;
       }
     }
+    // Cliente que vuelve: si el bot ofreció «los datos de la vez pasada» y dijo que sí, se completan.
+    const customerMemory = await import("@/lib/customer-memory.server")
+      .then(m => m.loadCustomerMemory(workspaceId, contact.id, phone)).catch(() => null);
+    if (customerMemory && !conversation.sale_closed) {
+      const { applyRememberedData } = await import("@/lib/customer-memory.server");
+      const lastBotText = [...chatHistory].reverse().find(h => h.role === "assistant")?.content ?? "";
+      const remembered = applyRememberedData(previousSale, customerMemory, lastBotText, body, ctx.training);
+      if (remembered.length) console.info("[BOT_SKY_CUSTOMER_MEMORY]", JSON.stringify({conversationId:conversation.id, applied:remembered}));
+    }
     const beforeRules: SaleState = { ...previousSale };
     const ruleStep = !bypassSale
       ? advanceRuleSale(ctx, saleInput, previousSale, media && (media.type === "image" || media.type === "document") ? mediaPath : null, gpsUrl)
@@ -2418,7 +2427,8 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       : `\n${sellerAllowsNationwideAdvance(ctx.training) ? "ENCOMIENDA NACIONAL AUTORIZADA: fuera de contraentrega se puede ofrecer pago anticipado sujeto a verificar logística; NO negar todo envío por ausencia en la lista. " : ""}COBERTURA PENDIENTE: la CIUDAD DE ENTREGA es el primer dato logístico obligatorio; NO solicites nombre, dirección, GPS, método de pago ni transferencia antes de verificarla. La ciudad debe estar en la cobertura activa de este vendedor o resolverse según su política de encomienda. No deduzcas municipio desde GPS ni barrio. Si el cliente hace otra consulta, respondela primero sin repetir automáticamente la pregunta de ciudad y conservá la venta.`;
     const aiAnswerContext = {
       ...answerContext,
-      systemInstruction: answerContext.systemInstruction + officialPolicyInstruction + shippingFeeInstruction + noShippingInstruction(verifiedSaleState) + codTransferInstruction + `\nMODO IA + ENTRENAMIENTO BOT SKY, PRIORIDAD ALTA: Las respuestas comerciales las generás vos usando únicamente catálogo y entrenamiento de esta tienda. CONVERSÁ VOS con el comprador de forma natural: resolvé una sola pregunta por vez y no repitas catálogo/precios completos ni datos ya recibidos. Cantidad y variante se capturan mediante código y deben respetarse. No confirmes pedidos sin número real generado por Supabase. El cliente puede comprar varias veces. DATOS VERIFICADOS DEL CICLO ACTUAL (no mezclar con pedidos previos): ${JSON.stringify({productId:verifiedSaleState.productId,optionId:verifiedSaleState.optionId,quantity:verifiedSaleState.quantity,city:verifiedSaleState.city,department:verifiedSaleState.department,cityVerified:verifiedSaleState.cityVerified===true,coverageStatus:verifiedSaleState.coverageStatus,customerName:verifiedSaleState.customerName,hasAddress:Boolean(verifiedSaleState.street),gpsReceived:Boolean(verifiedSaleState.locationUrl),paymentMethod:verifiedSaleState.paymentMethod,awaiting:verifiedSaleState.awaiting})}. COBERTURA: si cityVerified no es true, NUNCA digas que tenemos cobertura; cuando nombres la ciudad escribila SIEMPRE exactamente como figura en el campo city de los datos verificados (bien escrita, con tildes y ñ), nunca copies cómo la escribió el cliente; consultá la ciudad si falta. GPS no prueba por sí mismo ninguna ciudad. Si recibiste GPS no vuelvas a solicitarlo. El GPS es dirección suficiente si la configuración de la ciudad admite dirección por ubicación. Respetá el orden de preguntas definido en el entrenamiento del vendedor; nunca repitas hechos conocidos. Si no tenés precio/variante sin ambigüedad pedí aclaración. Si está completo, el código registrará el pedido; no inventes un número de orden ni digas que está confirmado.
+      systemInstruction: answerContext.systemInstruction + officialPolicyInstruction + shippingFeeInstruction + noShippingInstruction(verifiedSaleState) + codTransferInstruction +
+        (customerMemory ? (await import("@/lib/customer-memory.server")).customerMemoryInstruction(customerMemory, verifiedSaleState) : "") + `\nMODO IA + ENTRENAMIENTO BOT SKY, PRIORIDAD ALTA: Las respuestas comerciales las generás vos usando únicamente catálogo y entrenamiento de esta tienda. CONVERSÁ VOS con el comprador de forma natural: resolvé una sola pregunta por vez y no repitas catálogo/precios completos ni datos ya recibidos. Cantidad y variante se capturan mediante código y deben respetarse. No confirmes pedidos sin número real generado por Supabase. El cliente puede comprar varias veces. DATOS VERIFICADOS DEL CICLO ACTUAL (no mezclar con pedidos previos): ${JSON.stringify({productId:verifiedSaleState.productId,optionId:verifiedSaleState.optionId,quantity:verifiedSaleState.quantity,city:verifiedSaleState.city,department:verifiedSaleState.department,cityVerified:verifiedSaleState.cityVerified===true,coverageStatus:verifiedSaleState.coverageStatus,customerName:verifiedSaleState.customerName,hasAddress:Boolean(verifiedSaleState.street),gpsReceived:Boolean(verifiedSaleState.locationUrl),paymentMethod:verifiedSaleState.paymentMethod,awaiting:verifiedSaleState.awaiting})}. COBERTURA: si cityVerified no es true, NUNCA digas que tenemos cobertura; cuando nombres la ciudad escribila SIEMPRE exactamente como figura en el campo city de los datos verificados (bien escrita, con tildes y ñ), nunca copies cómo la escribió el cliente; consultá la ciudad si falta. GPS no prueba por sí mismo ninguna ciudad. Si recibiste GPS no vuelvas a solicitarlo. El GPS es dirección suficiente si la configuración de la ciudad admite dirección por ubicación. Respetá el orden de preguntas definido en el entrenamiento del vendedor; nunca repitas hechos conocidos. Si no tenés precio/variante sin ambigüedad pedí aclaración. Si está completo, el código registrará el pedido; no inventes un número de orden ni digas que está confirmado.
 AVANCE DEL CIERRE, OBLIGATORIO EN EL MISMO TURNO: si ya identificaste producto, variante, cantidad y ciudad, NO termines una respuesta mostrando solo el detalle o preguntando «¿seguimos?», «¿está bien?» o «¿confirmás?»; pedí inmediatamente el SIGUIENTE dato faltante del estado técnico. Si awaiting="name", solicitá nombre Y apellido en ese mismo mensaje, aun cuando acabes de explicar el pago al recibir y el total. Cuando te respondan el nombre, si awaiting="address", pedí dirección o ubicación. Si awaiting="receipt" para encomienda, explicá las instrucciones de pago SOLO desde los datos bancarios reales de este vendedor y decí que envíe el comprobante; no pidas dirección ni GPS. ORDEN DE CADA RESPUESTA: PRIMERO respondé lo que el cliente preguntó o comentó en su último mensaje (dudas del producto, precio, objeciones como «es caro», envío, garantía, uso) usando el catálogo y el entrenamiento; RECIÉN DESPUÉS, en el mismo mensaje, pedí el dato pendiente sin repetir lo ya dicho. Nunca ignores una consulta para pedir datos. Nunca digas «pedido confirmado» antes de que el servidor lo registre.
 Respetá el estilo, productos y condiciones del entrenamiento particular del vendedor; el backend solamente asegura que la venta NO se estanque sin pedir el siguiente dato obligatorio.`
     };
@@ -2986,6 +2996,33 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
      * incluidas las reescrituras de la IA. Ninguna respuesta puede contradecir
      * la modalidad verificada de la ciudad ni llevar marcadores como [PRECIO].
      */
+    // Memoria de la compra: nunca volver a pedir un dato que el cliente ya dio.
+    const knownName = isValidCustomerName(verifiedSaleState.customerName) ? String(verifiedSaleState.customerName) : null;
+    const knownAddress = isValidDeliveryAddress(verifiedSaleState.street) || Boolean(verifiedSaleState.locationUrl);
+    const asksKnownData = (text: string): string | null => {
+      const t = text.toLowerCase();
+      const asking = /[?¿]|\b(?:necesito|pas[aá]me|pas[aá]s|indic[aá]|confirm[aá]|dec[ií]me|envi[aá]me|mand[aá]me)/i.test(text);
+      if (!asking) return null;
+      if (knownName && /\b(?:tu|su)\s+nombre\b|\bnombre\s+(?:y|completo)\s*(?:apellido)?|\ba\s+nombre\s+de\s+qui[eé]n\b/i.test(text) &&
+          !t.includes(knownName.split(/\s+/)[0].toLowerCase())) return `el nombre (${knownName})`;
+      if (verifiedSaleState.cityVerified && verifiedSaleState.city && /\b(?:en\s+)?qu[eé]\s+ciudad\b|\bciudad\s+de\s+entrega\b|\bconfirm\w*\s+(?:tu|la)\s+ciudad\b/i.test(text) &&
+          !t.includes(String(verifiedSaleState.city).toLowerCase().slice(0, 5))) return `la ciudad (${verifiedSaleState.city})`;
+      if (knownAddress && /\b(?:tu|la|su)\s+direcci[oó]n\b|\bubicaci[oó]n\s+(?:por|de|en)\s+google|\b(?:tu|la)\s+ubicaci[oó]n\b/i.test(text) &&
+          !(verifiedSaleState.street && t.includes(String(verifiedSaleState.street).toLowerCase().slice(0, 12)))) return "la dirección o ubicación";
+      return null;
+    };
+    // No repetir el mismo mensaje: el cliente ya lo leyó.
+    const previousBotReplies = chatHistory.filter(h => h.role === "assistant").slice(-2).map(h => h.content);
+    const repeatsPreviousReply = (text: string) => {
+      const words = (v: string) => new Set(v.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").match(/[a-z0-9]{4,}/g) ?? []);
+      const a = words(text);
+      if (a.size < 6) return false;
+      return previousBotReplies.some(prev => {
+        const b = words(prev);
+        const inter = [...a].filter(w => b.has(w)).length;
+        return inter / Math.max(a.size, b.size) >= 0.8;
+      });
+    };
     const violatesVerifiedFacts = (text: string) => {
       const policy = verifiedSaleState.cityVerified
         ? deliveryPolicyForCity(verifiedSaleState.city, verifiedSaleState.department, ctx.training) : null;
@@ -3001,7 +3038,9 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         // «No realizamos envíos a Reducto»: solo la pestaña de cobertura puede negar un envío.
         (deniesShipping(text) && verifiedSaleState.coverageStatus !== "none") ||
         // «Te avisaremos cuando el pedido esté en camino» sin pedido registrado = venta perdida.
-        (!conversation.sale_closed && promisesShipment(text));
+        (!conversation.sale_closed && promisesShipment(text)) ||
+        (!conversation.sale_closed && Boolean(asksKnownData(text))) ||
+        repeatsPreviousReply(text);
     };
     // Solo el bloque posterior al INSERT puede confirmar; el resto nunca.
     function claimsRegisteredOrder(text: string) {
@@ -3028,6 +3067,10 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         WAITING_REPLY_RE.test(text) ? "No digas «un momento», «voy a verificar» ni «te aviso»: el sistema ya revisó todo en este turno; respondé con el resultado y el siguiente paso." : "",
         deniesShipping(text) && verifiedSaleState.coverageStatus !== "none"
           ? `No está verificado que no haya envío${verifiedSaleState.city ? ` a ${verifiedSaleState.city}` : ""}: NO digas que no enviamos. Si el cliente nombró un barrio, zona o compañía, preguntale con amabilidad a qué ciudad pertenece; si no dio lugar, preguntá en qué ciudad quiere recibir el pedido.` : "",
+        !conversation.sale_closed && asksKnownData(text)
+          ? `El cliente YA te dio ${asksKnownData(text)}: no se lo vuelvas a pedir. Pedí solo lo que de verdad falta${verifiedSaleState.awaiting ? ` (${verifiedSaleState.awaiting})` : ""}, o respondé lo que preguntó.` : "",
+        repeatsPreviousReply(text)
+          ? "Tu borrador repite casi igual un mensaje que ya le mandaste. No lo repitas: respondé lo NUEVO que dijo el cliente y, si sigue faltando el mismo dato, pedilo de otra forma o explicale en una frase para qué lo necesitás." : "",
         !conversation.sale_closed && promisesShipment(text)
           ? "Todavía NO hay pedido registrado: no digas que se envía, que está en camino ni que le avisarán. Pedí el dato que falta para registrarlo (por ejemplo la ciudad de entrega)." : "",
         claimsRegisteredOrder(text) ? "El pedido TODAVÍA NO está registrado en el sistema: no digas que está confirmado, no muestres número de pedido ni agradezcas la compra; pedí el dato que falte." : "",

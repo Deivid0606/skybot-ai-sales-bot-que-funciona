@@ -1,5 +1,5 @@
 // Limites defensivos por mensaje, configurables en Vercel.
-const MAX_HISTORY_MESSAGES = 16;
+const MAX_HISTORY_MESSAGES = 20;
 const MAX_HISTORY_CHARS = 950;
 const MAX_OUTPUT_TOKENS = 1536; // Dejar margen para JSON completo y el razonamiento del modelo.
 const MAX_PROVIDER_ATTEMPTS = 4;
