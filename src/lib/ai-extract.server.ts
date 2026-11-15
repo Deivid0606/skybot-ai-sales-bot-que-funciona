@@ -238,6 +238,11 @@ export function vetoUnsupportedChanges(ctx: AiContext, stored: SaleState, next: 
       reverted.push("ciudad→ia");
     }
   }
+  // «Es largo», «Ess»: si el análisis dice que el mensaje no trae una ciudad (pregunta,
+  // saludo, otro…), no se marca un «lugar sin ciudad» ni se pregunta por el barrio.
+  if (next.pendingPlace && next.pendingPlace !== stored.pendingPlace && !kinds.has("ciudad") && kinds.size > 0) {
+    next.pendingPlace = stored.pendingPlace ?? null; reverted.push("lugar");
+  }
   // Dirección
   if (!same(next.street, stored.street) && next.street && next.street !== next.locationUrl &&
       !kinds.has("direccion") && !kinds.has("ubicacion") && !same(ext.address, next.street)) {

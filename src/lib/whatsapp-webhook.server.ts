@@ -3012,7 +3012,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       return null;
     };
     // No repetir el mismo mensaje: el cliente ya lo leyó.
-    const previousBotReplies = chatHistory.filter(h => h.role === "assistant").slice(-2).map(h => h.content);
+    const previousBotReplies = chatHistory.filter(h => h.role === "assistant").slice(-4).map(h => h.content);
     const repeatsPreviousReply = (text: string) => {
       const words = (v: string) => new Set(v.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").match(/[a-z0-9]{4,}/g) ?? []);
       const a = words(text);
@@ -3076,7 +3076,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         asksCiEarly(text)
           ? "Todavía NO pidas la cédula: se pide recién después de que el sistema confirme el pedido. Pedí solo lo que falta para registrarlo (por ejemplo, nombre y apellido de quien recibe)." : "",
         repeatsPreviousReply(text)
-          ? "Tu borrador repite casi igual un mensaje que ya le mandaste. No lo repitas: respondé lo NUEVO que dijo el cliente y, si sigue faltando el mismo dato, pedilo de otra forma o explicale en una frase para qué lo necesitás." : "",
+          ? "Tu borrador repite casi igual un mensaje que ya le mandaste (por ejemplo el anuncio completo). No lo repitas: si volvió a preguntar algo que ya respondiste (como el precio), contestá en 1 o 2 líneas (ej.: «Sí 😊 1 a Gs. X, 2 a Gs. Y. ¿Cuántos te preparo?»); si no, respondé lo NUEVO que dijo y pedí el dato que falta de otra forma." : "",
         !conversation.sale_closed && promisesShipment(text)
           ? "Todavía NO hay pedido registrado: no digas que se envía, que está en camino ni que le avisarán. Pedí el dato que falta para registrarlo (por ejemplo la ciudad de entrega)." : "",
         claimsRegisteredOrder(text) ? "El pedido TODAVÍA NO está registrado en el sistema: no digas que está confirmado, no muestres número de pedido ni agradezcas la compra; pedí el dato que falte." : "",
