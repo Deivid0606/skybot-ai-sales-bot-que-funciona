@@ -236,10 +236,14 @@ export function findParaguayPlace(text: string): PyCity | null {
   if (!t || t.length > 220) return null;
   const padded = ` ${t} `;
   const cue = PLACE_CUE.test(t);
+  // «Sii san lorenso», «Ok, Luque», «Dale es en Limpio»: lo que queda después de
+  // las palabras de confirmación es la respuesta (la ciudad sola).
+  const core = t.replace(/^(?:(?:s+i+|sip|ok|okey|okay|dale|bueno|bien|claro|ya|perfecto|listo|exacto|correcto|es|en|para|desde|a|de|soy|vivo|estoy|seria|sería)\s+)+/, "")
+    .replace(/\s+(?:paraguay|paragauy|paraguai|py|gracias|porfa|por favor|nomas|noma)$/, "").trim();
   // El departamento de esa ciudad en el mismo mensaje («Pilar Ñeembucú») también la confirma.
   const depSaid = (dep: string) => padded.includes(` ${key(dep)} `);
   let hits = PLACES.filter(p => padded.includes(` ${p.alias} `) &&
-    (!AMBIGUOUS.has(p.alias) || cue || t === p.alias || (depSaid(p.department) && key(p.department) !== p.alias)));
+    (!AMBIGUOUS.has(p.alias) || cue || t === p.alias || core === p.alias || (depSaid(p.department) && key(p.department) !== p.alias)));
   if (!hits.length) {
     // Errores de tipeo de 1 letra en nombres largos («Ypakarai», «ciudad del est»).
     const words = t.split(" ");
@@ -253,7 +257,7 @@ export function findParaguayPlace(text: string): PyCity | null {
   if (!hits.length) {
     // El mensaje ENTERO es una ciudad mal escrita («Cuidad de leste», «San lorenso»,
     // «Ciudad deleste py»): se compara sin espacios, con hasta 2 errores en nombres largos.
-    const whole = t.replace(/^(?:para|soy de|vivo en|estoy en|en|a)\s+/, "").replace(/\s+(?:paraguay|paragauy|paraguai|py)$/, "").replace(/\s+/g, "");
+    const whole = core.replace(/\s+/g, "");
     if (whole.length >= 7 && whole.length <= 30) {
       let best = 99; let found: Place[] = [];
       for (const p of PLACES) {
