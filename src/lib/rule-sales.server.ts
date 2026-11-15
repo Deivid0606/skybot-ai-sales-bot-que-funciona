@@ -932,7 +932,11 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   // «Para el sábado», «mañana a la tarde»: es un día u horario, no un lugar.
   const isWhen = SCHEDULE_REF.test(n) || /\b(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo|manana|hoy|pasado|semana|tarde|noche|mediodia|finde|fin de semana)\b/.test(n);
   // «Sí, es una ciudad» después de preguntar: se toma el lugar indicado antes.
+  // Con la pestaña «Zonas de cobertura», un lugar que no es una ciudad real de Paraguay
+  // nunca se acepta «a confirmar» (se manda a encomienda por error): se sigue preguntando.
+  const managedCoverage = ctx.training.some(t => t.category === COVERAGE_CATEGORY);
   if (existing.pendingPlace && !s.cityVerified && !match && !nationalDestination &&
+      (!managedCoverage || Boolean(findParaguayPlace(existing.pendingPlace))) &&
       !/\b(?:barrio|bario|varrio|avarrio|abarrio|asentamiento|loteamiento|compania|cia|zona)\b/.test(norm(existing.pendingPlace)) &&
       /^(?:(?:si|sii|correcto|exacto|asi es)\b[\s,.]*)?(?:es\s+(?:una\s+|la\s+)?ciudad|es\s+(?:un\s+)?(?:distrito|municipio|pueblo))\b|^(?:si|sii|correcto|exacto|asi es)$/.test(n)) {
     s.city = existing.pendingPlace.replace(/\s+/g," ").replace(/(^|\s)(\p{L})/gu, (_m, sp, ch) => sp + ch.toUpperCase());
@@ -1038,7 +1042,7 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     } else if (raw.length >= 3 && raw.length <= 40 && /^[\p{L}0-9 .'-]+$/u.test(raw) && !isNonCityPhrase(raw) &&
         !/\b(?:calle|barrio|casi|esquina|ruta|direccion|casa|unidad|unidades|caja|cajas)\b/i.test(raw) && existing.pendingPlace && !isWhen &&
         // «Del departamento de Paraguarí» no es una ciudad: falta el distrito.
-        !departmentIn(raw)) {
+        !departmentIn(raw) && (!managedCoverage || Boolean(findParaguayPlace(raw)))) {
       s.city = raw.replace(/\s+/g," ").replace(/(^|\s)(\p{L})/gu, (_m, sp, ch) => sp + ch.toUpperCase());
       s.department = s.department || "A confirmar";
       s.cityVerified = true; s.coverageStatus = "uncovered"; s.paymentMethod = "anticipado";

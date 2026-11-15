@@ -3023,6 +3023,9 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         return inter / Math.max(a.size, b.size) >= 0.8;
       });
     };
+    // La cédula del destinatario se pide DESPUÉS de registrar el pedido (nunca antes).
+    const asksCiEarly = (text: string) => !conversation.sale_closed &&
+      /\b(?:tu|su|la)\s+(?:n[uú]mero\s+de\s+)?c[eé]dula\b|(?:pas[aá]|pasame|env[ií]a|mand[aá]|necesito|indic[aá]|confirm[aá]|dec[ií]me)[^.?!\n]{0,50}\b(?:c[eé]dula|c\.\s?i\.)/i.test(text);
     const violatesVerifiedFacts = (text: string) => {
       const policy = verifiedSaleState.cityVerified
         ? deliveryPolicyForCity(verifiedSaleState.city, verifiedSaleState.department, ctx.training) : null;
@@ -3040,6 +3043,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         // «Te avisaremos cuando el pedido esté en camino» sin pedido registrado = venta perdida.
         (!conversation.sale_closed && promisesShipment(text)) ||
         (!conversation.sale_closed && Boolean(asksKnownData(text))) ||
+        asksCiEarly(text) ||
         repeatsPreviousReply(text);
     };
     // Solo el bloque posterior al INSERT puede confirmar; el resto nunca.
@@ -3069,6 +3073,8 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
           ? `No está verificado que no haya envío${verifiedSaleState.city ? ` a ${verifiedSaleState.city}` : ""}: NO digas que no enviamos. Si el cliente nombró un barrio, zona o compañía, preguntale con amabilidad a qué ciudad pertenece; si no dio lugar, preguntá en qué ciudad quiere recibir el pedido.` : "",
         !conversation.sale_closed && asksKnownData(text)
           ? `El cliente YA te dio ${asksKnownData(text)}: no se lo vuelvas a pedir. Pedí solo lo que de verdad falta${verifiedSaleState.awaiting ? ` (${verifiedSaleState.awaiting})` : ""}, o respondé lo que preguntó.` : "",
+        asksCiEarly(text)
+          ? "Todavía NO pidas la cédula: se pide recién después de que el sistema confirme el pedido. Pedí solo lo que falta para registrarlo (por ejemplo, nombre y apellido de quien recibe)." : "",
         repeatsPreviousReply(text)
           ? "Tu borrador repite casi igual un mensaje que ya le mandaste. No lo repitas: respondé lo NUEVO que dijo el cliente y, si sigue faltando el mismo dato, pedilo de otra forma o explicale en una frase para qué lo necesitás." : "",
         !conversation.sale_closed && promisesShipment(text)
