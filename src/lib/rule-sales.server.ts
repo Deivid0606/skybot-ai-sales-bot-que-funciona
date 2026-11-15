@@ -467,6 +467,13 @@ export function applyDeclaredCity(state: SaleState, hit: {city:string; departmen
 
 export function cityIn(text:string, coverage:Coverage[]): Coverage | null {
   const hit = cityInList(text, coverage);
+  // «Barrio San Miguel», «Zona Santa Rosa», «Compañía Itá»: es el BARRIO, no la ciudad.
+  if (hit) {
+    const n = ` ${norm(text)} `;
+    if ([hit.city, ...hit.aliases].some(a => norm(a) &&
+        new RegExp(` (?:barrio|bario|varrio|b|compania|cia|zona|asentamiento|loteamiento) ${norm(a).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} `).test(n)))
+      return null;
+  }
   // «Jorge Andrés Maciel», «Escobar», «la de Santiago»: ciudades que también son
   // apellidos o palabras comunes solo cuentan con una señal clara de lugar.
   if (hit && isAmbiguousPlaceName(hit.city) && !hasPlaceCue(text) &&
@@ -1034,7 +1041,11 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     const trimmed = text.trim();
     const directed = trimmed.match(/^(?:para|soy de|vivo en|enviar a|enviame a|envialo a|mandar a|mandalo a|a)\s+(.+)$/i)?.[1]
       ?? trimmed.match(/\b(?:quiero|llevo|dame|pido|necesito)\b.*?\bpara\s+(.{3,40})$/i)?.[1];
-    const raw = (directed ?? (s.awaiting === "city" ? trimmed : "")).replace(/[.!¡]+$/,"").trim();
+    const rawText = (directed ?? (s.awaiting === "city" ? trimmed : "")).replace(/[.!¡]+$/,"").trim();
+    // «Y», «Ess», «Siii», «Okk»: una palabra corta o estirada nunca es un lugar.
+    const letters = rawText.replace(/[^\p{L}]/gu, "");
+    const stretched = /^(?:e+s+|s+i+|n+o+|o+k+|y+a+|j+a+(?:j+a+)*|a+h+|e+h+|m+m+|y+|o+|a+|u+|h+o+l+a+|g+r+a+c+i+a+s+)$/i.test(norm(rawText).replace(/\s+/g, ""));
+    const raw = letters.length >= 4 && !stretched ? rawText : "";
     if (raw.length >= 3 && raw.length <= 40 && /^[\p{L}0-9 .'-]+$/u.test(raw) && !isNonCityPhrase(raw) &&
         !/\b(?:calle|barrio|casi|esquina|ruta|direccion|casa|unidad|unidades|caja|cajas)\b/i.test(raw) && !existing.pendingPlace && !isWhen) {
       // Primera vez: preguntar a qué ciudad corresponde (puede ser un barrio).
