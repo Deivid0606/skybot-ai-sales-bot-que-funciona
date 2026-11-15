@@ -219,6 +219,18 @@ export function hasPlaceCue(text: string): boolean {
  * si no hay ninguna o es ambigua. Un barrio junto a la ciudad («Concepción
  * barrio Inmaculada») devuelve la ciudad.
  */
+/** Distancia de edición con transposiciones («cuidad» ↔ «ciudad» cuenta 1). */
+function osaDistance(a: string, b: string): number {
+  const d: number[][] = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) {
+    const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+    d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+    if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+  }
+  return d[a.length][b.length];
+}
+
 export function findParaguayPlace(text: string): PyCity | null {
   const t = key(text);
   if (!t || t.length > 220) return null;
@@ -237,6 +249,22 @@ export function findParaguayPlace(text: string): PyCity | null {
       for (let i = 0; i + size <= words.length; i++) if (oneEdit(words.slice(i, i + size).join(" "), p.alias)) return true;
       return false;
     });
+  }
+  if (!hits.length) {
+    // El mensaje ENTERO es una ciudad mal escrita («Cuidad de leste», «San lorenso»,
+    // «Ciudad deleste py»): se compara sin espacios, con hasta 2 errores en nombres largos.
+    const whole = t.replace(/^(?:para|soy de|vivo en|estoy en|en|a)\s+/, "").replace(/\s+(?:paraguay|paragauy|paraguai|py)$/, "").replace(/\s+/g, "");
+    if (whole.length >= 7 && whole.length <= 30) {
+      let best = 99; let found: Place[] = [];
+      for (const p of PLACES) {
+        const alias = p.alias.replace(/\s+/g, "");
+        if (alias.length < 8 || Math.abs(alias.length - whole.length) > 2) continue;
+        const d = osaDistance(whole, alias);
+        if (d > (alias.length >= 10 ? 2 : 1)) continue;
+        if (d < best) { best = d; found = [p]; } else if (d === best) found.push(p);
+      }
+      hits = found;
+    }
   }
   // «Barrio San Pablo», «B° Santa Rosa», «Compañía Itá»: el nombre que sigue a
   // barrio/compañía/zona es el BARRIO, no la ciudad.
