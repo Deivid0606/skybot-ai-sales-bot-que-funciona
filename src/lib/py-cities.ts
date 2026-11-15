@@ -134,7 +134,7 @@ const POPULAR: Record<string, string[]> = {
   "La Paloma del Espíritu Santo": ["la paloma"],
   "Teniente Primero Manuel Irala Fernández": ["irala fernandez"],
   "General José Eduvigis Díaz": ["general diaz"],
-  "Santa Rosa del Aguaray": ["aguaray"],
+  "Santa Rosa del Aguaray": ["aguaray", "sta rosa del aguaray"],
   "San Juan Bautista": ["san juan misiones"],
   // Barrios muy conocidos que los clientes dan como si fueran la ciudad («para Reducto»).
   // Solo barrios con un nombre que no se repite como ciudad ni como apellido común.
@@ -147,7 +147,6 @@ const POPULAR: Record<string, string[]> = {
   "Ypacaraí": ["ipacarai", "ipacaray", "ypacaray", "ypakarai", "ipakarai"],
   "Eusebio Ayala": ["barrero grande", "barrero"],
   "Santa Rita": ["sta rita"],
-  "Santa Rosa del Aguaray": ["sta rosa del aguaray"],
   "Minga Guazú": ["minguazu", "minga guasu", "mingaguazu"],
   "Hernandarias": ["hernandaria", "hernandaris"],
   "Guayaibí": ["guajayvi", "guajayvy", "guayaivi", "guajaivi"],
