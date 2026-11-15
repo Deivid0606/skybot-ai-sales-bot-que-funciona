@@ -107,12 +107,13 @@ const POPULAR: Record<string, string[]> = {
   "Ciudad del Este": ["cde", "c d e", "ciudad del este"],
   "San Estanislao": ["santani"],
   "Mauricio José Troche": ["capitan mauricio jose troche", "cap mauricio jose troche", "troche"],
-  "Doctor Juan Eulogio Estigarribia": ["campo 9", "campo nueve", "j eulogio estigarribia", "juan eulogio estigarribia",
+  "Doctor Juan Eulogio Estigarribia": ["campo 9", "campo9", "campo nueve", "j eulogio estigarribia", "juan eulogio estigarribia",
     "jota eulogio", "eulogio estigarribia", "dr j eulogio estigarribia"],
   "J. Augusto Saldívar": ["j augusto saldivar", "augusto saldivar", "jota augusto", "j a saldivar"],
   "Pedro Juan Caballero": ["pedro juan", "pjc"],
-  "Mariano Roque Alonso": ["mra", "mariano r alonso"],
-  "Fernando de la Mora": ["fdo de la mora", "fernando de la mora", "fdo mora", "fdm", "f d la mora", "fernando zona norte", "fernando zona sur"],
+  "Mariano Roque Alonso": ["mra", "mariano r alonso", "mariano roque", "m r alonso"],
+  "Fernando de la Mora": ["fdo de la mora", "fernando de la mora", "fdo mora", "fdm", "f d la mora", "fernando zona norte", "fernando zona sur",
+    "frenando de la mora", "fernando d l mora", "fernando d la mora", "fdo d la mora", "fernando de la mor"],
   "General Francisco Isidoro Resquín": ["isidoro resquin", "general resquin", "gral resquin", "resquin"],
   "Coronel Oviedo": ["cnel oviedo", "oviedo"],
   "Juan León Mallorquín": ["mallorquin", "km 41"],
@@ -138,10 +139,20 @@ const POPULAR: Record<string, string[]> = {
   // Barrios muy conocidos que los clientes dan como si fueran la ciudad («para Reducto»).
   // Solo barrios con un nombre que no se repite como ciudad ni como apellido común.
   "San Lorenzo": ["reducto", "barcequillo"],
-  "Asunción": ["villa morra", "recoleta", "sajonia", "mburucuya", "carmelitas", "tembetary",
+  "Asunción": ["asu", "asun", "asuncion py", "villa morra", "recoleta", "sajonia", "mburucuya", "carmelitas", "tembetary",
     "zeballos cue", "tablada nueva", "chacarita", "loma pyta", "ycua sati", "pinoza", "banado sur", "manora",
     "ytay", "villa aurelia"],
   "Luque": ["mora cue", "itapuami"],
+  // Abreviaturas y grafías que escriben los clientes (auditoría de chats reales).
+  "Ypacaraí": ["ipacarai", "ipacaray", "ypacaray", "ypakarai", "ipakarai"],
+  "Eusebio Ayala": ["barrero grande", "barrero"],
+  "Santa Rita": ["sta rita"],
+  "Santa Rosa del Aguaray": ["sta rosa del aguaray"],
+  "Minga Guazú": ["minguazu", "minga guasu", "mingaguazu"],
+  "Hernandarias": ["hernandaria", "hernandaris"],
+  "Guayaibí": ["guajayvi", "guajayvy", "guayaivi", "guajaivi"],
+  "San Lázaro": ["vallemi", "valle mi"],
+  "Caaguazú": ["czu"],
 };
 
 /**
@@ -284,4 +295,37 @@ export function findParaguayPlace(text: string): PyCity | null {
   }
   // Un nombre de departamento que coincide con su capital («Concepción», «Caaguazú»): la ciudad.
   return unique.length === 1 ? { city: unique[0].city, department: unique[0].department } : null;
+}
+
+
+const NOT_A_CITY_TOKEN = new Set(["para", "san", "santa", "villa", "puerto", "doctor", "general", "coronel", "capitan", "nueva", "nuevo",
+  "colonia", "mayor", "presidente", "teniente", "ciudad", "barrio", "zona", "del", "las", "los", "que", "con", "por", "una", "uno"]);
+
+/**
+ * ¿Lo que escribió el cliente respalda la ciudad que entendió la IA? Acepta la
+ * ciudad exacta, alias, errores de tipeo (hasta 2 letras en nombres largos) y
+ * abreviaturas («Asu» → Asunción, «Hernamdaria…» → Hernandarias).
+ */
+export function textSupportsCity(city: string, texts: string[]): boolean {
+  const target = PY_CITIES.find(c => key(c.city) === key(city));
+  if (!target) return false;
+  const aliases = PLACES.filter(p => p.city === target.city && p.department === target.department).map(p => p.alias);
+  const compactAliases = aliases.map(a => a.replace(/\s+/g, ""));
+  for (const text of texts) {
+    if (findParaguayPlace(text)?.city === target.city) return true;
+    const words = key(text).replace(/([a-z])(\d)/g, "$1 $2").replace(/(\d)([a-z])/g, "$1 $2").split(" ").filter(Boolean);
+    for (let size = 1; size <= 4; size++) {
+      for (let i = 0; i + size <= words.length; i++) {
+        const win = words.slice(i, i + size).join("");
+        if (win.length < 3) continue;
+        for (const alias of compactAliases) {
+          if (alias.length >= 6 && Math.abs(alias.length - win.length) <= 2 && osaDistance(win, alias) <= (alias.length >= 8 ? 2 : 1)) return true;
+          // Abreviatura o palabra pegada: «asu» → asuncion, «hernamdariabarrio» → hernandarias.
+          if (size === 1 && win.length >= 3 && !NOT_A_CITY_TOKEN.has(win) && alias.length >= 6 &&
+              (alias.startsWith(win) || (win.length >= alias.length && osaDistance(win.slice(0, alias.length), alias) <= 2))) return true;
+        }
+      }
+    }
+  }
+  return false;
 }

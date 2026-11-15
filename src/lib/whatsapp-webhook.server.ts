@@ -3943,6 +3943,15 @@ export async function createOrderFromAi(args: {
    * realiza otra compra en otro mensaje, se crea una orden nueva aunque se
    * reutilicen el contacto y la conversación.
    */
+  // «José Vicente González 3753769»: nombre y cédula juntos → se separan.
+  {
+    const glued = String(args.order.customer_name ?? "").trim().match(/^(.*\p{L})[\s,.:;-]*(?:c\.?\s?i\.?|c[eé]dula)?[\s:.-]*(\d[\d.]{4,11})$/iu);
+    if (glued) {
+      args.order.customer_name = glued[1].replace(/[\s,.:;-]*(?:c\.?\s?i\.?|c[eé]dula)$/i, "").trim();
+      const ci = glued[2].replace(/\D/g, "");
+      if (!args.order.recipient_ci && isValidRecipientCi(ci)) args.order.recipient_ci = ci;
+    }
+  }
   // Última barrera: ninguna ruta de creación puede saltarse estas verificaciones.
   const orderIsEncomienda=Boolean(args.training && isEncomiendaAdvanceOrder(args.training,args.order.city,args.order.departamento,args.order.payment_method));
   // Para encomienda no se lee ni se valida el domicilio de entrega.

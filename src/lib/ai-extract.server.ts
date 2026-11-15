@@ -1,5 +1,5 @@
 import { getGeminiCandidates, wellFormedJson, isKeyTemporarilyUnavailable, markKeyUnavailable, type AiContext } from "@/lib/ai.server";
-import { findParaguayPlace } from "@/lib/py-cities";
+import { findParaguayPlace, textSupportsCity } from "@/lib/py-cities";
 import { normalizeNoShipping, cityIn, parseCoverage, nationwideDestinationFromText, deliveryPolicyForCity, sellerAllowsNationwideAdvance, type SaleState } from "@/lib/rule-sales.server";
 import { isValidCustomerName, isValidDeliveryAddress } from "@/lib/sale-reconciliation.server";
 
@@ -156,10 +156,15 @@ export function applyAiExtraction(ctx: AiContext, state: SaleState, ext: AiSaleE
     // marcado así («Concepción barrio Inmaculada», «Pedro Juan Caballero»).
     const lastText = customerTexts[customerTexts.length - 1] ?? "";
     const geo = findParaguayPlace(ext.city) ?? (ext.place_kind === "barrio" ? findParaguayPlace(lastText) : null);
-    const geoSaid = geo && (wordsSaid(geo.city.replace(/\(.*\)/, "")) || findParaguayPlace(lastText)?.city === geo.city);
+    // Lo que escribió el cliente respalda la ciudad de la IA aunque esté abreviada o mal escrita
+    // («Asu», «Ipacaray», «minguazu km 30», «frenando de la mora»).
+    const recentTexts = customerTexts.slice(-3);
+    const geoSaid = geo && (wordsSaid(geo.city.replace(/\(.*\)/, "")) || findParaguayPlace(lastText)?.city === geo.city ||
+      textSupportsCity(geo.city, recentTexts));
     if (geo && geoSaid) ext = {...ext, place_kind: "city", city: geo.city};
     const covered = ext.place_kind === "barrio" ? null : cityIn(ext.city!, coverage);
-    const coveredSaid = covered && [covered.city, ...covered.aliases].some(a => norm(a).length >= 3 && said.includes(` ${norm(a)} `));
+    const coveredSaid = covered && ([covered.city, ...covered.aliases].some(a => norm(a).length >= 3 && said.includes(` ${norm(a)} `)) ||
+      textSupportsCity(covered.city, recentTexts));
     // Geografía (no cobertura): identifica municipio y departamento para cualquier vendedor.
     const national = ext.place_kind === "barrio" ? null
       : (geo && geoSaid ? geo

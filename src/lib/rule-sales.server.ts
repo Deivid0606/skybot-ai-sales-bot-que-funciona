@@ -411,6 +411,26 @@ function declaredDestination(text:string): {city:string;department:string}|null 
 }
 
 /** Frases que NO son nombres de ciudad (pago, saludos, preguntas, pedidos). */
+/**
+ * Mensajes que NUNCA son el nombre de un lugar, aunque el bot esté esperando la ciudad:
+ * palabras cortas o estiradas («Ess», «Siii»), propósitos («para reventa»), fechas
+ * («a fin de mes»), precios («149mil»), fotos, preguntas del producto, cortesías y
+ * nombres de personas («Rufino Rolón»).
+ */
+export function notAPlaceText(text:string):boolean{
+  const nr = norm(text);
+  const letters = String(text).replace(/[^\p{L}]/gu, "");
+  if (letters.length < 4) return true;
+  if (/^(?:e+s+|s+i+|n+o+|o+k+|y+a+|j+a+(?:j+a+)*|a+h+|e+h+|m+m+|y+|o+|a+|u+|h+o+l+a+|g+r+a+c+i+a+s+)$/i.test(nr.replace(/\s+/g, ""))) return true;
+  if ((/\d{3,}|\b\d+\s*mil\b/.test(nr) && !/\bkm\b/.test(nr))) return true;
+  // «2 lkgroz», «el 20 voy a querer», «para el 7 de diciembre»: cantidades y fechas.
+  if (/^\d{1,2}\s+(?!de\b)\p{L}/u.test(nr) || /\b(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|setiembre|septiembre|octubre|noviembre|diciembre|querer|quiero|voy)\b/.test(nr) && /\b(?:para|el|voy|quiero|querer)\b/.test(nr)) return true;
+  if (/^(?:para|pa)\s+(?:el|la|los|las|un|una|mi|mis|su|todos|ree?\s*venta|reventa|negocio|medir|mirar|usar|enviar\w*|regalar|regalo|que|cuando|ver|probar|aser|hacer|controlar|dentro|eladera|heladera|ustedes\w*)/.test(nr)) return true;
+  if (/\b(?:reventa|negocio|foto|fotos|video|viedeo|medida|medidas|precio|combo|opcion|opcao|paquete|producto|accesorios|presion|vuelto|explicar|conecta|tarda|fuerte|largo|tamano|color|modelo|garantia|stock|disponible|funciona|sirve|incluye|trae|viene|cuanto|cusnto|cual|donde|cuando|porque|como|mes|semana|quincena|cobro|sueldo|despues|luego|ahora|trabajando|ocupado|ninguno|todos|tambien|entiendo|ok|bueno|buemo|gracias|graciass|interesa|deliveri|delivery|deliberi|transportadora|carne|verduras|wifi|vehiculo|equivocando|economico|avisar|cualquier|momento|eres|chica|tarraja|taladro|rosca|glucometro|perdon|escribi|enviame|veo|somo|somos|tiensa|tienda|vende|junos|set|real|esa|este|esta)\b/.test(nr)) return true;
+  if (looksLikePersonName(text)) return true;
+  return false;
+}
+
 export function isNonCityPhrase(text:string):boolean{
   const n=norm(text);
   if (/\b(?:tsi|transportadora|transportista|encomienda|nasa|rutaexpress)\b/.test(n)) return true;
@@ -1006,9 +1026,9 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     const lineCoverage=lineHit ? cityIn(lineHit,coverage) : null;
     if(lineCoverage) {
       s.city=lineCoverage.city;s.department=lineCoverage.department;s.cityVerified=true;s.coverageStatus=lineCoverage.active?"covered":"uncovered";
-    } else if(n.length>=3 && n.length<=55 && /^[a-z ]+$/.test(n) && !isNonCityPhrase(text) && !existing.pendingPlace && !isWhen && !departmentIn(text)) {
+    } else if(n.length>=3 && n.length<=55 && /^[a-z ]+$/.test(n) && !isNonCityPhrase(text) && !notAPlaceText(text) && !existing.pendingPlace && !isWhen && !departmentIn(text)) {
       s.pendingPlace = text.trim(); askedPlaceNow = true;
-    } else if(n.length>=3 && n.length<=55 && /^[a-z ]+$/.test(n) && !isNonCityPhrase(text) && !isWhen && !departmentIn(text)) {
+    } else if(n.length>=3 && n.length<=55 && /^[a-z ]+$/.test(n) && !isNonCityPhrase(text) && !notAPlaceText(text) && !isWhen && !departmentIn(text)) {
       // La ciudad sola no determina el departamento. Solicitar aclaración, sin inventar.
       s.city = text.trim().replace(/^(?:para|soy de|vivo en|enviar a|mandar a|a)\s+/i, "");
       s.department = null;
@@ -1042,10 +1062,7 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     const directed = trimmed.match(/^(?:para|soy de|vivo en|enviar a|enviame a|envialo a|mandar a|mandalo a|a)\s+(.+)$/i)?.[1]
       ?? trimmed.match(/\b(?:quiero|llevo|dame|pido|necesito)\b.*?\bpara\s+(.{3,40})$/i)?.[1];
     const rawText = (directed ?? (s.awaiting === "city" ? trimmed : "")).replace(/[.!¡]+$/,"").trim();
-    // «Y», «Ess», «Siii», «Okk»: una palabra corta o estirada nunca es un lugar.
-    const letters = rawText.replace(/[^\p{L}]/gu, "");
-    const stretched = /^(?:e+s+|s+i+|n+o+|o+k+|y+a+|j+a+(?:j+a+)*|a+h+|e+h+|m+m+|y+|o+|a+|u+|h+o+l+a+|g+r+a+c+i+a+s+)$/i.test(norm(rawText).replace(/\s+/g, ""));
-    const raw = letters.length >= 4 && !stretched ? rawText : "";
+    const raw = notAPlaceText(rawText) || notAPlaceText(trimmed) ? "" : rawText;
     if (raw.length >= 3 && raw.length <= 40 && /^[\p{L}0-9 .'-]+$/u.test(raw) && !isNonCityPhrase(raw) &&
         !/\b(?:calle|barrio|casi|esquina|ruta|direccion|casa|unidad|unidades|caja|cajas)\b/i.test(raw) && !existing.pendingPlace && !isWhen) {
       // Primera vez: preguntar a qué ciudad corresponde (puede ser un barrio).
