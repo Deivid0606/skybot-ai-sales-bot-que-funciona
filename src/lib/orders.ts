@@ -270,6 +270,12 @@ export function buildEcommerceUrl(
     .filter(Boolean)
     .join(" | ");
 
+  // Precio final: si el total incluye el envío de la ciudad, el precio por unidad ya lo incluye.
+  const qtyForPrice = Math.max(1, Number(order.quantity ?? 1) || 1);
+  const finalUnitPrice = Number(order.total ?? 0) > Number(order.price ?? 0) * qtyForPrice
+    ? Math.round((Number(order.total) / qtyForPrice) * 100) / 100
+    : Number(order.price ?? 0);
+
   const entries: Record<string, string> = {
     origen: "seller-skyline",
 
@@ -305,8 +311,8 @@ export function buildEcommerceUrl(
     cantidad: String(order.quantity ?? 1),
     qty: String(order.quantity ?? 1),
 
-    precio: String(order.price ?? 0),
-    price: String(order.price ?? 0),
+    precio: String(finalUnitPrice),
+    price: String(finalUnitPrice),
 
     total: String(order.total ?? 0),
     total_gs: String(order.total ?? 0),
