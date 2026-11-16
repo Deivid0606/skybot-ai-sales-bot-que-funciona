@@ -85,6 +85,19 @@ async function importWorkspace(ws: WorkspaceRow, onlyProductId?: string, onlyOrd
     linesByOrder.set(line.order_id,found);
   }
   const linesFor=(order:any)=>linesByOrder.get(order.id) ?? [];
+  // A DCANP el producto va con el PRECIO FINAL que paga el cliente: el costo de
+  // envío de la ciudad (incluido en el total) se suma al precio del último artículo.
+  const finalLinesFor=(order:any)=>{
+    const lines=linesFor(order).map(line=>({...line}));
+    if(!lines.length)return lines;
+    const sum=lines.reduce((acc,line)=>acc+line.quantity*line.price,0);
+    const fee=Number(order.total)-sum;
+    if(fee>0.01){
+      const last=lines[lines.length-1];
+      last.price=Math.round(((last.price*last.quantity+fee)/last.quantity)*100)/100;
+    }
+    return lines;
+  };
   const rows = ((orders ?? []) as any[]).filter(order =>
     // No van en la carga automática (quedan para cargar a mano):
     // - pagos anticipados;
@@ -113,7 +126,7 @@ async function importWorkspace(ws: WorkspaceRow, onlyProductId?: string, onlyOrd
       source_order_id: o.id, order_number: o.order_number, customer_name: o.customer_name, phone: o.phone,
       city: o.city, departamento: o.departamento, street: o.street, district: o.district, email: "", obs: "",
       sku: o.sku, product_title: o.product_title, quantity: o.quantity, total: o.total,
-      ...(linesFor(o).length ? {items:linesFor(o)} : {}),
+      ...(linesFor(o).length ? {items:finalLinesFor(o)} : {}),
       payment_method: o.payment_method, payment_status: o.payment_status, receipt_url: o.receipt_url,
     })),
   });
