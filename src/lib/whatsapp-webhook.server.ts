@@ -1800,7 +1800,33 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     }));
     const ctx=await buildWorkspaceAiContext(supabaseAdmin,workspaceId,history,conversation.product_id,phone);
     const verified=await addVerifiedOrderContext(supabaseAdmin,ctx,workspaceId,phone);
-    const safeCtx={...verified,systemInstruction:verified.systemInstruction+`\nPRIORIDAD ABSOLUTA: El cliente YA COMPRÓ (sale_closed=true). Esto es POSTVENTA. Contestá su último mensaje y su reclamo primero. PROHIBIDO reiniciar venta, ofrecer promociones, solicitar cantidad, ciudad, GPS, nombre o domicilio que ya proporcionó, o generar otro pedido. Si pide entrega hoy, solo confirmala si hay fecha exacta en datos verificados. Nunca afirmes haber avisado a logística, priorizado, coordinado o registrado cambios sin una herramienta que lo haga. Si envía un saludo o agradecimiento, responde muy brevemente. Evitá repeticiones.`};
+    // Pide ANULAR o reclama la CANTIDAD / el pedido: se avisa al vendedor de verdad (campanita +
+    // nota en el pedido) y la IA dice exactamente eso, sin inventar ni «confirmá y lo gestiono».
+    const postSaleRequest = (() => {
+      const t = normalizeIntentText(body);
+      if (/\b(?:sin efecto|cancel\w*|anul\w*|ya no (?:lo |la )?(?:quiero|necesit\w*|nesecit\w*)|no quiero (?:el|mi|ese) pedido|deja(?:lo)? sin efecto|no (?:lo |la )?voy a (?:recibir|querer)|devol\w*)\b/.test(t)) return "anular";
+      if (/\bpor ?que\b.{0,30}\b(?:\d+|dos|tres|cuatro|cinco)\s+unidades\b|\byo (?:quiero|queria|pedi|ped[ií]) (?:una|uno|1|solo una|solo uno)\b|\b(?:me cobraron|me cobran|cobraste|esta mal el (?:total|precio|pedido))\b/.test(t)) return "corregir";
+      return null;
+    })();
+    let postSaleNote = "";
+    if (postSaleRequest) {
+      const { data: lastOrder } = await supabaseAdmin.from("orders").select("id,order_number,observations,quantity,total")
+        .eq("workspace_id",workspaceId).eq("conversation_id",conversation.id).order("created_at",{ascending:false}).limit(1).maybeSingle();
+      if (lastOrder) {
+        const marker = postSaleRequest === "anular" ? "CLIENTE PIDE ANULAR" : "CLIENTE RECLAMA EL PEDIDO";
+        if (!String(lastOrder.observations ?? "").includes(marker)) {
+          await supabaseAdmin.from("orders").update({ observations: [lastOrder.observations, `${marker}: «${body.slice(0, 160)}»`].filter(Boolean).join(" | ") } as any)
+            .eq("workspace_id",workspaceId).eq("id",lastOrder.id);
+          await supabaseAdmin.from("notifications").insert({
+            workspace_id: workspaceId, user_id: ownerId, type: "reclamo", audience: "user", link: "/inbox",
+            title: `${postSaleRequest === "anular" ? "⚠️ Piden ANULAR" : "⚠️ Reclamo en"} el pedido ${lastOrder.order_number} · ${phone}`,
+            body: `«${body.slice(0, 200)}». Pedido: ${lastOrder.quantity} u. · ${formatGs(lastOrder.total)}. Revisalo y corregilo en DCANP.`,
+          } as any);
+        }
+        postSaleNote = `\nEL CLIENTE ${postSaleRequest === "anular" ? "PIDE ANULAR EL PEDIDO" : "RECLAMA EL PEDIDO (cantidad, precio o datos)"}. El sistema YA avisó a la tienda (esto sí es verdad). Respondé con empatía y en 1 o 2 frases: que ya le avisaste a la tienda y que una persona lo revisa y le confirma. NO digas que lo anulaste o corregiste vos, NO le pidas que confirme y NO afirmes datos distintos a los registrados (cantidad ${lastOrder.quantity}, total ${formatGs(lastOrder.total)}): si dice que pidió otra cantidad, reconocé que puede haber un error y que la tienda lo corrige.`;
+      }
+    }
+    const safeCtx={...verified,systemInstruction:verified.systemInstruction+postSaleNote+`\nNUNCA afirmes una cantidad, un precio o un total distinto del que figura en el pedido registrado.`+`\nPRIORIDAD ABSOLUTA: El cliente YA COMPRÓ (sale_closed=true). Esto es POSTVENTA. Contestá su último mensaje y su reclamo primero. PROHIBIDO reiniciar venta, ofrecer promociones, solicitar cantidad, ciudad, GPS, nombre o domicilio que ya proporcionó, o generar otro pedido. Si pide entrega hoy, solo confirmala si hay fecha exacta en datos verificados. Nunca afirmes haber avisado a logística, priorizado, coordinado o registrado cambios sin una herramienta que lo haga. Si envía un saludo o agradecimiento, responde muy brevemente. Evitá repeticiones.`};
     let reply:string;
     try { reply=(await generateAiReplyWithRetry(safeCtx)).reply?.trim() || ""; }
     catch (error) {

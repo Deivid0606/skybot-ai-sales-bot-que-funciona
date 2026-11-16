@@ -1,6 +1,7 @@
 import type { AiContext, AiOrder } from "@/lib/ai.server";
 import type { SaleState } from "@/lib/rule-sales.server";
 import { isAmbiguousPlaceName, hasPlaceCue } from "@/lib/py-cities";
+import { measureWordsToDigits } from "@/lib/rule-sales.server";
 import { looksLikePersonName, verifiedCoverage, parseCoverage, sellerAllowsNationwideAdvance, nationwideDestinationFromText, extractRecipientCiFromCustomerText, isValidRecipientCi, isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi } from "@/lib/rule-sales.server";
 
 type ChatLine = { role: "user" | "assistant"; content: string };
@@ -105,7 +106,7 @@ export function recoverSaleStateFromHistory(ctx: AiContext, previous: SaleState,
   let lastQuestion = "";
   for (const item of history.slice(-32)) {
     if (item.role === "assistant") { lastQuestion = normal(item.content); continue; }
-    const raw = String(item.content ?? "").trim();
+    const raw = measureWordsToDigits(String(item.content ?? "").trim());
     const n = normal(raw);
     if (!n || /^\[(?:image|imagen|audio|document|documento|video)/i.test(raw)) continue;
     const ci=extractRecipientCiFromCustomerText(raw, /\b(?:cedula|c\.?\s?i)\b|documento de identidad/.test(lastQuestion));
