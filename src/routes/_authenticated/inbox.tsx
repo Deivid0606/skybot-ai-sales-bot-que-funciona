@@ -54,6 +54,7 @@ import { MAX_FILE_BYTES, guessMediaType, uploadWorkspaceFile } from "@/lib/stora
 import { AdOriginCard } from "@/components/ad-origin-card";
 import { ContactInfoDialog } from "@/components/contact-info-dialog";
 import { CityPicker } from "@/components/city-picker";
+import { findPyCity } from "@/lib/py-cities";
 import { DEPARTAMENTOS_PY } from "@/lib/orders";
 
 
@@ -962,7 +963,7 @@ function InboxPage() {
     (conversations ?? []).map((conversation) => [conversation.id, conversation]),
   );
 
-  for (const conversation of dateConversations ?? []) {
+  for (const conversation of [...(dateConversations ?? []), ...(searchConversations ?? [])]) {
     knownConversationsById.set(conversation.id, conversation);
   }
 
@@ -2174,12 +2175,26 @@ function InboxPage() {
                   )}
                   Responder IA
                 </Button>
-                <Button size="sm" variant="outline" onClick={() => {
+                <Button size="sm" variant="outline" onClick={async () => {
                   const customerMessages=(messages??[]).filter(m=>m.direction==="inbound");
                   const latestCustomer=customerMessages.at(-1);
-                  setRecovery({productId:active.product_id??"",optionId:"",promoCount:1,
-                    customerName:active.contacts?.name??"",city:active.contacts?.city??"",
-                    department:"",street:"",paymentMethod:"contraentrega",
+                  // Se completa con lo que el bot ya juntó en el chat (nombre, ciudad, dirección, producto).
+                  let st:Record<string,any>={};
+                  try{
+                    const {data}=await (supabase as any).from("bot_sale_states").select("state").eq("conversation_id",active.id).maybeSingle();
+                    st=(data?.state??{}) as Record<string,any>;
+                  }catch{ st={}; }
+                  const productId=String(st.productId||active.product_id||"");
+                  const product=(products??[]).find(p=>p.id===productId);
+                  const prices=((product as any)?.product_prices??[]) as Array<{id:string}>;
+                  const optionId=prices.some(o=>o.id===st.optionId) ? String(st.optionId) : "";
+                  const city=String(st.city||active.contacts?.city||"");
+                  const place=city ? findPyCity(city) : null;
+                  setRecovery({productId,optionId,promoCount:1,
+                    customerName:String(st.customerName||active.contacts?.name||""),city,
+                    department:String(st.department||place?.department||""),
+                    street:String(st.street||st.locationUrl||""),
+                    paymentMethod:st.paymentMethod==="anticipado"?"anticipado":"contraentrega",
                     sourceMessageId:latestCustomer?.id??""});
                   setRecoverOpen(true);
                 }}>
@@ -2250,11 +2265,27 @@ function InboxPage() {
                     </select>
                   </label>
                 </div>
-                <Button disabled={registerRecovery.isPending || !recovery.productId || !recovery.sourceMessageId || !recovery.customerName.trim() || !recovery.city.trim() || !recovery.department.trim() || !(products??[]).find(p=>p.id===recovery.productId) || Boolean((products??[]).find(p=>p.id===recovery.productId)?.product_prices?.length && !recovery.optionId)} onClick={()=>{
-                  if(window.confirm("¿Confirmás que verificaste la conversación y que esta compra NO está ya registrada? Se creará el pedido en Supabase."))registerRecovery.mutate();
-                }}>
-                  {registerRecovery.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/>:<CheckCircle2 className="mr-2 h-4 w-4"/>} Guardar pedido real
-                </Button>
+                {(()=>{
+                  const product=(products??[]).find(p=>p.id===recovery.productId);
+                  const missing=[
+                    !product ? "producto" : null,
+                    product?.product_prices?.length && !recovery.optionId ? "presentación" : null,
+                    recovery.customerName.trim().length<3 ? "nombre completo" : null,
+                    recovery.city.trim().length<2 ? "ciudad" : null,
+                    !recovery.sourceMessageId ? "mensaje del cliente" : null,
+                  ].filter(Boolean);
+                  return (
+                    <div className="space-y-1">
+                      <Button disabled={registerRecovery.isPending || missing.length>0} onClick={()=>{
+                        if(window.confirm("¿Confirmás que verificaste la conversación y que esta compra NO está ya registrada? Se creará el pedido."))registerRecovery.mutate();
+                      }}>
+                        {registerRecovery.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/>:<CheckCircle2 className="mr-2 h-4 w-4"/>} Guardar pedido real
+                      </Button>
+                      {missing.length>0 && <p className="text-xs text-destructive">Falta completar: {missing.join(", ")}.</p>}
+                      {registerRecovery.error && <p className="text-xs text-destructive">No se guardó: {(registerRecovery.error as Error).message}</p>}
+                    </div>
+                  );
+                })()}
               </div>
             )}
 
