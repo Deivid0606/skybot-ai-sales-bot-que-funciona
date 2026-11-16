@@ -139,7 +139,7 @@ const RecoveryInput = z.object({
   promoCount: z.number().int().min(1).max(25),
   customerName: z.string().trim().min(3).max(160),
   city: z.string().trim().min(2).max(120),
-  department: z.string().trim().min(2).max(120),
+  department: z.string().trim().max(120),
   street: z.string().trim().max(600),
   paymentMethod: z.enum(["contraentrega", "anticipado"]),
   sourceMessageId: z.string().uuid(),
@@ -212,6 +212,12 @@ export const registerPendingSale = createServerFn({ method: "POST" })
     const encomienda=isEncomiendaAdvanceOrder(ctx.training,city,department,paymentMethod) || (!match && nationwide);
     // Dirección: si quedó vacía se usa la ubicación GPS que mandó el cliente.
     let street=data.street;
+    if(!encomienda && !isValidDeliveryAddress(street)){
+      const { data: saved }=await (supabase as any).from("bot_sale_states").select("state").eq("conversation_id",convo.id).maybeSingle();
+      const savedState=(saved?.state??{}) as {street?:string|null;locationUrl?:string|null};
+      if(isValidDeliveryAddress(savedState.locationUrl))street=String(savedState.locationUrl);
+      else if(isValidDeliveryAddress(savedState.street))street=String(savedState.street);
+    }
     if(!encomienda && !isValidDeliveryAddress(street)){
       const { data: gps }=await (supabase as any).from("messages").select("latitude,longitude")
         .eq("conversation_id",convo.id).not("latitude","is",null).order("created_at",{ascending:false}).limit(1).maybeSingle();
