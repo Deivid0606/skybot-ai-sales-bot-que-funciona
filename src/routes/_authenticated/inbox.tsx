@@ -758,11 +758,47 @@ function InboxPage() {
     },
   });
 
-  const isLoadingDateFilter =
-    isLoadingDateConversationIds ||
-    (Boolean(dateConversationIds?.length) && isLoadingDateConversations);
-  const dateFilterError =
-    dateConversationIdsError ?? dateConversationsError;
+  // Búsqueda directa por número o nombre: va a la base sin leer todos los
+  // mensajes del período (con varios días eran decenas de miles de filas).
+  const searchQuery = search.trim();
+  const searchDigits = searchQuery.replace(/\D/g, "");
+  const searchSafe = searchQuery.replace(/[%,()*\\]/g, " ").trim();
+  const directSearch = searchDigits.length >= 6 || (searchSafe.length >= 3 && !/\d/.test(searchSafe));
+  const {
+    data: searchConversations,
+    isLoading: isLoadingSearch,
+    error: searchError,
+  } = useQuery({
+    queryKey: ["inbox-direct-search", workspaceId, searchDigits, searchSafe.toLowerCase()],
+    enabled: Boolean(workspaceId && directSearch),
+    queryFn: async () => {
+      const filter = searchDigits.length >= 6
+        ? `phone.ilike.%${searchDigits.length > 9 ? searchDigits.slice(-9) : searchDigits}%`
+        : `name.ilike.%${searchSafe}%`;
+      const { data: contactRows, error: contactError } = await supabase
+        .from("contacts").select("id").eq("workspace_id", workspaceId!).or(filter).limit(50);
+      if (contactError) throw contactError;
+      const contactIds = (contactRows ?? []).map(row => row.id);
+      if (!contactIds.length) return [] as NonNullable<typeof conversations>;
+      const { data, error } = await supabase
+        .from("conversations")
+        .select("*, contacts(name, phone, city), products(name, sales_copy), conversation_labels(label_id, labels(name, color))")
+        .eq("workspace_id", workspaceId!)
+        .in("contact_id", contactIds)
+        .order("last_message_at", { ascending: false })
+        .limit(50);
+      if (error) throw error;
+      return (data ?? []) as NonNullable<typeof conversations>;
+    },
+  });
+
+  const isLoadingDateFilter = directSearch
+    ? isLoadingSearch
+    : isLoadingDateConversationIds ||
+      (Boolean(dateConversationIds?.length) && isLoadingDateConversations);
+  const dateFilterError = directSearch
+    ? searchError
+    : dateConversationIdsError ?? dateConversationsError;
 
   const { data: labels } = useQuery({
     queryKey: ["labels", workspaceId],
@@ -1649,11 +1685,11 @@ function InboxPage() {
     tab.id,tab.id==="all"?(dateConversations??[]).length:(dateConversations??[]).filter(c=>getSmartCategories(c)[tab.id as Exclude<SmartTab,"all">]).length,
   ])) as Record<SmartTab,number>;
 
-  const filtered = (dateConversations ?? []).filter((c) => {
+  const filtered = ((directSearch ? searchConversations : dateConversations) ?? []).filter((c) => {
     const q = search.trim().toLowerCase();
 
     const matchesSearch =
-      !q ||
+      !q || directSearch ||
       (c.contacts?.name ?? "").toLowerCase().includes(q) ||
       (c.contacts?.phone ?? "").includes(q) ||
       (c.last_message ?? "").toLowerCase().includes(q);
@@ -1928,8 +1964,8 @@ function InboxPage() {
           <div className="flex items-center justify-between text-[11px] text-muted-foreground">
             <span>
               {isLoadingDateFilter
-                ? "Buscando mensajes del período..."
-                : `Mostrando ${filtered.length} conversación${
+                ? (directSearch ? "Buscando..." : "Buscando mensajes del período...")
+                : `${directSearch ? "Búsqueda en todas las fechas · " : ""}Mostrando ${filtered.length} conversación${
                     filtered.length === 1 ? "" : "es"
                   }`}
             </span>
@@ -1945,7 +1981,7 @@ function InboxPage() {
           {!dateFilterError && isLoadingDateFilter && (
             <div className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
-              Buscando todos los mensajes de la fecha seleccionada...
+              {directSearch ? "Buscando el chat..." : "Buscando todos los mensajes de la fecha seleccionada..."}
             </div>
           )}
           {!dateFilterError && !isLoadingDateFilter && filtered.length === 0 && (
