@@ -1,5 +1,6 @@
 import { coverageTrainingEntry, bankTrainingEntry } from "@/lib/managed-coverage";
 import { assistantNameFromTraining, businessProfileInstruction, profileFromRow, suggestedProfile } from "@/lib/business-profile";
+import { packQuantityFromLabel } from "@/lib/pack-quantity";
 import { catalogUrlFor, normalizeSalesRules, salesRulesTrainingEntry } from "@/lib/sales-rules";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { AiContext } from "@/lib/ai.server";
@@ -111,7 +112,8 @@ export async function buildWorkspaceAiContext(
     const productPrices = [...(product.product_prices ?? [])].map(option => ({
       id: option.id,
       label: String(option.label ?? "").trim(),
-      quantity: Math.max(1, Math.floor(Number(option.quantity) || 1)),
+      // «2 unidades» cargada con cantidad 1: se usa la del texto (evita cobrar el pack por unidad).
+      quantity: packQuantityFromLabel(option.label, option.quantity),
       price: Number(option.price) || 0,
       sort_order: Number(option.sort_order) || 0,
     })).filter(option => Boolean(option.label) && Number.isFinite(option.price) && option.price > 0)
