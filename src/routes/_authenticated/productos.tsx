@@ -32,6 +32,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { packQuantityFromLabel } from "@/lib/pack-quantity";
 import { useAuth } from "@/lib/auth";
 import { StoreScopeToggle, useStoreDirectory, useStoreScope } from "@/lib/admin-scope";
 import { guessMediaType, MAX_FILE_BYTES, uploadWorkspaceFile } from "@/lib/storage";
@@ -277,7 +278,8 @@ function ProductsPage() {
       const normalizedPrices = values.prices
         .map((item, index) => ({
           label: item.label.trim(),
-          quantity: Math.max(1, Number(item.quantity) || 1),
+          // «2 unidades» con cantidad 1 se corrige sola a 2.
+          quantity: packQuantityFromLabel(item.label, item.quantity),
           price: Number(item.price) || 0,
           sort_order: index,
         }))

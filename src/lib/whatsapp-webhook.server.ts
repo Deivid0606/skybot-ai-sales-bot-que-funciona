@@ -3382,8 +3382,8 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
           workspace_id: workspaceId, user_id: ownerId,
           conversation_id: conversation.id, ad_id: attributedAdId,
           direction: "outbound", sender: "ai", body: confirmationText,
-          wamid: confirmationWamid, status: "sent",
-        });
+          wamid: confirmationWamid, status: "sent", response_origin: "code",
+        } as any);
         await supabaseAdmin.from("conversations").update({
           last_message: confirmationText,
           last_message_at: new Date().toISOString(),
@@ -4272,7 +4272,9 @@ export async function createOrderFromAi(args: {
     cleanOrderText(args.order.city),
   ) || null;
   const district = cleanOrderText(args.order.district) || null;
-  const street = orderIsEncomienda ? "" : cleanOrderText(args.order.street);
+  // «Disculpa, Solar Guaraní 1165…»: sin la cortesía del principio.
+  const street = orderIsEncomienda ? "" : cleanOrderText(args.order.street)
+    .replace(/^(?:(?:disculp[ae]|perd[oó]n|hola|buenas(?:\s+(?:tardes|noches))?|buen\s+d[ií]a|s[ií]|ok|okey|dale|gracias|mi\s+direcci[oó]n\s+es|la\s+direcci[oó]n\s+es|es)[\s,.:;!-]+)+/i, "").trim();
   const baseObservations =
     cleanOrderText(args.order.observations) || null;
 
