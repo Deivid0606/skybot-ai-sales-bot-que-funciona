@@ -745,7 +745,24 @@ export function sellerUsesFirstOffer(ctx: Pick<AiContext, "training">): boolean 
   return ctx.training.some(entry => /(?:usar|utilizar|aplicar|seleccionar|tomar|asumir)\s+(?:autom[aá]ticamente\s+)?(?:la\s+)?primera\s+(?:promoci[oó]n|opci[oó]n|oferta)/i.test(entry.content));
 }
 
+/**
+ * «El de tres litros», «dos kilos», «cinco metros»: un número en letras seguido de una
+ * medida es la PRESENTACIÓN (variante), no la cantidad de unidades. Se pasa a cifra
+ * («3 litros») para que todas las reglas lo traten igual que «el de 3 litros».
+ */
+export function measureWordsToDigits(text: string): string {
+  const nums: Record<string, string> = { un: "1", uno: "1", una: "1", medio: "0.5", dos: "2", tres: "3", cuatro: "4", cinco: "5", seis: "6",
+    siete: "7", ocho: "8", nueve: "9", diez: "10", doce: "12", quince: "15", veinte: "20" };
+  return String(text ?? "").replace(
+    /\b(un|uno|una|medio|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|doce|quince|veinte)\s+(litros?|lts?|lt|l|kilos?|kg|kgs|gramos?|gr|g|ml|metros?|mts?|cm|mm|pulgadas?|watts?|w|gb|mah|velocidades|niveles|pisos|puertas|cajones)\b/gi,
+    (_m, w: string, unit: string) => `${nums[w.toLowerCase()] ?? w} ${unit}`)
+    // «quiero dos del de 3 litros» → «quiero 2 de 3 litros» (cantidad + presentación).
+    .replace(/\b(un|uno|una|dos|tres|cuatro|cinco|seis|\d{1,2})\s+(?:del\s+de|de\s+el|del|de\s+los|de\s+las)\s+(?=\d+(?:[.,]\d+)?\s*[a-z])/gi,
+      (_m, w: string) => `${nums[w.toLowerCase()] ?? w} de `);
+}
+
 export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={}, mediaPath?:string|null, sharedLocationUrl?:string|null):SaleStep|null {
+  text = measureWordsToDigits(text);
   // Audios: la transcripción suele confundir «litros» con «libros».
   if (/\blibros?\b/i.test(text) && ctx.products.some(p=>/litro/i.test(JSON.stringify(p)))) {
     text = text.replace(/\blibro(s?)\b/gi, "litro$1");
