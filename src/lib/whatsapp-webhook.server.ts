@@ -4364,6 +4364,8 @@ export async function createOrderFromAi(args: {
     quantity,
     price: unitPrice,
     total,
+    // La base valida: suma de artículos + costo de envío = total.
+    shipping_fee: shippingFee,
     status: "nuevo" as const,
     payment_status: "pendiente" as const,
   };
