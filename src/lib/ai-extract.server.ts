@@ -134,6 +134,17 @@ export async function extractSaleWithAi(ctx: AiContext, state: SaleState): Promi
  * Verifica y guarda lo que entendió la IA. Solo completa datos que faltan:
  * nunca pisa un dato ya verificado. Devuelve los campos aplicados.
  */
+/**
+ * «Panfilo gonzalez 1366» es una CALLE con número de casa, no el nombre del cliente:
+ * si el cliente escribió el supuesto nombre seguido de un número, no es su nombre.
+ */
+export function nameIsStreetWithNumber(name: string | null | undefined, texts: Array<string | null | undefined>): boolean {
+  const n = norm(String(name ?? ""));
+  if (!n) return false;
+  const pattern = new RegExp(`(?:^|\\s)${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*(?:n(?:ro|um(?:ero)?)?\\s*)?\\d{1,5}\\b`);
+  return texts.some(t => pattern.test(norm(String(t ?? ""))));
+}
+
 export function applyAiExtraction(ctx: AiContext, state: SaleState, ext: AiSaleExtraction, customerTexts: string[]): string[] {
   const applied: string[] = [];
   const said = ` ${norm(customerTexts.join(" "))} `;
@@ -190,6 +201,7 @@ export function applyAiExtraction(ctx: AiContext, state: SaleState, ext: AiSaleE
   }
   // 3) Nombre: tiene que estar escrito por el cliente y ser un nombre válido.
   if (ext.customer_name && !state.customerName && isValidCustomerName(ext.customer_name) && wordsSaid(ext.customer_name) &&
+      !nameIsStreetWithNumber(ext.customer_name, [...customerTexts, ext.address, state.street]) &&
       !cityIn(ext.customer_name, parseCoverage(ctx.training))) {
     state.customerName = ext.customer_name.replace(/\s+/g, " ").trim();
     applied.push("name");
@@ -263,7 +275,8 @@ export function vetoUnsupportedChanges(ctx: AiContext, stored: SaleState, next: 
   const recentSaid = ` ${norm(said.slice(-6).join(" "))} `;
   const words = (v: string) => norm(v).split(" ").filter(w => w.length >= 2);
   if (kinds.has("nombre") && ext.customer_name && isValidCustomerName(ext.customer_name) && !same(ext.customer_name, next.customerName) &&
-      words(ext.customer_name).every(w => lastSaid.includes(` ${w} `)) && !cityIn(ext.customer_name, parseCoverage(ctx.training))) {
+      words(ext.customer_name).every(w => lastSaid.includes(` ${w} `)) && !cityIn(ext.customer_name, parseCoverage(ctx.training)) &&
+      !nameIsStreetWithNumber(ext.customer_name, [...said.slice(-3), ext.address, next.street])) {
     next.customerName = ext.customer_name.replace(/\s+/g, " ").trim(); reverted.push("nombre→ia");
   }
   // Dirección dicha en uno o varios mensajes seguidos («Avd fernandonde la Mora» + «2998»).
