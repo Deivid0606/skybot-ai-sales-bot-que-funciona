@@ -4385,6 +4385,12 @@ export async function createOrderFromAi(args: {
       : [{product_id:product.id,title:product.name,sku:productSku,quantity,price:unitPrice}];
   if(Math.abs(itemRows.reduce((sum,line)=>sum+line.quantity*line.price,0)-productsTotal)>0.01)
     throw new Error("Los artículos no coinciden con el total del pedido; no se registra la venta");
+  // Freno: «El de 79.000» leído como 79 unidades. Una cantidad igual a los miles de un
+  // precio del catálogo es casi seguro un precio mal leído: no se registra sola.
+  const catalogThousands=new Set(args.products.flatMap(p=>[p.price,...((p as any).product_prices??[]).map((o:any)=>o.price)])
+    .map(v=>Math.floor(Number(v)/1000)).filter(v=>v>=10));
+  if(itemRows.some(line=>line.quantity>=10 && catalogThousands.has(line.quantity)))
+    throw new Error(`Cantidad sospechosa (${itemRows.map(l=>l.quantity).join("+")} unidades coincide con un precio): revisar el chat antes de registrar`);
   const { data: registration, error } = await (supabaseAdmin as any)
     .rpc("bot_sky_register_order_with_items", { p_order: orderPayload,p_items:itemRows });
   const created = registration?.order

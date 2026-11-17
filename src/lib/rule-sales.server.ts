@@ -646,7 +646,7 @@ function countOf(text:string, expecting:boolean):number|null {
   const n=norm(text);
   const word:Record<string,number>={un:1,uno:1,una:1,dos:2,tres:3,cuatro:4,cinco:5,seis:6};
   const m=n.match(/\b(\d{1,3}|un|uno|una|dos|tres|cuatro|cinco|seis)\s*(?:unidad(?:es)?|piezas?)\b/)
-    ?? n.match(/\b(?:el|la|los|las)\s+de\s+(\d{1,3}|un|uno|una|dos|tres|cuatro|cinco|seis)\b/)
+    ?? n.match(/\b(?:el|la|los|las)\s+de\s+(\d{1,3}|un|uno|una|dos|tres|cuatro|cinco|seis)\b(?![.,\s]?\d)(?!\s*(?:mil|k|gs|guaranies|lucas)\b)/)
     ?? n.match(/\b(?:quiero|llevo|dame|necesito|mandame|pido)\s+(\d{1,3}|un|uno|una|dos|tres|cuatro|cinco|seis)\b/)
     ?? n.match(/\bcada\s+(?:uno|una)\b[\s,.;y]*(\d{1,2}|dos|tres|cuatro|cinco|seis)\b/)
     ?? n.match(/\b(\d{1,2}|dos|tres|cuatro|cinco|seis)\s+(?:cajas?|packs?|juegos?)\b/)
