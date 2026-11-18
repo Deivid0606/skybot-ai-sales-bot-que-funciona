@@ -2373,7 +2373,7 @@ function InboxPage() {
                       ad?.products?.name ??
                       active.products?.name
                     }
-                    copy={ad?.products?.sales_copy ?? active.products?.sales_copy}
+                    copy={(active as { ad_body?: string | null }).ad_body ?? (ad as { body?: string | null } | null | undefined)?.body ?? ad?.products?.sales_copy ?? active.products?.sales_copy}
                     date={active.created_at}
                   />
                 )}

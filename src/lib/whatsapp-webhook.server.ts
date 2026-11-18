@@ -221,6 +221,8 @@ type ReferralData = {
   mediaUrl: string | null;
   mediaType: "image" | "video" | null;
   ctwaClid?: string | null;
+  /** Copy (texto) del anuncio. */
+  adBody?: string | null;
 };
 
 function referralOf(message: IncomingMessage): ReferralData {
@@ -257,6 +259,7 @@ function referralOf(message: IncomingMessage): ReferralData {
     mediaUrl: videoUrl ?? imageUrl,
     mediaType,
     ctwaClid: referral.ctwa_clid?.trim() || null,
+    adBody: referral.body?.trim() || null,
   };
 }
 
@@ -1366,6 +1369,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
           ad_url: referral.adUrl,
           ad_media_url: referral.mediaUrl,
           ad_media_type: referral.mediaType,
+          ...(referral.adBody ? { ad_body: referral.adBody } : {}),
           ...(referral.ctwaClid ? { ctwa_clid: referral.ctwaClid } : {}),
         } as any)
         .select("id, ai_paused, product_id, is_closed, sale_closed, ad_id")
@@ -1435,6 +1439,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         ...(referral.adUrl ? { ad_url: referral.adUrl } : {}),
         ...(referral.mediaUrl ? { ad_media_url: referral.mediaUrl } : {}),
         ...(referral.mediaType ? { ad_media_type: referral.mediaType } : {}),
+        ...(referral.adBody ? { ad_body: referral.adBody } : {}),
         ...(referral.ctwaClid ? { ctwa_clid: referral.ctwaClid } : {}),
       } as any)
       .eq("id", conversation.id)
@@ -1897,9 +1902,17 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
   // An explicit multi-product purchase must reach the cart parser. A single
   // product catalog template must not consume the whole WhatsApp turn.
   const multiProductInquiry = /\b(?:quiero|quisiera|llevo|necesito|comprar|pedir|agrega|sumale)\b.{2,100}\by\b.{2,100}/i.test(normalizeIntentText(body));
+  // PRODUCTO POR EL ANUNCIO: si el cliente no nombra el producto, se usa el anuncio del que vino
+  // (anuncio vinculado en la tabla de anuncios, o palabras clave en el título/copy del anuncio).
+  const adProductHint = !conversation.product_id && attributedAdId && !isReceiptMedia && !multiProductInquiry
+    ? await productHintFromAd(workspaceId, ownerId, attributedAdId, referral) : "";
+  // Primero manda lo que escribió el cliente; el anuncio solo si no nombró ningún producto.
+  const customerProduct = adProductHint ? await sendCatalogByKeyword({
+    workspaceId, ownerId, conversationId: conversation.id, adId: attributedAdId, conn, phone, text: body, identifyOnly: true,
+  }) : null;
   const catalogResult = isReceiptMedia || multiProductInquiry ? null : await sendCatalogByKeyword({
     workspaceId, ownerId, conversationId: conversation.id,
-    adId: attributedAdId, conn, phone, text: body,
+    adId: attributedAdId, conn, phone, text: adProductHint && !customerProduct ? adProductHint : body,
   });
   if (catalogResult?.productId && catalogResult.productId !== conversation.product_id) {
     // A fresh product selection starts its own checkout. Never carry the old
@@ -4777,6 +4790,60 @@ function enforceVerifiedCatalogPriceReply(args: {
  * la plantilla del producto (multimedia + copy) una sola vez por conversación.
  * Devuelve el producto detectado e indica si se envió en este turno.
  */
+/**
+ * Texto con las palabras clave del producto del anuncio, para que el catálogo lo identifique
+ * cuando el cliente no lo nombra. 1) anuncio vinculado a un producto; 2) palabras clave del
+ * catálogo en el título o copy del anuncio (un solo producto) → se vincula solo el anuncio.
+ */
+async function productHintFromAd(workspaceId: string, ownerId: string, adId: string, referral: ReferralData): Promise<string> {
+  try {
+    const keywordsOf = async (productId: string) => {
+      const { data } = await supabaseAdmin.from("product_keywords").select("keyword")
+        .eq("workspace_id", workspaceId).eq("product_id", productId).limit(20);
+      return ((data ?? []) as Array<{ keyword: string | null }>).map(r => String(r.keyword ?? "").trim()).filter(Boolean)
+        .sort((a, b) => b.length - a.length)[0] ?? "";
+    };
+    const { data: ad } = await (supabaseAdmin as any).from("ads").select("product_id,body")
+      .eq("workspace_id", workspaceId).eq("ad_id", adId).maybeSingle();
+    if (ad?.product_id) {
+      if (referral.adBody && !ad.body)
+        await (supabaseAdmin as any).from("ads").update({ body: referral.adBody }).eq("workspace_id", workspaceId).eq("ad_id", adId);
+      return await keywordsOf(ad.product_id);
+    }
+    let adText = [referral.adName, referral.adBody].filter(Boolean).join("\n");
+    if (!adText) {
+      const { data: convo } = await (supabaseAdmin as any).from("conversations").select("ad_name,ad_body")
+        .eq("workspace_id", workspaceId).eq("ad_id", adId).not("ad_body", "is", null).limit(1).maybeSingle();
+      adText = [convo?.ad_name, convo?.ad_body].filter(Boolean).join("\n");
+    }
+    if (!adText.trim()) return "";
+    const norm = (v: string) => v.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[*_~]/g, " ");
+    const hay = norm(adText);
+    const { data: rows } = await supabaseAdmin.from("product_keywords")
+      .select("keyword, product_id, products!inner(is_active)").eq("workspace_id", workspaceId);
+    const hits = new Map<string, string>();
+    for (const row of (rows ?? []) as Array<{ keyword: string | null; product_id: string; products: { is_active: boolean } | null }>) {
+      if (row.products?.is_active === false) continue;
+      const k = norm(String(row.keyword ?? "").trim());
+      if (k.length < 4) continue;
+      const re = new RegExp(`(^|[^\\p{L}\\p{N}])${k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^\\p{L}\\p{N}]|$)`, "u");
+      if (re.test(hay) && (!hits.has(row.product_id) || k.length > (hits.get(row.product_id)?.length ?? 0))) hits.set(row.product_id, String(row.keyword).trim());
+    }
+    if (hits.size !== 1) return "";
+    const [productId, keyword] = [...hits.entries()][0];
+    // Vincular el anuncio a ese producto (los próximos chats de este anuncio ya lo traen).
+    await (supabaseAdmin as any).from("ads").upsert({
+      workspace_id: workspaceId, user_id: ownerId, ad_id: adId, name: referral.adName, product_id: productId,
+      media_url: referral.mediaUrl, media_type: referral.mediaType, source_url: referral.adUrl, body: referral.adBody, auto_linked: true,
+    }, { onConflict: "workspace_id,ad_id", ignoreDuplicates: true });
+    console.info("[BOT_SKY_AD_PRODUCT]", JSON.stringify({ workspaceId, adId, productId }));
+    return keyword;
+  } catch (error) {
+    console.error("[BOT_SKY_AD_PRODUCT] error", error);
+    return "";
+  }
+}
+
 async function sendCatalogByKeyword(args: {
   workspaceId: string;
   ownerId: string;

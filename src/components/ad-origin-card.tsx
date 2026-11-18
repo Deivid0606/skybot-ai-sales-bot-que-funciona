@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   ExternalLink,
   ImageOff,
@@ -78,6 +79,7 @@ export function AdOriginCard({
   copy,
   date,
 }: Props) {
+  const [showAll, setShowAll] = useState(false);
   /*
    * Si Meta envió source_url, se prioriza esa URL.
    * Si no existe, se construye la URL completa de la Biblioteca de anuncios.
@@ -196,10 +198,16 @@ export function AdOriginCard({
             {title || "Anuncio sin nombre"}
           </p>
 
-          <p className="mt-1 line-clamp-5 whitespace-pre-wrap text-sm leading-5 text-muted-foreground">
+          <p className={`mt-1 whitespace-pre-wrap text-sm leading-5 text-muted-foreground ${showAll ? "" : "line-clamp-5"}`}>
             {copy ||
               "El cliente inició la conversación desde este anuncio."}
           </p>
+          {copy && copy.length > 220 && (
+            <button type="button" className="mt-1 text-xs font-medium text-primary hover:underline"
+              onClick={(event) => { event.stopPropagation(); setShowAll(v => !v); }}>
+              {showAll ? "Ver menos" : "Ver todo el copy"}
+            </button>
+          )}
 
           {targetUrl && (
             <button

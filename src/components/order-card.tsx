@@ -300,6 +300,20 @@ export function OrderCard({ order }: { order: Order }) {
           )}
 
           {(() => {
+            // Seguimiento en DCANP: número de pedido/guía y estado (se actualiza solo cada pocos minutos).
+            const d = order as Order & { dcanp_order_number?: string | null; dcanp_status?: string | null; dcanp_guide_at?: string | null };
+            if (!d.dcanp_order_number) return null;
+            return (
+              <span
+                className="inline-flex min-h-8 max-w-full items-center gap-1 rounded-md border border-sky-500/40 bg-sky-500/10 px-2 text-xs text-sky-700 dark:text-sky-300"
+                title={d.dcanp_guide_at ? `Guía generada el ${new Date(d.dcanp_guide_at).toLocaleString("es-PY")}` : "Pedido cargado en DCANP"}
+              >
+                🚚 DCANP Nº {d.dcanp_order_number}{d.dcanp_status ? ` · ${d.dcanp_status}` : ""}
+              </span>
+            );
+          })()}
+
+          {(() => {
             // «Ventas a Meta»: estado del aviso de esta venta (pestaña Configuraciones → Ventas a Meta).
             const raw = (order as Order & { meta_capi_events?: unknown }).meta_capi_events;
             const meta = (Array.isArray(raw) ? raw[0] : raw) as { status?: string; detail?: string | null } | null | undefined;
