@@ -230,7 +230,8 @@ export const registerPendingSale = createServerFn({ method: "POST" })
     if(options.length && !option)throw new Error("Seleccioná una presentación válida del catálogo");
     if(!options.length && data.optionId)throw new Error("Este producto no tiene esa promoción");
     const units=(option?.quantity??1)*data.promoCount;
-    if (!isValidCustomerName(data.customerName)) throw new Error("Ingresá nombre y apellido reales del cliente");
+    data.customerName = data.customerName.replace(/[\u00a0\u2000-\u200b\u202f\u205f\u3000\ufeff]/g, " ").replace(/\s+/g, " ").trim();
+    if (!isValidCustomerName(data.customerName)) throw new Error(`«${data.customerName}» no parece un nombre y apellido válido. Escribí nombre y apellido reales del cliente (sin números ni la cédula).`);
     if (street && !encomienda && !isValidDeliveryAddress(street))
       throw new Error("Dirección inválida: ingresá calle/referencia concreta o ubicación Google Maps");
     const order={customer_name:data.customerName,phone:convo.contacts.phone,

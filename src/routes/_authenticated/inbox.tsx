@@ -2193,7 +2193,7 @@ function InboxPage() {
                   setRecovery({productId,optionId,promoCount:1,
                     customerName:String(st.customerName||active.contacts?.name||""),city,
                     department:String(st.department||place?.department||""),
-                    street:String(st.street||st.locationUrl||""),
+                    street:String((st.street && !/^\s*\[|\b(?:PRODUCTO|COMPROBANTE)\s*:/i.test(String(st.street)) ? st.street : "") || st.locationUrl || ""),
                     paymentMethod:st.paymentMethod==="anticipado"?"anticipado":"contraentrega",
                     sourceMessageId:latestCustomer?.id??""});
                   setRecoverOpen(true);

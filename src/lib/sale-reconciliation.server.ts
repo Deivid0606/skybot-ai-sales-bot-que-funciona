@@ -16,7 +16,9 @@ const exactToken = (s: string, token: string) => {
 /** Validaciones semánticas compartidas por WhatsApp, Inbox y recuperación manual. */
 export function isValidCustomerName(value: unknown): boolean {
   if (typeof value !== "string") return false;
-  const name = value.replace(/^(?:soy|me llamo|mi nombre es|nombre(?: y apellido)?:)\s*/i, "").trim();
+  // Espacios invisibles al copiar de WhatsApp (no separable, ancho cero) cuentan como un espacio normal.
+  const name = value.replace(/[\u00a0\u2000-\u200b\u202f\u205f\u3000\ufeff]/g, " ").replace(/\s+/g, " ")
+    .replace(/^(?:soy|me llamo|mi nombre es|nombre(?: y apellido)?:)\s*/i, "").trim();
   const n = normal(name);
   // WhatsApp profile labels and greetings ("Buen dia") are never legal names.
   if (/^(?:por\s+favor|porfa|porfis|muchas\s+gracias|sin\s+problema|todo\s+bien|buen(?:os|as)?\s+(?:dia|dias|tardes|noches)|buenas?\s*dia|saludos?|hola(?:\s+que\s+tal)?|sin\s+nombre|cliente|informacion|precio|buen\s+dia\s+soy\s+de)\b/i.test(n)) return false;
@@ -24,7 +26,9 @@ export function isValidCustomerName(value: unknown): boolean {
   // Un destino escrito como "Para itaugua" no es nombre y apellido.
   // Rechazar también otras frases de entrega que pueden parecer nombres.
   if (/^(?:para|en|a|de|del|hacia|desde|ciudad|vivo|estoy|mandar|enviar|entregar)\b/.test(n)) return false;
-  if (/\b(?:itaugua|luque|lambare|cap iata|capiata|aregua|ypane|nemby|limpio|encarnacion|hernandarias|franco|mariano roque alonso|ciudad del este)\b/.test(n)) return false;
+  // Ciudad en lugar del nombre («Luque», «Ciudad del Este»). Un APELLIDO igual a una ciudad
+  // («Rafael Franco», «Juan Luque») sí es nombre: solo se rechaza si la ciudad va al comienzo.
+  if (/^(?:itaugua|luque|lambare|cap iata|capiata|aregua|ypane|nemby|limpio|encarnacion|hernandarias|franco|presidente franco|mariano roque alonso|ciudad del este)\b/.test(n)) return false;
 
   if (/\b(?:estoy|en|aeropuerto|trabajo|oficina|salgo|almorzar|almuerzo|horas?|hasta|desde|avisa|traigas|aca|aqui|cada|unidades?|cajas?)\b/.test(n)) return false;
   // Frases comunes («Es un poco alto», «O no», «Solo eso») no son nombres:
@@ -44,6 +48,8 @@ export function isValidDeliveryAddress(value: unknown): boolean {
   const address = value.trim();
   const n = normal(address);
   if (!address || address.length > 600) return false;
+  // Texto leído de una imagen/audio o de un comprobante no es una dirección.
+  if (/^\s*\[(?:imagen|audio|video|documento|sticker)\]|\b(?:PRODUCTO|COMPROBANTE|MONTO_GS|BENEFICIARIO)\s*:/i.test(address)) return false;
   if (/^https:\/\/(?:www\.)?(?:google\.[^\s/]+\/maps|maps\.app\.goo\.gl\/|goo\.gl\/maps\/)/i.test(address)) return true;
   if (address.length < 7 || /^(?:ok|okey|dale|si|no|para el |el |este |proximo |mañana|manana|hoy|lunes|martes|miercoles|jueves|viernes|sabado|domingo)/.test(n)) return false;
   // «Barrio San Pablo» solo no basta; «Barrio San Alfredo casi Kurupay» sí (trae referencia).
