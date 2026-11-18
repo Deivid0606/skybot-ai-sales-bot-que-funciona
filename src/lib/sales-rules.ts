@@ -108,8 +108,8 @@ export function salesRulesTrainingEntry(rules: SalesRules, catalogUrl: string | 
       ? "🏦 TRANSFERENCIA EN CIUDADES CON PAGO AL RECIBIR: SÍ. Si el cliente lo pide, puede pagar por transferencia con los datos bancarios oficiales; el envío sigue siendo a domicilio con su dirección y el pedido se registra igual. Nunca la exijas: por defecto paga al recibir."
       : "🏦 TRANSFERENCIA EN CIUDADES CON PAGO AL RECIBIR: NO. En esas ciudades solo se paga al recibir; la transferencia es solo para encomienda.",
     r.encomienda_ci.enabled
-      ? "🪪 CÉDULA EN ENCOMIENDA: en encomienda es requisito obligatorio pedir el número de cédula del destinatario, siempre DESPUÉS de que el sistema confirme el pedido. Nunca antes."
-      : "🪪 CÉDULA EN ENCOMIENDA: no se pide cédula.",
+      ? "🪪 CÉDULA EN ENCOMIENDA: en encomienda es requisito obligatorio pedir el número de cédula del destinatario, siempre DESPUÉS de que el sistema confirme el pedido. Nunca antes. SOLO en encomienda: en CONTRAENTREGA (pago al recibir) NUNCA se pide la cédula, ni antes ni después."
+      : "🪪 CÉDULA: no se pide cédula en ningún pedido.",
     r.catalog_on_greeting.enabled && catalogUrl
       ? `📦 CATÁLOGO: si el cliente saluda o pide información general SIN nombrar un producto, saludar y enviar el catálogo: ${catalogUrl} . Si ya nombró un producto, responder sobre ese producto y no mandar el catálogo. No mandarlo de nuevo en cada saludo.`
       : "📦 CATÁLOGO: no enviar el link del catálogo al saludar; preguntar qué producto le interesa.",
