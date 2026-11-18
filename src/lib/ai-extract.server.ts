@@ -1,6 +1,6 @@
 import { getGeminiCandidates, wellFormedJson, isKeyTemporarilyUnavailable, markKeyUnavailable, type AiContext } from "@/lib/ai.server";
 import { findParaguayPlace, textSupportsCity } from "@/lib/py-cities";
-import { normalizeNoShipping, cityIn, parseCoverage, nationwideDestinationFromText, deliveryPolicyForCity, sellerAllowsNationwideAdvance, type SaleState } from "@/lib/rule-sales.server";
+import { normalizeNoShipping, cityIn, parseCoverage, nationwideDestinationFromText, deliveryPolicyForCity, sellerAllowsNationwideAdvance, sellerBankText, type SaleState } from "@/lib/rule-sales.server";
 import { isValidCustomerName, isValidDeliveryAddress } from "@/lib/sale-reconciliation.server";
 
 /**
@@ -145,6 +145,14 @@ export function nameIsStreetWithNumber(name: string | null | undefined, texts: A
   return texts.some(t => pattern.test(norm(String(t ?? ""))));
 }
 
+/** El nombre de la TITULAR de la cuenta de la tienda (leído de un comprobante) nunca es el cliente. */
+export function isStoreAccountHolder(name: string | null | undefined, training: AiContext["training"]): boolean {
+  const words = norm(String(name ?? "")).split(" ").filter(w => w.length >= 3);
+  if (words.length < 2) return false;
+  const bank = ` ${norm(sellerBankText(training))} `;
+  return words.every(w => bank.includes(` ${w} `));
+}
+
 export function applyAiExtraction(ctx: AiContext, state: SaleState, ext: AiSaleExtraction, customerTexts: string[]): string[] {
   const applied: string[] = [];
   const said = ` ${norm(customerTexts.join(" "))} `;
@@ -202,6 +210,7 @@ export function applyAiExtraction(ctx: AiContext, state: SaleState, ext: AiSaleE
   // 3) Nombre: tiene que estar escrito por el cliente y ser un nombre válido.
   if (ext.customer_name && !state.customerName && isValidCustomerName(ext.customer_name) && wordsSaid(ext.customer_name) &&
       !nameIsStreetWithNumber(ext.customer_name, [...customerTexts, ext.address, state.street]) &&
+      !isStoreAccountHolder(ext.customer_name, ctx.training) &&
       !cityIn(ext.customer_name, parseCoverage(ctx.training))) {
     state.customerName = ext.customer_name.replace(/\s+/g, " ").trim();
     applied.push("name");
@@ -276,7 +285,8 @@ export function vetoUnsupportedChanges(ctx: AiContext, stored: SaleState, next: 
   const words = (v: string) => norm(v).split(" ").filter(w => w.length >= 2);
   if (kinds.has("nombre") && ext.customer_name && isValidCustomerName(ext.customer_name) && !same(ext.customer_name, next.customerName) &&
       words(ext.customer_name).every(w => lastSaid.includes(` ${w} `)) && !cityIn(ext.customer_name, parseCoverage(ctx.training)) &&
-      !nameIsStreetWithNumber(ext.customer_name, [...said.slice(-3), ext.address, next.street])) {
+      !nameIsStreetWithNumber(ext.customer_name, [...said.slice(-3), ext.address, next.street]) &&
+      !isStoreAccountHolder(ext.customer_name, ctx.training)) {
     next.customerName = ext.customer_name.replace(/\s+/g, " ").trim(); reverted.push("nombre→ia");
   }
   // Dirección dicha en uno o varios mensajes seguidos («Avd fernandonde la Mora» + «2998»).

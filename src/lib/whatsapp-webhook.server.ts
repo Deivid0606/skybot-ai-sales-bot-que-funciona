@@ -2231,7 +2231,24 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         const missingAliasHolder = Boolean(onlyMasked && authorizedHolder &&
           (!candidate.beneficiary || !holderOk));
         const amountOk = candidate.amountGs !== null && Number.isSafeInteger(candidate.amountGs);
-        if (!accountOk || !amountOk || wrongHolder || missingAliasHolder) {
+        // Titular COMPLETO (nombre y apellidos, 3+ palabras) igual al autorizado: el pago fue a la
+        // titular de la tienda aunque la cuenta sea otra suya (otro banco/financiera) o la cuenta
+        // cargada esté mal escrita. Se acepta y se avisa al vendedor para que verifique el ingreso.
+        const fullHolderTokens = candidate.beneficiary ? normalizeHolder(candidate.beneficiary).filter(t => t.length > 1) : [];
+        const strongHolder = Boolean(authorizedHolder && candidate.beneficiary && holderOk && fullHolderTokens.length >= 3 &&
+          normalizeHolder(authorizedHolder).filter(t => t.length > 1).every(t => fullHolderTokens.includes(t)));
+        const acceptedByHolder = !accountOk && strongHolder && amountOk && !missingAliasHolder;
+        if (acceptedByHolder) {
+          console.warn("[BOT_SKY_RECEIPT_ACCEPTED_BY_HOLDER]",JSON.stringify({conversationId:conversation.id,path:source.media_url,
+            read:{destinationAccount:candidate.destinationAccount,destinationAlias:candidate.destinationAlias,beneficiary:candidate.beneficiary,amountGs:candidate.amountGs},authorizedAccounts}));
+          await supabaseAdmin.from("notifications").insert({
+            workspace_id: workspaceId, user_id: ownerId, type: "ia",
+            title: `Verificar pago · ${phone}`,
+            body: `Comprobante a nombre de ${candidate.beneficiary} por ${candidate.amountGs} Gs. a la cuenta ${candidate.destinationAccount ?? candidate.destinationAlias ?? "?"}, distinta de la cargada en Datos bancarios. Se registró el pedido: confirmá que entró el dinero y corregí los Datos bancarios si hace falta.`.slice(0, 240),
+            link: "/inbox", audience: "user",
+          });
+        }
+        if (!acceptedByHolder && (!accountOk || !amountOk || wrongHolder || missingAliasHolder)) {
           console.warn("[BOT_SKY_RECEIPT_REJECTED]",JSON.stringify({conversationId:conversation.id,
             path:source.media_url,hasConfiguredAccount:authorizedAccounts.length > 0,
             hasConfiguredAlias:authorizedAliases.length > 0,
@@ -2454,6 +2471,9 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     const aiAnswerContext = {
       ...answerContext,
       systemInstruction: answerContext.systemInstruction + officialPolicyInstruction + shippingFeeInstruction + noShippingInstruction(verifiedSaleState) + codTransferInstruction +
+        // Sin producto identificado (anuncio no vinculado y el cliente no lo nombró) la venta no se puede registrar.
+        (!verifiedSaleState.productId && (verifiedSaleState.cityVerified || verifiedSaleState.customerName || verifiedSaleState.quantity)
+          ? "\nPRODUCTO SIN IDENTIFICAR: todavía no sabemos QUÉ producto quiere el cliente (el anuncio no indica cuál). Antes de cualquier otro dato, preguntale con amabilidad qué producto le interesa (por su nombre o una foto del anuncio). Sin el producto el pedido no se registra." : "") +
         (customerMemory ? (await import("@/lib/customer-memory.server")).customerMemoryInstruction(customerMemory, verifiedSaleState) : "") + `\nMODO IA + ENTRENAMIENTO BOT SKY, PRIORIDAD ALTA: Las respuestas comerciales las generás vos usando únicamente catálogo y entrenamiento de esta tienda. CONVERSÁ VOS con el comprador de forma natural: resolvé una sola pregunta por vez y no repitas catálogo/precios completos ni datos ya recibidos. Cantidad y variante se capturan mediante código y deben respetarse. No confirmes pedidos sin número real generado por Supabase. El cliente puede comprar varias veces. DATOS VERIFICADOS DEL CICLO ACTUAL (no mezclar con pedidos previos): ${JSON.stringify({productId:verifiedSaleState.productId,optionId:verifiedSaleState.optionId,quantity:verifiedSaleState.quantity,city:verifiedSaleState.city,department:verifiedSaleState.department,cityVerified:verifiedSaleState.cityVerified===true,coverageStatus:verifiedSaleState.coverageStatus,customerName:verifiedSaleState.customerName,hasAddress:Boolean(verifiedSaleState.street),gpsReceived:Boolean(verifiedSaleState.locationUrl),paymentMethod:verifiedSaleState.paymentMethod,awaiting:verifiedSaleState.awaiting})}. COBERTURA: si cityVerified no es true, NUNCA digas que tenemos cobertura; cuando nombres la ciudad escribila SIEMPRE exactamente como figura en el campo city de los datos verificados (bien escrita, con tildes y ñ), nunca copies cómo la escribió el cliente; consultá la ciudad si falta. GPS no prueba por sí mismo ninguna ciudad. Si recibiste GPS no vuelvas a solicitarlo. El GPS es dirección suficiente si la configuración de la ciudad admite dirección por ubicación. Respetá el orden de preguntas definido en el entrenamiento del vendedor; nunca repitas hechos conocidos. Si no tenés precio/variante sin ambigüedad pedí aclaración. Si está completo, el código registrará el pedido; no inventes un número de orden ni digas que está confirmado.
 AVANCE DEL CIERRE, OBLIGATORIO EN EL MISMO TURNO: si ya identificaste producto, variante, cantidad y ciudad, NO termines una respuesta mostrando solo el detalle o preguntando «¿seguimos?», «¿está bien?» o «¿confirmás?»; pedí inmediatamente el SIGUIENTE dato faltante del estado técnico. Si awaiting="name", solicitá nombre Y apellido en ese mismo mensaje, aun cuando acabes de explicar el pago al recibir y el total. Cuando te respondan el nombre, si awaiting="address", pedí dirección o ubicación. Si awaiting="receipt" para encomienda, explicá las instrucciones de pago SOLO desde los datos bancarios reales de este vendedor y decí que envíe el comprobante; no pidas dirección ni GPS. ORDEN DE CADA RESPUESTA: PRIMERO respondé lo que el cliente preguntó o comentó en su último mensaje (dudas del producto, precio, objeciones como «es caro», envío, garantía, uso) usando el catálogo y el entrenamiento; RECIÉN DESPUÉS, en el mismo mensaje, pedí el dato pendiente sin repetir lo ya dicho. Nunca ignores una consulta para pedir datos. Nunca digas «pedido confirmado» antes de que el servidor lo registre.
 Respetá el estilo, productos y condiciones del entrenamiento particular del vendedor; el backend solamente asegura que la venta NO se estanque sin pedir el siguiente dato obligatorio.`
@@ -5080,6 +5100,12 @@ function oneDigitApart(a: string, b: string): boolean {
 /** Respuestas de espera que el bot nunca cumple (no hay trabajo posterior). */
 /** La respuesta da por hecho un envío («te avisaremos cuando el pedido esté en camino», «te lo enviamos hoy»). */
 function promisesShipment(text: string): boolean {
+  // Sin pedido registrado, nunca afirmar que está registrado, programado o con fecha de entrega
+  // (caso real: «Tu encomienda fue registrada y está programada para mañana» sin pedido).
+  if (/\b(?:pedido|encomienda|env[ií]o|compra)\s+(?:ya\s+)?(?:fue|est[aá]|ha\s+sido|qued[oó])\s+(?:registrad[oa]|confirmad[oa]|programad[oa]|agendad[oa]|despachad[oa]|enviad[oa]|listo\s+para\s+ser\s+(?:entregad|enviad)[oa])\b/i.test(text) ||
+      /\bprogramad[oa]\s+para\s+(?:ser\s+)?(?:entregad[oa]|enviad[oa]|la\s+entrega|entrega)\b/i.test(text) ||
+      /\b(?:ser[aá]|va\s+a\s+ser)\s+(?:enviad[oa]|entregad[oa]|despachad[oa])\s+(?:hoy|ma[ñn]ana)\b/i.test(text) ||
+      /\b(?:llegar[aá]|te\s+llega|le\s+llega)\s+(?:hoy|ma[ñn]ana)\b/i.test(text)) return true;
   return /\b(?:te|le)\s+avis(?:aremos|amos|o)\s+cuando\s+(?:el|tu|su)\s+pedido\b|\b(?:tu|el|su)\s+pedido\s+(?:ya\s+)?(?:est[aá]|va|sale|sali[oó])\s+(?:en\s+camino|hoy|ma[ñn]ana)\b|\bte\s+lo\s+(?:enviamos|mandamos|llevamos)\s+(?:hoy|ma[ñn]ana)\b/i.test(text);
 }
 
