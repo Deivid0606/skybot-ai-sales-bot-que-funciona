@@ -176,7 +176,60 @@ export async function runDcanpAutoImport() {
       summary.push({ workspace: ws.id, error: message });
     }
   }
-  return { workspaces: summary.length, summary };
+  let tracking: unknown = null;
+  try { tracking = await syncDcanpTracking(); }
+  catch (e) { console.error("[BOT_SKY_DCANP_TRACKING]", e instanceof Error ? e.message : String(e)); }
+  return { workspaces: summary.length, summary, tracking };
+}
+
+const DCANP_STATUS_URL = process.env.DCANP_STATUS_URL || DCANP_IMPORT_URL.replace(/botsky-import\/?$/, "botsky-status");
+const FINAL_DCANP = /ENTREGAD|CANCEL|DEVUELT|RECHAZAD/i;
+
+/**
+ * Seguimiento en DCANP: número de pedido (guía), estado y fecha de guía de los pedidos
+ * de BOT SKY de los últimos 30 días. Así en Pedidos se ve que el pedido entró a DCANP.
+ */
+export async function syncDcanpTracking() {
+  const secret = process.env.DCANP_IMPORT_SECRET;
+  if (!secret) return { checked: 0 };
+  const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const stale = new Date(Date.now() - 20 * 60 * 1000).toISOString();
+  const { data, error } = await supabaseAdmin.from("orders")
+    .select("id,order_number,dcanp_status" as never)
+    .gte("created_at", since).neq("status", "cancelado")
+    .or(`dcanp_checked_at.is.null,dcanp_checked_at.lt.${stale}` as never)
+    .order("dcanp_checked_at" as never, { ascending: true, nullsFirst: true })
+    .limit(100);
+  if (error) throw error;
+  const rows = ((data ?? []) as unknown as Array<{ id: string; order_number: string; dcanp_status: string | null }>)
+    .filter(r => !FINAL_DCANP.test(String(r.dcanp_status ?? "")) && /^BS-/i.test(String(r.order_number ?? "")));
+  if (!rows.length) return { checked: 0 };
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30_000);
+  let response: Response;
+  try {
+    response = await fetch(DCANP_STATUS_URL, {
+      method: "POST", signal: controller.signal,
+      headers: { "Content-Type": "application/json", "x-botsky-secret": secret },
+      body: JSON.stringify({ orders: rows.map(r => ({ id: r.id, order_number: r.order_number })) }),
+    });
+  } finally { clearTimeout(timeout); }
+  const payload = await response.json().catch(() => null) as { results?: Array<Record<string, any>> } | null;
+  if (!response.ok || !Array.isArray(payload?.results)) throw new Error(`DCANP estado respondió ${response.status}`);
+  const now = new Date().toISOString();
+  let found = 0;
+  for (const r of payload!.results!) {
+    if (!rows.some(o => o.id === r.id)) continue;
+    const update: Record<string, unknown> = { dcanp_checked_at: now };
+    if (r.found) {
+      found++;
+      update.dcanp_order_number = String(r.guide_number || r.dcanp_order_number || "").slice(0, 80) || null;
+      update.dcanp_status = String(r.status ?? "").slice(0, 120) || null;
+      update.dcanp_guide_at = r.guide_generated_at ?? null;
+    }
+    await supabaseAdmin.from("orders").update(update as never).eq("id", r.id);
+  }
+  return { checked: rows.length, found };
 }
 
 /**
