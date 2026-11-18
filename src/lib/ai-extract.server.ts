@@ -1,6 +1,6 @@
 import { getGeminiCandidates, wellFormedJson, isKeyTemporarilyUnavailable, markKeyUnavailable, type AiContext } from "@/lib/ai.server";
 import { findParaguayPlace, textSupportsCity } from "@/lib/py-cities";
-import { normalizeNoShipping, cityIn, parseCoverage, nationwideDestinationFromText, deliveryPolicyForCity, sellerAllowsNationwideAdvance, sellerBankText, type SaleState } from "@/lib/rule-sales.server";
+import { normalizeNoShipping, cityIn, parseCoverage, nationwideDestinationFromText, deliveryPolicyForCity, sellerAllowsNationwideAdvance, sellerBankText, declaredCityFromTexts, type SaleState } from "@/lib/rule-sales.server";
 import { isValidCustomerName, isValidDeliveryAddress } from "@/lib/sale-reconciliation.server";
 
 /**
@@ -169,6 +169,18 @@ export function applyAiExtraction(ctx: AiContext, state: SaleState, ext: AiSaleE
     applied.push("option");
   }
   // 2) Ciudad: la forma de pago sale SIEMPRE de la cobertura del vendedor.
+  // «Vivo en Concepción, norte de Asunción»: Asunción es solo una REFERENCIA geográfica,
+  // no la ciudad de entrega. Se usa la ciudad que el cliente declaró.
+  if (ext.city && !state.cityVerified) {
+    const recent = ` ${norm(customerTexts.slice(-3).join(" "))} `;
+    const aiCity = norm(ext.city).replace(/[^a-z0-9 ]/g, " ").trim();
+    const asReference = aiCity.length >= 3 && new RegExp(`\\b(?:norte|sur|este|oeste|cerca|lejos|afuera|antes|despues|camino|ruta|km|kilometros?|cuadras?|minutos?)\\s+(?:a|al|de|del|desde)\\s+(?:la\\s+)?${aiCity.replace(/\s+/g, "\\s+")}\\b`).test(recent);
+    if (asReference) {
+      const declared = declaredCityFromTexts(ctx.training, customerTexts.slice(-3));
+      if (declared && norm(declared.city) !== norm(ext.city)) ext = { ...ext, city: declared.city, place_kind: "city" };
+      else ext = { ...ext, city: null };
+    }
+  }
   if (ext.city && !state.cityVerified) {
     const coverage = parseCoverage(ctx.training);
     // Una ciudad REAL de Paraguay nunca es «barrio», aunque la IA lo haya

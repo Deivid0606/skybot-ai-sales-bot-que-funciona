@@ -1810,25 +1810,37 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     const postSaleRequest = (() => {
       const t = normalizeIntentText(body);
       if (/\b(?:sin efecto|cancel\w*|anul\w*|ya no (?:lo |la )?(?:quiero|necesit\w*|nesecit\w*)|no quiero (?:el|mi|ese) pedido|deja(?:lo)? sin efecto|no (?:lo |la )?voy a (?:recibir|querer)|devol\w*)\b/.test(t)) return "anular";
+      // «Ojo ciudad de Concepción le dije, no Asunción»: corrige la CIUDAD del pedido.
+      if (/\b(?:le dije|te dije|no es|ojo|equivoc\w*|esta mal|cambi\w*|corrig\w*|en realidad|mejor (?:a|en|para))\b/.test(t) &&
+          declaredCityFromTexts(ctx.training, [body])) return "ciudad";
       if (/\bpor ?que\b.{0,30}\b(?:\d+|dos|tres|cuatro|cinco)\s+unidades\b|\byo (?:quiero|queria|pedi|ped[ií]) (?:una|uno|1|solo una|solo uno)\b|\b(?:me cobraron|me cobran|cobraste|esta mal el (?:total|precio|pedido))\b/.test(t)) return "corregir";
       return null;
     })();
     let postSaleNote = "";
     if (postSaleRequest) {
-      const { data: lastOrder } = await supabaseAdmin.from("orders").select("id,order_number,observations,quantity,total")
+      const { data: lastOrder } = await supabaseAdmin.from("orders").select("id,order_number,observations,quantity,total,city")
         .eq("workspace_id",workspaceId).eq("conversation_id",conversation.id).order("created_at",{ascending:false}).limit(1).maybeSingle();
       if (lastOrder) {
-        const marker = postSaleRequest === "anular" ? "CLIENTE PIDE ANULAR" : "CLIENTE RECLAMA EL PEDIDO";
+        const newCity = postSaleRequest === "ciudad" ? declaredCityFromTexts(ctx.training, [body]) : null;
+        if (postSaleRequest === "ciudad" && newCity && normalizeIntentText(newCity.city) === normalizeIntentText(String(lastOrder.city ?? ""))) {
+          // Ya es la ciudad registrada: nada que corregir.
+        } else {
+        const marker = postSaleRequest === "anular" ? "CLIENTE PIDE ANULAR" : postSaleRequest === "ciudad" ? `CLIENTE CORRIGE LA CIUDAD A ${newCity?.city ?? "?"}` : "CLIENTE RECLAMA EL PEDIDO";
         if (!String(lastOrder.observations ?? "").includes(marker)) {
           await supabaseAdmin.from("orders").update({ observations: [lastOrder.observations, `${marker}: «${body.slice(0, 160)}»`].filter(Boolean).join(" | ") } as any)
             .eq("workspace_id",workspaceId).eq("id",lastOrder.id);
           await supabaseAdmin.from("notifications").insert({
             workspace_id: workspaceId, user_id: ownerId, type: "reclamo", audience: "user", link: "/inbox",
-            title: `${postSaleRequest === "anular" ? "⚠️ Piden ANULAR" : "⚠️ Reclamo en"} el pedido ${lastOrder.order_number} · ${phone}`,
+            title: `${postSaleRequest === "anular" ? "⚠️ Piden ANULAR" : postSaleRequest === "ciudad" ? `⚠️ Corregir CIUDAD (${newCity?.city ?? "?"}) en` : "⚠️ Reclamo en"} el pedido ${lastOrder.order_number} · ${phone}`,
             body: `«${body.slice(0, 200)}». Pedido: ${lastOrder.quantity} u. · ${formatGs(lastOrder.total)}. Revisalo y corregilo en DCANP.`,
           } as any);
         }
         postSaleNote = `\nEL CLIENTE ${postSaleRequest === "anular" ? "PIDE ANULAR EL PEDIDO" : "RECLAMA EL PEDIDO (cantidad, precio o datos)"}. El sistema YA avisó a la tienda (esto sí es verdad). Respondé con empatía y en 1 o 2 frases: que ya le avisaste a la tienda y que una persona lo revisa y le confirma. NO digas que lo anulaste o corregiste vos, NO le pidas que confirme y NO afirmes datos distintos a los registrados (cantidad ${lastOrder.quantity}, total ${formatGs(lastOrder.total)}): si dice que pidió otra cantidad, reconocé que puede haber un error y que la tienda lo corrige.`;
+        if (postSaleRequest === "ciudad" && newCity) {
+          const policy = deliveryPolicyForCity(newCity.city, newCity.department, ctx.training);
+          postSaleNote = `\nEL CLIENTE CORRIGE LA CIUDAD DEL PEDIDO: es ${newCity.city} (no ${lastOrder.city}). El sistema YA avisó a la tienda para corregirla (esto sí es verdad). ${newCity.listed || policy ? `${newCity.city} SÍ tiene envío de esta tienda${policy?.paymentMethod === "contraentrega" ? " con pago al recibir" : ""}: NUNCA digas que no hay envío a ${newCity.city}.` : `${newCity.city} no figura en la cobertura: decí que la tienda lo revisa y le confirma; no lo niegues vos.`} Respondé con empatía en 1 o 2 frases: pedí disculpas por el error y decí que la tienda corrige la ciudad y le confirma. No digas que lo corregiste vos.`;
+        }
+        }
       }
     }
     const safeCtx={...verified,systemInstruction:verified.systemInstruction+postSaleNote+`\nNUNCA afirmes una cantidad, un precio o un total distinto del que figura en el pedido registrado.`+`\nPRIORIDAD ABSOLUTA: El cliente YA COMPRÓ (sale_closed=true). Esto es POSTVENTA. Contestá su último mensaje y su reclamo primero. PROHIBIDO reiniciar venta, ofrecer promociones, solicitar cantidad, ciudad, GPS, nombre o domicilio que ya proporcionó, o generar otro pedido. Si pide entrega hoy, solo confirmala si hay fecha exacta en datos verificados. Nunca afirmes haber avisado a logística, priorizado, coordinado o registrado cambios sin una herramienta que lo haga. Si envía un saludo o agradecimiento, responde muy brevemente. Evitá repeticiones.`};
@@ -4010,6 +4022,9 @@ export async function createOrderFromAi(args: {
       const ci = glued[2].replace(/\D/g, "");
       if (!args.order.recipient_ci && isValidRecipientCi(ci)) args.order.recipient_ci = ci;
     }
+    // «Gregoria Barrios C I»: la cédula ya se separó y quedó la sigla suelta al final.
+    if (args.order.customer_name)
+      args.order.customer_name = String(args.order.customer_name).replace(/[\s,.:;-]+(?:c\.?\s*i\.?|c[eé]dula|nro\.?|n[°º])\s*$/iu, "").trim();
   }
   // Última barrera: ninguna ruta de creación puede saltarse estas verificaciones.
   const orderIsEncomienda=Boolean(args.training && isEncomiendaAdvanceOrder(args.training,args.order.city,args.order.departamento,args.order.payment_method));
