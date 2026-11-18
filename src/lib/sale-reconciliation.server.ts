@@ -14,10 +14,31 @@ const exactToken = (s: string, token: string) => {
 };
 
 /** Validaciones semánticas compartidas por WhatsApp, Inbox y recuperación manual. */
+/**
+ * Limpia el nombre como lo escribió el cliente o el vendedor: espacios invisibles, emojis y
+ * símbolos, y el CERO tipeado en lugar de la letra O dentro de una palabra («0rtiz» → «Ortiz»).
+ */
+export function normalizeCustomerName(value: unknown): string {
+  return String(value ?? "")
+    .replace(/[\u00a0\u2000-\u200b\u202f\u205f\u3000\ufeff]/g, " ")
+    .replace(/[\p{Extended_Pictographic}\u{1F3FB}-\u{1F3FF}\u{FE0F}]/gu, " ")
+    .replace(/(^|\s)0(?=\p{L})/gu, "$1O")
+    .replace(/(?<=\p{L})0|0(?=\p{L})/gu, "o")
+    .replace(/[^\p{L}\d\s'.\-]/gu, " ")
+    .replace(/\s+/g, " ").trim()
+    // Títulos delante del nombre («Lic. Gricelda Quevedo», «Sra. Ana»).
+    .replace(/^(?:(?:lic|lcda|lcdo|dr|dra|ing|prof|sr|sra|srta|don|doña|crio|cnel|tte|abg|abog)\.?\s+)+/i, "").trim();
+}
+
+/** Para el registro MANUAL: alcanza con un nombre de letras (el vendedor ya revisó el chat). */
+export function isAcceptableManualName(value: unknown): boolean {
+  const name = normalizeCustomerName(value);
+  return name.length >= 2 && name.length <= 160 && !/\d/.test(name) && /\p{L}{2,}/u.test(name);
+}
+
 export function isValidCustomerName(value: unknown): boolean {
   if (typeof value !== "string") return false;
-  // Espacios invisibles al copiar de WhatsApp (no separable, ancho cero) cuentan como un espacio normal.
-  const name = value.replace(/[\u00a0\u2000-\u200b\u202f\u205f\u3000\ufeff]/g, " ").replace(/\s+/g, " ")
+  const name = normalizeCustomerName(value)
     .replace(/^(?:soy|me llamo|mi nombre es|nombre(?: y apellido)?:)\s*/i, "").trim();
   const n = normal(name);
   // WhatsApp profile labels and greetings ("Buen dia") are never legal names.
