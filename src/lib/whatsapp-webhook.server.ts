@@ -3110,7 +3110,8 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
     };
     // La cédula del destinatario se pide DESPUÉS de registrar el pedido (nunca antes).
     const asksCiEarly = (text: string) => !conversation.sale_closed &&
-      /\b(?:tu|su|la)\s+(?:n[uú]mero\s+de\s+)?c[eé]dula\b|(?:pas[aá]|pasame|env[ií]a|mand[aá]|necesito|indic[aá]|confirm[aá]|dec[ií]me)[^.?!\n]{0,50}\b(?:c[eé]dula|c\.\s?i\.)/i.test(text);
+      (/\b(?:tu|su|la|el)\s+(?:n[uú]mero\s+de\s+)?c[eé]dula\b|(?:pas[aá]|pasame|pases|env[ií]a|env[ií]es|mand[aá]|mandes|necesito|necesitamos|falta|indic[aá]|indiques|confirm[aá]|confirmes|confirme|dec[ií]me|compart[ií]|compartas)[^.?!\n]{0,60}\b(?:c[eé]dula|c\.\s?i\.)/i.test(text) ||
+       /\bc[eé]dula\b[^.?!\n]{0,40}\?/i.test(text) || /\bes\s+necesari[oa]\b[^.?!\n]{0,40}\b(?:registro|pedido)\b/i.test(text));
     const violatesVerifiedFacts = (text: string) => {
       const policy = verifiedSaleState.cityVerified
         ? deliveryPolicyForCity(verifiedSaleState.city, verifiedSaleState.department, ctx.training) : null;
@@ -3773,6 +3774,18 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         sentTotalLines.add(normalizedLine); return true;
       }).join("\n").replace(/\n{3,}/g,"\n\n").trim();
       outgoingText = await finalPolicyGate(outgoingText);
+      // Falta el nombre y apellido (p. ej. solo dijo «Cynthia»): el mensaje SIEMPRE lo pide.
+      // Nunca quedar en silencio si los controles depuraron toda la respuesta.
+      if (!bypassSale && !conversation.sale_closed && verifiedSaleState.awaiting === "name" &&
+          !isValidCustomerName(verifiedSaleState.customerName) && !/\b(?:nombre|apellido)\b/i.test(outgoingText)) {
+        const said = String(body ?? "").trim();
+        const firstOnly = /^[\p{L}]{2,20}$/u.test(said) && !/^(?:si|sí|no|ok|dale|hola|gracias|listo|bueno|perfecto)$/i.test(said);
+        const ask = firstOnly
+          ? `Gracias, ${said.charAt(0).toUpperCase()}${said.slice(1).toLowerCase()} 😊 ¿Me pasás también tu apellido para registrar el pedido?`
+          : "😊 Para registrar tu pedido, ¿me pasás tu nombre y apellido?";
+        outgoingText = outgoingText.trim() ? `${outgoingText.trim()}\n\n${ask}` : ask;
+        console.warn("[BOT_SKY_NAME_REQUIRED]", JSON.stringify({conversationId:conversation.id, firstOnly}));
+      }
       // Comprobante aceptado y falta el nombre: el mensaje final SIEMPRE informa el
       // saldo a favor (si pagó de más) y pide nombre y apellido, para poder confirmar.
       if (!bypassSale && !conversation.sale_closed && verifiedSaleState.awaiting === "name" &&
@@ -5201,7 +5214,9 @@ function promisesShipment(text: string): boolean {
   if (/\b(?:pedido|encomienda|env[ií]o|compra)\s+(?:ya\s+)?(?:fue|est[aá]|ha\s+sido|qued[oó])\s+(?:registrad[oa]|confirmad[oa]|programad[oa]|agendad[oa]|despachad[oa]|enviad[oa]|listo\s+para\s+ser\s+(?:entregad|enviad)[oa])\b/i.test(text) ||
       /\bprogramad[oa]\s+para\s+(?:ser\s+)?(?:entregad[oa]|enviad[oa]|la\s+entrega|entrega)\b/i.test(text) ||
       /\b(?:ser[aá]|va\s+a\s+ser)\s+(?:enviad[oa]|entregad[oa]|despachad[oa])\s+(?:hoy|ma[ñn]ana)\b/i.test(text) ||
-      /\b(?:llegar[aá]|te\s+llega|le\s+llega)\s+(?:hoy|ma[ñn]ana)\b/i.test(text)) return true;
+      /\b(?:llegar[aá]|te\s+llega|le\s+llega)\s+(?:hoy|ma[ñn]ana)\b/i.test(text) ||
+      /\bentrega\s+se\s+(?:realizar[aá]|har[aá]|efectuar[aá]|coordinar[aá])\s+(?:hoy|ma[ñn]ana|el\s+\w+)\b/i.test(text) ||
+      /\b(?:pedido|compra|encomienda)\s+(?:ya\s+)?(?:est[aá]|sigue)\s+en\s+(?:proceso|preparaci[oó]n|camino)\b/i.test(text)) return true;
   return /\b(?:te|le)\s+avis(?:aremos|amos|o)\s+cuando\s+(?:el|tu|su)\s+pedido\b|\b(?:tu|el|su)\s+pedido\s+(?:ya\s+)?(?:est[aá]|va|sale|sali[oó])\s+(?:en\s+camino|hoy|ma[ñn]ana)\b|\bte\s+lo\s+(?:enviamos|mandamos|llevamos)\s+(?:hoy|ma[ñn]ana)\b/i.test(text);
 }
 
