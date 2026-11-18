@@ -1876,6 +1876,20 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         }
       }
     }
+    // Barrera de COBERTURA también en POSTVENTA: nunca negar envío a una ciudad que la tienda
+    // tiene en Zonas de cobertura (caso: «Concepción no está en nuestra lista» con Concepción activa).
+    if (reply && deniesShipping(reply)) {
+      const mentioned = declaredCityFromTexts(ctx.training, [reply]) ?? declaredCityFromTexts(ctx.training, [body]);
+      const policy = mentioned ? deliveryPolicyForCity(mentioned.city, mentioned.department, ctx.training) : null;
+      if (mentioned && (mentioned.listed || policy)) {
+        console.warn("[BOT_SKY_POSTSALE_COVERAGE_GUARD]", JSON.stringify({conversationId:conversation.id, city:mentioned.city}));
+        const fact = `${mentioned.city} SÍ tiene envío de esta tienda${policy?.paymentMethod === "contraentrega" ? " con pago al recibir" : policy?.paymentMethod === "anticipado" ? " por encomienda con pago anticipado" : ""}. NUNCA digas que no hay envío a ${mentioned.city}. Si el cliente pide cambiar la ciudad del pedido, decí que la tienda lo corrige y le confirma.`;
+        const rewritten = await aiCompose(safeCtx, fact);
+        reply = rewritten && !deniesShipping(rewritten) ? rewritten
+          : reply.split(/(?<=[.!?\n])\s*/).filter(part => !deniesShipping(part)).join(" ").trim() ||
+            `Sí, hacemos envíos a ${mentioned.city}. 😊 Ya le avisé a la tienda para que revise tu pedido y te confirme.`;
+      }
+    }
     // La depuración de modalidad pudo dejar la respuesta vacía: una sola
     // reescritura breve antes de dar la falla por perdida.
     if (!reply) {
@@ -5193,6 +5207,9 @@ function promisesShipment(text: string): boolean {
 
 /** La respuesta niega el envío («no realizamos envíos a Reducto», «no llegamos a…»). */
 function deniesShipping(text: string): boolean {
+  // «Concepción no está en esa lista», «solo hacemos envíos a las ciudades de contraentrega…».
+  if (/\bno\s+(?:est[aá]|figura|aparece|se\s+encuentra|entra)\s+(?:en|dentro\s+de)\s+(?:esa|esta|la|nuestra)\s+(?:lista|cobertura|zona)\b/i.test(text) ||
+      /\bsolo\s+(?:hacemos|realizamos|tenemos|enviamos)\s+(?:env[ií]os?\s+)?(?:a|en|para)\s+(?:las?|los)\s+(?:ciudades|zonas|lugares)\b/i.test(text)) return true;
   return /\bno\s+(?:realizamos|hacemos|tenemos|contamos\s+con|ofrecemos|disponemos\s+de)\s+(?:env[ií]os?|cobertura|delivery|entregas?)\b|\bno\s+(?:enviamos|llegamos|despachamos|entregamos|cubrimos)\b|\b(?:fuera\s+de|sin)\s+(?:nuestra\s+)?cobertura\b|\bno\s+(?:est[aá]|se\s+encuentra)\s+(?:dentro\s+de\s+)?(?:nuestra|la)\s+(?:zona|cobertura)/i.test(text);
 }
 const WAITING_REPLY_RE = /\b(?:un momento|un momentito|aguard[aá]|esper[aá] (?:un|unos)|voy a verificar|vamos a verificar|proceder[eé]? a verificar|verificaremos|te aviso|le avisaremos|estoy guardando|estoy verificando|estoy revisando|necesito verificar|debo verificar|tengo que verificar|antes de continuar con tu pedido|proceder[eé]? a validar|voy a validar|vamos a validar|estoy validando|validar[eé] la informaci[oó]n|en breve te confirmo|te confirmo en breve|ahora (?:reviso|verifico|revisar[eé]|verificar[eé]))\b/i;
