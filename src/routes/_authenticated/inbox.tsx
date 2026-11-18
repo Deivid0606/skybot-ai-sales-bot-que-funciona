@@ -2270,7 +2270,7 @@ function InboxPage() {
                   const missing=[
                     !product ? "producto" : null,
                     product?.product_prices?.length && !recovery.optionId ? "presentación" : null,
-                    recovery.customerName.trim().length<3 ? "nombre completo" : null,
+                    recovery.customerName.trim().length<2 ? "nombre" : null,
                     recovery.city.trim().length<2 ? "ciudad" : null,
                     !recovery.sourceMessageId ? "mensaje del cliente" : null,
                   ].filter(Boolean);

@@ -8,7 +8,7 @@ import { safePostSaleReply } from "@/lib/post-sale-reply-guard";
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { formatGs } from "@/lib/format";
 import { parseReceiptFields } from "@/lib/media-ai.server";
-import { reconcileOrderWithSaleState, recoverSaleStateFromHistory, isValidCustomerName, isValidDeliveryAddress } from "@/lib/sale-reconciliation.server";
+import { reconcileOrderWithSaleState, recoverSaleStateFromHistory, isValidCustomerName, isValidDeliveryAddress, normalizeCustomerName, isAcceptableManualName } from "@/lib/sale-reconciliation.server";
 import { buildRegisteredOrderConfirmation } from "@/lib/order-confirmation.server";
 import { resolveCartPricing, type MultiProductLine } from "@/lib/multi-product-cart";
 import { buildWorkspaceAiContext } from "@/lib/ai-context.server";
@@ -3954,6 +3954,7 @@ export function isUnambiguousPriceSelection(
 export function isOrderReady(
   order: Awaited<ReturnType<typeof generateAiReply>>["order"],
   productId: string | null,
+  allowLooseName = false,
 ): order is NonNullable<Awaited<ReturnType<typeof generateAiReply>>["order"]> {
   if (!order || !productId) return false;
 
@@ -3968,7 +3969,7 @@ export function isOrderReady(
    * cantidad válidos. Si existe una dirección, igualmente se guarda.
    */
   return Boolean(
-    isValidCustomerName(customerName) &&
+    (allowLooseName ? isAcceptableManualName(customerName) : isValidCustomerName(customerName)) &&
       city &&
       /^(?:contraentrega|anticipado|transferencia|deposito|depósito|giro)$/i.test(paymentMethod) &&
       (!order.street || isValidDeliveryAddress(order.street)) &&
@@ -4017,6 +4018,8 @@ export async function createOrderFromAi(args: {
   deliveryNotes?: string | null;
   /** Registro manual desde Inbox: la cédula de encomienda se pide después, no frena el registro. */
   allowMissingRecipientCi?: boolean;
+  /** Registro manual desde Inbox: el vendedor revisó el chat; el nombre no bloquea. */
+  allowLooseName?: boolean;
   /** Entrenamiento ACTIVO del workspace para validar requisitos por modalidad. */
   training?: AiContext["training"];
   products: {
@@ -4051,17 +4054,17 @@ export async function createOrderFromAi(args: {
     }
     // «Gregoria Barrios C I»: la cédula ya se separó y quedó la sigla suelta al final.
     if (args.order.customer_name)
-      args.order.customer_name = String(args.order.customer_name).replace(/[\s,.:;-]+(?:c\.?\s*i\.?|c[eé]dula|nro\.?|n[°º])\s*$/iu, "").trim();
+      args.order.customer_name = normalizeCustomerName(args.order.customer_name).replace(/[\s,.:;-]+(?:c\.?\s*i\.?|c[eé]dula|nro\.?|n[°º])\s*$/iu, "").trim();
   }
   // Última barrera: ninguna ruta de creación puede saltarse estas verificaciones.
   const orderIsEncomienda=Boolean(args.training && isEncomiendaAdvanceOrder(args.training,args.order.city,args.order.departamento,args.order.payment_method));
   // Para encomienda no se lee ni se valida el domicilio de entrega.
   const orderForValidation = orderIsEncomienda ? {...args.order, street: undefined} : args.order;
-  if (!isOrderReady(orderForValidation, args.productId) ||
+  if (!isOrderReady(orderForValidation, args.productId, Boolean(args.allowLooseName)) ||
       (!orderIsEncomienda && args.order.street && !isValidDeliveryAddress(args.order.street))) {
     throw new Error("Pedido incompleto: nombre, ciudad, cantidad o pago inválidos. No se registró la venta.");
   }
-  if (!isValidCustomerName(args.order.customer_name)) throw new Error("Nombre y apellido del destinatario inválidos: pedido no registrado.");
+  if (!(args.allowLooseName ? isAcceptableManualName(args.order.customer_name) : isValidCustomerName(args.order.customer_name))) throw new Error("Nombre y apellido del destinatario inválidos: pedido no registrado.");
   if (orderIsEncomienda && args.training && sellerRequiresEncomiendaCi(args.training) && !args.allowMissingRecipientCi &&
       !isValidRecipientCi(args.order.recipient_ci)) throw new Error("Cédula del destinatario pendiente: pedido no registrado.");
   const sourceMessageId = cleanOrderText(args.sourceMessageId);

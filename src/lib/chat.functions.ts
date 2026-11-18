@@ -7,7 +7,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { sendWhatsAppText } from "@/lib/whatsapp.server";
-import { reconcileOrderWithSaleState, recoverSaleStateFromHistory, isValidCustomerName, isValidDeliveryAddress } from "@/lib/sale-reconciliation.server";
+import { reconcileOrderWithSaleState, recoverSaleStateFromHistory, isValidCustomerName, isValidDeliveryAddress, normalizeCustomerName, isAcceptableManualName } from "@/lib/sale-reconciliation.server";
 import { isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi, isValidRecipientCi, enforceVerifiedPaymentReply, type SaleState } from "@/lib/rule-sales.server";
 import { buildRegisteredOrderConfirmation } from "@/lib/order-confirmation.server";
 import { handlePostSaleRecipientCi, shouldAskPostSaleCi } from "./recipient-ci.server";
@@ -230,8 +230,9 @@ export const registerPendingSale = createServerFn({ method: "POST" })
     if(options.length && !option)throw new Error("Seleccioná una presentación válida del catálogo");
     if(!options.length && data.optionId)throw new Error("Este producto no tiene esa promoción");
     const units=(option?.quantity??1)*data.promoCount;
-    data.customerName = data.customerName.replace(/[\u00a0\u2000-\u200b\u202f\u205f\u3000\ufeff]/g, " ").replace(/\s+/g, " ").trim();
-    if (!isValidCustomerName(data.customerName)) throw new Error(`«${data.customerName}» no parece un nombre y apellido válido. Escribí nombre y apellido reales del cliente (sin números ni la cédula).`);
+    // El vendedor revisó el chat: el nombre se limpia («0rtiz» → «Ortiz») y no bloquea la venta.
+    data.customerName = normalizeCustomerName(data.customerName).replace(/[\s,.:;-]+(?:c\.?\s*i\.?|c[eé]dula)?[\s:.-]*\d[\d.\-]{3,}\s*$/iu, "").trim();
+    if (!isAcceptableManualName(data.customerName)) throw new Error("Escribí el nombre del cliente (con letras).");
     if (street && !encomienda && !isValidDeliveryAddress(street))
       throw new Error("Dirección inválida: ingresá calle/referencia concreta o ubicación Google Maps");
     const order={customer_name:data.customerName,phone:convo.contacts.phone,
@@ -243,7 +244,7 @@ export const registerPendingSale = createServerFn({ method: "POST" })
       conversationId:convo.id,contactId:convo.contact_id,phone:convo.contacts.phone,
       adId:convo.ad_id??null,productId:data.productId,
       sourceMessageId:`manual-recovery:${data.sourceMessageId}`,order,products:ctx.products,training:ctx.training,
-      allowMissingRecipientCi:true});
+      allowMissingRecipientCi:true,allowLooseName:true});
     const {error: stateError}=await supabase.from("bot_sale_states").delete()
       .eq("workspace_id",convo.workspace_id).eq("conversation_id",convo.id);
     if(stateError)console.error("Se registró el pedido, pero no se pudo limpiar el estado",stateError);
