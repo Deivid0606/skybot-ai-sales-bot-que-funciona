@@ -49,7 +49,10 @@ export function isValidCustomerName(value: unknown): boolean {
   if (/^(?:para|en|a|de|del|hacia|desde|ciudad|vivo|estoy|mandar|enviar|entregar)\b/.test(n)) return false;
   // Ciudad en lugar del nombre («Luque», «Ciudad del Este»). Un APELLIDO igual a una ciudad
   // («Rafael Franco», «Juan Luque») sí es nombre: solo se rechaza si la ciudad va al comienzo.
-  if (/^(?:itaugua|luque|lambare|cap iata|capiata|aregua|ypane|nemby|limpio|encarnacion|hernandarias|franco|presidente franco|mariano roque alonso|ciudad del este)\b/.test(n)) return false;
+  if (/^(?:itaugua|luque|lambare|cap iata|capiata|aregua|ypane|nemby|limpio|hernandarias|franco|presidente franco|mariano roque alonso|ciudad del este)\b/.test(n)) return false;
+  // Nombres de mujer que también son ciudades («Asunción González», «Encarnación Duarte»):
+  // valen como nombre si van con apellido; solos o con «centro/barrio…» siguen siendo lugar.
+  const cityFirstName = /^(?:maria\s+)?(?:asuncion|encarnacion)\s+\p{L}{3,}/u.test(n);
 
   if (/\b(?:estoy|en|aeropuerto|trabajo|oficina|salgo|almorzar|almuerzo|horas?|hasta|desde|avisa|traigas|aca|aqui|cada|unidades?|cajas?)\b/.test(n)) return false;
   // Frases comunes («Es un poco alto», «O no», «Solo eso») no son nombres:
@@ -58,7 +61,8 @@ export function isValidCustomerName(value: unknown): boolean {
   // Referencias de dirección («Caballero casi Rca. de Colombia») no son nombres.
   if (/\b(?:casi|esq|esquina|entre|frente|detras|cerca|km|ruta|rca|republica|mcal|mariscal|tte|gral|cnel|nro|numero|casa|edificio|piso|depto|manzana|lote|villa|sobre)\b/.test(n)) return false;
   if (/\b(?:av|avd|avda|avenida|pje|pasaje)\b/.test(n)) return false;
-  if (/\b(?:barrio|ciudad|calle|avenida|avda|ruta|esquina|zona|centro|obrero|direccion|ubicacion|departamento|pedido|entrega|lunes|martes|miercoles|jueves|viernes|sabado|domingo|mañana|manana|hoy|precio|quiero|gracias|okey|perfecto|confirmo|asuncion|central|paraguay)\b/.test(n)) return false;
+  if (/\b(?:barrio|ciudad|calle|avenida|avda|ruta|esquina|zona|centro|obrero|direccion|ubicacion|departamento|pedido|entrega|lunes|martes|miercoles|jueves|viernes|sabado|domingo|mañana|manana|hoy|precio|quiero|gracias|okey|perfecto|confirmo|central|paraguay)\b/.test(n)) return false;
+  if (/\basuncion\b/.test(n) && !cityFirstName) return false;
   if (/\b(?:pago|pagos|pagar|pago al recibir|recibir|recibo|transferencia|transferir|efectivo|contado|contra|contraentrega|deposito|giro|comprobante|tarjeta|cuota|cuotas|envio|delivery|direccion|dirección|avenida|avda|calle|si|no|ok|dale|listo|gracias|hola|buenas|precio|costo|cuanto|foto|disponible|unidad|und|quiero|tenes|tienen)\b/.test(n)) return false;
   if (/\d/.test(name)) return false;
   return true;
