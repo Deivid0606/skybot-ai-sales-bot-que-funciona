@@ -57,7 +57,7 @@ export function isValidCustomerName(value: unknown): boolean {
   if (/\b(?:estoy|en|aeropuerto|trabajo|oficina|salgo|almorzar|almuerzo|horas?|hasta|desde|avisa|traigas|aca|aqui|cada|unidades?|cajas?)\b/.test(n)) return false;
   // Frases comunes («Es un poco alto», «O no», «Solo eso») no son nombres:
   // palabras funcionales u opiniones nunca forman parte de un nombre y apellido.
-  if (/\b(?:es|son|un|una|uno|unos|poco|muy|mas|menos|alto|alta|caro|cara|barato|barata|solo|sola|nomas|o|y|que|eso|esto|esta|este|todo|nada|algo|ya|tambien|pero|porque|bueno|buena|mejor|peor|igual|tal|vez|creo|puede|seria|hay|tiene|tengo|quiero|necesito|me|te|se|lo|le|les|mi|tu|su|ahi|asi)\b/.test(n)) return false;
+  if (/\b(?:es|son|un|una|uno|unos|poco|muy|menos|alto|alta|caro|cara|barato|barata|solo|sola|nomas|o|y|que|eso|esto|esta|este|todo|nada|algo|ya|tambien|pero|porque|bueno|buena|mejor|peor|igual|tal|vez|creo|puede|seria|hay|tiene|tengo|quiero|necesito|me|te|se|lo|le|les|mi|tu|su|ahi|asi)\b/.test(n)) return false;
   // Referencias de dirección («Caballero casi Rca. de Colombia») no son nombres.
   if (/\b(?:casi|esq|esquina|entre|frente|detras|cerca|km|ruta|rca|republica|mcal|mariscal|tte|gral|cnel|nro|numero|casa|edificio|piso|depto|manzana|lote|villa|sobre)\b/.test(n)) return false;
   if (/\b(?:av|avd|avda|avenida|pje|pasaje)\b/.test(n)) return false;

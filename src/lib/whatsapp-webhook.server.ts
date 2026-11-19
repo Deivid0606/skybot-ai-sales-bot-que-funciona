@@ -2168,13 +2168,15 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         // La IA puede leer la cuenta con texto extra («815060085 (Banco Familiar)»,
         // «Cuenta 815060085», «N° 815060085»): comparar solo el número de cuenta.
         const digitRun = value.replace(/(\d)[\s.-](?=\d)/g, "$1").match(/\d{6,}/g);
+        // Alias = celular con código de país (+595 992…) es el mismo que 0992…
+        const localPhone = (d: string) => /^5959\d{8}$/.test(d) ? d.slice(3) : d;
         if (digitRun?.length === 1 && !/^\d+$/.test(result) && !/^(?:ALIAS)?(?:CI|CEDULA|RUC)\d{5,12}$/.test(result))
-          return digitRun[0].replace(/^0+(?=\d)/, "");
+          return localPhone(digitRun[0].replace(/^0+(?=\d)/, ""));
         if (!/^[A-Z0-9]{4,80}$/.test(result)) return "";
         // "CI 4804126", "C.I. 4804126" o "Alias ci 4804126" = mismo alias numérico.
         const ciDigits = result.match(/^(?:ALIAS)?(?:CI|CEDULA|RUC)(\d{5,12})$/)?.[1];
         if (ciDigits) return ciDigits.replace(/^0+(?=\d)/, "");
-        return /^\d+$/.test(result) ? result.replace(/^0+(?=\d)/, "") : result;
+        return /^\d+$/.test(result) ? localPhone(result.replace(/^0+(?=\d)/, "")) : result;
       };
       const authorizedAliases = [...new Set(bankLines.flatMap(line => {
         const match = line.trim().replace(/^[-*]\s*/, "").match(
@@ -2196,7 +2198,9 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       const HOLDER_NOISE = new Set(["BANCO","FAMILIAR","SAECA","SA","EKO","CUENTA","CTA","DESTINO","PARA","NOMBRE","TITULAR","BENEFICIARIO","ENTIDAD"]);
       const normalizeHolder = (value: string) => value.toUpperCase().normalize("NFD")
         .replace(/[\u0300-\u036f]/g, "").replace(/S\.?\s*A\.?\s*E\.?\s*C\.?\s*A\.?/g, " ").replace(/[^A-Z\s]/g, " ")
-        .trim().split(/\s+/).filter(token => token && !HOLDER_NOISE.has(token));
+        .trim().split(/\s+/).filter(token => token && !HOLDER_NOISE.has(token))
+        // «E.A.S.» → «EAS»: letras sueltas seguidas forman una sigla.
+        .join(" ").replace(/\b([A-Z])(?:\s+(?=[A-Z]\b))/g, "$1").split(" ").filter(Boolean);
       const compatibleHolder = (received: string | null) => {
         // La abreviación de un titular (p.ej., nombre + apellido) es habitual
         // en recibos; si es ambigua debe revisarse, no afirmarse acreditación.
@@ -2204,6 +2208,10 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         const expected = normalizeHolder(authorizedHolder);
         const actual = normalizeHolder(received);
         if (actual.length < 2) return false;
+        // Titular COMPLETO en el comprobante y abreviado en Datos bancarios
+        // («HUGO RODOLFO AVALOS SANTANDER» con «Hugo Avalos» cargado): todas las palabras cargadas aparecen.
+        const expectedWords = expected.filter(word => word.length > 1);
+        if (expectedWords.length >= 2 && expectedWords.every(word => actual.includes(word))) return true;
         // Iniciales («PAMELA A. AYALA G.») deben corresponder a algún nombre autorizado.
         return actual.every(token => expected.includes(token) ||
             (token.length === 1 && expected.some(word => word.startsWith(token)))) &&
@@ -2237,9 +2245,16 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
           const hasNumber = /\d{4,}/.test(value.replace(/[\s.-]/g, ""));
           // Error de lectura de UN dígito (p. ej. «8150600085» por «815060085»): solo
           // cuenta si la titular también coincide (se verifica más abajo).
+          // El banco agrega código de sucursal/producto («AH-0125 0055313002» por «010055313002»):
+          // mismos últimos 10 dígitos de una cuenta de 10+ dígitos. Solo cuenta si el titular coincide.
+          const receivedDigits = value.replace(/\D/g, "");
+          const branchMatch = !accountMatch && receivedDigits.length >= 10 && authorizedAccounts.some(account => {
+            const d = String(account).replace(/\D/g, "");
+            return d.length >= 10 && receivedDigits.slice(-10) === d.slice(-10);
+          });
           const nearMatch = !accountMatch && /^\d{8,}$/.test(normalized) &&
             authorizedAccounts.some(account => oneDigitApart(normalizeDestination(String(account)), normalized));
-          return { accountMatch, aliasMatch, masked, maskedMatch, hasNumber, nearMatch };
+          return { accountMatch, aliasMatch, masked, maskedMatch, hasNumber, nearMatch: nearMatch || branchMatch };
         });
         // Un identificador completo que contradice la cuenta autorizada bloquea;
         // uno enmascarado solo cuenta si sus últimos dígitos coinciden.
@@ -5219,7 +5234,10 @@ function promisesShipment(text: string): boolean {
       /\b(?:ser[aá]|va\s+a\s+ser)\s+(?:enviad[oa]|entregad[oa]|despachad[oa])\s+(?:hoy|ma[ñn]ana)\b/i.test(text) ||
       /\b(?:llegar[aá]|te\s+llega|le\s+llega)\s+(?:hoy|ma[ñn]ana)\b/i.test(text) ||
       /\bentrega\s+se\s+(?:realizar[aá]|har[aá]|efectuar[aá]|coordinar[aá])\s+(?:hoy|ma[ñn]ana|el\s+\w+)\b/i.test(text) ||
-      /\b(?:pedido|compra|encomienda)\s+(?:ya\s+)?(?:est[aá]|sigue)\s+en\s+(?:proceso|preparaci[oó]n|camino)\b/i.test(text)) return true;
+      /\b(?:pedido|compra|encomienda)\s+(?:ya\s+)?(?:est[aá]|sigue)\s+en\s+(?:proceso|preparaci[oó]n|camino)\b/i.test(text) ||
+      /\bse\s+(?:entregar[aá]|enviar[aá]|despachar[aá])\s+(?:hoy|ma[ñn]ana|el\s+\w+)\b/i.test(text) ||
+      /\blisto\s+para\s+(?:ser\s+)?(?:entregad|enviad|despachad|procesad|registrad)[oa]\b/i.test(text) ||
+      /\b(?:est[aá]|va)\s+siendo\s+(?:registrad|procesad|preparad|enviad)[oa]\b|\bvamos\s+a\s+proceder\s+con\s+el\s+registro\b|\btengo\s+todos\s+los\s+datos\s+(?:para|de)\s+tu\s+pedido\b/i.test(text)) return true;
   return /\b(?:te|le)\s+avis(?:aremos|amos|o)\s+cuando\s+(?:el|tu|su)\s+pedido\b|\b(?:tu|el|su)\s+pedido\s+(?:ya\s+)?(?:est[aá]|va|sale|sali[oó])\s+(?:en\s+camino|hoy|ma[ñn]ana)\b|\bte\s+lo\s+(?:enviamos|mandamos|llevamos)\s+(?:hoy|ma[ñn]ana)\b/i.test(text);
 }
 
