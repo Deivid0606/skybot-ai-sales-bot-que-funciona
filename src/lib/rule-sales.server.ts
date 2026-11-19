@@ -794,7 +794,9 @@ export function measureWordsToDigits(text: string): string {
 }
 
 export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={}, mediaPath?:string|null, sharedLocationUrl?:string|null):SaleStep|null {
-  text = measureWordsToDigits(text);
+  text = measureWordsToDigits(text)
+    // «Quiero solo una vez», «pedí dos veces»: hablan de cuántas veces pidió, no de unidades.
+    .replace(/\b(?:un|una|dos|tres|cuatro|cinco|\d{1,2})\s+(?:vez|veces)\b/gi, " ");
   // Audios: la transcripción suele confundir «litros» con «libros».
   if (/\blibros?\b/i.test(text) && ctx.products.some(p=>/litro/i.test(JSON.stringify(p)))) {
     text = text.replace(/\blibro(s?)\b/gi, "litro$1");

@@ -137,7 +137,8 @@ export function recoverSaleStateFromHistory(ctx: AiContext, previous: SaleState,
   let lastQuestion = "";
   for (const item of history.slice(-32)) {
     if (item.role === "assistant") { lastQuestion = normal(item.content); continue; }
-    const raw = measureWordsToDigits(String(item.content ?? "").trim());
+    const raw = measureWordsToDigits(String(item.content ?? "").trim())
+      .replace(/\b(?:un|una|dos|tres|cuatro|cinco|\d{1,2})\s+(?:vez|veces)\b/gi, " ");
     const n = normal(raw);
     if (!n || /^\[(?:image|imagen|audio|document|documento|video)/i.test(raw)) continue;
     const ci=extractRecipientCiFromCustomerText(raw, /\b(?:cedula|c\.?\s?i)\b|documento de identidad/.test(lastQuestion));
