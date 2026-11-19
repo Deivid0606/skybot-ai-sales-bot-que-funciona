@@ -4943,17 +4943,32 @@ async function productHintFromAd(workspaceId: string, ownerId: string, adId: str
     const norm = (v: string) => v.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[*_~]/g, " ");
     const hay = norm(adText);
     const { data: rows } = await supabaseAdmin.from("product_keywords")
-      .select("keyword, product_id, products!inner(is_active)").eq("workspace_id", workspaceId);
-    const hits = new Map<string, string>();
-    for (const row of (rows ?? []) as Array<{ keyword: string | null; product_id: string; products: { is_active: boolean } | null }>) {
+      .select("keyword, product_id, products!inner(is_active, name)").eq("workspace_id", workspaceId);
+    // Puntaje por producto: largo de las palabras clave que aparecen en el anuncio, y un bono
+    // grande si el NOMBRE del producto aparece («Base Ajustable con Ruedas»). Un copy puede
+    // mencionar al pasar palabras de otro producto («heladera», «lavarropas»).
+    const wordRe = (k: string) => new RegExp(`(^|[^\\p{L}\\p{N}])${k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^\\p{L}\\p{N}]|$)`, "u");
+    const scores = new Map<string, { score: number; keyword: string }>();
+    for (const row of (rows ?? []) as unknown as Array<{ keyword: string | null; product_id: string; products: { is_active: boolean; name: string | null } | null }>) {
       if (row.products?.is_active === false) continue;
       const k = norm(String(row.keyword ?? "").trim());
-      if (k.length < 4) continue;
-      const re = new RegExp(`(^|[^\\p{L}\\p{N}])${k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^\\p{L}\\p{N}]|$)`, "u");
-      if (re.test(hay) && (!hits.has(row.product_id) || k.length > (hits.get(row.product_id)?.length ?? 0))) hits.set(row.product_id, String(row.keyword).trim());
+      if (k.length < 4 || !wordRe(k).test(hay)) continue;
+      const entry = scores.get(row.product_id) ?? { score: 0, keyword: "" };
+      entry.score += k.length;
+      if (k.length > entry.keyword.length) entry.keyword = String(row.keyword).trim();
+      scores.set(row.product_id, entry);
     }
-    if (hits.size !== 1) return "";
-    const [productId, keyword] = [...hits.entries()][0];
+    const named = new Set<string>();
+    for (const row of (rows ?? []) as unknown as Array<{ product_id: string; products: { name: string | null } | null }>) {
+      const entry = scores.get(row.product_id);
+      if (!entry || named.has(row.product_id)) continue;
+      const nameWords = norm(String(row.products?.name ?? "")).replace(/[^\p{L}\p{N} ]/gu, " ").split(/\s+/).filter(w => w.length >= 3);
+      if (nameWords.length >= 2 && wordRe(nameWords.slice(0, 2).join(" ")).test(hay)) { entry.score += 100; named.add(row.product_id); }
+    }
+    const ranked = [...scores.entries()].sort((a, b) => b[1].score - a[1].score);
+    // Gana solo con ventaja clara (el doble que el segundo); si están parejos, no se adivina.
+    if (!ranked.length || (ranked[1] && ranked[0][1].score < ranked[1][1].score * 2)) return "";
+    const [productId, { keyword }] = ranked[0];
     // Vincular el anuncio a ese producto (los próximos chats de este anuncio ya lo traen).
     await (supabaseAdmin as any).from("ads").upsert({
       workspace_id: workspaceId, user_id: ownerId, ad_id: adId, name: referral.adName, product_id: productId,
