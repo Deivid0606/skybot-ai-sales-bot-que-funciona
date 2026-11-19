@@ -70,8 +70,8 @@ export async function buildWorkspaceAiContext(
     supabase.from("ai_settings").select("system_instruction, gemini_api_key, gemini_api_key_2, gemini_api_key_3, openai_api_key, provider_order, provider_models, model, autodetect_model").eq("workspace_id", workspaceId).maybeSingle(),
     supabase.from("user_settings").select("business_name, currency").eq("workspace_id", workspaceId).maybeSingle(),
     supabase.from("products").select(`
-      id, name, sku, price, promo_price, stock, sales_copy, description, delivery_info, ai_instructions,
-      product_keywords(keyword), product_prices(id, label, quantity, price, sort_order)
+      id, name, sku, price, promo_price, stock, sales_copy, description, delivery_info, ai_instructions, advance_discount_percent,
+      product_keywords(keyword), product_prices(id, label, quantity, price, sort_order, delivery_fee)
     `).eq("workspace_id", workspaceId).eq("is_active", true),
     supabase.from("training_entries").select("title, content, category, priority, scope, product_id, keywords, created_at").eq("workspace_id", workspaceId).eq("is_active", true).order("priority", { ascending: false }).order("created_at", { ascending: false }),
     conversationId ? supabase.from("bot_sale_states").select("state").eq("workspace_id", workspaceId).eq("conversation_id", conversationId).maybeSingle() : Promise.resolve({ data: null, error: null }),
@@ -116,6 +116,7 @@ export async function buildWorkspaceAiContext(
       quantity: packQuantityFromLabel(option.label, option.quantity),
       price: Number(option.price) || 0,
       sort_order: Number(option.sort_order) || 0,
+      delivery_fee: Number((option as { delivery_fee?: unknown }).delivery_fee) || 0,
     })).filter(option => Boolean(option.label) && Number.isFinite(option.price) && option.price > 0)
       .sort((a,b) => a.sort_order-b.sort_order);
     const legacy = Number(product.price);
@@ -129,6 +130,7 @@ export async function buildWorkspaceAiContext(
       delivery_info: product.delivery_info, ai_instructions: product.ai_instructions,
       keywords: (product.product_keywords ?? []).map(k => String(k.keyword ?? "").trim().toLowerCase()).filter(Boolean),
       product_prices: productPrices,
+      advance_discount_percent: Number((product as { advance_discount_percent?: unknown }).advance_discount_percent) || null,
     };
   });
   return {

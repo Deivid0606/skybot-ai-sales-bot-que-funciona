@@ -48,6 +48,15 @@ export function buildRegisteredOrderConfirmation(args: ConfirmationArgs): string
   const optionLabel = String(args.productOption ?? "").trim();
   const boxLabel = /^(?:1|un|una)\s+caja\b/i.test(optionLabel);
   const packContainsTwoBases = boxLabel && /\b(?:1|una)\s+caja\s+(?:trae|contiene|incluye)\s+(?:2|dos)\s+bases\b/i.test(String(args.packageCopy ?? ""));
+  // Envío y descuento reales del pedido (los anota el registro en las observaciones):
+  // envío de la ciudad o delivery del producto, y descuento por pago anticipado.
+  const obs = String((created as { observations?: string | null }).observations ?? "");
+  const obsFee = obs.match(/ENVÍO:\s*([\d.]+)\s*Gs/);
+  const shippingFee = obsFee ? Number(obsFee[1].replace(/\D/g, "")) : Number(args.shippingFee) || 0;
+  const productDelivery = /delivery del producto/i.test(obs);
+  const obsDiscount = obs.match(/DESCUENTO\s+(\d+(?:[.,]\d+)?)%\s+POR PAGO ANTICIPADO:\s*−?([\d.]+)\s*Gs/);
+  const discountPct = obsDiscount ? obsDiscount[1] : "";
+  const discount = obsDiscount ? Number(obsDiscount[2].replace(/\D/g, "")) : 0;
   const multi = (args.items??[]).length>1;
   const itemLines = multi ? (args.items??[]).flatMap((item,index)=>[
     `📦 ${index+1}. ${item.title}`,
@@ -65,9 +74,11 @@ export function buildRegisteredOrderConfirmation(args: ConfirmationArgs): string
     ...(args.recipientCi && /^[0-9]{4,9}$/.test(args.recipientCi.replace(/[^0-9]/g,""))
       ? [`🪪 Cédula: ${args.recipientCi.replace(/[^0-9]/g,"")}`] : []),
     ...(multi ? itemLines : [`📦 Producto: ${product}`,`🔢 Cantidad: ${quantityDescription}`]),
-    ...(Number(args.shippingFee) > 0 && Number(created.total) > Number(args.shippingFee)
-      ? [`🛍️ Productos: ${formatGs(Number(created.total) - Number(args.shippingFee))}`, `🚚 Costo de envío: ${formatGs(Number(args.shippingFee))}`] : []),
-    `💰 Total${Number(args.shippingFee) > 0 ? " con envío" : ""}: ${formatGs(created.total)}`,
+    ...(shippingFee > 0 || discount > 0
+      ? [`🛍️ Productos: ${formatGs(Number(created.total) - shippingFee + discount)}`,
+        ...(shippingFee > 0 ? [`🚚 ${productDelivery ? "Delivery" : "Costo de envío"}: ${formatGs(shippingFee)}`] : []),
+        ...(discount > 0 ? [`💸 Descuento ${discountPct}% por pago anticipado: −${formatGs(discount)}`] : [])] : []),
+    `💰 Total${shippingFee > 0 ? " con envío" : ""}: ${formatGs(created.total)}`,
     `📍 Ciudad: ${city}`,
     ...(address ? [`🏠 Dirección: ${address}`] : []),
     `📱 Teléfono: ${created.phone}`,
