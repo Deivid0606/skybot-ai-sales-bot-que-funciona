@@ -25,6 +25,7 @@ import {
   Wand2,
   User,
   X,
+  MoreHorizontal,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -511,6 +512,95 @@ function isAdvanceOrder(order: {payment_method?:string|null;payment_status?:stri
   return /anticip|transfer|deposit|giro|encomienda/.test(method) || order.payment_status === "anticipado";
 }
 
+/** Ficha de la venta del chat abierto: qué datos tiene el bot, qué falta y sus pedidos. */
+function SalePanel({ conversationId, products, onRegister }: {
+  conversationId: string;
+  products: Array<{ id: string; name: string; product_prices?: Array<{ id: string; label: string; price: number; quantity: number }> | null }>;
+  onRegister: () => void;
+}) {
+  const { data, isLoading } = useQuery({
+    queryKey: ["inbox-sale-panel", conversationId],
+    queryFn: async () => {
+      const [stateResult, ordersResult] = await Promise.all([
+        (supabase as any).from("bot_sale_states").select("state, updated_at").eq("conversation_id", conversationId).maybeSingle(),
+        (supabase as any).from("orders").select("id, order_number, total, status, created_at, product_title, quantity, payment_method, dcanp_order_number, dcanp_status")
+          .eq("conversation_id", conversationId).order("created_at", { ascending: false }).limit(5),
+      ]);
+      return {
+        state: (stateResult.data?.state ?? {}) as Record<string, any>,
+        orders: (ordersResult.data ?? []) as Array<Record<string, any>>,
+      };
+    },
+    refetchInterval: 15000,
+  });
+  const st = data?.state ?? {};
+  const product = products.find(p => p.id === st.productId);
+  const option = product?.product_prices?.find(o => o.id === st.optionId);
+  const advance = /anticip|transfer/i.test(String(st.paymentMethod ?? ""));
+  const nameOk = typeof st.customerName === "string" && st.customerName.trim().split(/\s+/).length >= 2;
+  const rows: Array<{ label: string; value: string | null; ok: boolean; hide?: boolean }> = [
+    { label: "Producto", value: product ? `${product.name}${option ? ` · ${option.label}` : ""}` : null, ok: Boolean(product && option) },
+    { label: "Ciudad", value: st.cityVerified ? `${st.city}${st.department ? ` (${st.department})` : ""}` : st.city ?? null, ok: Boolean(st.cityVerified) },
+    { label: "Pago", value: st.paymentMethod ? (advance ? (st.payByTransfer ? "Transferencia" : "Anticipado (encomienda)") : "Al recibir") : null, ok: Boolean(st.paymentMethod) },
+    { label: "Nombre", value: st.customerName ?? null, ok: nameOk },
+    { label: "Dirección", value: st.street ? String(st.street) : st.locationUrl ? "Ubicación GPS" : null, ok: Boolean(st.street || st.locationUrl), hide: advance && !st.payByTransfer },
+    { label: "Comprobante", value: (st.receiptDocuments?.length ?? 0) > 0 ? `${st.receiptDocuments.length} recibido(s)` : null, ok: (st.receiptDocuments?.length ?? 0) > 0, hide: !advance },
+  ];
+  const visible = rows.filter(r => !r.hide);
+  const missing = visible.filter(r => !r.ok).length;
+  const orders = data?.orders ?? [];
+  return (
+    <div className="flex h-full w-full flex-col overflow-y-auto bg-card/70 p-3 text-sm [scrollbar-width:thin]">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground">🧾 Venta en curso</p>
+        {isLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" /> :
+          <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-bold", missing ? "bg-amber-500/15 text-amber-700 dark:text-amber-300" : "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300")}>
+            {missing ? `Faltan ${missing}` : "Completa"}
+          </span>}
+      </div>
+      <div className="mt-2 space-y-1.5 rounded-xl border border-border/60 bg-background/60 p-2.5">
+        {visible.map(r => (
+          <div key={r.label} className="flex items-start gap-2">
+            <span className="mt-0.5 text-xs">{r.ok ? "✅" : "⏳"}</span>
+            <span className="w-20 shrink-0 text-xs text-muted-foreground">{r.label}</span>
+            <span className={cn("min-w-0 flex-1 break-words text-xs", r.value ? "font-medium" : "italic text-muted-foreground")}>{r.value ?? "falta"}</span>
+          </div>
+        ))}
+        {option && (
+          <div className="mt-1 flex items-center justify-between border-t border-border/60 pt-1.5 text-xs">
+            <span className="text-muted-foreground">Precio</span>
+            <b className="tabular-nums">{moneyGs(Number(option.price))}</b>
+          </div>
+        )}
+      </div>
+      <Button size="sm" className="mt-2 w-full" onClick={onRegister}>
+        <CheckCircle2 className="mr-1 h-4 w-4" /> Registrar venta
+      </Button>
+      <p className="mt-1 text-[10px] text-muted-foreground">El bot registra solo cuando estén todos los datos. Usalo si la venta quedó trabada.</p>
+
+      <p className="mt-4 text-xs font-bold uppercase tracking-wide text-muted-foreground">📦 Pedidos de este chat</p>
+      {!orders.length && <p className="mt-1 text-xs text-muted-foreground">Todavía no tiene pedidos.</p>}
+      <div className="mt-1.5 space-y-1.5">
+        {orders.map(o => (
+          <div key={o.id} className="rounded-lg border border-border/60 bg-background/60 p-2 text-xs">
+            <div className="flex items-center justify-between gap-2">
+              <span className="truncate font-mono text-[11px]">{o.order_number}</span>
+              <b className="shrink-0 tabular-nums">{moneyGs(Number(o.total) || 0)}</b>
+            </div>
+            <p className="truncate text-muted-foreground">{o.quantity} × {o.product_title}</p>
+            <div className="mt-1 flex flex-wrap gap-1">
+              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold">{o.status}</span>
+              {o.dcanp_order_number
+                ? <span className="rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-sky-700 dark:text-sky-300">🚚 DCANP {o.dcanp_order_number}{o.dcanp_status ? ` · ${o.dcanp_status}` : ""}</span>
+                : <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">Sin DCANP aún</span>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function InboxPage() {
   const { c: initialConversationId } = Route.useSearch();
   const { profile } = useAuth();
@@ -574,7 +664,8 @@ function InboxPage() {
   useEffect(() => () => { if (activityClearRef.current) clearTimeout(activityClearRef.current); }, []);
   useEffect(() => { knownOfficeOrderIds.current = null; setOfficeActivity(null); }, [workspaceId]);
   const [smallOfficeOpen, setSmallOfficeOpen] = useState(false);
-  const [showPanoramaOffice, setShowPanoramaOffice] = useState(true);
+  const [saleSheetOpen, setSaleSheetOpen] = useState(false);
+  const [showPanoramaOffice, setShowPanoramaOffice] = useState(false);
   const [showAdvancedInboxFilters, setShowAdvancedInboxFilters] = useState(false);
 
   const queryClient = useQueryClient();
@@ -1686,6 +1777,17 @@ function InboxPage() {
     tab.id,tab.id==="all"?(dateConversations??[]).length:(dateConversations??[]).filter(c=>getSmartCategories(c)[tab.id as Exclude<SmartTab,"all">]).length,
   ])) as Record<SmartTab,number>;
 
+  // Un solo estado por chat, el más importante, para saber a quién atender primero.
+  const chatStatus = (c: NonNullable<typeof dateConversations>[number]) => {
+    const cat = getSmartCategories(c);
+    if (cat.ai_failed) return { icon: "🔴", label: "IA no responde", cls: "border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-300" };
+    if (cat.complaints) return { icon: "🚨", label: "Reclamo", cls: "border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-300" };
+    if (lastReplyOrigins?.[c.id] === "incoming") return { icon: "⏳", label: "Esperando respuesta", cls: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300" };
+    if (cat.closed) return { icon: "🟢", label: cat.order_query ? "Pregunta por su pedido" : "Pedido registrado", cls: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" };
+    if (cat.human) return { icon: "👤", label: "Atiende una persona", cls: "border-orange-500/40 bg-orange-500/10 text-orange-700 dark:text-orange-300" };
+    if (cat.potential) return { icon: "🟡", label: "En venta", cls: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300" };
+    return { icon: "💬", label: "Consulta", cls: "border-border bg-muted/40 text-muted-foreground" };
+  };
   const filtered = ((directSearch ? searchConversations : dateConversations) ?? []).filter((c) => {
     const q = search.trim().toLowerCase();
 
@@ -1717,54 +1819,76 @@ function InboxPage() {
 
   const heroSales = (todayOfficeOrders ?? []).filter(order => order.status !== "cancelado");
   const heroSalesTotal = heroSales.reduce((sum, order) => sum + (Number(order.total) || 0), 0);
+  // «Registrar venta»: abre el formulario completado con lo que el bot ya juntó del chat.
+  const openRecovery = async () => {
+                  if (!active) return;
+                  const customerMessages=(messages??[]).filter(m=>m.direction==="inbound");
+                  const latestCustomer=customerMessages.at(-1);
+                  // Se completa con lo que el bot ya juntó en el chat (nombre, ciudad, dirección, producto).
+                  let st:Record<string,any>={};
+                  try{
+                    const {data}=await (supabase as any).from("bot_sale_states").select("state").eq("conversation_id",active.id).maybeSingle();
+                    st=(data?.state??{}) as Record<string,any>;
+                  }catch{ st={}; }
+                  const productId=String(st.productId||active.product_id||"");
+                  const product=(products??[]).find(p=>p.id===productId);
+                  const prices=((product as any)?.product_prices??[]) as Array<{id:string}>;
+                  const optionId=prices.some(o=>o.id===st.optionId) ? String(st.optionId) : "";
+                  const city=String(st.city||active.contacts?.city||"");
+                  const place=city ? findPyCity(city) : null;
+                  setRecovery({productId,optionId,promoCount:1,
+                    customerName:String(st.customerName||active.contacts?.name||""),city,
+                    department:String(st.department||place?.department||""),
+                    street:String((st.street && !/^\s*\[|\b(?:PRODUCTO|COMPROBANTE)\s*:/i.test(String(st.street)) ? st.street : "") || st.locationUrl || ""),
+                    paymentMethod:st.paymentMethod==="anticipado"?"anticipado":"contraentrega",
+                    sourceMessageId:latestCustomer?.id??""});
+                  setRecoverOpen(true);
+};
+  // Filtros de atención en un desplegable (antes, 11 botones en dos filas).
   const smartTabsBar = (
-    <div className="flex max-h-[64px] flex-wrap content-start gap-1.5 overflow-y-auto [scrollbar-width:thin]">
-      {SMART_TABS.map(tab=>(
-        <button key={tab.id} type="button" onClick={()=>setSmartTab(tab.id)}
-          aria-pressed={smartTab===tab.id}
-          className={cn("inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border py-1 pl-2.5 pr-1 text-[11px] font-semibold leading-snug shadow-sm backdrop-blur-sm transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300",
-            smartTab===tab.id?"border-sky-300 bg-sky-400 text-[#06213d] shadow-sky-500/30":
-            tab.id==="ai_failed"&&(smartCounts.ai_failed??0)>0?"border-red-400 bg-red-600/85 text-white hover:bg-red-600":
-            "border-sky-300/20 bg-[#0a2444]/85 text-sky-50 hover:border-sky-300/50 hover:bg-[#1b395a]")}
-        >
-          <span aria-hidden>{tab.icon}</span>{tab.label}
-          <span className={cn("min-w-[22px] rounded-full px-1.5 py-0.5 text-center text-[10px] font-bold tabular-nums",
-            smartTab===tab.id?"bg-[#06213d]/15 text-[#06213d]":"bg-white/10 text-sky-100")}>{smartCounts[tab.id]??0}</span>
-        </button>
-      ))}
+    <div className="flex items-center gap-2">
+      <select value={smartTab} onChange={event => setSmartTab(event.target.value as SmartTab)}
+        aria-label="Mostrar conversaciones"
+        className="h-9 min-w-0 flex-1 rounded-lg border border-input bg-background px-2.5 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        {SMART_TABS.map(tab => (
+          <option key={tab.id} value={tab.id}>{tab.icon} {tab.label} ({smartCounts[tab.id] ?? 0})</option>
+        ))}
+      </select>
+      {(smartCounts.ai_failed ?? 0) > 0 && smartTab !== "ai_failed" && (
+        <button type="button" onClick={() => setSmartTab("ai_failed")}
+          className="shrink-0 rounded-lg bg-red-600 px-2 py-1.5 text-[11px] font-bold text-white hover:bg-red-500"
+          title="Conversaciones donde la IA no respondió">🔴 {smartCounts.ai_failed}</button>
+      )}
     </div>
   );
   return (
     <div className="relative flex h-[calc(100vh-3.5rem)] w-full flex-col overflow-hidden bg-gradient-to-br from-background via-background to-sky-500/[.035]">
       {/* Cabecera premium. Todos los contadores provienen del Inbox, no son simulados. */}
-      <div className="flex min-h-[52px] shrink-0 items-center gap-3 border-b border-sky-500/15 bg-gradient-to-r from-[#0c2341] via-[#142e55] to-[#092a3f] px-3 py-2 text-white shadow-sm sm:px-5">
-        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-white/15 bg-white/10 text-sky-200 shadow-inner"><MessageSquare className="h-5 w-5" /></span>
+      <div className="flex min-h-[46px] shrink-0 items-center gap-3 border-b border-sky-500/15 bg-gradient-to-r from-[#0c2341] via-[#142e55] to-[#092a3f] px-3 py-1.5 text-white shadow-sm sm:px-4">
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/15 bg-white/10 text-sky-200 shadow-inner"><MessageSquare className="h-4 w-4" /></span>
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-extrabold tracking-wide sm:text-base">{inboxWorkspace?.name?.trim() || 'Mi tienda'} <span className="font-medium text-sky-200">· Inbox PRO</span></p>
-          <p className="hidden truncate text-[11px] text-sky-100/70 sm:block">Centro de atención · WhatsApp · IA · Pedidos</p>
+          
         </div>
-        <div className="hidden items-center gap-2 xl:flex">
-          <div className="min-w-[92px] rounded-xl border border-white/10 bg-white/10 px-3 py-1.5"><p className="text-[10px] text-sky-100/75">Conversaciones</p><p className="text-lg font-bold tabular-nums">{smartCounts.all}</p></div>
-          <div className="min-w-[92px] rounded-xl border border-white/10 bg-white/10 px-3 py-1.5"><p className="text-[10px] text-sky-100/75">Pendientes</p><p className="text-lg font-bold tabular-nums">{pendingCandidates.length}</p></div>
-          <div className="min-w-[105px] rounded-xl border border-white/10 bg-white/10 px-3 py-1.5"><p className="text-[10px] text-sky-100/75">Ventas registradas</p><p className="text-lg font-bold tabular-nums">{smartCounts.closed}</p></div>
+        <div className="hidden items-center gap-3 text-[11px] text-sky-100/85 lg:flex">
+          <span><b className="text-sm tabular-nums text-white">{smartCounts.all}</b> chats</span>
+          <span className="text-sky-100/30">·</span>
+          <span><b className="text-sm tabular-nums text-white">{pendingCandidates.length}</b> sin responder</span>
+          <span className="text-sky-100/30">·</span>
+          <span><b className="text-sm tabular-nums text-white">{heroSales.length}</b> pedidos hoy · <b className="tabular-nums text-white">{moneyGs(heroSalesTotal)}</b></span>
         </div>
-        <button type="button" onClick={() => setSmallOfficeOpen(true)} className="inline-flex shrink-0 items-center gap-2 rounded-xl border border-sky-300/25 bg-white/10 px-3 py-2 text-xs font-bold text-sky-50 transition hover:bg-white/15 2xl:hidden" aria-label="Abrir oficina y resumen de hoy"><Layers3 className="h-4 w-4"/><span className="hidden md:inline">Resumen de hoy</span></button>
+        <button type="button" onClick={() => setShowPanoramaOffice(value => !value)} className="hidden shrink-0 items-center gap-1.5 rounded-lg border border-sky-300/20 px-2.5 py-1.5 text-[11px] font-semibold text-sky-100 transition hover:bg-white/10 md:inline-flex" aria-pressed={showPanoramaOffice}>{showPanoramaOffice ? "Ocultar oficina" : "Oficina 3D"}</button>
+        <button type="button" onClick={() => setSmallOfficeOpen(true)} className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-sky-300/25 bg-white/10 px-2.5 py-1.5 text-[11px] font-bold text-sky-50 transition hover:bg-white/15" aria-label="Abrir resumen de ventas de hoy"><Layers3 className="h-4 w-4"/><span className="hidden md:inline">Resumen de hoy</span></button>
         <span className={cn('hidden items-center gap-1.5 rounded-full border px-3 py-1.5 text-[10px] font-semibold sm:inline-flex', hasPossibleAiFailure?'border-rose-400/35 bg-rose-400/15 text-rose-100':'border-emerald-400/25 bg-emerald-400/10 text-emerald-100')}>
           <span className={cn('h-1.5 w-1.5 rounded-full',hasPossibleAiFailure?'bg-rose-400':'bg-emerald-400')} />
           {hasPossibleAiFailure?'Revisar IA':'Sin alertas IA'}
         </span>
       </div>
-      {showPanoramaOffice ? (
+      {showPanoramaOffice && (
         <InboxPanoramicOffice businessName={inboxWorkspace?.name?.trim() || "Mi tienda"}
           recentActivity={officeActivity} pending={pendingCandidates.length}
           salesCount={heroSales.length} amount={heroSalesTotal}
-          onHide={() => setShowPanoramaOffice(false)} tabs={smartTabsBar} />
-      ) : (
-        <div className="hidden shrink-0 items-center justify-between border-b border-sky-500/20 bg-[#0b2038] px-4 py-1.5 text-xs text-sky-100 md:flex">
-          <span className="flex items-center gap-2"><Layers3 className="h-3.5 w-3.5 text-sky-300" /> Oficina de {inboxWorkspace?.name?.trim() || "Mi tienda"} · {heroSales.length} pedidos registrados hoy</span>
-          <div className="mx-3 min-w-0 flex-1">{smartTabsBar}</div>
-          <button type="button" onClick={() => setShowPanoramaOffice(true)} className="shrink-0 rounded-lg border border-sky-300/20 px-2.5 py-1 font-semibold hover:bg-white/10">Mostrar oficina 3D</button>
-        </div>
+          onHide={() => setShowPanoramaOffice(false)} tabs={null} />
       )}
       <div className="flex min-h-0 flex-1">
       <aside
@@ -1773,45 +1897,26 @@ function InboxPage() {
           activeId && "hidden sm:flex",
         )}
       >
-        <div className="max-h-[min(52vh,390px)] shrink-0 space-y-2 overflow-y-auto border-b border-sky-500/15 bg-gradient-to-b from-sky-500/[.065] to-card/60 p-2.5 backdrop-blur [scrollbar-width:thin]">
-          <div className="grid grid-cols-2 gap-2">
-            <div className="rounded-2xl border border-sky-500/20 bg-background/85 p-3 shadow-sm">
-              <p className="text-[11px] font-medium text-muted-foreground">
-                Respuestas pendientes
-              </p>
-              <p className="mt-1 text-2xl font-bold">
-                {isCheckingPending ? "…" : pendingCandidates.length}
-              </p>
-            </div>
-
-            <div
-              className={cn(
-                "rounded-2xl border p-3 shadow-sm",
-                isCheckingPending
-                  ? "border-border bg-muted/40"
-                  : hasPossibleAiFailure
-                  ? "border-destructive/50 bg-destructive/10"
-                  : "border-emerald-500/30 bg-emerald-500/10",
-              )}
-            >
-              <p className="text-[11px] font-medium text-muted-foreground">Estado IA</p>
-              <p
-                className={cn(
-                  "mt-1 text-sm font-bold",
-                  isCheckingPending
-                    ? "text-muted-foreground"
-                    : hasPossibleAiFailure
-                      ? "text-destructive"
-                      : "text-emerald-600",
-                )}
-              >
-                {isCheckingPending
-                  ? "Verificando..."
-                  : hasPossibleAiFailure
-                    ? "Posible fallo"
-                    : "Sin alertas"}
-              </p>
-            </div>
+        <div className="max-h-[min(52vh,390px)] shrink-0 space-y-2 overflow-y-auto border-b border-sky-500/15 bg-card/60 p-2.5 [scrollbar-width:thin]">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              className="h-9 pl-9"
+              placeholder="Buscar nombre o número"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+          {smartTabsBar}
+          <div className="flex items-center justify-between gap-2 px-0.5 text-[11px]">
+            <span className="text-muted-foreground">
+              ⏳ <b className="tabular-nums text-foreground">{isCheckingPending ? "…" : pendingCandidates.length}</b> sin responder
+            </span>
+            <span className={cn("inline-flex items-center gap-1 font-semibold",
+              isCheckingPending ? "text-muted-foreground" : hasPossibleAiFailure ? "text-destructive" : "text-emerald-600")}>
+              <span className={cn("h-1.5 w-1.5 rounded-full", hasPossibleAiFailure ? "bg-destructive" : "bg-emerald-500")} />
+              IA: {isCheckingPending ? "verificando…" : hasPossibleAiFailure ? "posible fallo" : "sin alertas"}
+            </span>
           </div>
 
           {hasPossibleAiFailure && (
@@ -1866,26 +1971,10 @@ function InboxPage() {
             </div>
           </details>
 
-          {/* Pestañas de atención: se muestran arriba, en la barra de la oficina. En celular quedan aquí. */}
-          <div className="space-y-2">
-            <p className="text-xs font-semibold md:hidden">Organizar conversaciones</p>
-            <div className="md:hidden">{smartTabsBar}</div>
-            {(loadingInboxOrders || loadingSmartMessages || loadingClosingOrigins) &&
-              <p className="text-[11px] text-muted-foreground">Clasificando mensajes y verificando pedidos…</p>}
-            {(inboxOrdersError || smartMessagesError || closingOriginsError) &&
-              <p className="text-[11px] text-destructive">No se pudo completar la clasificación. Revisá permisos de pedidos y mensajes.</p>}
-            <p className="text-[10px] text-muted-foreground">Las categorías pueden superponerse. El origen del cierre se muestra solo cuando se puede verificar.</p>
-          </div>
-
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              className="pl-9"
-              placeholder="Buscar por nombre, teléfono o mensaje"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-          </div>
+          {(loadingInboxOrders || loadingSmartMessages || loadingClosingOrigins) &&
+            <p className="text-[11px] text-muted-foreground">Clasificando mensajes y verificando pedidos…</p>}
+          {(inboxOrdersError || smartMessagesError || closingOriginsError) &&
+            <p className="text-[11px] text-destructive">No se pudo completar la clasificación. Revisá permisos de pedidos y mensajes.</p>}
 
           <button type="button" onClick={() => setShowAdvancedInboxFilters(value => !value)}
             className="flex w-full items-center justify-between rounded-lg border border-border/70 bg-background/55 px-3 py-2 text-[11px] font-semibold text-muted-foreground hover:text-foreground"
@@ -1988,79 +2077,53 @@ function InboxPage() {
           {!dateFilterError && !isLoadingDateFilter && filtered.length === 0 && (
             <p className="p-4 text-sm text-muted-foreground">No hay conversaciones que coincidan con los filtros.</p>
           )}
-          {!dateFilterError && !isLoadingDateFilter && filtered.map((c) => (
+          {!dateFilterError && !isLoadingDateFilter && filtered.map((c) => {
+            const status = chatStatus(c);
+            const title = c.contacts?.name || c.contacts?.phone || "Cliente";
+            const initials = title.replace(/[^\p{L}\p{N} ]/gu, " ").trim().split(/\s+/).slice(0, 2).map(w => w[0]).join("").toUpperCase() || "#";
+            return (
             <button
               key={c.id}
               onClick={() => setActiveId(c.id)}
               className={cn(
-                "mx-1 my-1 flex w-[calc(100%_-_0.5rem)] flex-col gap-1 rounded-xl border border-transparent px-3 py-3 text-left transition-all hover:border-sky-500/20 hover:bg-sky-500/[.055]",
-                activeId === c.id && "!border-sky-500/30 !bg-sky-500/10 shadow-sm ring-1 ring-sky-500/10",
+                "flex w-full items-start gap-2.5 border-b border-border/40 px-3 py-2.5 text-left transition-colors hover:bg-sky-500/[.06]",
+                activeId === c.id && "bg-sky-500/10 shadow-[inset_3px_0_0_rgb(14,165,233)]",
               )}
             >
-              <div className="flex items-center gap-2">
-                <span className="min-w-0 flex-1 truncate font-medium">
-                  {c.contacts?.name || c.contacts?.phone}
+              <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-sky-500/80 to-indigo-500/80 text-xs font-bold text-white">{initials}</span>
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-2">
+                  <span className="min-w-0 flex-1 truncate text-sm font-semibold">{title}</span>
+                  <span className="shrink-0 text-[10px] text-muted-foreground">{c.last_message_at ? formatTime(c.last_message_at) : ""}</span>
                 </span>
-                {c.unread_count > 0 && (
-                  <Badge className="h-5 min-w-5 justify-center px-1 text-[10px]">
-                    {c.unread_count}
-                  </Badge>
-                )}
-              </div>
-              <span className="truncate text-xs text-muted-foreground">
-                {c.last_message || "Sin mensajes"}
+                <span className="mt-0.5 flex items-center gap-1.5">
+                  <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{c.last_message || "Sin mensajes"}</span>
+                  {c.unread_count > 0 && (
+                    <span className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-emerald-500 px-1 text-[10px] font-bold text-white">{c.unread_count}</span>
+                  )}
+                </span>
+                <span className="mt-1 flex flex-wrap items-center gap-1">
+                  <span className={cn("rounded-md border px-1.5 py-0.5 text-[10px] font-semibold", status.cls)}>{status.icon} {status.label}</span>
+                  {c.ai_paused && <span className="rounded-md border border-orange-400/40 px-1.5 py-0.5 text-[10px] text-orange-600">IA pausada</span>}
+                  {c.conversation_labels.map((l) => (
+                    <span key={l.label_id} className="rounded-full px-1.5 py-0.5 text-[10px] text-background" style={{ backgroundColor: l.labels?.color ?? "#64748b" }}>{l.labels?.name}</span>
+                  ))}
+                </span>
               </span>
-              <div className="flex flex-wrap items-center gap-1">
-                 {lastReplyOrigins?.[c.id] === "code" && <span className="rounded-md border border-lime-400 bg-lime-500/25 px-2 py-0.5 text-[10px] font-bold text-lime-200">⚡ RESPONDIDO POR CÓDIGO</span>}
-                 {lastReplyOrigins?.[c.id] === "ai" && <span className="rounded-md border border-sky-400 bg-sky-500/25 px-2 py-0.5 text-[10px] font-bold text-sky-200">✦ RESPONDIDO POR IA</span>}
-                 {lastReplyOrigins?.[c.id] === "human" && <span className="rounded-md border border-orange-400 bg-orange-500/25 px-2 py-0.5 text-[10px] font-bold text-orange-200">👤 HUMANO</span>}
-                 {lastReplyOrigins?.[c.id] === "incoming" && <span className="rounded-md border border-red-400 bg-red-500/20 px-2 py-0.5 text-[10px] font-bold text-red-200">● CLIENTE ESPERANDO</span>}
-                 {lastReplyOrigins?.[c.id] === "unknown" && <span className="rounded-md border border-slate-400 bg-slate-500/20 px-2 py-0.5 text-[10px] text-slate-200">AUTOMÁTICO · SIN ORIGEN</span>}
-                 {getSmartCategories(c).ai_failed && <span className="rounded-md border border-red-500 bg-red-600/30 px-2 py-0.5 text-[10px] font-bold text-red-100">🔴 IA NO RESPONDE</span>}
-                 {getSmartCategories(c).human && lastReplyOrigins?.[c.id] !== "human" && <span className="rounded-md border border-orange-400 bg-orange-500/25 px-2 py-0.5 text-[10px] font-bold text-orange-200">👤 ATENDIENDO HUMANO</span>}
-                 {getSmartCategories(c).complaints && <span className="rounded border border-red-500/40 bg-red-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-red-600">🚨 Reclamo</span>}
-                 {getSmartCategories(c).order_query && <span className="rounded border border-blue-500/40 bg-blue-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-blue-600">📦 Consulta pedido</span>}
-                 {getSmartCategories(c).advance && <span className="rounded border border-violet-500/40 bg-violet-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-violet-600">💳 Anticipado</span>}
-                 {getSmartCategories(c).closed && <span className="rounded border border-emerald-500/40 bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-600">✅ Venta registrada</span>}
-                 {getSmartCategories(c).potential && <span className="rounded border border-amber-500/40 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600">🛒 Potencial</span>}
-                 {Boolean(ordersByConversation.get(c.id)?.length) && (
-                  <Badge variant="default" className="text-[10px]">
-                    ✅ VENTA
-                  </Badge>
-                )}
-                {c.ad_id && (
-                  <Badge variant="secondary" className="text-[10px]">
-                    anuncio
-                  </Badge>
-                )}
-                {c.ai_paused && (
-                  <Badge variant="outline" className="text-[10px]">
-                    IA pausada
-                  </Badge>
-                )}
-                {c.conversation_labels.map((l) => (
-                  <span
-                    key={l.label_id}
-                    className="rounded-full px-1.5 py-0.5 text-[10px] text-background"
-                    style={{ backgroundColor: l.labels?.color ?? "#64748b" }}
-                  >
-                    {l.labels?.name}
-                  </span>
-                ))}
-              </div>
             </button>
-          ))}
+            );
+          })}
         </ScrollArea>
       </aside>
 
       <section className={cn("flex min-h-0 min-w-0 flex-1 flex-col bg-background/70", !activeId && "hidden sm:flex")}>
         {!active ? (
           <div className="flex flex-1 items-center justify-center overflow-y-auto p-4 sm:p-7">
-            <div className="mx-auto flex max-w-md flex-col items-center gap-4 rounded-[24px] border border-sky-500/15 bg-card/85 px-8 py-10 text-center shadow-[0_16px_40px_rgba(0,0,0,.08)]"><div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-sky-400/25 bg-sky-400/10"><MessageSquare className="h-8 w-8 text-sky-500"/></div><div><h2 className="text-xl font-extrabold">Tu centro de atención está listo</h2><p className="mt-2 text-sm leading-relaxed text-muted-foreground">Seleccioná una conversación para responder. La oficina animada está arriba y el resumen real de pedidos a la derecha.</p></div></div>
+            <div className="mx-auto flex max-w-md flex-col items-center gap-4 rounded-[24px] border border-sky-500/15 bg-card/85 px-8 py-10 text-center shadow-[0_16px_40px_rgba(0,0,0,.08)]"><div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-sky-400/25 bg-sky-400/10"><MessageSquare className="h-8 w-8 text-sky-500"/></div><div><h2 className="text-xl font-extrabold">Tu centro de atención está listo</h2><p className="mt-2 text-sm leading-relaxed text-muted-foreground">Elegí un chat de la izquierda. A la derecha vas a ver la ficha de esa venta: qué datos ya tiene el bot, qué falta y sus pedidos.</p></div></div>
           </div>
         ) : (
           <>
-            <header className="flex flex-wrap items-center gap-2 border-b border-sky-500/15 bg-card/80 p-3 shadow-sm backdrop-blur">
+            <header className="flex flex-wrap items-center gap-2 border-b border-sky-500/15 bg-card/80 px-3 py-2 shadow-sm backdrop-blur">
               <Button
                 variant="ghost"
                 size="sm"
@@ -2069,97 +2132,60 @@ function InboxPage() {
               >
                 Volver
               </Button>
-              <div className="min-w-0">
-                <p className="truncate font-medium">
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-semibold">
                   {active.contacts?.name || active.contacts?.phone}
                 </p>
-                <p className="text-xs text-muted-foreground">
+                <p className="truncate text-xs text-muted-foreground">
                   {active.contacts?.phone}
                   {active.contacts?.city ? ` · ${active.contacts.city}` : ""}
                   {active.products?.name ? ` · ${active.products.name}` : ""}
                 </p>
               </div>
-              <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
-                <Button variant="outline" size="sm" onClick={() => setInfoOpen(true)}>
-                  <User className="mr-1 h-4 w-4" /> Info
-                </Button>
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  disabled={deleteConversation.isPending}
-                  onClick={() => {
-                    const confirmed = window.confirm(
-                      "¿Seguro que quieres borrar este chat? Se eliminarán todos sus mensajes.",
-                    );
-
-                    if (confirmed) {
-                      deleteConversation.mutate();
-                    }
-                  }}
-                >
-                  {deleteConversation.isPending ? (
-                    <Loader2 className="mr-1 h-4 w-4 animate-spin" />
-                  ) : (
-                    <Trash2 className="mr-1 h-4 w-4" />
-                  )}
-                  Borrar chat
-                </Button>
-                <Popover>
+              <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
+<Popover>
                   <PopoverTrigger asChild>
-                    <Button variant="outline" size="sm" disabled={sendCatalog.isPending}>
-                      {sendCatalog.isPending ? (
-                        <Loader2 className="mr-1 h-4 w-4 animate-spin" />
-                      ) : (
-                        <ShoppingBag className="mr-1 h-4 w-4" />
-                      )}
-                      Catálogo
+                    <Button variant="outline" size="sm" aria-label="Más acciones">
+                      <MoreHorizontal className="mr-1 h-4 w-4" /> Más
                     </Button>
                   </PopoverTrigger>
-                  <PopoverContent className="w-64 space-y-1">
-                    {!products?.length && (
-                      <p className="text-sm text-muted-foreground">Crea productos primero.</p>
-                    )}
-                    {products?.map((p) => (
-                      <button
-                        key={p.id}
-                        onClick={() => sendCatalog.mutate(p.id)}
-                        className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent"
-                      >
-                        <span className="truncate">{p.name}</span>
-                      </button>
-                    ))}
-                  </PopoverContent>
-                </Popover>
-                <Popover>
-
-                  <PopoverTrigger asChild>
-                    <Button variant="outline" size="sm">
-                      <Tag className="mr-1 h-4 w-4" /> Etiquetas
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-56 space-y-1">
-                    {!labels?.length && (
-                      <p className="text-sm text-muted-foreground">Crea etiquetas primero.</p>
-                    )}
-                    {labels?.map((l) => {
-                      const on = active.conversation_labels.some((cl) => cl.label_id === l.id);
-                      return (
-                        <button
-                          key={l.id}
-                          onClick={() => toggleLabel.mutate(l.id)}
-                          className={cn(
-                            "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent",
-                            on && "bg-accent",
-                          )}
-                        >
-                          <span
-                            className="h-3 w-3 rounded-full"
-                            style={{ backgroundColor: l.color }}
-                          />
-                          {l.name}
-                        </button>
-                      );
-                    })}
+                  <PopoverContent align="end" className="w-72 space-y-3 p-3">
+                    <button type="button" onClick={() => setInfoOpen(true)}
+                      className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent">
+                      <User className="h-4 w-4" /> Datos del contacto
+                    </button>
+                    <div>
+                      <p className="px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Enviar catálogo de</p>
+                      <div className="max-h-40 space-y-0.5 overflow-y-auto">
+                        {!products?.length && <p className="px-2 text-sm text-muted-foreground">Crea productos primero.</p>}
+                        {products?.map((p) => (
+                          <button key={p.id} type="button" onClick={() => sendCatalog.mutate(p.id)} disabled={sendCatalog.isPending}
+                            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent">
+                            <ShoppingBag className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /><span className="truncate">{p.name}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <p className="px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Etiquetas</p>
+                      <div className="max-h-36 space-y-0.5 overflow-y-auto">
+                        {!labels?.length && <p className="px-2 text-sm text-muted-foreground">Crea etiquetas primero.</p>}
+                        {labels?.map((l) => {
+                          const on = active.conversation_labels.some((cl) => cl.label_id === l.id);
+                          return (
+                            <button key={l.id} type="button" onClick={() => toggleLabel.mutate(l.id)}
+                              className={cn("flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent", on && "bg-accent font-semibold")}>
+                              <span className="h-3 w-3 rounded-full" style={{ backgroundColor: l.color }} />{l.name}{on && <span className="ml-auto text-xs">✓</span>}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <button type="button" disabled={deleteConversation.isPending}
+                      onClick={() => { if (window.confirm("¿Seguro que quieres borrar este chat? Se eliminarán todos sus mensajes.")) deleteConversation.mutate(); }}
+                      className="flex w-full items-center gap-2 rounded-md border-t border-border px-2 pt-2 text-sm text-destructive hover:bg-destructive/10">
+                      {deleteConversation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />} Borrar chat
+                    </button>
                   </PopoverContent>
                 </Popover>
                 <Button
@@ -2175,30 +2201,11 @@ function InboxPage() {
                   )}
                   Responder IA
                 </Button>
-                <Button size="sm" variant="outline" onClick={async () => {
-                  const customerMessages=(messages??[]).filter(m=>m.direction==="inbound");
-                  const latestCustomer=customerMessages.at(-1);
-                  // Se completa con lo que el bot ya juntó en el chat (nombre, ciudad, dirección, producto).
-                  let st:Record<string,any>={};
-                  try{
-                    const {data}=await (supabase as any).from("bot_sale_states").select("state").eq("conversation_id",active.id).maybeSingle();
-                    st=(data?.state??{}) as Record<string,any>;
-                  }catch{ st={}; }
-                  const productId=String(st.productId||active.product_id||"");
-                  const product=(products??[]).find(p=>p.id===productId);
-                  const prices=((product as any)?.product_prices??[]) as Array<{id:string}>;
-                  const optionId=prices.some(o=>o.id===st.optionId) ? String(st.optionId) : "";
-                  const city=String(st.city||active.contacts?.city||"");
-                  const place=city ? findPyCity(city) : null;
-                  setRecovery({productId,optionId,promoCount:1,
-                    customerName:String(st.customerName||active.contacts?.name||""),city,
-                    department:String(st.department||place?.department||""),
-                    street:String((st.street && !/^\s*\[|\b(?:PRODUCTO|COMPROBANTE)\s*:/i.test(String(st.street)) ? st.street : "") || st.locationUrl || ""),
-                    paymentMethod:st.paymentMethod==="anticipado"?"anticipado":"contraentrega",
-                    sourceMessageId:latestCustomer?.id??""});
-                  setRecoverOpen(true);
-                }}>
-                  <CheckCircle2 className="mr-1 h-4 w-4" /> Registrar venta pendiente
+                <Button size="sm" variant="outline" className="xl:hidden" onClick={() => setSaleSheetOpen(true)}>
+                  🧾 Venta
+                </Button>
+                <Button size="sm" variant="outline" onClick={openRecovery}>
+                  <CheckCircle2 className="mr-1 h-4 w-4" /> Registrar venta
                 </Button>
                 <Button
                   variant={active.ai_paused ? "default" : "outline"}
@@ -2585,11 +2592,21 @@ function InboxPage() {
 
         )}
       </section>
-      <aside className="hidden h-full min-h-0 w-[290px] shrink-0 border-l border-sky-500/20 xl:flex 2xl:w-[325px]">
+      <aside className="hidden h-full min-h-0 w-[290px] shrink-0 border-l border-sky-500/20 xl:flex 2xl:w-[320px]">
+        {active ? (
+          <SalePanel conversationId={active.id} products={(products ?? []) as any} onRegister={openRecovery} />
+        ) : (
         <InboxOperationsPanel businessName={inboxWorkspace?.name?.trim() || "Mi tienda"} orders={todayOfficeOrders ?? []} pending={pendingCandidates.length} totalChats={smartCounts.all} loading={officeLoading} failed={Boolean(officeError)} recentActivity={officeActivity}/>
+        )}
       </aside>
       </div>
-      {smallOfficeOpen && <div className="fixed inset-0 z-[80] bg-black/65 backdrop-blur-sm xl:hidden" onClick={() => setSmallOfficeOpen(false)} role="presentation">
+      {saleSheetOpen && active && <div className="fixed inset-0 z-[80] bg-black/55 backdrop-blur-sm xl:hidden" onClick={() => setSaleSheetOpen(false)} role="presentation">
+        <aside role="dialog" aria-label="Venta del chat" aria-modal="true" className="absolute inset-y-0 right-0 w-[min(360px,92vw)] border-l border-sky-500/20 bg-background shadow-2xl" onClick={event => event.stopPropagation()}>
+          <button onClick={() => setSaleSheetOpen(false)} type="button" className="absolute right-2 top-2 z-10 rounded-md p-1.5 hover:bg-accent" aria-label="Cerrar"><X className="h-4 w-4" /></button>
+          <SalePanel conversationId={active.id} products={(products ?? []) as any} onRegister={() => { setSaleSheetOpen(false); openRecovery(); }} />
+        </aside>
+      </div>}
+      {smallOfficeOpen && <div className="fixed inset-0 z-[80] bg-black/65 backdrop-blur-sm" onClick={() => setSmallOfficeOpen(false)} role="presentation">
         <aside role="dialog" aria-label="Oficina y ventas de hoy" aria-modal="true" className="absolute inset-y-0 right-0 w-[min(420px,94vw)] border-l border-sky-500/20 shadow-2xl" onClick={event=>event.stopPropagation()}>
           <button onClick={() => setSmallOfficeOpen(false)} type="button" className="absolute right-3 top-3 z-30 rounded-lg bg-[#071527] p-2 text-white shadow-lg" aria-label="Cerrar oficina"><X className="h-4 w-4"/></button>
           <InboxOperationsPanel businessName={inboxWorkspace?.name?.trim() || "Mi tienda"} orders={todayOfficeOrders ?? []} pending={pendingCandidates.length} totalChats={smartCounts.all} loading={officeLoading} failed={Boolean(officeError)} recentActivity={officeActivity}/>
