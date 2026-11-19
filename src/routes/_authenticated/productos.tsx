@@ -277,6 +277,7 @@ function ProductsPage() {
 
       const normalizedPrices = values.prices
         .map((item, index) => ({
+          id: item.id,
           label: item.label.trim(),
           // «2 unidades» con cantidad 1 se corrige sola a 2.
           quantity: packQuantityFromLabel(item.label, item.quantity),
@@ -285,17 +286,28 @@ function ProductsPage() {
         }))
         .filter((item) => item.label && item.price > 0);
 
-      await supabase.from("product_prices").delete().eq("product_id", productId!);
-      if (normalizedPrices.length) {
-        const { error } = await supabase.from("product_prices").insert(
-          normalizedPrices.map((item) => ({
-            workspace_id: targetWorkspace,
-            user_id: targetUser,
-            product_id: productId!,
-            ...item,
-          })),
-        );
+      // Las opciones que ya existían se ACTUALIZAN conservando su código: las ventas en curso
+      // del bot guardan ese código y, si se borra y se crea de nuevo, quedan trabadas.
+      const { data: currentPrices, error: currentPricesError } = await (supabase as any)
+        .from("product_prices").select("id").eq("product_id", productId!);
+      if (currentPricesError) throw currentPricesError;
+      const currentIds = new Set(((currentPrices ?? []) as Array<{ id: string }>).map((row) => row.id));
+      const keptIds = new Set(normalizedPrices.map((item) => item.id).filter((id): id is string => Boolean(id && currentIds.has(id))));
+      const removedIds = [...currentIds].filter((id) => !keptIds.has(id));
+      if (removedIds.length) {
+        const { error } = await (supabase as any).from("product_prices").delete().in("id", removedIds);
         if (error) throw error;
+      }
+      for (const { id, ...item } of normalizedPrices) {
+        if (id && keptIds.has(id)) {
+          const { error } = await (supabase as any).from("product_prices").update(item).eq("id", id);
+          if (error) throw error;
+        } else {
+          const { error } = await (supabase as any).from("product_prices").insert({
+            workspace_id: targetWorkspace, user_id: targetUser, product_id: productId!, ...item,
+          });
+          if (error) throw error;
+        }
       }
 
       const keywords = values.keywords
