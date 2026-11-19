@@ -881,7 +881,7 @@ function ProductsPage() {
                           type="number"
                           min="0"
                           placeholder="0 = gratis"
-                          title="Se cobra solo si la ciudad no tiene costo de envío propio en Zonas de cobertura"
+                          title="Solo en ciudades con pago al recibir sin costo propio en Zonas de cobertura. Nunca en encomienda ni sumado al costo de la ciudad."
                           value={item.delivery_fee ?? ""}
                           onChange={(e) =>
                             setForm((current) => ({
@@ -964,8 +964,8 @@ function ProductsPage() {
               />
               <p className="text-xs text-muted-foreground">
                 Solo en ciudades con pago al recibir: si el cliente paga antes por transferencia, el bot le ofrece este descuento
-                y registra el pedido con el total rebajado. Vacío = sin descuento. El delivery de cada precio se cobra solo
-                si la ciudad no tiene costo de envío propio.
+                y registra el pedido con el total rebajado. Vacío = sin descuento. El delivery de cada precio se cobra solo en
+                ciudades con pago al recibir que no tienen costo de envío propio en Zonas de cobertura (nunca en encomienda).
               </p>
             </div>
             <div className="space-y-1.5 sm:col-span-2">

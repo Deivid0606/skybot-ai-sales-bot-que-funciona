@@ -293,8 +293,9 @@ export function shippingFeeForCity(city: string | null | undefined, department: 
 
 /**
  * Costo de envío y descuento del pedido.
- * - Envío: si la CIUDAD tiene costo (Zonas de cobertura) se cobra solo ese; si no, el delivery
- *   de la opción de precio elegida (Productos). Nunca los dos.
+ * - Envío: si la CIUDAD tiene costo (Zonas de cobertura) se cobra solo ese. El delivery de la
+ *   opción de precio (Productos) se cobra solo en ciudades con pago al recibir SIN costo propio;
+ *   nunca en encomienda. Nunca se suman.
  * - Descuento: % del producto por pago anticipado, solo en ciudades con pago al recibir
  *   cuando el cliente paga por transferencia.
  */
@@ -307,9 +308,12 @@ export function orderCharges(args: {
   const cityFee = shippingFeeForCity(args.city, args.department, args.training);
   const product = args.products.find(p => p.id === args.productId);
   const options = product?.product_prices ?? [];
-  const productFee = Math.max(0, ...args.optionIds.map(id => Number(options.find(o => o.id === id)?.delivery_fee) || 0));
-  const shippingFee = cityFee > 0 ? cityFee : productFee;
   const cod = deliveryPolicyForCity(args.city, args.department, args.training)?.paymentMethod === "contraentrega";
+  // Delivery del producto: SOLO en ciudades con pago al recibir y sin costo propio en la cobertura.
+  // Encomienda o ciudad con costo: manda únicamente Zonas de cobertura (nunca se suman ni se mezclan).
+  const productFee = cod && cityFee === 0
+    ? Math.max(0, ...args.optionIds.map(id => Number(options.find(o => o.id === id)?.delivery_fee) || 0)) : 0;
+  const shippingFee = cityFee > 0 ? cityFee : productFee;
   const pct = Number(product?.advance_discount_percent) || 0;
   const discountPct = cod && args.payByTransfer && pct > 0 && pct <= 50 ? pct : 0;
   const discount = discountPct ? Math.round(args.productsTotal * discountPct / 100) : 0;
