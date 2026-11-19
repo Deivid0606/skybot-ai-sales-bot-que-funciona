@@ -28,6 +28,8 @@ export type AiContext = {
   model?: string | null;
   customerPhone?: string | null;
   businessName: string;
+  /** Tono elegido en «Mi negocio» (amable, formal, emojis). */
+  tone?: string | null;
   currency: string;
   products: {
     id: string;

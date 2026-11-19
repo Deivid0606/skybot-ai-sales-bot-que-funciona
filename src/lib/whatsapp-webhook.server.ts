@@ -3818,6 +3818,29 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         outgoingText = outgoingText.trim() ? `${outgoingText.trim()}\n\n${ask}` : ask;
         console.warn("[BOT_SKY_NAME_REQUIRED]", JSON.stringify({conversationId:conversation.id, firstOnly}));
       }
+      // Ciudad con pago al recibir confirmada: el cliente tiene que saber que paga al recibir y
+      // cuánto, y si el producto tiene descuento por pago anticipado, se le ofrece UNA vez.
+      if (!bypassSale && !conversation.sale_closed && codCity && verifiedSaleState.cityVerified && chargeListTotal > 0 && !codTransferActive) {
+        const earlier = chatHistory.filter(h => h.role === "assistant").map(h => normalizeIntentText(h.content)).join(" ");
+        const now = normalizeIntentText(outgoingText);
+        const codTotal = chargeListTotal + cityShippingFee;
+        const extra: string[] = [];
+        if (!/\b(?:al recibir|contra ?entrega)\b/.test(earlier) && !/\b(?:al recibir|contra ?entrega)\b/.test(now))
+          extra.push(`🚚 A ${verifiedSaleState.city} te lo llevamos y pagás al recibir: *${formatGs(codTotal)}*${cityShippingFee > 0 ? ` (incluye envío ${formatGs(cityShippingFee)})` : ""}.`);
+        if (productDiscountPct > 0 && !/\bdescuento\b/.test(earlier) && !/\bdescuento\b/.test(now)) {
+          const discounted = codTotal - Math.round(chargeListTotal * productDiscountPct / 100);
+          extra.push(`💸 Si preferís pagar antes por transferencia, tenés ${productDiscountPct}% de descuento: *${formatGs(discounted)}*.`);
+        }
+        if (extra.length) {
+          outgoingText = `${extra.join("\n")}\n\n${outgoingText.trim()}`.trim();
+          console.info("[BOT_SKY_COD_SUMMARY_ADDED]", JSON.stringify({conversationId:conversation.id, discount: productDiscountPct > 0}));
+        }
+      }
+      // Tono «con emojis» en «Mi negocio»: ningún mensaje sale sin al menos un emoji.
+      if (ctx.tone === "emojis" && outgoingText.trim() && !/\p{Extended_Pictographic}/u.test(outgoingText)) {
+        outgoingText = outgoingText.replace(/([.!?])(\s|$)/, "$1 😊$2");
+        if (!/\p{Extended_Pictographic}/u.test(outgoingText)) outgoingText = `${outgoingText.trim()} 😊`;
+      }
       // Encomienda con pago anticipado: si el mensaje pide el comprobante, SIEMPRE lleva los datos
       // bancarios oficiales y el total (caso: «necesito el comprobante» y el cliente: «¿y dónde pago?»).
       if (!bypassSale && !conversation.sale_closed && /anticip|transfer|deposit|giro/i.test(String(verifiedSaleState.paymentMethod ?? "")) &&
