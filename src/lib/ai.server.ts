@@ -47,7 +47,11 @@ export type AiContext = {
       quantity: number;
       price: number;
       sort_order: number;
+      /** Delivery de esta opción (solo si la ciudad no tiene costo propio). */
+      delivery_fee?: number | null;
     }[];
+    /** % de descuento si en una ciudad con pago al recibir el cliente paga antes por transferencia. */
+    advance_discount_percent?: number | null;
   }[];
   training: {
     title: string;
@@ -223,14 +227,16 @@ function buildSystemPrompt(ctx: AiContext): string {
       const variants = [...(product.product_prices ?? [])]
         .sort((a, b) => a.sort_order - b.sort_order)
         .map((option) =>
-          `    - variante_id:${option.id} | nombre:${option.label} | unidades_incluidas:${option.quantity} | precio_total:${option.price} ${ctx.currency}`,
+          `    - variante_id:${option.id} | nombre:${option.label} | unidades_incluidas:${option.quantity} | precio_total:${option.price} ${ctx.currency}${Number(option.delivery_fee) > 0 ? ` | delivery:${option.delivery_fee} ${ctx.currency} (solo si la ciudad no tiene costo de envío propio)` : ""}`,
         )
         .join("\n");
+      const discount = Number(product.advance_discount_percent) || 0;
       return `- id:${product.id} | ${product.name} | stock:${product.stock} | claves:${product.keywords.join(", ") || "-"}
   variantes/precios de catálogo:
 ${variants || `    - precio_unitario_heredado:${product.promo_price ?? product.price} ${ctx.currency}`}
   copy: ${ctx.promptMode === "revision" ? String(product.sales_copy ?? product.description ?? "-").slice(0, 400) : product.sales_copy ?? product.description ?? "-"}
-  entrega: ${product.delivery_info ?? "-"}
+  entrega: ${product.delivery_info ?? "-"}${discount > 0 ? `
+  descuento_pago_anticipado: ${discount}% SOLO en ciudades con pago al recibir, si el cliente paga ANTES por transferencia (ofrecelo UNA vez junto con el total; nunca en encomienda)` : ""}
   instrucciones: ${product.ai_instructions ?? "-"}`;
     })
     .join("\n");

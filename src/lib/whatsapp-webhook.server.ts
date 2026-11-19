@@ -17,7 +17,7 @@ import { extractSaleWithAi, applyAiExtraction, vetoUnsupportedChanges } from "@/
 import { advanceRuleSale, cityIn, sellerUsesFirstOffer, isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi, isValidRecipientCi, type SaleState } from "@/lib/rule-sales.server";
 import { classifyCustomerIntent, addVerifiedOrderContext, addPendingSaleContext } from "@/lib/hybrid-intent.server";
 import { coordinatesFromText, validCoords } from "@/lib/hybrid-intent.server";
-import { shippingFeeForCity, normalizeNoShipping, noShippingInstruction, declaredCityFromTexts, applyDeclaredCity, parseCoverage, verifiedCoverage, sellerAllowsNationwideAdvance, deliveryPolicyForCity, hasTemplatePlaceholder, stripBankDetailsForCod, enforceVerifiedPaymentReply, isNonCityPhrase, sellerBankText, cleanReplyForPolicy, codTransferAllowed, customerWantsTransfer } from "@/lib/rule-sales.server";
+import { shippingFeeForCity, orderCharges, normalizeNoShipping, noShippingInstruction, declaredCityFromTexts, applyDeclaredCity, parseCoverage, verifiedCoverage, sellerAllowsNationwideAdvance, deliveryPolicyForCity, hasTemplatePlaceholder, stripBankDetailsForCod, enforceVerifiedPaymentReply, isNonCityPhrase, sellerBankText, cleanReplyForPolicy, codTransferAllowed, customerWantsTransfer } from "@/lib/rule-sales.server";
 import { resolveDepartamento } from "@/lib/orders";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { sendWhatsAppText as sendWhatsAppTextNow } from "@/lib/whatsapp.server";
@@ -2492,7 +2492,9 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     // cliente puede elegir transferencia (si la tienda lo acepta); el envío sigue a domicilio.
     {
       const wantsTransfer = customerWantsTransfer(body);
-      if (wantsTransfer !== null) verifiedSaleState.payByTransfer = wantsTransfer && codTransferAllowed(ctx.training);
+      // También si el producto tiene descuento por pago anticipado (la tienda ya acepta transferencia ahí).
+      const productAllowsTransfer = (Number(ctx.products.find(p => p.id === verifiedSaleState.productId)?.advance_discount_percent) || 0) > 0;
+      if (wantsTransfer !== null) verifiedSaleState.payByTransfer = wantsTransfer && (codTransferAllowed(ctx.training) || productAllowsTransfer);
     }
     // Fuente autoritativa: cobertura del vendedor, nunca una inferencia de IA.
     const officialDelivery = verifiedSaleState.cityVerified
@@ -2508,23 +2510,38 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       paymentMethod:verifiedSaleState.paymentMethod,receiptCount:verifiedSaleState.receiptDocuments?.length??0,
       receiptReview:verifiedSaleState.receiptReview??null}));
     // Ciudad sin envío (pestaña Zonas de cobertura): solo vale la instrucción de «sin envío».
-    const cityShippingFee = verifiedSaleState.cityVerified ? shippingFeeForCity(verifiedSaleState.city, verifiedSaleState.department, ctx.training) : 0;
-    const codTransferActive = Boolean(verifiedSaleState.payByTransfer) && codTransferAllowed(ctx.training) &&
-      deliveryPolicyForCity(verifiedSaleState.city, verifiedSaleState.department, ctx.training)?.paymentMethod === "contraentrega";
+    // Producto y opción del ciclo: delivery por opción y descuento por pago anticipado.
+    const chargeProduct = ctx.products.find(p => p.id === verifiedSaleState.productId);
+    const chargeOption = chargeProduct?.product_prices?.find(o => o.id === verifiedSaleState.optionId);
+    const chargePacks = chargeOption && verifiedSaleState.quantity ? Math.max(1, Math.round(Number(verifiedSaleState.quantity) / Math.max(1, Number(chargeOption.quantity) || 1))) : 1;
+    const chargeListTotal = chargeOption ? Number(chargeOption.price) * chargePacks : 0;
+    const productDiscountPct = Number(chargeProduct?.advance_discount_percent) || 0;
+    const codCity = deliveryPolicyForCity(verifiedSaleState.city, verifiedSaleState.department, ctx.training)?.paymentMethod === "contraentrega";
+    const codTransferActive = Boolean(verifiedSaleState.payByTransfer) && (codTransferAllowed(ctx.training) || productDiscountPct > 0) && codCity;
+    const cycleCharges = orderCharges({ products: ctx.products, productId: verifiedSaleState.productId,
+      optionIds: [verifiedSaleState.optionId], city: verifiedSaleState.cityVerified ? verifiedSaleState.city : null,
+      department: verifiedSaleState.department, training: ctx.training, payByTransfer: codTransferActive, productsTotal: chargeListTotal });
+    // Envío que se cobra: el de la ciudad, o si la ciudad no tiene, el delivery de la opción elegida.
+    const cityShippingFee = verifiedSaleState.cityVerified ? cycleCharges.shippingFee : 0;
+    const discountInstruction = codCity && productDiscountPct > 0 && chargeListTotal > 0
+      ? (codTransferActive
+        ? `\nDESCUENTO POR PAGO ANTICIPADO APLICADO (${productDiscountPct}%): el cliente paga antes por transferencia. Total a transferir: ${formatGs(chargeListTotal + cityShippingFee - Math.round(chargeListTotal * productDiscountPct / 100))} (productos ${formatGs(chargeListTotal)} − ${productDiscountPct}%${cityShippingFee ? ` + envío ${formatGs(cityShippingFee)}` : ""}). Usá ese total exacto.`
+        : `\nDESCUENTO POR PAGO ANTICIPADO DISPONIBLE: ${productDiscountPct}% si paga ANTES por transferencia (total ${formatGs(chargeListTotal + cityShippingFee - Math.round(chargeListTotal * productDiscountPct / 100))} en vez de ${formatGs(chargeListTotal + cityShippingFee)}). Mencionalo UNA sola vez, junto con el total a pagar al recibir; si no lo quiere, sigue con pago al recibir. No insistas.`)
+      : "";
     const codTransferInstruction = codTransferActive
       ? `\nPAGO POR TRANSFERENCIA (lo pidió el cliente; la tienda lo acepta): el envío a ${verifiedSaleState.city} sigue siendo a domicilio, con la dirección o ubicación. Pasale los datos bancarios oficiales de la tienda y el total; que mande el comprobante cuando transfiera. NO digas encomienda. El pedido se registra igual con nombre y dirección, aunque todavía no haya mandado el comprobante.`
       : (deliveryPolicyForCity(verifiedSaleState.city, verifiedSaleState.department, ctx.training)?.paymentMethod === "contraentrega" && codTransferAllowed(ctx.training)
         ? "\nSi el cliente pregunta si puede pagar por transferencia: SÍ puede (envío igual a domicilio). Por defecto paga al recibir; no ofrezcas transferencia si no la pide."
         : "");
     const shippingFeeInstruction = cityShippingFee > 0
-      ? `\nCOSTO DE ENVÍO a ${verifiedSaleState.city}: ${formatGs(cityShippingFee)} (pestaña Zonas de cobertura). Cuando des precio o total, decí SIEMPRE el costo de envío y el TOTAL CON ENVÍO (precio del producto + ${formatGs(cityShippingFee)}). Formato: «[precio del catálogo] + delivery ${formatGs(cityShippingFee)} = total [suma exacta]», usando SOLO precios reales del catálogo.`
+      ? `\nCOSTO DE ENVÍO a ${verifiedSaleState.city}: ${formatGs(cityShippingFee)} (${cycleCharges.cityFee > 0 ? "pestaña Zonas de cobertura" : "delivery de este producto"}). Cuando des precio o total, decí SIEMPRE el costo de envío y el TOTAL CON ENVÍO (precio del producto + ${formatGs(cityShippingFee)}). Formato: «[precio del catálogo] + delivery ${formatGs(cityShippingFee)} = total [suma exacta]», usando SOLO precios reales del catálogo.`
       : "";
     const officialPolicyInstruction = verifiedSaleState.coverageStatus === "none" ? "" : officialDelivery?.paymentMethod
       ? `\nCOBERTURA DEL VENDEDOR COMPROBADA: ciudad ${officialDelivery.city}, departamento ${officialDelivery.department}; modalidad EXACTA ${officialDelivery.method}; pago permitido ${officialDelivery.paymentMethod}. Esta información es obligatoria, no la reemplaces con pago anticipado ni preguntes cómo quiere pagar cuando el vendedor exige una modalidad. No confundas envío con modalidad de pago.`
       : `\n${sellerAllowsNationwideAdvance(ctx.training) ? "ENCOMIENDA NACIONAL AUTORIZADA: fuera de contraentrega se puede ofrecer pago anticipado sujeto a verificar logística; NO negar todo envío por ausencia en la lista. " : ""}COBERTURA PENDIENTE: la CIUDAD DE ENTREGA es el primer dato logístico obligatorio; NO solicites nombre, dirección, GPS, método de pago ni transferencia antes de verificarla. La ciudad debe estar en la cobertura activa de este vendedor o resolverse según su política de encomienda. No deduzcas municipio desde GPS ni barrio. Si el cliente hace otra consulta, respondela primero sin repetir automáticamente la pregunta de ciudad y conservá la venta.`;
     const aiAnswerContext = {
       ...answerContext,
-      systemInstruction: answerContext.systemInstruction + officialPolicyInstruction + shippingFeeInstruction + noShippingInstruction(verifiedSaleState) + codTransferInstruction +
+      systemInstruction: answerContext.systemInstruction + officialPolicyInstruction + shippingFeeInstruction + discountInstruction + noShippingInstruction(verifiedSaleState) + codTransferInstruction +
         // Sin producto identificado (anuncio no vinculado y el cliente no lo nombró) la venta no se puede registrar.
         (!verifiedSaleState.productId && (verifiedSaleState.cityVerified || verifiedSaleState.customerName || verifiedSaleState.quantity)
           ? "\nPRODUCTO SIN IDENTIFICAR: todavía no sabemos QUÉ producto quiere el cliente (el anuncio no indica cuál). Antes de cualquier otro dato, preguntale con amabilidad qué producto le interesa (por su nombre o una foto del anuncio). Sin el producto el pedido no se registra." : "") +
@@ -2598,7 +2615,7 @@ Respetá el estilo, productos y condiciones del entrenamiento particular del ven
       const chosenOption = productForReceipt?.product_prices?.find(
         o => o.id === verifiedSaleState.optionId);
       const expectedReceiptTotal = chosenOption
-        ? Number(chosenOption.price) + shippingFeeForCity(verifiedSaleState.city, verifiedSaleState.department, ctx.training) : null;
+        ? Number(chosenOption.price) + cycleCharges.shippingFee - (codTransferActive ? Math.round(Number(chosenOption.price) * productDiscountPct / 100) : 0) : null;
       const documentedReceiptTotal = (verifiedSaleState.receiptDocuments ?? [])
         .reduce((sum, document) => sum + document.amountGs, 0);
       const isEncomiendaReceipt = isEncomiendaAdvanceOrder(ctx.training,
@@ -3303,7 +3320,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
     const baseExpectedTotal = stateExpectedTotal ?? aiExpectedTotal;
     // El comprobante tiene que cubrir también el costo de envío fijo de la ciudad.
     const expectedTotal = baseExpectedTotal === null ? null
-      : baseExpectedTotal + shippingFeeForCity(verifiedSaleState.city, verifiedSaleState.department, ctx.training);
+      : baseExpectedTotal + cycleCharges.shippingFee - (codTransferActive ? Math.round(baseExpectedTotal * productDiscountPct / 100) : 0);
     const receivedTotal = (paymentSaleState.receiptDocuments ?? []).reduce((n,r)=>n+r.amountGs,0);
     const financiallyReady = !isAdvance || Boolean(paymentSaleState.receiptPath &&
       !paymentSaleState.receiptReview && expectedTotal !== null && Number.isFinite(expectedTotal) &&
@@ -4381,8 +4398,17 @@ export async function createOrderFromAi(args: {
   // Costo de envío de la ciudad (pestaña Zonas de cobertura o entrenamiento):
   // se SUMA al total del pedido; los artículos siguen valiendo solo el producto.
   const productsTotal = total;
-  const shippingFee = shippingFeeForCity(String(args.order.city ?? ""), String(args.order.departamento ?? ""), args.training ?? []);
-  total = productsTotal + shippingFee;
+  // Envío: el de la ciudad si tiene; si no, el delivery de la opción elegida (nunca los dos).
+  // Descuento: % del producto si en una ciudad con pago al recibir paga antes por transferencia.
+  const charges = orderCharges({
+    products: args.products, productId: product.id,
+    optionIds: cartResolved?.length ? cartResolved.map(line => line.optionId) : [selectedPrice?.id],
+    city: String(args.order.city ?? ""), department: String(args.order.departamento ?? ""), training: args.training ?? [],
+    payByTransfer: /transfer/i.test(String(args.order.payment_method ?? "")), productsTotal,
+  });
+  const shippingFee = charges.shippingFee;
+  const discount = charges.discount;
+  total = productsTotal + shippingFee - discount;
   // Verificación definitiva contra el total calculado para el INSERT (no
   // contra un estimado de la IA). El excedente solo existe si ambos importes
   // son coherentes y el comprobante es documentalmente compatible.
@@ -4410,7 +4436,8 @@ export async function createOrderFromAi(args: {
     cleanOrderText(args.order.observations) || null;
 
   const observations = [
-    shippingFee > 0 ? `ENVÍO: ${shippingFee.toLocaleString("es-PY")} Gs. (productos ${productsTotal.toLocaleString("es-PY")} Gs. + envío = total ${total.toLocaleString("es-PY")} Gs.)` : null,
+    shippingFee > 0 ? `ENVÍO: ${shippingFee.toLocaleString("es-PY")} Gs.${charges.cityFee > 0 ? "" : " (delivery del producto)"} (productos ${productsTotal.toLocaleString("es-PY")} Gs. + envío${discount ? ` − descuento ${discount.toLocaleString("es-PY")} Gs.` : ""} = total ${total.toLocaleString("es-PY")} Gs.)` : null,
+    discount > 0 ? `DESCUENTO ${charges.discountPct}% POR PAGO ANTICIPADO: −${discount.toLocaleString("es-PY")} Gs. (precio de lista ${productsTotal.toLocaleString("es-PY")} Gs.)` : null,
     // Guardar la CI de encomienda en la columna existente; no imprimirla en logs.
     orderIsEncomienda && isValidRecipientCi(args.order.recipient_ci)
       ? `C.I. destinatario encomienda: ${String(args.order.recipient_ci).replace(/\D/g,"")}` : null,
@@ -4469,8 +4496,9 @@ export async function createOrderFromAi(args: {
     quantity,
     price: unitPrice,
     total,
-    // La base valida: suma de artículos + costo de envío = total.
+    // La base valida: suma de artículos + costo de envío − descuento = total.
     shipping_fee: shippingFee,
+    discount,
     status: "nuevo" as const,
     payment_status: "pendiente" as const,
   };
@@ -5016,7 +5044,7 @@ async function sendCatalogByKeyword(args: {
     `${match.products.name}
 ${match.products.description ?? ""}`.trim();
   const { data: rawOptions } = await supabaseAdmin.from("product_prices")
-    .select("label, quantity, price, sort_order")
+    .select("label, quantity, price, sort_order, delivery_fee")
     .eq("workspace_id", args.workspaceId)
     .eq("product_id", productId)
     .order("sort_order", { ascending: true });
@@ -5035,7 +5063,7 @@ ${match.products.description ?? ""}`.trim();
   // Los precios se envían aparte, 5 segundos después del copy + imagen.
   const copy = baseCopy;
   const pricesMessage = options.length
-    ? `💰 *Precios disponibles:*\n${options.map((o) => `• *${o.label}* — Gs. ${Math.round(Number(o.price)).toLocaleString("es-PY")}`).join("\n")}${args.emergency ? "" : "\n\n¿Cuál te interesa? 😊"}`
+    ? `💰 *Precios disponibles:*\n${options.map((o) => `• *${o.label}* — Gs. ${Math.round(Number(o.price)).toLocaleString("es-PY")}${Number((o as { delivery_fee?: number | null }).delivery_fee) > 0 ? ` + delivery Gs. ${Math.round(Number((o as { delivery_fee?: number | null }).delivery_fee)).toLocaleString("es-PY")}` : options.some(x => Number((x as { delivery_fee?: number | null }).delivery_fee) > 0) ? " (envío gratis)" : ""}`).join("\n")}${args.emergency ? "" : "\n\n¿Cuál te interesa? 😊"}`
     : null;
 
   const { sendWhatsAppMedia: sendWhatsAppMediaNow } = await import("@/lib/whatsapp.server");

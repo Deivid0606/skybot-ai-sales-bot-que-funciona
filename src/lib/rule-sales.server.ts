@@ -200,7 +200,8 @@ export function enforceVerifiedPaymentReply(args: {
   const normalized=norm(reply);
   const promisesCod=/\b(?:tenemos|contamos|disponemos|ofrecemos|hay|podes|podras|paga|pagas|pagar|se paga)\b.{0,95}\b(?:contra entrega|contraentrega|pago al recibir|al recibir|cuando recibas|cuando llegue|al delivery)\b|\b(?:pago al recibir|contra entrega|contraentrega)\b.{0,80}\b(?:disponible|habilitado|para (?:tu|esa|esta) (?:zona|ciudad))\b/.test(normalized);
   // El cliente eligió pagar por transferencia y la tienda lo acepta: datos bancarios permitidos (nunca «encomienda»).
-  const codTransfer=policy?.paymentMethod==="contraentrega" && Boolean(args.saleState?.payByTransfer) && codTransferAllowed(args.training);
+  // payByTransfer solo se activa si la tienda acepta transferencia (ficha o descuento del producto).
+  const codTransfer=policy?.paymentMethod==="contraentrega" && Boolean(args.saleState?.payByTransfer);
   const wrongCod=policy?.paymentMethod==="contraentrega" && codTransfer ? /\b(?:encomienda|no tenemos contra entrega|no hay contra entrega)\b/.test(normalized) :
     policy?.paymentMethod==="contraentrega" &&
     /\b(?:encomienda|pago anticipado|pagar por transferencia|transferencia obligatoria|total a transferir|monto a transferir|importe a transferir|debes transferir|tenes que transferir|transferis a|datos bancarios|cuenta bancaria|no tenemos contra entrega|no hay contra entrega|comprobante de transferencia|comprobante de pago|comprobante|banco|titular|alias eko|cuenta desde|nro de cuenta|realices el pago)\b/.test(normalized);
@@ -224,6 +225,8 @@ export function customerWantsTransfer(text: string): boolean | null {
   const n = norm(text);
   if (/\bno\s+(?:tengo|puedo|hago|quiero|voy a)\b.{0,30}\btransfer|\btransferencias?\s+no\s+(?:tengo|puedo)|\bsin\s+transfer|\b(?:mejor|prefiero)\s+(?:al recibir|contra ?entrega|en efectivo|efectivo)/.test(n)) return false;
   if (/\btransfer\w*|\btransfiero\b|\bgiro\b|\bdeposit\w*|\bpago\s+(?:por\s+)?(?:banco|alias)\b/.test(n)) return true;
+  // «Pago antes», «quiero pagar por adelantado», «quiero el descuento» (descuento por pago anticipado).
+  if (/\b(?:pago|pagar|pagaria|pagare|pagamos|abono|abonar)\s+(?:antes|anticipad\w*|adelantad\w*|por\s+adelantado)\b|\b(?:quiero|acepto|me\s+sirve|tomo)\s+(?:el|ese|tu|su)\s+descuento\b|\bcon\s+(?:el\s+)?descuento\b/.test(n)) return true;
   return null;
 }
 
@@ -286,6 +289,31 @@ export function shippingFeeForCity(city: string | null | undefined, department: 
   const m = policy.method.match(/(?:DELIVERY|COSTO DE ENV[IÍ]O|ENV[IÍ]O)[^0-9]{0,12}(?:GS\.?|₲)?\s*([0-9]{1,3}(?:[.,][0-9]{3})+|[0-9]{4,7})/i);
   const fee = m ? Number(m[1].replace(/\D/g, "")) : 0;
   return Number.isSafeInteger(fee) && fee >= 1000 ? fee : 0;
+}
+
+/**
+ * Costo de envío y descuento del pedido.
+ * - Envío: si la CIUDAD tiene costo (Zonas de cobertura) se cobra solo ese; si no, el delivery
+ *   de la opción de precio elegida (Productos). Nunca los dos.
+ * - Descuento: % del producto por pago anticipado, solo en ciudades con pago al recibir
+ *   cuando el cliente paga por transferencia.
+ */
+export function orderCharges(args: {
+  products: ReadonlyArray<{ id: string; product_prices?: ReadonlyArray<{ id: string; delivery_fee?: number | null }> | null; advance_discount_percent?: number | null }>;
+  productId: string | null | undefined; optionIds: Array<string | null | undefined>;
+  city: string | null | undefined; department: string | null | undefined; training: AiContext["training"];
+  payByTransfer: boolean; productsTotal: number;
+}): { cityFee: number; productFee: number; shippingFee: number; discountPct: number; discount: number } {
+  const cityFee = shippingFeeForCity(args.city, args.department, args.training);
+  const product = args.products.find(p => p.id === args.productId);
+  const options = product?.product_prices ?? [];
+  const productFee = Math.max(0, ...args.optionIds.map(id => Number(options.find(o => o.id === id)?.delivery_fee) || 0));
+  const shippingFee = cityFee > 0 ? cityFee : productFee;
+  const cod = deliveryPolicyForCity(args.city, args.department, args.training)?.paymentMethod === "contraentrega";
+  const pct = Number(product?.advance_discount_percent) || 0;
+  const discountPct = cod && args.payByTransfer && pct > 0 && pct <= 50 ? pct : 0;
+  const discount = discountPct ? Math.round(args.productsTotal * discountPct / 100) : 0;
+  return { cityFee, productFee, shippingFee, discountPct, discount };
 }
 
 /**

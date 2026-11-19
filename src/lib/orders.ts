@@ -272,7 +272,7 @@ export function buildEcommerceUrl(
 
   // Precio final: si el total incluye el envío de la ciudad, el precio por unidad ya lo incluye.
   const qtyForPrice = Math.max(1, Number(order.quantity ?? 1) || 1);
-  const finalUnitPrice = Number(order.total ?? 0) > Number(order.price ?? 0) * qtyForPrice
+  const finalUnitPrice = Number(order.total ?? 0) > 0 && Math.abs(Number(order.total ?? 0) - Number(order.price ?? 0) * qtyForPrice) > 0.5
     ? Math.round((Number(order.total) / qtyForPrice) * 100) / 100
     : Number(order.price ?? 0);
 

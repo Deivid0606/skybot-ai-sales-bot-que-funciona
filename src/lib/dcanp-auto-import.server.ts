@@ -91,8 +91,9 @@ async function importWorkspace(ws: WorkspaceRow, onlyProductId?: string, onlyOrd
     const lines=linesFor(order).map(line=>({...line}));
     if(!lines.length)return lines;
     const sum=lines.reduce((acc,line)=>acc+line.quantity*line.price,0);
+    // Envío (+) o descuento por pago anticipado (−): el precio final del último artículo lo absorbe.
     const fee=Number(order.total)-sum;
-    if(fee>0.01){
+    if(Math.abs(fee)>0.01 && lines[lines.length-1].price*lines[lines.length-1].quantity+fee>0){
       const last=lines[lines.length-1];
       last.price=Math.round(((last.price*last.quantity+fee)/last.quantity)*100)/100;
     }

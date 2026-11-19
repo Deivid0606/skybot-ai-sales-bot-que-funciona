@@ -61,6 +61,8 @@ type ProductPriceForm = {
   label: string;
   quantity: string;
   price: string;
+  /** Delivery de esta opción (₲). Vacío o 0 = envío gratis. */
+  delivery_fee?: string;
 };
 
 type ProductForm = {
@@ -73,6 +75,8 @@ type ProductForm = {
   stock: string;
   is_active: boolean;
   delivery_info: string;
+  /** % de descuento si en una ciudad con pago al recibir paga antes por transferencia. */
+  advance_discount_percent: string;
   ai_instructions: string;
   followup_message: string;
   followup_second_message: string;
@@ -93,6 +97,7 @@ function createEmptyForm(): ProductForm {
     stock: "0",
     is_active: true,
     delivery_info: "",
+    advance_discount_percent: "",
     ai_instructions: "",
     followup_message: "¡Hola! 😊 ¿Te gustaría continuar con tu pedido? Estoy para ayudarte.",
     followup_second_message: "¡Hola de nuevo! 😊 ¿Todavía te interesa el producto que consultaste? Podemos ayudarte a finalizar el pedido.",
@@ -169,7 +174,7 @@ function ProductsPage() {
     queryKey: ["products", allStores ? "todas" : workspaceId],
     enabled: Boolean(workspaceId),
     queryFn: async () => {
-      const select = "*, product_keywords(id, keyword), product_media(id, media_type, storage_path), product_prices(id, label, quantity, price, sort_order)";
+      const select = "*, product_keywords(id, keyword), product_media(id, media_type, storage_path), product_prices(id, label, quantity, price, sort_order, delivery_fee)";
       if (allStores) {
         // Administrador: productos de todas las tiendas (editables).
         const all = [];
@@ -253,6 +258,8 @@ function ProductsPage() {
         stock: Number(values.stock) || 0,
         is_active: values.is_active,
         delivery_info: values.delivery_info.trim() || null,
+        advance_discount_percent: Number(values.advance_discount_percent) > 0
+          ? Math.min(50, Number(values.advance_discount_percent)) : null,
         ai_instructions: values.ai_instructions.trim() || null,
         followup_message: values.followup_message.trim() || null,
         followup_second_message: values.followup_second_message.trim() || null,
@@ -282,6 +289,7 @@ function ProductsPage() {
           // «2 unidades» con cantidad 1 se corrige sola a 2.
           quantity: packQuantityFromLabel(item.label, item.quantity),
           price: Number(item.price) || 0,
+          delivery_fee: Math.max(0, Math.round(Number(item.delivery_fee) || 0)),
           sort_order: index,
         }))
         .filter((item) => item.label && item.price > 0);
@@ -443,7 +451,9 @@ function ProductsPage() {
       quantity: number;
       price: number;
       sort_order: number;
+      delivery_fee?: number | null;
     }[];
+    advance_discount_percent?: number | null;
     stock: number;
     is_active: boolean;
     delivery_info: string | null;
@@ -471,11 +481,13 @@ function ProductsPage() {
           label: item.label,
           quantity: String(item.quantity),
           price: String(item.price),
+          delivery_fee: Number(item.delivery_fee) > 0 ? String(item.delivery_fee) : "",
         }))
         .concat((p.product_prices ?? []).length ? [] : [{ label: "1 unidad", quantity: "1", price: "" }]),
       stock: String(p.stock ?? 0),
       is_active: p.is_active,
       delivery_info: p.delivery_info ?? "",
+      advance_discount_percent: Number(p.advance_discount_percent) > 0 ? String(p.advance_discount_percent) : "",
       ai_instructions: p.ai_instructions ?? "",
       followup_message: p.followup_message ?? "",
       followup_second_message: p.followup_second_message ?? "",
@@ -807,7 +819,7 @@ function ProductsPage() {
                   {form.prices.map((item, index) => (
                     <div
                       key={item.id ?? `new-${index}`}
-                      className="grid gap-2 rounded-md border p-3 sm:grid-cols-[minmax(0,1fr)_110px_minmax(0,180px)_40px]"
+                      className="grid gap-2 rounded-md border p-3 sm:grid-cols-[minmax(0,1fr)_90px_minmax(0,150px)_minmax(0,130px)_40px]"
                     >
                       <div className="space-y-1">
                         <Label className="text-xs">Nombre</Label>
@@ -857,6 +869,26 @@ function ProductsPage() {
                               prices: current.prices.map((priceItem, currentIndex) =>
                                 currentIndex === index
                                   ? { ...priceItem, price: e.target.value }
+                                  : priceItem,
+                              ),
+                            }))
+                          }
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">Delivery (₲)</Label>
+                        <Input
+                          type="number"
+                          min="0"
+                          placeholder="0 = gratis"
+                          title="Se cobra solo si la ciudad no tiene costo de envío propio en Zonas de cobertura"
+                          value={item.delivery_fee ?? ""}
+                          onChange={(e) =>
+                            setForm((current) => ({
+                              ...current,
+                              prices: current.prices.map((priceItem, currentIndex) =>
+                                currentIndex === index
+                                  ? { ...priceItem, delivery_fee: e.target.value }
                                   : priceItem,
                               ),
                             }))
@@ -918,6 +950,23 @@ function ProductsPage() {
                 value={form.delivery_info}
                 onChange={(e) => setForm({ ...form, delivery_info: e.target.value })}
               />
+            </div>
+            <div className="space-y-1.5 sm:col-span-2 rounded-md border p-3">
+              <Label>💸 Descuento por pago anticipado (%)</Label>
+              <Input
+                type="number"
+                min="0"
+                max="50"
+                className="max-w-[140px]"
+                placeholder="Ej. 5"
+                value={form.advance_discount_percent}
+                onChange={(e) => setForm({ ...form, advance_discount_percent: e.target.value })}
+              />
+              <p className="text-xs text-muted-foreground">
+                Solo en ciudades con pago al recibir: si el cliente paga antes por transferencia, el bot le ofrece este descuento
+                y registra el pedido con el total rebajado. Vacío = sin descuento. El delivery de cada precio se cobra solo
+                si la ciudad no tiene costo de envío propio.
+              </p>
             </div>
             <div className="space-y-1.5 sm:col-span-2">
               <Label>Instrucciones específicas para la IA</Label>
