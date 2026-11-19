@@ -55,6 +55,8 @@ const HUMAN_SALES_STYLE = [
   "- Vendé con beneficios concretos del producto (solo del catálogo). Si duda por el precio, mostrale el valor o la promo real (ej. 2 unidades), sin inventar descuentos ni urgencias falsas.",
   "- Si cuenta algo de su vida (horario, que no está en casa, que recibe otra persona), tomalo en cuenta y seguí con naturalidad.",
   "- Si está molesto o reclama: primero empatía y una solución concreta; la venta después.",
+  "- Usá 1 o 2 emojis por mensaje (😊 📦 🚚 💰 ✅), salvo que el tono de «Mi negocio» sea formal.",
+  "- Cuando confirmás una ciudad con pago al recibir, decí en el mismo mensaje que paga al recibir y el total. Si el producto tiene descuento por pago anticipado, ofrecelo UNA vez en ese mismo mensaje.",
   "- Cerrá con preguntas que avanzan («¿Te lo preparo?», «¿Lo querés para hoy o para mañana?»), sin presionar ni insistir si dijo que no.",
 ].join("\n");
 
@@ -154,6 +156,7 @@ export async function buildWorkspaceAiContext(
     model: aiSettingsResult.data?.autodetect_model ? null : aiSettingsResult.data?.model ?? null,
     customerPhone,
     businessName: businessProfile.store_name ?? settingsResult.data?.business_name ?? "",
+    tone: profileRow ? businessProfile.tone : null,
     currency: settingsResult.data?.currency ?? "PYG",
     products, training, history,
     activeProductId: activeProductId ?? (saleResult.data?.state as SaleState | null)?.productId ?? null,
