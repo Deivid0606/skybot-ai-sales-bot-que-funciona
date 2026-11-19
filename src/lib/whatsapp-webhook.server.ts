@@ -3125,7 +3125,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
     };
     // La cédula del destinatario se pide DESPUÉS de registrar el pedido (nunca antes).
     const asksCiEarly = (text: string) => !conversation.sale_closed &&
-      (/\b(?:tu|su|la|el)\s+(?:n[uú]mero\s+de\s+)?c[eé]dula\b|(?:pas[aá]|pasame|pases|env[ií]a|env[ií]es|mand[aá]|mandes|necesito|necesitamos|falta|indic[aá]|indiques|confirm[aá]|confirmes|confirme|dec[ií]me|compart[ií]|compartas)[^.?!\n]{0,60}\b(?:c[eé]dula|c\.\s?i\.)/i.test(text) ||
+      (/\b(?:tu|su|la|el)\s+(?:n[uú]mero\s+de\s+)?c[eé]dula\b|(?:pas[aá]|pasame|pases|env[ií]a|env[ií]es|mand[aá]|mandes|necesito|necesitamos|falta|indic[aá]|indiques|confirm[aá]|confirmes|confirme|dec[ií]me|compart[ií]|compartas|proporcion\w*|facilit\w*|brind\w*|escrib\w*)[^.?!\n]{0,60}\b(?:c[eé]dula|c\.\s?i\.)/i.test(text) ||
        /\bc[eé]dula\b[^.?!\n]{0,40}\?/i.test(text) || /\bes\s+necesari[oa]\b[^.?!\n]{0,40}\b(?:registro|pedido)\b/i.test(text));
     const violatesVerifiedFacts = (text: string) => {
       const policy = verifiedSaleState.cityVerified
@@ -3800,6 +3800,18 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
           : "😊 Para registrar tu pedido, ¿me pasás tu nombre y apellido?";
         outgoingText = outgoingText.trim() ? `${outgoingText.trim()}\n\n${ask}` : ask;
         console.warn("[BOT_SKY_NAME_REQUIRED]", JSON.stringify({conversationId:conversation.id, firstOnly}));
+      }
+      // Encomienda con pago anticipado: si el mensaje pide el comprobante, SIEMPRE lleva los datos
+      // bancarios oficiales y el total (caso: «necesito el comprobante» y el cliente: «¿y dónde pago?»).
+      if (!bypassSale && !conversation.sale_closed && /anticip|transfer|deposit|giro/i.test(String(verifiedSaleState.paymentMethod ?? "")) &&
+          /comprobante/i.test(outgoingText) && !/\b(?:cuenta|alias)\b[^\n]{0,40}\d{4,}/i.test(outgoingText) &&
+          !(paymentSaleState.receiptDocuments?.length ?? 0)) {
+        const bank = sellerBankText(ctx.training).trim();
+        if (bank) {
+          const totalLine = expectedTotal !== null ? `💰 *Total a transferir:* ${formatGs(expectedTotal)}\n` : "";
+          outgoingText = `${outgoingText.trim()}\n\n${totalLine}${bank.slice(0, 700)}\n\nCuando transfieras, mandame la foto del comprobante 📎`;
+          console.warn("[BOT_SKY_BANK_DATA_ADDED]", JSON.stringify({conversationId:conversation.id}));
+        }
       }
       // Comprobante aceptado y falta el nombre: el mensaje final SIEMPRE informa el
       // saldo a favor (si pagó de más) y pide nombre y apellido, para poder confirmar.
