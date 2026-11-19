@@ -839,6 +839,13 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     if (candidate) s.customerName = candidate;
   }
   const variants=opts(p);
+  // Opción guardada que ya no existe (el vendedor volvió a guardar los precios y cambiaron
+  // los códigos): se reasigna por la cantidad elegida; si no hay una sola coincidencia, se pregunta.
+  if (s.optionId && variants.length && !variants.some(v => v.id === s.optionId)) {
+    const byQty = s.quantity ? variants.filter(v => Number(v.quantity) === Number(s.quantity)) : [];
+    s.optionId = byQty.length === 1 ? byQty[0].id : (variants.length === 1 ? variants[0].id : null);
+    if (!s.optionId) s.quantity = null;
+  }
   // «?» después de una selección no es una pregunta técnica: continuar la
   // compra pendiente sin borrar producto, variante, cantidad, ciudad o GPS.
   // No registrar pedidos ni elegir una variante por inferencia.
