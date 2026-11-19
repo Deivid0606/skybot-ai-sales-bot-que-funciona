@@ -227,7 +227,7 @@ function buildSystemPrompt(ctx: AiContext): string {
       const variants = [...(product.product_prices ?? [])]
         .sort((a, b) => a.sort_order - b.sort_order)
         .map((option) =>
-          `    - variante_id:${option.id} | nombre:${option.label} | unidades_incluidas:${option.quantity} | precio_total:${option.price} ${ctx.currency}${Number(option.delivery_fee) > 0 ? ` | delivery:${option.delivery_fee} ${ctx.currency} (solo si la ciudad no tiene costo de envío propio)` : ""}`,
+          `    - variante_id:${option.id} | nombre:${option.label} | unidades_incluidas:${option.quantity} | precio_total:${option.price} ${ctx.currency}${Number(option.delivery_fee) > 0 ? ` | delivery:${option.delivery_fee} ${ctx.currency} (solo en ciudades con pago al recibir sin costo de envío propio; nunca en encomienda ni sumado al costo de la ciudad)` : ""}`,
         )
         .join("\n");
       const discount = Number(product.advance_discount_percent) || 0;
