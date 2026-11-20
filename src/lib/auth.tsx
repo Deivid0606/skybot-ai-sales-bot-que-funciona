@@ -27,18 +27,120 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 const STORAGE_KEY = `sb-${import.meta.env.VITE_SUPABASE_PROJECT_ID}-auth-token`;
 
-function readStoredSession(): Session | null {
+function readStoredSession(allowExpired = false): Session | null {
   if (typeof window === "undefined") return null;
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Session & { expires_at?: number };
     if (!parsed?.access_token) return null;
-    if (parsed.expires_at && parsed.expires_at * 1000 < Date.now()) return null;
+    if (!allowExpired && parsed.expires_at && parsed.expires_at * 1000 < Date.now()) return null;
     return parsed as Session;
   } catch {
     return null;
   }
+}
+
+/**
+ * Cuentas guardadas en ESTE navegador (como Gmail): cambiar de tienda con un clic,
+ * sin volver a escribir la contraseña. Se guarda la misma sesión que Supabase ya
+ * guarda en este navegador; «Cerrar sesión» la borra de la lista.
+ */
+const SAVED_ACCOUNTS_KEY = "botsky-saved-accounts";
+const MAX_SAVED_ACCOUNTS = 8;
+type SavedAccountRecord = {
+  userId: string;
+  email: string;
+  label: string;
+  access_token: string;
+  refresh_token: string;
+  expires_at: number;
+  savedAt: number;
+};
+export type SavedAccount = Pick<SavedAccountRecord, "userId" | "email" | "label">;
+
+function readSavedAccounts(): SavedAccountRecord[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const list = JSON.parse(window.localStorage.getItem(SAVED_ACCOUNTS_KEY) || "[]") as SavedAccountRecord[];
+    return Array.isArray(list) ? list.filter((a) => a?.userId && a.refresh_token) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeSavedAccounts(list: SavedAccountRecord[]) {
+  try {
+    window.localStorage.setItem(SAVED_ACCOUNTS_KEY, JSON.stringify(list.slice(0, MAX_SAVED_ACCOUNTS)));
+  } catch {
+    // sin almacenamiento: simplemente no se recuerdan cuentas
+  }
+}
+
+function saveAccountSession(session: Session | null, label?: string | null) {
+  if (typeof window === "undefined" || !session?.user?.id || !session.refresh_token) return;
+  try {
+    // «Solo mientras el navegador esté abierto»: no recordar la cuenta.
+    if (window.localStorage.getItem(BROWSER_ONLY_KEY) === "1") return;
+  } catch {
+    return;
+  }
+  const list = readSavedAccounts();
+  const previous = list.find((a) => a.userId === session.user.id);
+  const record: SavedAccountRecord = {
+    userId: session.user.id,
+    email: session.user.email ?? previous?.email ?? "",
+    label: (label || previous?.label || session.user.email || "Cuenta").trim(),
+    access_token: session.access_token,
+    refresh_token: session.refresh_token,
+    expires_at: session.expires_at ?? 0,
+    savedAt: Date.now(),
+  };
+  writeSavedAccounts([record, ...list.filter((a) => a.userId !== record.userId)]);
+}
+
+export function listSavedAccounts(): SavedAccount[] {
+  return readSavedAccounts().map(({ userId, email, label }) => ({ userId, email, label }));
+}
+
+export function forgetSavedAccount(userId: string) {
+  writeSavedAccounts(readSavedAccounts().filter((a) => a.userId !== userId));
+}
+
+/** Pasa a otra cuenta guardada sin contraseña. La cuenta actual queda guardada (no se revoca). */
+export async function switchToSavedAccount(userId: string): Promise<boolean> {
+  const target = readSavedAccounts().find((a) => a.userId === userId);
+  if (!target) return false;
+  const current = readStoredSession(true);
+  if (current && current.user?.id !== userId) saveAccountSession(current);
+  try {
+    // setSession reemplaza la sesión local SIN cerrar la anterior en el servidor
+    // (signOut la revocaría y ya no se podría volver a ella sin contraseña).
+    const { data, error } = await supabase.auth.setSession({
+      access_token: target.access_token,
+      refresh_token: target.refresh_token,
+    });
+    if (error || !data.session) throw error ?? new Error("Sesión vencida");
+    rememberSession(true);
+    saveAccountSession(data.session, target.label);
+    return true;
+  } catch {
+    // La sesión guardada ya no sirve (cerrada en otro lado o vencida): pedir contraseña.
+    forgetSavedAccount(userId);
+    return false;
+  }
+}
+
+/** «Agregar otra cuenta»: guarda la actual y abre el login sin cerrarla en el servidor. */
+export function addAnotherAccount() {
+  if (typeof window === "undefined") return;
+  saveAccountSession(readStoredSession(true));
+  try {
+    window.localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // ignorar
+  }
+  window.location.assign("/auth");
 }
 
 /**
@@ -118,11 +220,22 @@ export async function getSessionFast(timeoutMs = 2000): Promise<Session | null> 
   }
   const stored = readStoredSession();
   try {
+    const pending = supabase.auth.getSession().then(({ data }) => data.session);
     const result = await Promise.race([
-      supabase.auth.getSession().then(({ data }) => data.session),
+      pending,
       new Promise<Session | null>((resolve) => setTimeout(() => resolve(stored), timeoutMs)),
     ]);
-    return result ?? stored;
+    if (result) return result;
+    // Volviste después de un rato: el token venció y se está renovando. Con internet
+    // lento eso tarda más de 2 s; esperar en vez de mandar al login.
+    if (readStoredSession(true)?.refresh_token) {
+      const renewed = await Promise.race([
+        pending,
+        new Promise<Session | null>((resolve) => setTimeout(() => resolve(null), 12_000)),
+      ]);
+      if (renewed) return renewed;
+    }
+    return stored;
   } catch {
     return stored;
   }
@@ -149,6 +262,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       supabase.from("user_roles").select("role").eq("user_id", userId),
     ]);
     setProfile((prof as Profile) ?? null);
+    const label = (prof as Profile | null)?.company || (prof as Profile | null)?.full_name;
+    if (label) {
+      const list = readSavedAccounts();
+      const mine = list.find((a) => a.userId === userId);
+      if (mine && mine.label !== label) writeSavedAccounts(list.map((a) => (a.userId === userId ? { ...a, label } : a)));
+    }
     setIsAdmin(Boolean(roles?.some((r) => r.role === "admin")));
   }, []);
 
@@ -164,6 +283,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return;
       }
       setSession(newSession);
+      if (newSession) saveAccountSession(newSession);
       if (!newSession) {
         setProfile(null);
         setIsAdmin(false);
@@ -222,7 +342,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch (error) {
       console.warn('[BOT SKY] No se pudo desvincular push durante cierre de sesión', error);
     }
-    await supabase.auth.signOut();
+    // scope local: cerrar SOLO en este dispositivo. Antes cerraba en todos y un
+    // vendedor que salía desde su celular le cerraba la sesión al dueño.
+    const { data: { session: leaving } } = await supabase.auth.getSession();
+    if (leaving?.user?.id) forgetSavedAccount(leaving.user.id);
+    await supabase.auth.signOut({ scope: "local" });
     setSession(null);
     setProfile(null);
     setIsAdmin(false);

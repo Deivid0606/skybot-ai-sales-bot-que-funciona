@@ -1,14 +1,14 @@
 import { createFileRoute, Outlet, redirect, useNavigate } from "@tanstack/react-router";
 import { useEffect } from "react";
-import { LogOut, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
 
 import { AppSidebar } from "@/components/app-sidebar";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { ViewModeToggle } from "@/components/view-mode-toggle";
 import { NotificationsBell } from "@/components/notifications-bell";
+import { AccountSwitcher } from "@/components/account-switcher";
 import { BalanceBadge } from "@/components/balance-badge";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
-import { Button } from "@/components/ui/button";
 import { useAuth, getSessionFast } from "@/lib/auth";
 
 export const Route = createFileRoute("/_authenticated")({
@@ -31,7 +31,7 @@ function LoadingScreen() {
 }
 
 function AuthenticatedLayout() {
-  const { profile, loading, signOut, isAdmin } = useAuth();
+  const { profile, loading, isAdmin } = useAuth();
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -62,17 +62,7 @@ function AuthenticatedLayout() {
             <NotificationsBell />
             <ViewModeToggle />
             <ThemeToggle />
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label="Cerrar sesión"
-              onClick={async () => {
-                await signOut();
-                navigate({ to: "/auth", replace: true });
-              }}
-            >
-              <LogOut className="h-4 w-4" />
-            </Button>
+            <AccountSwitcher onSignedOut={() => navigate({ to: "/auth", replace: true })} />
           </header>
           <main className="min-w-0 flex-1">
             <Outlet />

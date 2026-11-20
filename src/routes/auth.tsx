@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useAuth, rememberSession } from "@/lib/auth";
+import { useAuth, rememberSession, listSavedAccounts, switchToSavedAccount, type SavedAccount } from "@/lib/auth";
 
 const searchSchema = z.object({
   mode: z.enum(["signin", "signup"]).optional(),
@@ -49,6 +49,21 @@ function AuthPage() {
   const [remember, setRemember] = useState(true);
   const [forgot, setForgot] = useState(false);
   const [resetSent, setResetSent] = useState(false);
+  const [saved, setSaved] = useState<SavedAccount[]>([]);
+  const [switching, setSwitching] = useState<string | null>(null);
+  useEffect(() => setSaved(listSavedAccounts()), []);
+
+  async function enterSaved(account: SavedAccount) {
+    setSwitching(account.userId);
+    if (await switchToSavedAccount(account.userId)) {
+      window.location.assign("/dashboard");
+      return;
+    }
+    setSwitching(null);
+    setSaved(listSavedAccounts());
+    setEmail(account.email);
+    toast.error(`La sesión de ${account.label} venció. Escribí la contraseña una vez y queda guardada.`);
+  }
 
   // Si ya hay sesión activa, no dejar al usuario atrapado en la pantalla de login.
   useEffect(() => {
@@ -206,6 +221,30 @@ function AuthPage() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
+            {mode === "signin" && saved.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-muted-foreground">Tus cuentas en este navegador (sin contraseña)</p>
+                {saved.map((account) => (
+                  <Button
+                    key={account.userId}
+                    type="button"
+                    variant="outline"
+                    className="h-auto w-full justify-start gap-3 py-2 text-left"
+                    disabled={switching !== null}
+                    onClick={() => void enterSaved(account)}
+                  >
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary">
+                      {switching === account.userId ? <Loader2 className="h-4 w-4 animate-spin" /> : account.label.charAt(0).toUpperCase()}
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-medium">{account.label}</span>
+                      <span className="block truncate text-xs text-muted-foreground">{account.email}</span>
+                    </span>
+                  </Button>
+                ))}
+                <p className="pt-1 text-center text-xs text-muted-foreground">o ingresá con otra cuenta</p>
+              </div>
+            )}
             <Tabs value={mode} onValueChange={(v) => setMode(v as "signin" | "signup")}>
               <TabsList className="grid w-full grid-cols-2">
                 <TabsTrigger value="signin">Ingresar</TabsTrigger>
