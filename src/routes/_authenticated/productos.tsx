@@ -35,7 +35,7 @@ import {
 import { packQuantityFromLabel } from "@/lib/pack-quantity";
 import { useAuth } from "@/lib/auth";
 import { StoreScopeToggle, useStoreDirectory, useStoreScope } from "@/lib/admin-scope";
-import { guessMediaType, MAX_FILE_BYTES, uploadWorkspaceFile } from "@/lib/storage";
+import { guessMediaType, MAX_PRODUCT_MEDIA_BYTES, uploadWorkspaceFile } from "@/lib/storage";
 import {
   MEDIA_LIMITS,
   ProductMediaManager,
@@ -428,8 +428,8 @@ function ProductsPage() {
     setUploadingFor(productId);
     try {
       for (const file of Array.from(files)) {
-        if (file.size > MAX_FILE_BYTES) {
-          toast.error(`${file.name} supera 25MB`);
+        if (file.size > MAX_PRODUCT_MEDIA_BYTES) {
+          toast.error(`${file.name} supera 50 MB`);
           continue;
         }
         const path = await uploadWorkspaceFile("product-media", targetWorkspace, file, productId);
