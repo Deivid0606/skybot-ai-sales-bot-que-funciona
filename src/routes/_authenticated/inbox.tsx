@@ -51,7 +51,7 @@ import {
   transcribeMessage,
 } from "@/lib/chat.functions";
 import { ChatMedia } from "@/components/chat-media";
-import { MAX_FILE_BYTES, guessMediaType, uploadWorkspaceFile } from "@/lib/storage";
+import { AUDIO_ACCEPT, MAX_FILE_BYTES, guessMediaType, uploadWorkspaceFile } from "@/lib/storage";
 import { AdOriginCard } from "@/components/ad-origin-card";
 import { ContactInfoDialog } from "@/components/contact-info-dialog";
 import { CityPicker } from "@/components/city-picker";
@@ -2541,7 +2541,7 @@ function InboxPage() {
                 ref={fileRef}
                 type="file"
                 className="hidden"
-                accept="image/*,video/*,audio/*,application/pdf"
+                accept={`image/*,video/*,${AUDIO_ACCEPT},application/pdf`}
                 onChange={(e) => {
                   const file = e.target.files?.[0];
                   if (file) sendFile.mutate(file);

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Image as ImageIcon, Music, Trash2, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { getSignedUrl, guessMediaType, MAX_FILE_BYTES } from "@/lib/storage";
+import { AUDIO_ACCEPT, getSignedUrl, guessMediaType, MAX_PRODUCT_MEDIA_BYTES } from "@/lib/storage";
 import { toast } from "sonner";
 
 export type ExistingMedia = { id: string; media_type: string; storage_path: string | null };
@@ -12,8 +12,8 @@ export const MEDIA_LIMITS: Record<MediaKind, number> = { image: 5, video: 4, aud
 
 const KIND_META: Record<MediaKind, { label: string; accept: string; icon: typeof ImageIcon }> = {
   image: { label: "Imágenes", accept: "image/*", icon: ImageIcon },
-  video: { label: "Videos", accept: "video/*", icon: Video },
-  audio: { label: "Audios", accept: "audio/*", icon: Music },
+  video: { label: "Videos", accept: "video/*,.mp4,.mov,.webm,.3gp,.mkv", icon: Video },
+  audio: { label: "Audios", accept: AUDIO_ACCEPT, icon: Music },
 };
 
 export function useSignedMedia(items: ExistingMedia[]) {
@@ -66,8 +66,8 @@ export function ProductMediaManager({
     if (!list?.length) return;
     const next = [...pending];
     for (const file of Array.from(list)) {
-      if (file.size > MAX_FILE_BYTES) {
-        toast.error(`${file.name} supera 25MB`);
+      if (file.size > MAX_PRODUCT_MEDIA_BYTES) {
+        toast.error(`${file.name} supera 50 MB`);
         continue;
       }
       const used =

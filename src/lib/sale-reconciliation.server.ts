@@ -27,7 +27,9 @@ export function normalizeCustomerName(value: unknown): string {
     .replace(/[^\p{L}\d\s'.\-]/gu, " ")
     .replace(/\s+/g, " ").trim()
     // Títulos delante del nombre («Lic. Gricelda Quevedo», «Sra. Ana»).
-    .replace(/^(?:(?:lic|lcda|lcdo|dr|dra|ing|prof|sr|sra|srta|don|doña|crio|cnel|tte|abg|abog)\.?\s+)+/i, "").trim();
+    .replace(/^(?:(?:lic|lcda|lcdo|dr|dra|ing|prof|sr|sra|srta|don|doña|crio|cnel|tte|abg|abog)\.?\s+)+/i, "").trim()
+    // «Favio Martínez soy» → «Favio Martínez».
+    .replace(/\s+(?:soy|es mi nombre)$/i, "").trim();
 }
 
 /** Para el registro MANUAL: alcanza con un nombre de letras (el vendedor ya revisó el chat). */
@@ -39,7 +41,8 @@ export function isAcceptableManualName(value: unknown): boolean {
 export function isValidCustomerName(value: unknown): boolean {
   if (typeof value !== "string") return false;
   const name = normalizeCustomerName(value)
-    .replace(/^(?:soy|me llamo|mi nombre es|nombre(?: y apellido)?:)\s*/i, "").trim();
+    .replace(/^(?:soy|me llamo|mi nombre es|nombre(?: y apellido)?:)\s*/i, "")
+    .replace(/\s+(?:soy|es mi nombre)$/i, "").trim();
   const n = normal(name);
   // WhatsApp profile labels and greetings ("Buen dia") are never legal names.
   if (/^(?:por\s+favor|porfa|porfis|muchas\s+gracias|sin\s+problema|todo\s+bien|buen(?:os|as)?\s+(?:dia|dias|tardes|noches)|buenas?\s*dia|saludos?|hola(?:\s+que\s+tal)?|sin\s+nombre|cliente|informacion|precio|buen\s+dia\s+soy\s+de)\b/i.test(n)) return false;
@@ -54,6 +57,8 @@ export function isValidCustomerName(value: unknown): boolean {
   // valen como nombre si van con apellido; solos o con «centro/barrio…» siguen siendo lugar.
   const cityFirstName = /^(?:maria\s+)?(?:asuncion|encarnacion)\s+\p{L}{3,}/u.test(n);
 
+  // Respuestas de tiempo o de intención («Cuando estoi mas trankilo», «Voy a pedir», «La próxima»).
+  if (/\b(?:cuando|voy|vamos|proxima|proximo|pedir|pido|despues|luego|ahora|tranquilo|trankilo|estoi|pensar|pienso|aviso)\b/.test(n)) return false;
   if (/\b(?:estoy|en|aeropuerto|trabajo|oficina|salgo|almorzar|almuerzo|horas?|hasta|desde|avisa|traigas|aca|aqui|cada|unidades?|cajas?)\b/.test(n)) return false;
   // Frases comunes («Es un poco alto», «O no», «Solo eso») no son nombres:
   // palabras funcionales u opiniones nunca forman parte de un nombre y apellido.

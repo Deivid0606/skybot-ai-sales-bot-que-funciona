@@ -55,7 +55,23 @@ export async function sendWhatsAppMedia(
     body: JSON.stringify(payload),
   });
   const json = (await res.json()) as { messages?: { id: string }[]; error?: { message: string } };
-  if (!res.ok) throw new Error(json.error?.message ?? "Error enviando media a WhatsApp");
+  if (!res.ok) {
+    // WhatsApp solo reproduce como audio/video algunos formatos y hasta 16 MB. Si no lo
+    // acepta (WAV, FLAC, audios largos…), se manda como archivo: el cliente igual lo escucha.
+    if (type === "audio" || type === "video") {
+      const fallback = await fetch(`${GRAPH}/${conn.phone_number_id}/messages`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${conn.access_token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messaging_product: "whatsapp", to, type: "document",
+          document: { link, filename: type === "audio" ? "audio" : "video", ...(caption ? { caption } : {}) },
+        }),
+      });
+      const retry = (await fallback.json()) as { messages?: { id: string }[]; error?: { message: string } };
+      if (fallback.ok) return retry.messages?.[0]?.id ?? null;
+    }
+    throw new Error(json.error?.message ?? "Error enviando media a WhatsApp");
+  }
   return json.messages?.[0]?.id ?? null;
 }
 
