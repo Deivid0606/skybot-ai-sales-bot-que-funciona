@@ -46,15 +46,26 @@ async function handleJob(job: Job, baseUrl: string) {
     await setDelivery(job.delivery_id,'failed','Conexión de WhatsApp ausente');return;
   }
   const {data:product,error:productError}=await supabaseAdmin.from('products')
-    .select('id,is_active,followup_enabled,followup_message,followup_second_message')
+    .select('id,name,is_active,followup_enabled,followup_message,followup_second_message,pain_point')
     .eq('workspace_id',job.workspace_id).eq('id',job.product_id).maybeSingle();
   if(productError || !product?.is_active || !product.followup_enabled) {
     await setDelivery(job.delivery_id,'skipped','Producto sin seguimiento activo'); return;
   }
   const defaultFirst='¡Hola! 😊 ¿Te gustaría continuar con tu pedido? Estoy para ayudarte.';
   const defaultSecond='¡Hola de nuevo! 😊 ¿Todavía te interesa el producto que consultaste? Podemos ayudarte a finalizar tu pedido.';
+  // Mensaje PERSONAL (relación con el cliente): nombre, producto y el problema que le resuelve.
+  // Se usa cuando el vendedor dejó el texto genérico de siempre o no cargó uno propio.
+  const {data:who}=await supabaseAdmin.from('conversations').select('contacts(name)').eq('id',job.conversation_id).maybeSingle();
+  const rawName=String((who as {contacts?:{name?:string|null}|null}|null)?.contacts?.name ?? '').replace(/[^\p{L} ]/gu,' ').trim().split(/\s+/)[0] ?? '';
+  const firstName=rawName.length>=2 && rawName.length<=15 ? rawName.charAt(0).toUpperCase()+rawName.slice(1).toLowerCase() : '';
+  const productName=String((product as {name?:string|null}).name ?? '').replace(/\*+/g,'').trim();
+  const pain=String((product as {pain_point?:string|null}).pain_point ?? '').trim().replace(/[.!]+$/,'');
+  const personalFirst=`¡Hola${firstName?` ${firstName}`:''}! 😊 Te escribo por ${productName||'el producto que consultaste'}.${pain?` Es ideal si ${pain.charAt(0).toLowerCase()+pain.slice(1)}.`:''} ¿Te quedó alguna duda? Contame y te ayudo, o si querés te lo preparo hoy mismo.`;
+  const personalSecond=`${firstName?`${firstName}, `:''}¿cómo estás? 🙌 No quería que te quedes sin ${productName||'tu pedido'}. Si algo te frenó (precio, entrega o cómo se usa), decime y lo vemos juntos 😊`;
   const custom=job.phase === 2 ? product.followup_second_message : product.followup_message;
-  const followup=String(custom|| (job.phase===2? defaultSecond:defaultFirst)).trim();
+  const isGeneric=(text:string|null|undefined)=>!text?.trim() || text.trim()===defaultFirst || text.trim()===defaultSecond ||
+    /^¡hola( de nuevo)?! 😊 ¿(te gustar[ií]a continuar con tu pedido|todav[ií]a te interesa el producto que consultaste)/i.test(text.trim());
+  const followup=String(isGeneric(custom) ? (job.phase===2 ? personalSecond : personalFirst) : custom).trim();
   if(!followup) {await setDelivery(job.delivery_id,'skipped','Mensaje vacío');return;}
   const catalogUrl = `${baseUrl.replace(/\/$/,'')}/c/${encodeURIComponent(job.workspace_id)}`;
   const body=`${followup.slice(0,1200)}\n\n🛍️ Mirá nuestro catálogo: ${catalogUrl}`;
@@ -88,6 +99,9 @@ async function handler({request}:{request:Request}) {
   const baseUrl=process.env.PUBLIC_SITE_URL?.trim();
   if(!baseUrl || !/^https:\/\//.test(baseUrl))
     return Response.json({error:'Configurá PUBLIC_SITE_URL=https://tu-dominio'}, {status:503});
+  // Horario de descanso (Paraguay): no escribir a los clientes entre las 22:00 y las 7:00.
+  const hourPy=Number(new Intl.DateTimeFormat('en-US',{timeZone:'America/Asuncion',hour:'numeric',hourCycle:'h23'}).format(new Date()));
+  if(hourPy>=22 || hourPy<7) return Response.json({claimed:0,processed:0,failed:0,quietHours:true});
   const {data,error}=await supabaseAdmin.rpc('bot_claim_followups',{p_limit:MAX_JOBS});
   if(error) return Response.json({error:error.message},{status:500});
   let processed=0,failed=0;
@@ -97,6 +111,6 @@ async function handler({request}:{request:Request}) {
   }
   return Response.json({claimed:(data??[]).length,processed,failed});
 }
-export const Route=createFileRoute('/api/internal/followups')({
+export const Route=createFileRoute('/api/followups')({
   server:{handlers:{GET:handler,POST:handler}}
 });
