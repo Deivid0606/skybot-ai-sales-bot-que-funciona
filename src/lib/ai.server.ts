@@ -30,6 +30,7 @@ export type AiContext = {
   businessName: string;
   /** Tono elegido en «Mi negocio» (amable, formal, emojis). */
   tone?: string | null;
+  deliveryProfile?: import("@/lib/business-profile").BusinessProfile | null;
   currency: string;
   products: {
     id: string;

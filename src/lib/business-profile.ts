@@ -85,8 +85,8 @@ const toMin = (hhmm: string | null | undefined) => {
   return m ? Number(m[1]) * 60 + Number(m[2]) : null;
 };
 
-/** Próximo día de entrega según días, corte y feriados (hora de Paraguay). */
-export function nextDeliveryText(profile: BusinessProfile, now = new Date()): string | null {
+/** Día de entrega de un pedido confirmado en `now` (fecha local de Paraguay a medianoche UTC). */
+function nextDeliverySlot(profile: BusinessProfile, now: Date): { date: Date; offset: number; rule: DeliveryDay } | null {
   const days = profile.delivery_days.filter(d => d.active);
   if (!days.length) return null;
   const t = asuncionNow(now);
@@ -102,10 +102,39 @@ export function nextDeliveryText(profile: BusinessProfile, now = new Date()): st
       const end = toMin(rule.to);
       if ((cutoff !== null && t.minutes > cutoff) || (end !== null && t.minutes >= end)) continue;
     }
-    const when = offset === 0 ? `HOY (${DAY_NAMES[weekday]})` : offset === 1 ? `MAÑANA (${DAY_NAMES[weekday]})` : `el ${DAY_NAMES[weekday].toLowerCase()} ${date.getUTCDate()}/${date.getUTCMonth() + 1}`;
-    return `${when}, entre las ${rule.from} y las ${rule.to}`;
+    return { date, offset, rule };
   }
   return null;
+}
+
+/** Próximo día de entrega según días, corte y feriados (hora de Paraguay). */
+export function nextDeliveryText(profile: BusinessProfile, now = new Date()): string | null {
+  const slot = nextDeliverySlot(profile, now);
+  if (!slot) return null;
+  const { date, offset, rule } = slot;
+  const weekday = date.getUTCDay();
+  const when = offset === 0 ? `HOY (${DAY_NAMES[weekday]})` : offset === 1 ? `MAÑANA (${DAY_NAMES[weekday]})` : `el ${DAY_NAMES[weekday].toLowerCase()} ${date.getUTCDate()}/${date.getUTCMonth() + 1}`;
+  return `${when}, entre las ${rule.from} y las ${rule.to}`;
+}
+
+/** ¿Un pedido confirmado en `confirmedAt` se entrega HOY (fecha de Paraguay de `now`)? */
+export function deliveryIsToday(profile: BusinessProfile, confirmedAt: Date, now = new Date()): boolean {
+  const slot = nextDeliverySlot(profile, confirmedAt);
+  if (!slot) return false;
+  const t = asuncionNow(now);
+  return slot.date.getTime() === Date.UTC(t.y, t.m - 1, t.d);
+}
+
+/** ¿Un pedido confirmado en este momento sale HOY? (días de entrega, hora de corte y feriados). */
+export function sameDayDeliveryOpen(profile: BusinessProfile, at = new Date()): boolean {
+  return deliveryIsToday(profile, at, at);
+}
+
+/** El texto promete entrega/envío para hoy («sale hoy», «te llega hoy», «se entregará hoy»). */
+export function promisesSameDayDelivery(text: string): boolean {
+  const verbs = String.raw`(?:entreg\w*|env[ií]\w*|lleg\w*|sale|salir\w*|saldr\w*|despach\w*|programad\w*|en camino|recib\w*|te lo (?:llevamos|traemos)|lo (?:llevamos|traemos))`;
+  const gap = String.raw`[^.?!\n]{0,45}`;
+  return new RegExp(String.raw`${verbs}${gap}\bhoy\b|\bhoy\b${gap}${verbs}`, "i").test(text);
 }
 
 const TONE_TEXT: Record<Tone, string> = {
@@ -131,10 +160,13 @@ export function businessProfileInstruction(profile: BusinessProfile, saved: bool
   if (saved) {
     const days = profile.delivery_days.filter(d => d.active).sort((a, b) => ((a.day + 6) % 7) - ((b.day + 6) % 7));
     const next = nextDeliveryText(profile, now);
+    const todayOpen = sameDayDeliveryOpen(profile, now);
     lines.push(
       "HORARIO DE ENTREGAS (pestaña «Mi negocio»):",
       days.length ? `- Días de entrega: ${days.map(d => `${DAY_NAMES[d.day]} de ${d.from} a ${d.to}`).join("; ")}.` : "- No hay días de entrega cargados.",
-      profile.cutoff_time ? `- Hora de corte: ${profile.cutoff_time}. Lo confirmado antes del corte sale ese día de entrega; después, el siguiente.` : "",
+      todayOpen
+        ? (profile.cutoff_time ? `- Hora de corte: ${profile.cutoff_time}. Todavía estamos ANTES del corte: lo que se confirme ahora sale HOY.` : "")
+        : `- HOY YA NO HAY ENTREGAS${profile.cutoff_time ? ` (la hora de corte de hoy, ${profile.cutoff_time}, ya pasó o hoy no se entrega)` : ""}. PROHIBIDO decir que sale, llega, se envía o se entrega hoy, y PROHIBIDO decir «si confirmás antes de las ${profile.cutoff_time ?? "…"}». Si el cliente lo quiere para hoy, decile con amabilidad que hoy ya no llegamos y ofrecé la próxima entrega.`,
       profile.no_holiday_delivery ? "- Feriados: no hay entregas." : "",
       next ? `- PRÓXIMA ENTREGA para un pedido confirmado AHORA: ${next}. Usá exactamente esto si preguntan cuándo llega; no inventes otras fechas.` : "",
       profile.bot_always_on

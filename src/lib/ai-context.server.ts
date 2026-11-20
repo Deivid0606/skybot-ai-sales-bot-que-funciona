@@ -165,6 +165,8 @@ export async function buildWorkspaceAiContext(
     customerPhone,
     businessName: businessProfile.store_name ?? settingsResult.data?.business_name ?? "",
     tone: profileRow ? businessProfile.tone : null,
+    // Horario de entregas guardado (para el control de «sale hoy» en el webhook).
+    deliveryProfile: profileRow ? businessProfile : null,
     currency: settingsResult.data?.currency ?? "PYG",
     products, training, history,
     activeProductId: activeProductId ?? (saleResult.data?.state as SaleState | null)?.productId ?? null,
