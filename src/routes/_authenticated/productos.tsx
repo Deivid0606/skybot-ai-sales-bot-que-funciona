@@ -44,6 +44,12 @@ import {
 import { ProductPreview } from "@/components/product-preview";
 import { listMyProductShares, setProductSharing, importProductByCode, retryAfterProductSkuSave } from "@/lib/product-share.functions";
 
+/** Textos de seguimiento genéricos de siempre: se muestran vacíos (la IA escribe el mensaje). */
+function isGenericFollowup(text: string | null | undefined): boolean {
+  const t = (text ?? "").trim();
+  return !t || /^¡hola( de nuevo)?! 😊 ¿(te gustar[ií]a continuar con tu pedido|todav[ií]a te interesa el producto que consultaste)/i.test(t);
+}
+
 export const Route = createFileRoute("/_authenticated/productos")({
   head: () => ({
     meta: [
@@ -105,8 +111,9 @@ function createEmptyForm(): ProductForm {
     pain_point: "",
     discovery_question: "",
     ai_instructions: "",
-    followup_message: "¡Hola! 😊 ¿Te gustaría continuar con tu pedido? Estoy para ayudarte.",
-    followup_second_message: "¡Hola de nuevo! 😊 ¿Todavía te interesa el producto que consultaste? Podemos ayudarte a finalizar el pedido.",
+    // Vacío = la IA escribe un seguimiento personalizado para cada cliente.
+    followup_message: "",
+    followup_second_message: "",
     followup_second_minutes: "1380",
     followup_minutes: "120",
     followup_enabled: false,
@@ -501,8 +508,8 @@ function ProductsPage() {
       pain_point: p.pain_point ?? "",
       discovery_question: p.discovery_question ?? "",
       ai_instructions: p.ai_instructions ?? "",
-      followup_message: p.followup_message ?? "",
-      followup_second_message: p.followup_second_message ?? "",
+      followup_message: isGenericFollowup(p.followup_message) ? "" : p.followup_message ?? "",
+      followup_second_message: isGenericFollowup(p.followup_second_message) ? "" : p.followup_second_message ?? "",
       followup_second_minutes: String(p.followup_second_minutes ?? 1380),
       followup_minutes: String(p.followup_minutes ?? 120),
       followup_enabled: p.followup_enabled,
@@ -1012,9 +1019,22 @@ function ProductsPage() {
                 onChange={(e) => setForm({ ...form, ai_instructions: e.target.value })}
               />
             </div>
+            <div className="space-y-1.5 rounded-lg border border-primary/30 bg-primary/5 p-3 text-sm sm:col-span-2">
+              <p className="font-medium">✨ Seguimiento inteligente</p>
+              <p className="text-xs text-muted-foreground">
+                La IA escribe un mensaje <strong>distinto para cada cliente</strong>: lee su chat, usa su nombre, el producto y
+                «¿Qué problema le resuelve?». Ejemplo: «¡Hola Ana! 😊 ¿Pudiste ver lo del cepillo? Me contaste que las juntas
+                del baño te cansan… ¿Querés que te cuente cómo se usa?». Nunca inventa precios, descuentos ni plazos de entrega.
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Dejá los campos de abajo <strong>vacíos</strong> para que la IA escriba todo. Si escribís una idea (por ejemplo
+                una promo real), la IA la usa como base y la adapta a cada cliente.
+              </p>
+            </div>
             <div className="space-y-1.5 sm:col-span-2">
-              <Label>1.º seguimiento — mensaje (por defecto: 2 horas)</Label>
+              <Label>1.º seguimiento — idea base (opcional, se envía a las 2 horas)</Label>
               <Textarea rows={2} value={form.followup_message}
+                placeholder="Vacío = la IA lo escribe para cada cliente. Ej.: «Mencioná que el envío es gratis en Asunción»"
                 onChange={(e) => setForm({ ...form, followup_message: e.target.value })} />
               <p className="text-xs text-muted-foreground">El enlace del catálogo se agregará automáticamente al final del mensaje.</p>
             </div>
@@ -1024,8 +1044,9 @@ function ProductsPage() {
                 onChange={(e) => setForm({ ...form, followup_minutes: e.target.value })} />
             </div>
             <div className="space-y-1.5 sm:col-span-2">
-              <Label>2.º seguimiento — último mensaje (por defecto: 23 horas)</Label>
+              <Label>2.º seguimiento — idea base del último mensaje (opcional, a las 23 horas)</Label>
               <Textarea rows={2} value={form.followup_second_message}
+                placeholder="Vacío = la IA pregunta con naturalidad qué lo frenó (precio, entrega, dudas)"
                 onChange={(e) => setForm({ ...form, followup_second_message: e.target.value })} />
             </div>
             <div className="space-y-1.5">
