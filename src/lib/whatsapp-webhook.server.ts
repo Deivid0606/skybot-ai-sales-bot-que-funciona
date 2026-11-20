@@ -3974,15 +3974,15 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       // falla o la respuesta no es apta para audio, sale en texto como siempre.
       await waitConfiguredReplyDelay();
       const { tryVoiceReply } = await import("@/lib/voice-reply.server");
-      const voiceWamid = await tryVoiceReply({
+      const voice = await tryVoiceReply({
         workspaceId, conn, phone, text: outgoingText, customerSentAudio: media?.type === "audio",
       });
-      const outgoingWamid = voiceWamid ?? await sendWhatsAppText(conn, phone, outgoingText);
+      const outgoingWamid = voice ? voice.wamid : await sendWhatsAppText(conn, phone, outgoingText);
       await supabaseAdmin.from("messages").insert({
         workspace_id: workspaceId, user_id: ownerId, conversation_id: conversation.id,
         ad_id: attributedAdId, direction: "outbound", sender: "ai",
         response_origin: "ai",
-        body: voiceWamid ? `🎤 (audio) ${outgoingText}` : outgoingText, wamid: outgoingWamid, status: "sent",
+        body: voice ? `🎤 (audio) ${voice.spoken}` : outgoingText, wamid: outgoingWamid, status: "sent",
       } as any);
       await supabaseAdmin.from("conversations").update({
         last_message: outgoingText, last_message_at: new Date().toISOString(),
