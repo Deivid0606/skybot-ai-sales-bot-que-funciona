@@ -57,6 +57,12 @@ const HUMAN_SALES_STYLE = [
   "- Si está molesto o reclama: primero empatía y una solución concreta; la venta después.",
   "- Usá 1 o 2 emojis por mensaje (😊 📦 🚚 💰 ✅), salvo que el tono de «Mi negocio» sea formal.",
   "- Cuando confirmás una ciudad con pago al recibir, decí en el mismo mensaje que paga al recibir y el total. Si el producto tiene descuento por pago anticipado, ofrecelo UNA vez en ese mismo mensaje.",
+  "VENDÉ COMO CONSULTORA, NO COMO CATÁLOGO:",
+  "- Interesate por la persona: preguntale para qué lo necesita o qué problema quiere resolver (usá la «pregunta_para_conocer_al_cliente» del producto). Una sola pregunta, natural.",
+  "- Cuando te cuente su situación, conectá el producto con SU problema («Justamente para eso es…») usando el «problema_que_resuelve» del producto. Hablale del resultado que va a tener, no de características.",
+  "- OBJECIÓN «está caro / es mucho»: no bajes el precio ni te disculpes. Primero validá («Te entiendo»), después mostrale el VALOR: lo que le resuelve, lo que ahorra (tiempo, esfuerzo, plata a la larga) y que paga al recibir (si corresponde, sin riesgo). Si hay promo real (2 unidades) o descuento por pago anticipado del producto, ofrecelo. Terminá con una pregunta que avance.",
+  "- OBJECIÓN «dejame pensarlo / después te aviso / lo consulto»: respetalo, pero averiguá QUÉ le falta para decidir con UNA pregunta amable («¿Te quedó alguna duda del producto, del precio o de la entrega?»). Respondé esa duda concreta y ofrecé reservarlo sin compromiso. No presiones ni inventes urgencia.",
+  "- OBJECIÓN «no sé si funciona / es original»: contá cómo se usa y qué resultado da (solo del catálogo) y recordá que lo ve antes de pagar si es pago al recibir.",
   "- Cerrá con preguntas que avanzan («¿Te lo preparo?», «¿Lo querés para hoy o para mañana?»), sin presionar ni insistir si dijo que no.",
 ].join("\n");
 
@@ -72,7 +78,7 @@ export async function buildWorkspaceAiContext(
     supabase.from("ai_settings").select("system_instruction, gemini_api_key, gemini_api_key_2, gemini_api_key_3, openai_api_key, provider_order, provider_models, model, autodetect_model").eq("workspace_id", workspaceId).maybeSingle(),
     supabase.from("user_settings").select("business_name, currency").eq("workspace_id", workspaceId).maybeSingle(),
     supabase.from("products").select(`
-      id, name, sku, price, promo_price, stock, sales_copy, description, delivery_info, ai_instructions, advance_discount_percent,
+      id, name, sku, price, promo_price, stock, sales_copy, description, delivery_info, ai_instructions, advance_discount_percent, pain_point, discovery_question,
       product_keywords(keyword), product_prices(id, label, quantity, price, sort_order, delivery_fee)
     `).eq("workspace_id", workspaceId).eq("is_active", true),
     supabase.from("training_entries").select("title, content, category, priority, scope, product_id, keywords, created_at").eq("workspace_id", workspaceId).eq("is_active", true).order("priority", { ascending: false }).order("created_at", { ascending: false }),
@@ -133,6 +139,8 @@ export async function buildWorkspaceAiContext(
       keywords: (product.product_keywords ?? []).map(k => String(k.keyword ?? "").trim().toLowerCase()).filter(Boolean),
       product_prices: productPrices,
       advance_discount_percent: Number((product as { advance_discount_percent?: unknown }).advance_discount_percent) || null,
+      pain_point: String((product as { pain_point?: unknown }).pain_point ?? "").trim() || null,
+      discovery_question: String((product as { discovery_question?: unknown }).discovery_question ?? "").trim() || null,
     };
   });
   return {

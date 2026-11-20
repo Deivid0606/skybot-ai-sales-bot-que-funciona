@@ -54,6 +54,10 @@ export type AiContext = {
     }[];
     /** % de descuento si en una ciudad con pago al recibir el cliente paga antes por transferencia. */
     advance_discount_percent?: number | null;
+    /** Problema del cliente que resuelve el producto (venta consultiva). */
+    pain_point?: string | null;
+    /** Pregunta para conocer al cliente y su necesidad. */
+    discovery_question?: string | null;
   }[];
   training: {
     title: string;
@@ -237,7 +241,9 @@ function buildSystemPrompt(ctx: AiContext): string {
   variantes/precios de catálogo:
 ${variants || `    - precio_unitario_heredado:${product.promo_price ?? product.price} ${ctx.currency}`}
   copy: ${ctx.promptMode === "revision" ? String(product.sales_copy ?? product.description ?? "-").slice(0, 400) : product.sales_copy ?? product.description ?? "-"}
-  entrega: ${product.delivery_info ?? "-"}${discount > 0 ? `
+  entrega: ${product.delivery_info ?? "-"}
+  problema_que_resuelve: ${product.pain_point?.trim() || "-"}
+  pregunta_para_conocer_al_cliente: ${product.discovery_question?.trim() || "-"}${discount > 0 ? `
   descuento_pago_anticipado: ${discount}% SOLO en ciudades con pago al recibir, si el cliente paga ANTES por transferencia (ofrecelo UNA vez junto con el total; nunca en encomienda)` : ""}
   instrucciones: ${product.ai_instructions ?? "-"}`;
     })

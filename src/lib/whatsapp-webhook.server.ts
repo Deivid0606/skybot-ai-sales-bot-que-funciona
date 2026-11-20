@@ -2533,6 +2533,24 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       : (deliveryPolicyForCity(verifiedSaleState.city, verifiedSaleState.department, ctx.training)?.paymentMethod === "contraentrega" && codTransferAllowed(ctx.training)
         ? "\nSi el cliente pregunta si puede pagar por transferencia: SÍ puede (envío igual a domicilio). Por defecto paga al recibir; no ofrezcas transferencia si no la pide."
         : "");
+    // OBJECIONES (venta consultiva): «está caro», «dejame pensarlo». En ese turno la IA recibe la
+    // instrucción concreta con el VALOR real del producto (problema que resuelve, promo, descuento).
+    const objectionText = normalizeIntentText(body);
+    const priceObjection = /\b(?:caro|carisimo|muy caro|es mucho|mucha plata|elevado|no me alcanza|no tengo tanto|mas barato|algo mas economico|rebaja|me haces precio|ultimo precio)\b/.test(objectionText);
+    const thinkObjection = /\b(?:lo pienso|pensarlo|lo voy a pensar|voy a pensar|despues te aviso|luego te aviso|te aviso|te confirmo|lo consulto|consultar con|consulto con|mi (?:esposo|esposa|marido|senora|pareja)|cuando cobre|a fin de mes|mas adelante|otro dia|por ahora no|ahora no)\b/.test(objectionText);
+    const promoOption = (chargeProduct?.product_prices ?? []).filter(o => Number(o.quantity) > 1).sort((a, b) => Number(a.price) / Number(a.quantity) - Number(b.price) / Number(b.quantity))[0];
+    const valueFacts = [
+      chargeProduct?.pain_point ? `Problema que le resuelve: ${chargeProduct.pain_point}.` : "",
+      promoOption ? `Promo real: ${promoOption.label} a ${formatGs(Number(promoOption.price))}.` : "",
+      productDiscountPct > 0 && codCity ? `Descuento real: ${productDiscountPct}% si paga antes por transferencia.` : "",
+      codCity ? "Paga al recibir: ve el producto antes de pagar, sin riesgo." : "",
+    ].filter(Boolean).join(" ");
+    const objectionInstruction = priceObjection
+      ? `\nEL CLIENTE DICE QUE ESTÁ CARO. No bajes el precio ni te disculpes. Validalo en una frase («Te entiendo») y mostrale el VALOR para SU situación: el resultado que va a tener y lo que le ahorra. ${valueFacts} Terminá con UNA pregunta que avance (ej.: «¿Te lo preparo para que lo pruebes?»). Breve, 2 a 4 líneas.`
+      : thinkObjection
+        ? `\nEL CLIENTE QUIERE PENSARLO O AVISA DESPUÉS. Respetalo, sin presionar. Preguntale con amabilidad qué le falta para decidir: «¿Te quedó alguna duda del producto, del precio o de la entrega?». Si ya dijo el motivo (plata, consultar con alguien, fecha), respondé ESE motivo. ${valueFacts} Ofrecé reservarlo sin compromiso. Breve.`
+        : "";
+    if (objectionInstruction) console.info("[BOT_SKY_OBJECTION]", JSON.stringify({conversationId:conversation.id, type: priceObjection ? "precio" : "pensarlo"}));
     const shippingFeeInstruction = cityShippingFee > 0
       ? `\nCOSTO DE ENVÍO a ${verifiedSaleState.city}: ${formatGs(cityShippingFee)} (${cycleCharges.cityFee > 0 ? "pestaña Zonas de cobertura" : "delivery de este producto"}). Cuando des precio o total, decí SIEMPRE el costo de envío y el TOTAL CON ENVÍO (precio del producto + ${formatGs(cityShippingFee)}). Formato: «[precio del catálogo] + delivery ${formatGs(cityShippingFee)} = total [suma exacta]», usando SOLO precios reales del catálogo.`
       : "";
@@ -2541,7 +2559,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       : `\n${sellerAllowsNationwideAdvance(ctx.training) ? "ENCOMIENDA NACIONAL AUTORIZADA: fuera de contraentrega se puede ofrecer pago anticipado sujeto a verificar logística; NO negar todo envío por ausencia en la lista. " : ""}COBERTURA PENDIENTE: la CIUDAD DE ENTREGA es el primer dato logístico obligatorio; NO solicites nombre, dirección, GPS, método de pago ni transferencia antes de verificarla. La ciudad debe estar en la cobertura activa de este vendedor o resolverse según su política de encomienda. No deduzcas municipio desde GPS ni barrio. Si el cliente hace otra consulta, respondela primero sin repetir automáticamente la pregunta de ciudad y conservá la venta.`;
     const aiAnswerContext = {
       ...answerContext,
-      systemInstruction: answerContext.systemInstruction + officialPolicyInstruction + shippingFeeInstruction + discountInstruction + noShippingInstruction(verifiedSaleState) + codTransferInstruction +
+      systemInstruction: answerContext.systemInstruction + officialPolicyInstruction + shippingFeeInstruction + discountInstruction + objectionInstruction + noShippingInstruction(verifiedSaleState) + codTransferInstruction +
         // Sin producto identificado (anuncio no vinculado y el cliente no lo nombró) la venta no se puede registrar.
         (!verifiedSaleState.productId && (verifiedSaleState.cityVerified || verifiedSaleState.customerName || verifiedSaleState.quantity)
           ? "\nPRODUCTO SIN IDENTIFICAR: todavía no sabemos QUÉ producto quiere el cliente (el anuncio no indica cuál). Antes de cualquier otro dato, preguntale con amabilidad qué producto le interesa (por su nombre o una foto del anuncio). Sin el producto el pedido no se registra." : "") +
@@ -5009,7 +5027,7 @@ async function sendCatalogByKeyword(args: {
   const { data: keywords, error: keywordsError } = await supabaseAdmin
     .from("product_keywords")
     .select(
-      "keyword, product_id, products!inner(id, name, price, promo_price, sales_copy, description, is_active)",
+      "keyword, product_id, products!inner(id, name, price, promo_price, sales_copy, description, is_active, discovery_question)",
     )
     .eq("workspace_id", args.workspaceId);
 
@@ -5101,7 +5119,7 @@ ${match.products.description ?? ""}`.trim();
   // Los precios se envían aparte, 5 segundos después del copy + imagen.
   const copy = baseCopy;
   const pricesMessage = options.length
-    ? `💰 *Precios disponibles:*\n${options.map((o) => `• *${o.label}* — Gs. ${Math.round(Number(o.price)).toLocaleString("es-PY")}${Number((o as { delivery_fee?: number | null }).delivery_fee) > 0 ? ` + delivery Gs. ${Math.round(Number((o as { delivery_fee?: number | null }).delivery_fee)).toLocaleString("es-PY")}` : options.some(x => Number((x as { delivery_fee?: number | null }).delivery_fee) > 0) ? " (envío gratis)" : ""}`).join("\n")}${args.emergency ? "" : "\n\n¿Cuál te interesa? 😊"}`
+    ? `💰 *Precios disponibles:*\n${options.map((o) => `• *${o.label}* — Gs. ${Math.round(Number(o.price)).toLocaleString("es-PY")}${Number((o as { delivery_fee?: number | null }).delivery_fee) > 0 ? ` + delivery Gs. ${Math.round(Number((o as { delivery_fee?: number | null }).delivery_fee)).toLocaleString("es-PY")}` : options.some(x => Number((x as { delivery_fee?: number | null }).delivery_fee) > 0) ? " (envío gratis)" : ""}`).join("\n")}${args.emergency ? "" : `\n\n${String((match.products as { discovery_question?: string | null }).discovery_question ?? "").trim() || "¿Cuál te interesa? 😊"}`}`
     : null;
 
   const { sendWhatsAppMedia: sendWhatsAppMediaNow } = await import("@/lib/whatsapp.server");

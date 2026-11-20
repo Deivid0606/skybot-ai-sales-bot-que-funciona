@@ -77,6 +77,10 @@ type ProductForm = {
   delivery_info: string;
   /** % de descuento si en una ciudad con pago al recibir paga antes por transferencia. */
   advance_discount_percent: string;
+  /** Problema del cliente que resuelve (venta consultiva). */
+  pain_point: string;
+  /** Pregunta para conocer al cliente; el bot la hace después del precio. */
+  discovery_question: string;
   ai_instructions: string;
   followup_message: string;
   followup_second_message: string;
@@ -98,6 +102,8 @@ function createEmptyForm(): ProductForm {
     is_active: true,
     delivery_info: "",
     advance_discount_percent: "",
+    pain_point: "",
+    discovery_question: "",
     ai_instructions: "",
     followup_message: "¡Hola! 😊 ¿Te gustaría continuar con tu pedido? Estoy para ayudarte.",
     followup_second_message: "¡Hola de nuevo! 😊 ¿Todavía te interesa el producto que consultaste? Podemos ayudarte a finalizar el pedido.",
@@ -258,6 +264,8 @@ function ProductsPage() {
         stock: Number(values.stock) || 0,
         is_active: values.is_active,
         delivery_info: values.delivery_info.trim() || null,
+        pain_point: values.pain_point.trim() || null,
+        discovery_question: values.discovery_question.trim() || null,
         advance_discount_percent: Number(values.advance_discount_percent) > 0
           ? Math.min(50, Number(values.advance_discount_percent)) : null,
         ai_instructions: values.ai_instructions.trim() || null,
@@ -454,6 +462,8 @@ function ProductsPage() {
       delivery_fee?: number | null;
     }[];
     advance_discount_percent?: number | null;
+    pain_point?: string | null;
+    discovery_question?: string | null;
     stock: number;
     is_active: boolean;
     delivery_info: string | null;
@@ -488,6 +498,8 @@ function ProductsPage() {
       is_active: p.is_active,
       delivery_info: p.delivery_info ?? "",
       advance_discount_percent: Number(p.advance_discount_percent) > 0 ? String(p.advance_discount_percent) : "",
+      pain_point: p.pain_point ?? "",
+      discovery_question: p.discovery_question ?? "",
       ai_instructions: p.ai_instructions ?? "",
       followup_message: p.followup_message ?? "",
       followup_second_message: p.followup_second_message ?? "",
@@ -934,6 +946,30 @@ function ProductsPage() {
                 value={form.sales_copy}
                 onChange={(e) => setForm({ ...form, sales_copy: e.target.value })}
               />
+            </div>
+            <div className="space-y-3 sm:col-span-2 rounded-md border border-sky-500/30 bg-sky-500/5 p-3">
+              <p className="text-sm font-semibold">🤝 Venta consultiva (para cerrar más ventas)</p>
+              <div className="space-y-1.5">
+                <Label>¿Qué problema le resuelve al cliente?</Label>
+                <Textarea
+                  rows={2}
+                  placeholder="Ej.: no poder limpiar debajo de la heladera porque pesa mucho y se junta suciedad"
+                  value={form.pain_point}
+                  onChange={(e) => setForm({ ...form, pain_point: e.target.value })}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Pregunta para conocer al cliente</Label>
+                <Input
+                  placeholder="Ej.: ¿Lo querés para la heladera o para el lavarropas? 😊"
+                  value={form.discovery_question}
+                  onChange={(e) => setForm({ ...form, discovery_question: e.target.value })}
+                />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                El bot hace esta pregunta después del precio (en vez de «¿Cuál te interesa?»), conecta el producto con el problema del
+                cliente, lo usa para responder «está caro» o «dejame pensarlo», y en los mensajes de seguimiento.
+              </p>
             </div>
             <div className="space-y-1.5 sm:col-span-2">
               <Label>Palabras clave (separadas por coma)</Label>
