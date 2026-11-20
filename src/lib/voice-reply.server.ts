@@ -8,10 +8,17 @@ import { wellFormedJson } from "@/lib/ai.server";
  */
 const GRAPH = "https://graph.facebook.com/v21.0";
 export const VOICE_OPTIONS = ["coral", "nova", "shimmer", "sage", "alloy", "ash", "ballad", "echo", "onyx", "verse"] as const;
-export const DEFAULT_VOICE_INSTRUCTIONS =
-  "Hablá en español de Paraguay, como una vendedora joven, cálida y cercana de Asunción. " +
-  "Usá el voseo con naturalidad (vos, contame, querés), ritmo tranquilo y entonación amable, " +
-  "como en un audio de WhatsApp a un cliente. Nada robótico ni de locutor.";
+const MALE_VOICES = new Set(["ash", "ballad", "echo", "onyx", "verse"]);
+/** Pronunciación paraguaya (no argentina, mexicana ni española), con el género de la voz elegida. */
+export function voiceInstructionsFor(voice: string): string {
+  const who = MALE_VOICES.has(voice) ? "un vendedor paraguayo de Asunción" : "una vendedora paraguaya de Asunción";
+  return `Hablás como ${who}, en una nota de voz de WhatsApp a un cliente. ` +
+    "ACENTO PARAGUAYO: la «ll» y la «y» se pronuncian como una «y» suave (NUNCA como la «sh» de Argentina), " +
+    "la «r» suave, las «s» completas, entonación cálida, tranquila y un poco cantada, típica de Paraguay. " +
+    "NO uses acento argentino, porteño, mexicano ni de España. Voseo natural (vos, querés, contame). " +
+    "Ritmo pausado y amable, como alguien de confianza; nada de locutor ni de robot.";
+}
+export const DEFAULT_VOICE_INSTRUCTIONS = voiceInstructionsFor("coral");
 const MAX_SPOKEN_CHARS = 600;
 const TTS_TIMEOUT_MS = 15_000;
 
@@ -31,7 +38,8 @@ export async function loadVoiceSettings(workspaceId: string): Promise<VoiceSetti
   return {
     enabled: true,
     voice: VOICE_OPTIONS.includes(String(row.voice_name) as (typeof VOICE_OPTIONS)[number]) ? String(row.voice_name) : "coral",
-    instructions: String(row.voice_instructions ?? "").trim() || DEFAULT_VOICE_INSTRUCTIONS,
+    instructions: String(row.voice_instructions ?? "").trim() ||
+      voiceInstructionsFor(VOICE_OPTIONS.includes(String(row.voice_name) as (typeof VOICE_OPTIONS)[number]) ? String(row.voice_name) : "coral"),
     openaiKey,
   };
 }
@@ -66,8 +74,10 @@ export async function spokenSummary(openaiKey: string, text: string): Promise<st
         max_completion_tokens: 250,
         messages: [{
           role: "user",
-          content: "Convertí este mensaje de WhatsApp de una tienda en lo que diría una vendedora paraguaya en una NOTA DE VOZ corta: " +
+          content: "Convertí este mensaje de WhatsApp de una tienda en lo que diría una persona que vende en Paraguay en una NOTA DE VOZ corta: " +
             "3 o 4 frases naturales (menos de 450 caracteres), con voseo, sin emojis, sin listas y sin números ni precios. " +
+            "Español de Paraguay, cálido y respetuoso: podés empezar con «Mirá, te cuento…» o «Sí, claro…». " +
+            "PROHIBIDO: «che», «nde», palabras en guaraní, «viste», «re» como intensificador, «posta», «laburo» y cualquier modismo argentino. " +
             "Contá lo más importante para el cliente y TERMINÁ con la misma pregunta final del mensaje. No inventes nada que no esté en el mensaje. " +
             "Respondé SOLO con el texto a decir.\n\nMensaje:\n" + text.slice(0, 2500),
         }],
@@ -87,6 +97,9 @@ export async function spokenSummary(openaiKey: string, text: string): Promise<st
 /** Texto limpio para leer en voz alta: sin emojis, asteriscos ni saltos raros. */
 export function textForSpeech(text: string): string {
   return text
+    // «Che» o «nde» suenan forzados en la voz: se quitan.
+    .replace(/,\s*(?:che|nde)\b/gi, "")
+    .replace(/(^|[¡¿.!?]\s*)(?:che|nde)\b[,!]?\s*/gi, "$1")
     .replace(/[\p{Extended_Pictographic}\u{1F3FB}-\u{1F3FF}\u{FE0F}‍]/gu, "")
     .replace(/[*_~`#>]/g, "")
     .replace(/\s*\n+\s*/g, ". ")

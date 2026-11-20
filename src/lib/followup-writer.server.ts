@@ -130,6 +130,7 @@ function buildPrompt(i: FollowupWriterInput, chat: string): string {
     "- Máximo 3 frases cortas (menos de 300 caracteres), 1 o 2 emojis.",
     "- Nada de números, precios, descuentos, promociones, regalos, stock ni plazos de entrega, salvo que estén en el mensaje base del vendedor.",
     "- No digas que es un seguimiento ni que no respondió. No presiones. No uses links.",
+    "- Español de Paraguay: nada de «che», «nde», palabras en guaraní ni modismos argentinos («re», «posta», «viste»).",
     "- Si el cliente ya preguntó algo concreto en el chat, mencionalo con naturalidad.",
     "- Terminá SIEMPRE con una pregunta.",
     "Respondé SOLO con el texto del mensaje.",
