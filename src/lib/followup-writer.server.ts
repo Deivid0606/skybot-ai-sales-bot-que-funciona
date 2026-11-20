@@ -37,6 +37,19 @@ export function friendlyProductName(name: string): string {
   return main;
 }
 
+/** Nombre de perfil de WhatsApp usable para saludar («Gracias», «doradiazalfonso» o «Ventas» no lo son). */
+const NOT_A_NAME = new Set([
+  "gracias", "hola", "buenas", "buen", "bendiciones", "bendicion", "dios", "amor", "cliente", "usuario", "whatsapp",
+  "mama", "mami", "papa", "papi", "senora", "senor", "sra", "sr", "tia", "tio", "info", "ventas", "venta", "tienda",
+  "store", "shop", "negocio", "familia", "casa", "ok", "yo", "mi", "la", "el", "don", "dona", "lic", "ing", "prof",
+]);
+export function usableFirstName(name: string): string {
+  const n = name.trim();
+  const plain = n.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  if (n.length < 3 || n.length > 12 || NOT_A_NAME.has(plain) || !/[aeiou]/.test(plain) || /(.)\1\1/.test(plain)) return "";
+  return n;
+}
+
 const lower = (s: string) => (s ? s.charAt(0).toLowerCase() + s.slice(1) : s);
 
 /** Plantillas de respaldo: varias por fase, elegidas por conversación para no repetir siempre la misma. */
@@ -147,33 +160,68 @@ async function callGemini(key: string, model: string, prompt: string): Promise<s
   }
 }
 
+async function callOpenAI(key: string, model: string, prompt: string): Promise<string> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
+  try {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      signal: controller.signal,
+      body: wellFormedJson({
+        model,
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.9,
+        max_completion_tokens: 300,
+      }),
+    });
+    if (!response.ok) throw new Error(`openai HTTP ${response.status}`);
+    const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    return String(data.choices?.[0]?.message?.content ?? "").trim();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 /** Devuelve el texto del seguimiento y de dónde salió (ia | plantilla). */
-export async function writeFollowup(i: FollowupWriterInput): Promise<{ text: string; source: "ia" | "plantilla" }> {
+export async function writeFollowup(input: FollowupWriterInput): Promise<{ text: string; source: "ia" | "plantilla" }> {
+  const i = { ...input, firstName: usableFirstName(input.firstName) };
   try {
     const [{ data: settingsRaw }, chat] = await Promise.all([
       supabaseAdmin
         .from("ai_settings")
-        .select("gemini_api_key,gemini_api_key_2,gemini_api_key_3,model")
+        .select("gemini_api_key,gemini_api_key_2,gemini_api_key_3,openai_api_key,provider_models,model")
         .eq("workspace_id", i.workspaceId)
         .maybeSingle(),
       recentChat(i.workspaceId, i.conversationId),
     ]);
     const settings = settingsRaw as unknown as {
       gemini_api_key?: string | null; gemini_api_key_2?: string | null; gemini_api_key_3?: string | null; model?: string | null;
+      openai_api_key?: string | null; provider_models?: { openai?: string | null } | null;
     } | null;
     const keys = [settings?.gemini_api_key, settings?.gemini_api_key_2, settings?.gemini_api_key_3]
       .map((k) => String(k ?? "").trim())
       .filter((k, idx, all) => k && all.indexOf(k) === idx && !isKeyTemporarilyUnavailable(k));
     const model = getGeminiCandidates(settings?.model)[0];
     const prompt = buildPrompt(i, chat);
-    for (const key of keys.slice(0, 2)) {
+    // Gemini primero; OpenAI de respaldo (la mayoría de las tiendas solo tiene clave de OpenAI).
+    const openaiKey = String(settings?.openai_api_key ?? "").trim();
+    const openaiModel = /^(?:gpt-4o-mini|gpt-4o|gpt-4\.1-mini|gpt-4\.1-nano|gpt-4\.1)$/.test(String(settings?.provider_models?.openai ?? ""))
+      ? String(settings?.provider_models?.openai) : "gpt-4o-mini";
+    const attempts: Array<{ key: string; run: () => Promise<string> }> = [
+      ...keys.slice(0, 2).map((key) => ({ key, run: () => callGemini(key, model, prompt) })),
+      ...(openaiKey && !isKeyTemporarilyUnavailable(openaiKey) ? [{ key: openaiKey, run: () => callOpenAI(openaiKey, openaiModel, prompt) }] : []),
+    ];
+    for (const attempt of attempts) {
       try {
-        const text = cleanAiText(await callGemini(key, model, prompt));
+        const text = cleanAiText(await attempt.run());
         if (followupLooksSafe(text, i)) return { text, source: "ia" };
-        console.warn("[followups] Texto IA descartado por seguridad", i.conversationId);
-        break; // la clave funciona; el texto no sirvió → plantilla
+        console.warn("[followups] Texto IA descartado por seguridad", i.conversationId, text.slice(0, 160));
+        break; // la IA respondió pero el texto no sirvió → texto del vendedor o plantilla
       } catch (e) {
-        markKeyUnavailable(key, e instanceof Error ? e.message : String(e));
+        const reason = e instanceof Error ? e.message : String(e);
+        console.warn("[followups] Proveedor IA falló", i.conversationId, reason.slice(0, 120));
+        markKeyUnavailable(attempt.key, reason);
       }
     }
   } catch (e) {
