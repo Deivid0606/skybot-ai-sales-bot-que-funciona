@@ -87,6 +87,8 @@ function SettingsPage() {
     voice_reply_enabled: false,
     voice_name: "coral",
     voice_instructions: "",
+    azure_speech_key: "",
+    azure_speech_region: "",
   });
   const [biz, setBiz] = useState({
     business_name: "",
@@ -144,6 +146,8 @@ function SettingsPage() {
         voice_reply_enabled: (data.ai as { voice_reply_enabled?: boolean }).voice_reply_enabled === true,
         voice_name: (data.ai as { voice_name?: string | null }).voice_name || "coral",
         voice_instructions: (data.ai as { voice_instructions?: string | null }).voice_instructions ?? "",
+        azure_speech_key: (data.ai as { azure_speech_key?: string | null }).azure_speech_key ?? "",
+        azure_speech_region: (data.ai as { azure_speech_region?: string | null }).azure_speech_region ?? "",
       });
     }
     if (data.settings) {
@@ -181,7 +185,8 @@ function SettingsPage() {
     if (!workspaceId) return;
     setVoiceTesting(true);
     try {
-      const res = await runVoiceTest({ data: { workspaceId, voice: ai.voice_name, instructions: ai.voice_instructions } });
+      const res = await runVoiceTest({ data: { workspaceId, voice: ai.voice_name, instructions: ai.voice_instructions,
+        azureKey: ai.azure_speech_key, azureRegion: ai.azure_speech_region } });
       const url = `data:${res.mime};base64,${res.base64}`;
       setVoiceSample(url);
       void new Audio(url).play().catch(() => undefined);
@@ -291,6 +296,8 @@ function SettingsPage() {
           voice_reply_enabled: ai.voice_reply_enabled,
           voice_name: ai.voice_name,
           voice_instructions: ai.voice_instructions.trim() || null,
+          azure_speech_key: ai.azure_speech_key.trim() || null,
+          azure_speech_region: ai.azure_speech_region.trim().toLowerCase() || null,
         });
       } else {
         await upsert("user_settings", {
@@ -575,7 +582,7 @@ function SettingsPage() {
                     <Label>🎤 Responder con audio (nota de voz)</Label>
                     <p className="text-xs text-muted-foreground">
                       Cuando el cliente manda un audio, el bot contesta hablando. Precios, datos bancarios, resúmenes de pedido y links
-                      salen siempre en texto. Usa la API Key de OpenAI de esta tienda (centavos por minuto).
+                      salen siempre en texto. Las voces paraguayas (Tania y Mario) son gratis con Azure; las de OpenAI usan tu clave de OpenAI.
                     </p>
                   </div>
                 </div>
@@ -584,6 +591,11 @@ function SettingsPage() {
                     <Label>Voz</Label>
                     <select className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
                       value={ai.voice_name} onChange={(e) => setAi({ ...ai, voice_name: e.target.value })}>
+                      <optgroup label="🇵🇾 Paraguayas (Microsoft Azure, gratis)">
+                        <option value="es-PY-TaniaNeural">Tania (mujer, paraguaya)</option>
+                        <option value="es-PY-MarioNeural">Mario (hombre, paraguayo)</option>
+                      </optgroup>
+                      <optgroup label="OpenAI (usa tu clave de OpenAI)">
                       <option value="coral">Coral (mujer, cálida)</option>
                       <option value="nova">Nova (mujer, joven)</option>
                       <option value="shimmer">Shimmer (mujer, suave)</option>
@@ -594,6 +606,7 @@ function SettingsPage() {
                       <option value="echo">Echo (hombre, neutro)</option>
                       <option value="onyx">Onyx (hombre, grave)</option>
                       <option value="alloy">Alloy (neutra)</option>
+                      </optgroup>
                     </select>
                   </div>
                   <div className="space-y-1.5">
@@ -603,6 +616,21 @@ function SettingsPage() {
                       onChange={(e) => setAi({ ...ai, voice_instructions: e.target.value })} />
                   </div>
                 </div>
+                {ai.voice_name.startsWith("es-PY-") && (
+                  <div className="space-y-2 rounded-md bg-muted/40 p-3">
+                    <p className="text-xs text-muted-foreground">
+                      Voces paraguayas gratis: creá una cuenta en <strong>portal.azure.com</strong>, después un recurso
+                      «<strong>Speech</strong>» con el plan <strong>Free F0</strong>, y copiá acá la <strong>Key 1</strong> y la
+                      <strong> Región</strong> (por ejemplo <em>eastus</em>), desde «Keys and Endpoint».
+                    </p>
+                    <div className="grid gap-2 sm:grid-cols-[1fr_160px]">
+                      <Input type="password" placeholder="Clave de Azure Speech (Key 1)" value={ai.azure_speech_key}
+                        onChange={(e) => setAi({ ...ai, azure_speech_key: e.target.value })} />
+                      <Input placeholder="Región (ej. eastus)" value={ai.azure_speech_region}
+                        onChange={(e) => setAi({ ...ai, azure_speech_region: e.target.value })} />
+                    </div>
+                  </div>
+                )}
                 <div className="flex flex-wrap items-center gap-3">
                   <Button type="button" variant="outline" size="sm" disabled={voiceTesting} onClick={() => void playVoiceSample()}>
                     {voiceTesting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}▶️ Probar voz

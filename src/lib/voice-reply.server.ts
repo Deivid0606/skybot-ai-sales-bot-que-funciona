@@ -2,12 +2,16 @@ import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { wellFormedJson } from "@/lib/ai.server";
 
 /**
- * Respuestas con nota de voz (OpenAI TTS). Solo para respuestas conversacionales:
+ * Respuestas con nota de voz (OpenAI TTS o voces paraguayas de Azure). Solo para respuestas conversacionales:
  * precios, datos bancarios, resúmenes y links van SIEMPRE en texto para que el
  * cliente pueda leerlos y copiarlos.
  */
 const GRAPH = "https://graph.facebook.com/v21.0";
-export const VOICE_OPTIONS = ["coral", "nova", "shimmer", "sage", "alloy", "ash", "ballad", "echo", "onyx", "verse"] as const;
+export const OPENAI_VOICES = ["coral", "nova", "shimmer", "sage", "alloy", "ash", "ballad", "echo", "onyx", "verse"] as const;
+/** Voces de Microsoft Azure nacidas en Paraguay (plan gratuito F0 de Azure Speech). */
+export const AZURE_PY_VOICES = ["es-PY-TaniaNeural", "es-PY-MarioNeural"] as const;
+export const VOICE_OPTIONS = [...OPENAI_VOICES, ...AZURE_PY_VOICES] as const;
+export const isAzureVoice = (voice: string) => (AZURE_PY_VOICES as readonly string[]).includes(voice);
 const MALE_VOICES = new Set(["ash", "ballad", "echo", "onyx", "verse"]);
 /** Pronunciación paraguaya (no argentina, mexicana ni española), con el género de la voz elegida. */
 export function voiceInstructionsFor(voice: string): string {
@@ -22,26 +26,32 @@ export const DEFAULT_VOICE_INSTRUCTIONS = voiceInstructionsFor("coral");
 const MAX_SPOKEN_CHARS = 600;
 const TTS_TIMEOUT_MS = 15_000;
 
-export type VoiceSettings = { enabled: boolean; voice: string; instructions: string; openaiKey: string };
+export type VoiceSettings = {
+  enabled: boolean; voice: string; instructions: string; openaiKey: string; azureKey: string; azureRegion: string;
+};
 
 export async function loadVoiceSettings(workspaceId: string): Promise<VoiceSettings | null> {
   const { data } = await supabaseAdmin
     .from("ai_settings")
-    .select("voice_reply_enabled,voice_name,voice_instructions,openai_api_key")
+    .select("voice_reply_enabled,voice_name,voice_instructions,openai_api_key,azure_speech_key,azure_speech_region")
     .eq("workspace_id", workspaceId)
     .maybeSingle();
   const row = data as unknown as {
     voice_reply_enabled?: boolean; voice_name?: string | null; voice_instructions?: string | null; openai_api_key?: string | null;
+    azure_speech_key?: string | null; azure_speech_region?: string | null;
   } | null;
-  const openaiKey = String(row?.openai_api_key ?? "").trim();
-  if (!row?.voice_reply_enabled || !openaiKey) return null;
-  return {
+  if (!row?.voice_reply_enabled) return null;
+  const voice = (VOICE_OPTIONS as readonly string[]).includes(String(row.voice_name)) ? String(row.voice_name) : "coral";
+  const settings: VoiceSettings = {
     enabled: true,
-    voice: VOICE_OPTIONS.includes(String(row.voice_name) as (typeof VOICE_OPTIONS)[number]) ? String(row.voice_name) : "coral",
-    instructions: String(row.voice_instructions ?? "").trim() ||
-      voiceInstructionsFor(VOICE_OPTIONS.includes(String(row.voice_name) as (typeof VOICE_OPTIONS)[number]) ? String(row.voice_name) : "coral"),
-    openaiKey,
+    voice,
+    instructions: String(row.voice_instructions ?? "").trim() || voiceInstructionsFor(voice),
+    openaiKey: String(row.openai_api_key ?? "").trim(),
+    azureKey: String(row.azure_speech_key ?? "").trim(),
+    azureRegion: String(row.azure_speech_region ?? "").trim().toLowerCase(),
   };
+  const ready = isAzureVoice(voice) ? Boolean(settings.azureKey && /^[a-z0-9]+$/.test(settings.azureRegion)) : Boolean(settings.openaiKey);
+  return ready ? settings : null;
 }
 
 /** ¿Se puede decir en audio? No si lleva precios, montos, datos bancarios, links o un resumen de pedido. */
@@ -109,7 +119,39 @@ export function textForSpeech(text: string): string {
 }
 
 /** Genera el audio (OGG/Opus, el formato de las notas de voz de WhatsApp). */
-export async function synthesizeSpeech(settings: Pick<VoiceSettings, "openaiKey" | "voice" | "instructions">, text: string, format: "opus" | "mp3" = "opus"): Promise<ArrayBuffer> {
+const xmlEscape = (v: string) => v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+
+/** Voz paraguaya de Microsoft Azure (Tania / Mario). */
+async function azureSpeech(key: string, region: string, voice: string, text: string, format: "opus" | "mp3"): Promise<ArrayBuffer> {
+  // La región va en el host de la URL: solo letras y números («eastus», «brazilsouth»).
+  if (!/^[a-z0-9]{3,30}$/.test(region)) throw new Error("Región de Azure inválida (ej.: eastus, brazilsouth)");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), TTS_TIMEOUT_MS);
+  try {
+    const ssml = `<speak version="1.0" xml:lang="es-PY"><voice name="${voice}"><prosody rate="-4%">${xmlEscape(textForSpeech(text).slice(0, 1500))}</prosody></voice></speak>`;
+    const response = await fetch(`https://${region}.tts.speech.microsoft.com/cognitiveservices/v1`, {
+      method: "POST",
+      headers: {
+        "Ocp-Apim-Subscription-Key": key,
+        "Content-Type": "application/ssml+xml",
+        "X-Microsoft-OutputFormat": format === "opus" ? "ogg-48khz-16bit-mono-opus" : "audio-24khz-48kbitrate-mono-mp3",
+        "User-Agent": "botsky",
+      },
+      signal: controller.signal,
+      body: ssml,
+    });
+    if (!response.ok) throw new Error(`azure tts HTTP ${response.status}: ${(await response.text()).slice(0, 200)}`);
+    return await response.arrayBuffer();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function synthesizeSpeech(settings: Pick<VoiceSettings, "openaiKey" | "voice" | "instructions"> & Partial<Pick<VoiceSettings, "azureKey" | "azureRegion">>, text: string, format: "opus" | "mp3" = "opus"): Promise<ArrayBuffer> {
+  if (isAzureVoice(settings.voice)) {
+    if (!settings.azureKey || !settings.azureRegion) throw new Error("Falta la clave o la región de Azure Speech");
+    return azureSpeech(settings.azureKey, settings.azureRegion, settings.voice, text, format);
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TTS_TIMEOUT_MS);
   try {
@@ -178,6 +220,7 @@ export async function tryVoiceReply(args: {
     if (!settings) return null;
     let spoken = args.text;
     if (!canBeSpoken(spoken)) {
+      if (!settings.openaiKey) return null;
       const summary = await spokenSummary(settings.openaiKey, args.text);
       if (!summary || !canBeSpoken(summary)) return null;
       spoken = summary;
