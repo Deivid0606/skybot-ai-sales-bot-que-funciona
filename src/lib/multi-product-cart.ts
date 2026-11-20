@@ -30,10 +30,16 @@ function closeToken(a:string,b:string):boolean{
 }
 function productScore(segment:string,product:ProductForCart):number{
   const words=norm(segment).split(" ").filter(w=>w.length>=4&&!ignored.has(w));
-  const terms=[product.name,...(product.keywords??[])].flatMap(v=>norm(v).split(" "))
-    .filter(w=>w.length>=4&&!ignored.has(w));
-  if(!words.length||!terms.length)return 0;
-  const found=words.filter(w=>terms.some(t=>closeToken(w,t)));
+  const tokens=(values:string[])=>values.flatMap(v=>norm(v).split(" ")).filter(w=>w.length>=4&&!ignored.has(w));
+  // Tolerancia a errores de tipeo SOLO contra las palabras clave del vendedor. Las palabras
+  // del nombre (a veces una frase larga: «…sin cortar la fruta ni colar») deben coincidir
+  // exactas: «Paseo del Solar» no es «ni colar» y no puede sumar un extractor al pedido.
+  const keywordTerms=tokens(product.keywords??[]);
+  // Solo la parte principal del nombre: «EXTRACTOR DE JUGO SOKANY – JUGO NATURAL…» → extractor, jugo, sokany.
+  const coreName=product.name.split(/\s[–—-]\s|[|,:(]/)[0];
+  const nameTerms=tokens([coreName]).map(singular);
+  if(!words.length||(!keywordTerms.length&&!nameTerms.length))return 0;
+  const found=words.filter(w=>keywordTerms.some(t=>closeToken(w,t))||nameTerms.includes(singular(w)));
   return found.length;
 }
 const wordsToNumber:Record<string,number>={un:1,uno:1,una:1,dos:2,tres:3,cuatro:4,cinco:5};
