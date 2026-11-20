@@ -41,6 +41,7 @@ async function sendWhatsAppText(...args: Parameters<typeof sendWhatsAppTextNow>)
   return sendWhatsAppTextNow(...args);
 }
 import { detectComplaint, COMPLAINT_REASON_LABELS } from "@/lib/complaints";
+import { deliveryIsToday, nextDeliveryText, promisesSameDayDelivery } from "@/lib/business-profile";
 
 type CheckoutPrompt = "city" | "name" | "address" | "recipient_ci";
 
@@ -1890,6 +1891,31 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
             `Sí, hacemos envíos a ${mentioned.city}. 😊 Ya le avisé a la tienda para que revise tu pedido y te confirme.`;
       }
     }
+    // POSTVENTA: no prometer entrega «hoy» si el pedido se confirmó después del corte (o hoy no
+    // se entrega), y no inventar precios ni «confirmar» cambios de cantidad/precio.
+    if (reply) {
+      const { data: po } = await supabaseAdmin.from("orders").select("created_at,total,quantity,product_title")
+        .eq("workspace_id", workspaceId).eq("conversation_id", conversation.id)
+        .order("created_at", { ascending: false }).limit(1).maybeSingle();
+      const dp = ctx.deliveryProfile ?? null;
+      const sameDayOk = !dp || !po?.created_at || deliveryIsToday(dp, new Date(po.created_at));
+      const known = new Set<number>([Number(po?.total ?? 0),
+        ...ctx.products.flatMap(p => (p.product_prices ?? []).map(o => Math.round(Number(o.price)))),
+      ].filter(n => n > 0));
+      const badAmount = (t: string) => Boolean(po) && (t.match(/\d{1,3}(?:[.,]\d{3})+/g) ?? [])
+        .some(raw => !known.has(Number(raw.replace(/[.,]/g, ""))));
+      const badToday = (t: string) => !sameDayOk && promisesSameDayDelivery(t);
+      if (badAmount(reply) || badToday(reply)) {
+        console.warn("[BOT_SKY_POSTSALE_FACTS_GUARD]", JSON.stringify({conversationId:conversation.id, amount:badAmount(reply), today:badToday(reply)}));
+        const fact = [
+          po ? `El pedido registrado es: ${po.product_title ?? "producto"}, cantidad ${po.quantity}, total ${formatGs(Number(po.total))}. NO inventes precios ni confirmes cambios: si el cliente quiere cambiar cantidad, precio o dirección, decile que se lo pasás a la tienda para que lo modifique y le confirme.` : "",
+          badToday(reply) && dp ? `Este pedido NO se entrega hoy: la entrega es ${nextDeliveryText(dp, new Date(po!.created_at))}. No digas que llega o se entrega hoy.` : "",
+        ].filter(Boolean).join(" ");
+        const rewritten = await aiCompose(safeCtx, fact);
+        reply = rewritten && !badAmount(rewritten) && !badToday(rewritten) ? rewritten
+          : reply.split(/(?<=[.!?\n])\s*/).filter(part => !badAmount(part) && !badToday(part)).join(" ").trim();
+      }
+    }
     // La depuración de modalidad pudo dejar la respuesta vacía: una sola
     // reescritura breve antes de dar la falla por perdida.
     if (!reply) {
@@ -3162,6 +3188,31 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
     const asksCiEarly = (text: string) => !conversation.sale_closed &&
       (/\b(?:tu|su|la|el)\s+(?:n[uú]mero\s+de\s+)?c[eé]dula\b|(?:pas[aá]|pasame|pases|env[ií]a|env[ií]es|mand[aá]|mandes|necesito|necesitamos|falta|indic[aá]|indiques|confirm[aá]|confirmes|confirme|dec[ií]me|compart[ií]|compartas|proporcion\w*|facilit\w*|brind\w*|escrib\w*)[^.?!\n]{0,60}\b(?:c[eé]dula|c\.\s?i\.)/i.test(text) ||
        /\bc[eé]dula\b[^.?!\n]{0,40}\?/i.test(text) || /\bes\s+necesari[oa]\b[^.?!\n]{0,40}\b(?:registro|pedido)\b/i.test(text));
+    // HORA DE CORTE («Mi negocio»): después del corte (o un día sin entregas) nunca prometer
+    // entrega para hoy. Con pedido ya registrado se usa la hora en que se confirmó.
+    const deliveryProfile = ctx.deliveryProfile ?? null;
+    let sameDayAllowed = true;
+    let nextDeliveryNow: string | null = null;
+    const { data: lastOrder } = conversation.sale_closed
+      ? await supabaseAdmin.from("orders").select("created_at,total,quantity,product_title")
+          .eq("workspace_id", workspaceId).eq("conversation_id", conversation.id)
+          .order("created_at", { ascending: false }).limit(1).maybeSingle()
+      : { data: null };
+    if (deliveryProfile) {
+      const confirmedAt = lastOrder?.created_at ? new Date(lastOrder.created_at) : new Date();
+      sameDayAllowed = deliveryIsToday(deliveryProfile, confirmedAt);
+      nextDeliveryNow = nextDeliveryText(deliveryProfile, confirmedAt);
+    }
+    const wrongSameDay = (text: string) => !sameDayAllowed && promisesSameDayDelivery(text);
+    // PEDIDO YA REGISTRADO: la IA no puede inventar un precio ni «confirmar» un cambio
+    // (decía «1 unidad por ₲ 59.900, entrega hoy 17:00» con un pedido de 3 por ₲ 120.000).
+    const knownAmounts = new Set<number>([
+      Number(lastOrder?.total ?? 0),
+      ...ctx.products.flatMap(p => (p.product_prices ?? []).map(o => Math.round(Number(o.price)))),
+      ...ctx.products.map(p => Math.round(Number(p.price ?? 0))),
+    ].filter(n => n > 0));
+    const inventsPostSaleAmount = (text: string) => Boolean(lastOrder) &&
+      (text.match(/\d{1,3}(?:[.,]\d{3})+/g) ?? []).some(raw => !knownAmounts.has(Number(raw.replace(/[.,]/g, ""))));
     const violatesVerifiedFacts = (text: string) => {
       const policy = verifiedSaleState.cityVerified
         ? deliveryPolicyForCity(verifiedSaleState.city, verifiedSaleState.department, ctx.training) : null;
@@ -3180,6 +3231,8 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         (!conversation.sale_closed && promisesShipment(text)) ||
         (!conversation.sale_closed && Boolean(asksKnownData(text))) ||
         asksCiEarly(text) ||
+        wrongSameDay(text) ||
+        inventsPostSaleAmount(text) ||
         repeatsPreviousReply(text);
     };
     // Solo el bloque posterior al INSERT puede confirmar; el resto nunca.
@@ -3216,6 +3269,10 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         !conversation.sale_closed && promisesShipment(text)
           ? "Todavía NO hay pedido registrado: no digas que se envía, que está en camino ni que le avisarán. Pedí el dato que falta para registrarlo (por ejemplo la ciudad de entrega)." : "",
         claimsRegisteredOrder(text) ? "El pedido TODAVÍA NO está registrado en el sistema: no digas que está confirmado, no muestres número de pedido ni agradezcas la compra; pedí el dato que falte." : "",
+        inventsPostSaleAmount(text) && lastOrder
+          ? `El pedido YA registrado es: ${lastOrder.product_title ?? "producto"}, cantidad ${lastOrder.quantity}, total ${formatGs(Number(lastOrder.total))}. NO inventes precios ni confirmes cambios de cantidad o precio: usá solo precios del catálogo y decile al cliente que su pedido de cambio se lo pasás a la tienda para que lo modifique.` : "",
+        wrongSameDay(text)
+          ? `HOY YA NO HAY ENTREGAS (pasó la hora de corte${deliveryProfile?.cutoff_time ? ` de las ${deliveryProfile.cutoff_time}` : ""} o hoy no se entrega). La entrega es ${nextDeliveryNow ?? "en el próximo día de entrega"}. NO digas que sale, llega o se entrega hoy, ni «si confirmás antes de las…». Si el cliente lo quiere para hoy, decile con amabilidad que hoy ya no llegamos y ofrecé esa fecha.` : "",
       ].filter(Boolean).join(" ");
       const again = await aiCompose({...aiAnswerContext, promptMode: "revision"}, `${facts} Tu borrador anterior violaba estas reglas: «${text.slice(0, 1200)}». Reescribí la respuesta correcta.`);
       if (again && !violatesVerifiedFacts(again)) return again;
@@ -3230,7 +3287,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         if (policy?.paymentMethod === "contraentrega" && !codTransferActive) out = cleanReplyForPolicy(stripBankDetailsForCod(out), "contraentrega");
         else if (verifiedSaleState.awaiting === "variant") out = stripBankDetailsForCod(out);
         out = stripWaitingSentences(out);
-        return out.split("\n").filter(line => !hasTemplatePlaceholder(line) && !claimsRegisteredOrder(line) &&
+        return out.split("\n").filter(line => !hasTemplatePlaceholder(line) && !claimsRegisteredOrder(line) && !wrongSameDay(line) && !inventsPostSaleAmount(line) &&
           !(deniesShipping(line) && verifiedSaleState.coverageStatus !== "none") &&
           !(!conversation.sale_closed && promisesShipment(line))).join("\n").replace(/\n{3,}/g, "\n\n").trim();
       };
@@ -3912,12 +3969,20 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
           reason:"La IA no pudo redactar la respuesta", queue:false});
         return;
       }
-      const outgoingWamid = await sendWhatsAppText(conn, phone, outgoingText);
+      // Nota de voz (Configuraciones → «Responder con audio»): si el cliente mandó un audio y la
+      // respuesta no lleva precios, datos bancarios ni links, se contesta hablando. Si la voz
+      // falla o la respuesta no es apta para audio, sale en texto como siempre.
+      await waitConfiguredReplyDelay();
+      const { tryVoiceReply } = await import("@/lib/voice-reply.server");
+      const voiceWamid = await tryVoiceReply({
+        workspaceId, conn, phone, text: outgoingText, customerSentAudio: media?.type === "audio",
+      });
+      const outgoingWamid = voiceWamid ?? await sendWhatsAppText(conn, phone, outgoingText);
       await supabaseAdmin.from("messages").insert({
         workspace_id: workspaceId, user_id: ownerId, conversation_id: conversation.id,
         ad_id: attributedAdId, direction: "outbound", sender: "ai",
         response_origin: "ai",
-        body: outgoingText, wamid: outgoingWamid, status: "sent",
+        body: voiceWamid ? `🎤 (audio) ${outgoingText}` : outgoingText, wamid: outgoingWamid, status: "sent",
       } as any);
       await supabaseAdmin.from("conversations").update({
         last_message: outgoingText, last_message_at: new Date().toISOString(),

@@ -88,6 +88,9 @@ export function isValidDeliveryAddress(value: unknown): boolean {
   // Preguntas sin signo («Por qué es de 25kilo», «cuánto pesa») y medidas no son direcciones.
   if (/^(?:por\s*que|porque|que|como|cuanto|cuanta|cual|donde|cuando|sera|es\s+de)\b/.test(n) ||
       /\b\d+\s*(?:kilos?|kg|litros?|lts?|cm|mm|gramos?)\b|\d+(?:kilos?|kg|litros?)\b/.test(n)) return false;
+  // Un precio («120.000 era», «Gs 99.000», «son 150 mil») no es una dirección.
+  if (/\b\d{1,3}(?:[.,]\d{3})+\b|\b\d+\s*mil\b/.test(n) &&
+      !/\b(?:calle|avenida|avda|ruta|esquina|casi|barrio|frente|entre|km|nro|numero|casa|manzana|lote)\b/.test(n)) return false;
   // Cantidades o pedidos («Solo 1 caja», «quiero 2 unidades») no son direcciones.
   if (/\b(?:cajas?|unidad(?:es)?|packs?|combos?|promo(?:cion)?|quiero|solo|nomas|precio|gs|guaranies|afilador(?:es)?|bases?)\b/.test(n) &&
       !/\b(?:calle|avenida|avda|ruta|esquina|casi|barrio|frente|entre|km|nro|numero)\b/.test(n)) return false;

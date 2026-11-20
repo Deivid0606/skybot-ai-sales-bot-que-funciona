@@ -21,6 +21,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/lib/auth";
 import ActivarNotificacionesBotSky from "@/components/ActivarNotificacionesBotSky";
 import { MetaCapiSettings } from "@/components/meta-capi-settings";
+import { testVoiceReply } from "@/lib/voice.functions";
 
 export const Route = createFileRoute("/_authenticated/configuraciones")({
   head: () => ({
@@ -83,6 +84,9 @@ function SettingsPage() {
     gemini_api_key_3: "",
     openai_api_key: "",
     provider_models: { openai: "gpt-4o-mini" },
+    voice_reply_enabled: false,
+    voice_name: "coral",
+    voice_instructions: "",
   });
   const [biz, setBiz] = useState({
     business_name: "",
@@ -137,6 +141,9 @@ function SettingsPage() {
         gemini_api_key_3: data.ai.gemini_api_key_3 ?? "",
         openai_api_key: data.ai.openai_api_key ?? "",
         provider_models: { openai: data.ai.provider_models?.openai ?? "gpt-4o-mini" },
+        voice_reply_enabled: (data.ai as { voice_reply_enabled?: boolean }).voice_reply_enabled === true,
+        voice_name: (data.ai as { voice_name?: string | null }).voice_name || "coral",
+        voice_instructions: (data.ai as { voice_instructions?: string | null }).voice_instructions ?? "",
       });
     }
     if (data.settings) {
@@ -167,6 +174,23 @@ function SettingsPage() {
   const [testing, setTesting] = useState(false);
   const [checks, setChecks] = useState<WebhookCheck[] | null>(null);
   const runDiagnostics = useServerFn(runWebhookDiagnostics);
+  const runVoiceTest = useServerFn(testVoiceReply);
+  const [voiceTesting, setVoiceTesting] = useState(false);
+  const [voiceSample, setVoiceSample] = useState<string | null>(null);
+  async function playVoiceSample() {
+    if (!workspaceId) return;
+    setVoiceTesting(true);
+    try {
+      const res = await runVoiceTest({ data: { workspaceId, voice: ai.voice_name, instructions: ai.voice_instructions } });
+      const url = `data:${res.mime};base64,${res.base64}`;
+      setVoiceSample(url);
+      void new Audio(url).play().catch(() => undefined);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "No se pudo generar la voz");
+    } finally {
+      setVoiceTesting(false);
+    }
+  }
 
   async function testWebhook() {
     const token = wa.verify_token.trim();
@@ -264,6 +288,9 @@ function SettingsPage() {
           openai_api_key: ai.openai_api_key.trim() || null,
           provider_order: ["gemini1", "gemini2", "gemini3", "openai"],
           provider_models: { openai: ai.provider_models.openai.trim() || "gpt-4o-mini" },
+          voice_reply_enabled: ai.voice_reply_enabled,
+          voice_name: ai.voice_name,
+          voice_instructions: ai.voice_instructions.trim() || null,
         });
       } else {
         await upsert("user_settings", {
@@ -538,6 +565,51 @@ function SettingsPage() {
                   />
                   <span className="text-sm text-muted-foreground">seg</span>
                 </div>
+              </div>
+
+              <div className="space-y-3 rounded-lg border p-4">
+                <div className="flex items-start gap-3">
+                  <Switch checked={ai.voice_reply_enabled}
+                    onCheckedChange={(v) => setAi((prev) => ({ ...prev, voice_reply_enabled: v }))} />
+                  <div>
+                    <Label>🎤 Responder con audio (nota de voz)</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Cuando el cliente manda un audio, el bot contesta hablando. Precios, datos bancarios, resúmenes de pedido y links
+                      salen siempre en texto. Usa la API Key de OpenAI de esta tienda (centavos por minuto).
+                    </p>
+                  </div>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-[180px_1fr]">
+                  <div className="space-y-1.5">
+                    <Label>Voz</Label>
+                    <select className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                      value={ai.voice_name} onChange={(e) => setAi({ ...ai, voice_name: e.target.value })}>
+                      <option value="coral">Coral (mujer, cálida)</option>
+                      <option value="nova">Nova (mujer, joven)</option>
+                      <option value="shimmer">Shimmer (mujer, suave)</option>
+                      <option value="sage">Sage (mujer, tranquila)</option>
+                      <option value="ballad">Ballad (hombre, cálido)</option>
+                      <option value="ash">Ash (hombre, cercano)</option>
+                      <option value="verse">Verse (hombre, expresivo)</option>
+                      <option value="echo">Echo (hombre, neutro)</option>
+                      <option value="onyx">Onyx (hombre, grave)</option>
+                      <option value="alloy">Alloy (neutra)</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Cómo tiene que hablar (opcional)</Label>
+                    <Textarea rows={2} value={ai.voice_instructions}
+                      placeholder="Ej.: vendedora paraguaya de Asunción, cálida y cercana, con voseo, ritmo tranquilo"
+                      onChange={(e) => setAi({ ...ai, voice_instructions: e.target.value })} />
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <Button type="button" variant="outline" size="sm" disabled={voiceTesting} onClick={() => void playVoiceSample()}>
+                    {voiceTesting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}▶️ Probar voz
+                  </Button>
+                  {voiceSample ? <audio controls src={voiceSample} className="h-9 max-w-full" /> : null}
+                </div>
+                <p className="text-xs text-muted-foreground">Probá varias voces y guardá la que más te guste con «Guardar».</p>
               </div>
 
               <div className="space-y-3 rounded-lg border p-4">
