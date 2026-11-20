@@ -1,10 +1,12 @@
 import { createFileRoute } from '@tanstack/react-router';
 import { supabaseAdmin } from '@/integrations/supabase/client.server';
 import { sendWhatsAppText } from '@/lib/whatsapp.server';
+import { writeFollowup } from '@/lib/followup-writer.server';
 
 const WINDOW_MS = 24 * 60 * 60 * 1000;
 const SAFETY_MS = 20 * 60 * 1000;
 const MAX_JOBS = 12;
+const PARALLEL = 6;
 type Job = {
   delivery_id: string; workspace_id: string; conversation_id: string;
   owner_user_id: string; phone: string; product_id: string;
@@ -46,26 +48,29 @@ async function handleJob(job: Job, baseUrl: string) {
     await setDelivery(job.delivery_id,'failed','Conexión de WhatsApp ausente');return;
   }
   const {data:product,error:productError}=await supabaseAdmin.from('products')
-    .select('id,name,is_active,followup_enabled,followup_message,followup_second_message,pain_point')
+    .select('id,name,is_active,followup_enabled,followup_message,followup_second_message,pain_point,discovery_question')
     .eq('workspace_id',job.workspace_id).eq('id',job.product_id).maybeSingle();
   if(productError || !product?.is_active || !product.followup_enabled) {
     await setDelivery(job.delivery_id,'skipped','Producto sin seguimiento activo'); return;
   }
   const defaultFirst='¡Hola! 😊 ¿Te gustaría continuar con tu pedido? Estoy para ayudarte.';
   const defaultSecond='¡Hola de nuevo! 😊 ¿Todavía te interesa el producto que consultaste? Podemos ayudarte a finalizar tu pedido.';
-  // Mensaje PERSONAL (relación con el cliente): nombre, producto y el problema que le resuelve.
-  // Se usa cuando el vendedor dejó el texto genérico de siempre o no cargó uno propio.
+  // Mensaje PERSONAL escrito por la IA leyendo el chat de este cliente (nombre, producto,
+  // problema que resuelve y lo último que preguntó). Si la IA falla: plantilla variada.
   const {data:who}=await supabaseAdmin.from('conversations').select('contacts(name)').eq('id',job.conversation_id).maybeSingle();
   const rawName=String((who as {contacts?:{name?:string|null}|null}|null)?.contacts?.name ?? '').replace(/[^\p{L} ]/gu,' ').trim().split(/\s+/)[0] ?? '';
   const firstName=rawName.length>=2 && rawName.length<=15 ? rawName.charAt(0).toUpperCase()+rawName.slice(1).toLowerCase() : '';
-  const productName=String((product as {name?:string|null}).name ?? '').replace(/\*+/g,'').trim();
-  const pain=String((product as {pain_point?:string|null}).pain_point ?? '').trim().replace(/[.!]+$/,'');
-  const personalFirst=`¡Hola${firstName?` ${firstName}`:''}! 😊 Te escribo por ${productName||'el producto que consultaste'}.${pain?` Es ideal si ${pain.charAt(0).toLowerCase()+pain.slice(1)}.`:''} ¿Te quedó alguna duda? Contame y te ayudo, o si querés te lo preparo hoy mismo.`;
-  const personalSecond=`${firstName?`${firstName}, `:''}¿cómo estás? 🙌 No quería que te quedes sin ${productName||'tu pedido'}. Si algo te frenó (precio, entrega o cómo se usa), decime y lo vemos juntos 😊`;
+  const productName=String((product as {name?:string|null}).name ?? '').replace(/\*+/g,'').replace(/[^\p{L}\p{N} .,°|-]/gu,'').replace(/\s+/g,' ').trim();
+  const pain=String((product as {pain_point?:string|null}).pain_point ?? '').trim();
+  const discoveryQuestion=String((product as {discovery_question?:string|null}).discovery_question ?? '').trim();
   const custom=job.phase === 2 ? product.followup_second_message : product.followup_message;
   const isGeneric=(text:string|null|undefined)=>!text?.trim() || text.trim()===defaultFirst || text.trim()===defaultSecond ||
     /^¡hola( de nuevo)?! 😊 ¿(te gustar[ií]a continuar con tu pedido|todav[ií]a te interesa el producto que consultaste)/i.test(text.trim());
-  const followup=String(isGeneric(custom) ? (job.phase===2 ? personalSecond : personalFirst) : custom).trim();
+  const written=await writeFollowup({
+    workspaceId:job.workspace_id,conversationId:job.conversation_id,phase:job.phase,firstName,productName,pain,discoveryQuestion,
+    sellerText:isGeneric(custom)?'':String(custom).trim().slice(0,800),
+  });
+  const followup=written.text.trim();
   if(!followup) {await setDelivery(job.delivery_id,'skipped','Mensaje vacío');return;}
   const catalogUrl = `${baseUrl.replace(/\/$/,'')}/c/${encodeURIComponent(job.workspace_id)}`;
   const body=`${followup.slice(0,1200)}\n\n🛍️ Mirá nuestro catálogo: ${catalogUrl}`;
@@ -105,11 +110,15 @@ async function handler({request}:{request:Request}) {
   const {data,error}=await supabaseAdmin.rpc('bot_claim_followups',{p_limit:MAX_JOBS});
   if(error) return Response.json({error:error.message},{status:500});
   let processed=0,failed=0;
-  for(const job of (data??[]) as Job[]) {
-    try {await handleJob(job,baseUrl);processed++;}
-    catch(e){failed++;await setDelivery(job.delivery_id,'failed',asError(e));console.error('[followups]',job.conversation_id,asError(e));}
+  // En tandas paralelas: la IA tarda unos segundos por mensaje y el cron no puede esperar 12 seguidos.
+  const jobs=(data??[]) as unknown as Job[];
+  for(let i=0;i<jobs.length;i+=PARALLEL) {
+    await Promise.all(jobs.slice(i,i+PARALLEL).map(async (job)=>{
+      try {await handleJob(job,baseUrl);processed++;}
+      catch(e){failed++;await setDelivery(job.delivery_id,'failed',asError(e));console.error('[followups]',job.conversation_id,asError(e));}
+    }));
   }
-  return Response.json({claimed:(data??[]).length,processed,failed});
+  return Response.json({claimed:jobs.length,processed,failed});
 }
 export const Route=createFileRoute('/api/followups')({
   server:{handlers:{GET:handler,POST:handler}}
