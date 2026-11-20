@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router';
-export const Route = createFileRoute('/api/push/push/unsubscribe')({
+export const Route = createFileRoute('/api/push/unsubscribe')({
   server:{handlers:{POST:async ({request})=>{
     const {authUser} = await import('@/lib/push.server');
     const {supabaseAdmin} = await import('@/integrations/supabase/client.server');
