@@ -37,14 +37,51 @@ export async function loadVoiceSettings(workspaceId: string): Promise<VoiceSetti
 }
 
 /** ¿Se puede decir en audio? No si lleva precios, montos, datos bancarios, links o un resumen de pedido. */
+/** Datos que el cliente tiene que poder LEER o copiar: precios, montos, cuentas, links, resúmenes. */
+export function hasDataToRead(text: string): boolean {
+  return /\d{3,}|\d[.,]\d{3}|₲|\bgs\b|%|https?:\/\/|www\.|@/i.test(text) ||
+    /\b(?:alias|cuenta|banco|titular|transferencia|c[eé]dula|ruc|comprobante|total|subtotal|pedido confirmado|precios? disponibles?)\b/i.test(text);
+}
+
 export function canBeSpoken(text: string): boolean {
   const t = text.trim();
-  if (!t || t.length > MAX_SPOKEN_CHARS) return false;
-  if (/\d{3,}|\d[.,]\d{3}|₲|\bgs\b|%|https?:\/\/|www\.|@/i.test(t)) return false;
-  if (/\b(?:alias|cuenta|banco|titular|transferencia|c[eé]dula|ruc|comprobante|total|subtotal|pedido confirmado|precios? disponibles?)\b/i.test(t)) return false;
+  if (!t || t.length > MAX_SPOKEN_CHARS || hasDataToRead(t)) return false;
   // Listas o resúmenes con viñetas no se escuchan bien.
   if ((t.match(/\n\s*(?:[•\-*]|\d+[.)])/g) ?? []).length >= 2) return false;
   return true;
+}
+
+/** Una respuesta larga (p. ej. el anuncio con beneficios) se convierte en un audio corto y natural. */
+export async function spokenSummary(openaiKey: string, text: string): Promise<string | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${openaiKey}` },
+      signal: controller.signal,
+      body: wellFormedJson({
+        model: "gpt-4o-mini",
+        temperature: 0.6,
+        max_completion_tokens: 250,
+        messages: [{
+          role: "user",
+          content: "Convertí este mensaje de WhatsApp de una tienda en lo que diría una vendedora paraguaya en una NOTA DE VOZ corta: " +
+            "3 o 4 frases naturales (menos de 450 caracteres), con voseo, sin emojis, sin listas y sin números ni precios. " +
+            "Contá lo más importante para el cliente y TERMINÁ con la misma pregunta final del mensaje. No inventes nada que no esté en el mensaje. " +
+            "Respondé SOLO con el texto a decir.\n\nMensaje:\n" + text.slice(0, 2500),
+        }],
+      }),
+    });
+    if (!response.ok) return null;
+    const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    const out = String(data.choices?.[0]?.message?.content ?? "").replace(/^["“«]+|["”»]+$/g, "").trim();
+    return out || null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 /** Texto limpio para leer en voz alta: sin emojis, asteriscos ni saltos raros. */
@@ -120,13 +157,20 @@ export async function tryVoiceReply(args: {
   phone: string;
   text: string;
   customerSentAudio: boolean;
-}): Promise<string | null> {
-  if (!args.customerSentAudio || !canBeSpoken(args.text)) return null;
+}): Promise<{ wamid: string | null; spoken: string } | null> {
+  // Precios, cuentas o links: siempre en texto para que se puedan leer.
+  if (!args.customerSentAudio || !args.text.trim() || hasDataToRead(args.text)) return null;
   try {
     const settings = await loadVoiceSettings(args.workspaceId);
     if (!settings) return null;
-    const audio = await synthesizeSpeech(settings, args.text);
-    return await sendWhatsAppVoice(args.conn, args.phone, audio);
+    let spoken = args.text;
+    if (!canBeSpoken(spoken)) {
+      const summary = await spokenSummary(settings.openaiKey, args.text);
+      if (!summary || !canBeSpoken(summary)) return null;
+      spoken = summary;
+    }
+    const audio = await synthesizeSpeech(settings, spoken);
+    return { wamid: await sendWhatsAppVoice(args.conn, args.phone, audio), spoken };
   } catch (e) {
     console.warn("[BOT_SKY_VOICE] Se responde en texto", e instanceof Error ? e.message.slice(0, 200) : String(e));
     return null;
