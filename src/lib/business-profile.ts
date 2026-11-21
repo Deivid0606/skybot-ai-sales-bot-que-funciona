@@ -130,11 +130,22 @@ export function sameDayDeliveryOpen(profile: BusinessProfile, at = new Date()): 
   return deliveryIsToday(profile, at, at);
 }
 
-/** El texto promete entrega/envío para hoy («sale hoy», «te llega hoy», «se entregará hoy»). */
+/**
+ * El texto promete entrega/envío PARA HOY («sale hoy», «te llega hoy», «se entregará hoy»).
+ * No cuenta: «si pedís hoy, te llega mañana», «hoy ya no llegamos», «hoy no hay entregas».
+ */
 export function promisesSameDayDelivery(text: string): boolean {
   const verbs = String.raw`(?:entreg\w*|env[ií]\w*|lleg\w*|sale|salir\w*|saldr\w*|despach\w*|programad\w*|en camino|recib\w*|te lo (?:llevamos|traemos)|lo (?:llevamos|traemos))`;
-  const gap = String.raw`[^.?!\n]{0,45}`;
-  return new RegExp(String.raw`${verbs}${gap}\bhoy\b|\bhoy\b${gap}${verbs}`, "i").test(text);
+  const promise = new RegExp(String.raw`${verbs}[^,;]{0,40}\bhoy\b|\bhoy\b[^,;]{0,40}${verbs}`, "i");
+  const clauses = text.split(/[.;!?\n,]+|\s(?:pero|aunque|y)\s/i);
+  return clauses.some(raw => {
+    // «Si pedís/confirmás hoy» habla de cuándo pide el cliente, no de cuándo llega.
+    const clause = raw.replace(/\b(?:ped[ií]s|pedir|pide|pido|ped[ií]|confirm[aá]s|confirmar|confirmo|compr[aá]s|comprar|compro|hac[eé]s el pedido)\s+(?:el pedido\s+)?hoy\b/gi, " ");
+    if (!/\bhoy\b/i.test(clause)) return false;
+    // Negación o la próxima fecha en la misma frase: no promete hoy.
+    if (/\b(?:no|ya no|nunca|tampoco|ma[nñ]ana|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo|pr[oó]xim\w*|siguiente)\b/i.test(clause)) return false;
+    return promise.test(clause);
+  });
 }
 
 const TONE_TEXT: Record<Tone, string> = {
