@@ -5855,7 +5855,9 @@ async function sendSilenceFallback(args: {
       if (text && WAITING_REPLY_RE.test(text)) text = stripWaitingSentences(text);
       // El respaldo nunca anuncia un pedido confirmado: eso solo lo hace el registro real.
       if (text) text = text.split(/(?<=[.!?\n])\s*/).filter(part =>
-        !/(?:pedido|compra)[^.!?\n]{0,25}(?:confirmad|registrad)|\bBS-[A-F0-9]{6,}|pedido\s+n\.?\s*[º°o]/i.test(part)).join(" ").trim();
+        !/(?:pedido|compra)[^.!?\n]{0,80}(?:confirmad|registrad|listo|agendad)|\bBS-[A-F0-9]{6,}|pedido\s+n\.?\s*[º°o]/i.test(part) &&
+        !(!convInfo?.sale_closed && /recibir[aá]s (?:el|tu) (?:paquete|pedido)|(?:ser[aá]|va a ser) (?:enviado|entregado)|te (?:lo )?(?:llevamos|enviamos|entregamos)/i.test(part)))
+        .join(" ").trim();
       // Never claim that a payment was accredited or an order was registered.
       // This is a service notice, not a commercial reply or a promise of timing.
       if (!text) {

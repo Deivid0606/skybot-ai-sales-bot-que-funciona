@@ -1147,6 +1147,14 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     if(details.street && !gpsUrl && (!s.street || s.street === s.locationUrl) && isValidDeliveryAddress(details.street))s.street=details.street;
     if(details.alternatePhone && !s.alternatePhone)s.alternatePhone=details.alternatePhone;
   }
+  // «Gracias, Che Varea» → el cliente responde «Gustavo Rojas»: corrige su nombre.
+  if(s.cityVerified && s.customerName) {
+    const lastBotLine=[...(ctx.history ?? [])].reverse().find(h=>h.role==="assistant")?.content ?? "";
+    const echoed=norm(lastBotLine).includes(norm(s.customerName));
+    const onlyName=text.trim().replace(/[.!]+$/,"");
+    if(echoed && /^[\p{L}]+(?:[ '-]+[\p{L}]+){1,3}$/u.test(onlyName) && norm(onlyName)!==norm(s.customerName) &&
+       isValidCustomerName(onlyName) && !cityIn(onlyName,coverage) && !isValidDeliveryAddress(onlyName))s.customerName=onlyName;
+  }
   if(s.cityVerified && (expectingRecipientName || /^\s*(?:me llamo|mi nombre es)\b/i.test(text))) {
     const name=humanName(text,expectingRecipientName);if(name && isValidCustomerName(name) && !cityIn(name,coverage))s.customerName=name;
   }
