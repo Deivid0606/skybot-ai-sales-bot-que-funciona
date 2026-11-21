@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router';
 import { supabaseAdmin } from '@/integrations/supabase/client.server';
 import { sendWhatsAppText } from '@/lib/whatsapp.server';
 import { writeFollowup } from '@/lib/followup-writer.server';
+import { stripBotFillers } from '@/lib/human-text';
 
 const WINDOW_MS = 24 * 60 * 60 * 1000;
 const SAFETY_MS = 20 * 60 * 1000;
@@ -70,7 +71,7 @@ async function handleJob(job: Job, baseUrl: string) {
     workspaceId:job.workspace_id,conversationId:job.conversation_id,phase:job.phase,firstName,productName,pain,discoveryQuestion,
     sellerText:isGeneric(custom)?'':String(custom).trim().slice(0,800),
   });
-  const followup=written.text.trim();
+  const followup=stripBotFillers(written.text).trim();
   if(!followup) {await setDelivery(job.delivery_id,'skipped','Mensaje vacío');return;}
   const catalogUrl = `${baseUrl.replace(/\/$/,'')}/c/${encodeURIComponent(job.workspace_id)}`;
   const body=`${followup.slice(0,1200)}\n\n🛍️ Mirá nuestro catálogo: ${catalogUrl}`;
