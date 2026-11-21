@@ -8,6 +8,7 @@ import { ViewModeToggle } from "@/components/view-mode-toggle";
 import { NotificationsBell } from "@/components/notifications-bell";
 import { AccountSwitcher } from "@/components/account-switcher";
 import { BalanceBadge } from "@/components/balance-badge";
+import { AiCreditBanner } from "@/components/ai-credit-banner";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { useAuth, getSessionFast } from "@/lib/auth";
 
@@ -64,6 +65,7 @@ function AuthenticatedLayout() {
             <ThemeToggle />
             <AccountSwitcher onSignedOut={() => navigate({ to: "/auth", replace: true })} />
           </header>
+          <AiCreditBanner />
           <main className="min-w-0 flex-1">
             <Outlet />
           </main>
