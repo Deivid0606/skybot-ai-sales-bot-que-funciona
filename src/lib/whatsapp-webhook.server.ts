@@ -42,6 +42,7 @@ async function sendWhatsAppText(...args: Parameters<typeof sendWhatsAppTextNow>)
 }
 import { detectComplaint, COMPLAINT_REASON_LABELS } from "@/lib/complaints";
 import { deliveryIsToday, nextDeliveryText, promisesSameDayDelivery } from "@/lib/business-profile";
+import { stripBotFillers } from "@/lib/human-text";
 
 type CheckoutPrompt = "city" | "name" | "address" | "recipient_ci";
 
@@ -1936,6 +1937,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     const {data:lastPersisted}=await supabaseAdmin.from("orders")
       .select("order_number,status").eq("workspace_id",workspaceId)
       .eq("conversation_id",conversation.id).order("created_at",{ascending:false}).limit(1).maybeSingle();
+    reply = stripBotFillers(reply);
     const safe=safePostSaleReply({reply,customerText:body,
       orderNumber:lastPersisted?.order_number,orderStatus:lastPersisted?.status});
     if(safe.corrected)console.warn("[BOT_SKY_POSTSALE_RECONFIRM_BLOCKED]",{conversationId:conversation.id,source:"general"});
@@ -3969,6 +3971,8 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
           reason:"La IA no pudo redactar la respuesta", queue:false});
         return;
       }
+      // Sin muletillas de bot («¡Estoy aquí para ayudarte!»…).
+      outgoingText = stripBotFillers(outgoingText);
       // Nota de voz (Configuraciones → «Responder con audio»): si el cliente mandó un audio y la
       // respuesta no lleva precios, datos bancarios ni links, se contesta hablando. Si la voz
       // falla o la respuesta no es apta para audio, sale en texto como siempre.
