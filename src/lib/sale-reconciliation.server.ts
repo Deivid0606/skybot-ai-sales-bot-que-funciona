@@ -59,6 +59,8 @@ export function isValidCustomerName(value: unknown): boolean {
 
   // Respuestas de tiempo o de intención («Cuando estoi mas trankilo», «Voy a pedir», «La próxima»).
   if (/\b(?:cuando|voy|vamos|proxima|proximo|pedir|pido|despues|luego|ahora|tranquilo|trankilo|estoi|pensar|pienso|aviso)\b/.test(n)) return false;
+  // «Che», «nde» o «loco» son muletillas, no nombres («Che Varea» salió de «Limitaría. Che Varea gril»).
+  if (/\b(?:che|nde|loco|amigo|amiga|hermano|hermana|bro|mi amor)\b/.test(n)) return false;
   if (/\b(?:estoy|en|aeropuerto|trabajo|oficina|salgo|almorzar|almuerzo|horas?|hasta|desde|avisa|traigas|aca|aqui|cada|unidades?|cajas?)\b/.test(n)) return false;
   // Frases comunes («Es un poco alto», «O no», «Solo eso») no son nombres:
   // palabras funcionales u opiniones nunca forman parte de un nombre y apellido.
@@ -97,12 +99,15 @@ export function isValidDeliveryAddress(value: unknown): boolean {
   // Calle, avenida, número o referencia inequívoca. Un barrio aislado no basta.
   if (/\b(?:\d{1,2}\s*[:.]\s*\d{2}|\d{1,2}\s*(?:hs|horas?)|de\s+\d{1,2}\s+a\s+\d{1,2}|almorzar|almuerzo|salgo|horario|hasta las)\b/.test(n) && !/\b(?:calle|avenida|ruta|casa|aeropuerto|trabajo|oficina|frente|esquina)\b/.test(n)) return false;
   // Frases vagas sin calle ni referencia ("voy a estar en mi casa", "en casa", "mi domicilio").
-  const hasConcreteRef = /(?:\b(?:calle|avenida|avda|avd|av|av\.|ruta|nro|numero|manzana|lote|pasaje|esquina|casi|frente|al lado|detras|entre|barrio|maps)\b|\d{1,5})/.test(n);
+  // «Narciso Méndez Fleitas c/ Mcal. López», «Brasil esq. España»: cruce de calles típico de Paraguay.
+  // Solo marcadores de cruce: «Coronel Oviedo» o «Mariscal Estigarribia» son ciudades, no calles.
+  const streetCross = /(?:^|\s)c\s*\/\s*\p{L}|\besq\b\.?\s*\p{L}/u.test(n);
+  const hasConcreteRef = streetCross || /(?:\b(?:calle|avenida|avda|avd|av|av\.|ruta|nro|numero|manzana|lote|pasaje|esquina|casi|frente|al lado|detras|entre|barrio|maps)\b|\d{1,5})/.test(n);
   if (!hasConcreteRef && /\b(?:mi casa|en casa|mi domicilio|mi hogar|donde vivo|voy a estar|estoy en|ahi en|aca en|lo de siempre)\b/.test(n)) return false;
   // «Asunción en mi trabajo a partir del miércoles»: un día u horario sin calle ni número no es dirección.
   if (!hasConcreteRef && /\b(?:a partir|lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/.test(n)) return false;
   if (/\b(?:aeropuerto|trabajo|oficina|empresa|shopping|colegio|escuela|universidad|hospital|sanatorio|terminal|supermercado|estacion|iglesia|plaza)\b/.test(n)) return true;
-  return /(?:\b(?:calle|avenida|avda|avd|av|av\.|ruta|numero|nro|casa|manzana|lote|pasaje|esquina|casi|frente|al lado|detras|detrás|entre)\b|\d{1,5}|\b(?:maps|ubicacion exacta)\b)/i.test(n);
+  return streetCross || /(?:\b(?:calle|avenida|avda|avd|av|av\.|ruta|numero|nro|casa|manzana|lote|pasaje|esquina|casi|frente|al lado|detras|detrás|entre)\b|\d{1,5}|\b(?:maps|ubicacion exacta)\b)/i.test(n);
 }
 
 const validName = (raw: string): string | null => {
