@@ -3978,6 +3978,8 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         workspaceId, conn, phone, text: outgoingText, customerSentAudio: media?.type === "audio",
       });
       const outgoingWamid = voice ? voice.wamid : await sendWhatsAppText(conn, phone, outgoingText);
+      // La IA respondió: si había cartel de «sin saldo», se apaga.
+      void import("@/lib/ai-credit-alert.server").then(m => m.clearAiCreditProblem(workspaceId)).catch(() => undefined);
       await supabaseAdmin.from("messages").insert({
         workspace_id: workspaceId, user_id: ownerId, conversation_id: conversation.id,
         ad_id: attributedAdId, direction: "outbound", sender: "ai",
@@ -5749,6 +5751,11 @@ async function sendSilenceFallback(args: {
       wamid: args.wamid, error_message: args.reason.slice(0, 1500), status: "pending",
       updated_at: new Date().toISOString(),
     }, { onConflict: "workspace_id,wamid" });
+  }
+  // Sin saldo en la API de IA: cartel rojo en el panel + campanita + push al celular.
+  {
+    const { reportAiCreditProblem } = await import("@/lib/ai-credit-alert.server");
+    await reportAiCreditProblem(args.workspaceId, args.ownerId, args.reason);
   }
   const neutralNotice = "Recibimos tu mensaje. En este momento no podemos darte una respuesta automática. Tu consulta necesita revisión de la tienda. Gracias por tu paciencia.";
   const settings=await loadEmergencySettings(args.workspaceId);
