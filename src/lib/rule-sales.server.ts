@@ -498,6 +498,9 @@ export function declaredCityFromTexts(training: AiContext["training"], texts: st
     const bare = n.replace(/^(?:de|para|en|a|soy de|desde)\s+/, "").trim();
     const listed = hitCity && (deliveryCue || [hitCity.city, ...hitCity.aliases].some(a => norm(a) === bare)) ? hitCity : null;
     if (listed) return {city:listed.city, department:listed.department, listed};
+    // «B. San Alfredo», «Barrio Obrero», «Compañía…»: es un BARRIO de la ciudad ya dicha, no otra
+    // ciudad homónima (caso real: CDE con contraentrega pasó a «San Alfredo, Concepción» anticipado).
+    if (/^(?:b|bo|barrio|bario|varrio|compania|cia|zona|asentamiento|loteamiento)\b/.test(n)) continue;
     const geo = findParaguayPlace(text);
     if (geo) {
       const inList = cityIn(geo.city, coverage) ?? verifiedCoverage(geo.city, geo.department, coverage);
