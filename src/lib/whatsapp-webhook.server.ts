@@ -27,7 +27,7 @@ import { sendWhatsAppText as sendWhatsAppTextNow } from "@/lib/whatsapp.server";
  * «Tiempo de respuesta del bot»): la primera respuesta sale a los N segundos de
  * recibir el mensaje. Si preparar la respuesta tarda más, sale apenas esté lista.
  */
-type TurnClock = { startedAt: number; delayMs: number; waited: boolean };
+type TurnClock = { startedAt: number; delayMs: number; waited: boolean; workspaceId?: string; conversationId?: string };
 const turnClock = new AsyncLocalStorage<TurnClock>();
 async function waitConfiguredReplyDelay(): Promise<void> {
   const clock = turnClock.getStore();
@@ -36,9 +36,32 @@ async function waitConfiguredReplyDelay(): Promise<void> {
   const rest = clock.delayMs - (Date.now() - clock.startedAt);
   if (rest > 0) await new Promise(resolve => setTimeout(resolve, rest));
 }
+/** El texto anuncia un pedido confirmado/registrado o una entrega. */
+const CLAIMS_ORDER_OR_DELIVERY = /(?:pedido|compra)[^.!?\n]{0,80}\b(?:est[aá]|qued[oó]|fue|ya\s+est[aá])\s+(?:confirmad|registrad|agendad)|PEDIDO\s+(?:CONFIRMADO|REGISTRADO)|recibir[aá]s\s+(?:el|tu)\s+(?:paquete|pedido)/i;
+/**
+ * ÚLTIMO CONTROL antes de enviar CUALQUIER texto: sin pedido registrado no se promete
+ * entrega ni se confirma el pedido, salga por el camino que salga (GPS, postventa,
+ * respaldo…). Casos reales: «Recibirás tu pedido mañana» y «Tu pedido está en proceso
+ * y se entregará mañana» sin ningún pedido.
+ */
+async function guardNoOrderPromises(text: string): Promise<string> {
+  const clock = turnClock.getStore();
+  if (!clock?.conversationId || !clock.workspaceId) return text;
+  const risky = (t: string) => promisesShipment(t) || CLAIMS_ORDER_OR_DELIVERY.test(t);
+  if (!risky(text)) return text;
+  const { data: order } = await supabaseAdmin.from("orders").select("id")
+    .eq("workspace_id", clock.workspaceId).eq("conversation_id", clock.conversationId).limit(1).maybeSingle();
+  if (order) return text;
+  console.warn("[BOT_SKY_NO_ORDER_PROMISE_BLOCKED]", JSON.stringify({ conversationId: clock.conversationId, text: text.slice(0, 200) }));
+  const kept = text.split("\n").map(line => line.split(/(?<=[.!?])\s+/).filter(part => !risky(part)).join(" ")).join("\n")
+    .replace(/\n{3,}/g, "\n\n").trim();
+  return (kept.match(/\p{L}{2,}/gu) ?? []).length >= 3 ? kept
+    : "Ya estoy revisando los datos para registrar tu pedido 😊 En un momento te confirmo.";
+}
 async function sendWhatsAppText(...args: Parameters<typeof sendWhatsAppTextNow>) {
   await waitConfiguredReplyDelay();
-  return sendWhatsAppTextNow(...args);
+  const [conn, to, body] = args;
+  return sendWhatsAppTextNow(conn, to, await guardNoOrderPromises(body));
 }
 import { detectComplaint, COMPLAINT_REASON_LABELS } from "@/lib/complaints";
 import { deliveryIsToday, nextDeliveryText, promisesSameDayDelivery } from "@/lib/business-profile";
@@ -1655,7 +1678,11 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     .maybeSingle();
 
   const replyClock = turnClock.getStore();
-  if (replyClock) replyClock.delayMs = Math.min(30, Math.max(0, Number(aiSettings?.reply_delay_seconds) || 0)) * 1000;
+  if (replyClock) {
+    replyClock.delayMs = Math.min(30, Math.max(0, Number(aiSettings?.reply_delay_seconds) || 0)) * 1000;
+    replyClock.workspaceId = workspaceId;
+    replyClock.conversationId = conversation.id;
+  }
   if (!aiSettings?.ai_enabled || conversation.ai_paused || conversation.is_closed) {
     console.warn("[BOT_SKY_REPLY_SKIPPED_SETTINGS]", {
       workspaceId, conversationId: conversation.id,
@@ -5400,6 +5427,7 @@ function promisesShipment(text: string): boolean {
       /\bprogramad[oa]\s+para\s+(?:ser\s+)?(?:entregad[oa]|enviad[oa]|la\s+entrega|entrega)\b/i.test(text) ||
       /\b(?:ser[aá]|va\s+a\s+ser)\s+(?:enviad[oa]|entregad[oa]|despachad[oa])\s+(?:hoy|ma[ñn]ana)\b/i.test(text) ||
       /\b(?:llegar[aá]|te\s+llega|le\s+llega)\s+(?:hoy|ma[ñn]ana)\b/i.test(text) ||
+      /\brecibir[aá]s\s+(?:el|tu)\s+(?:paquete|pedido)\b/i.test(text) ||
       /\bentrega\s+se\s+(?:realizar[aá]|har[aá]|efectuar[aá]|coordinar[aá])\s+(?:hoy|ma[ñn]ana|el\s+\w+)\b/i.test(text) ||
       /\b(?:pedido|compra|encomienda)\s+(?:ya\s+)?(?:est[aá]|sigue)\s+en\s+(?:proceso|preparaci[oó]n|camino)\b/i.test(text) ||
       /\bse\s+(?:entregar[aá]|enviar[aá]|despachar[aá])\s+(?:hoy|ma[ñn]ana|el\s+\w+)\b/i.test(text) ||

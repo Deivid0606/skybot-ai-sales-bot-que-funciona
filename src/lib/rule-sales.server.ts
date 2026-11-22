@@ -528,8 +528,10 @@ export function cityIn(text:string, coverage:Coverage[]): Coverage | null {
   }
   // «Jorge Andrés Maciel», «Escobar», «la de Santiago»: ciudades que también son
   // apellidos o palabras comunes solo cuentan con una señal clara de lugar.
+  // «Piquete cué - Limpio» / «Piquete Cue, Limpio»: la ciudad como parte separada también es señal clara.
+  const separatedPart = (a: string) => text.split(/\s*[-–—,/|]\s*/).some(part => norm(part) === norm(a));
   if (hit && isAmbiguousPlaceName(hit.city) && !hasPlaceCue(text) &&
-      ![hit.city, ...hit.aliases].some(a => norm(a) === norm(text))) return null;
+      ![hit.city, ...hit.aliases].some(a => norm(a) === norm(text) || separatedPart(a))) return null;
   return hit;
 }
 
@@ -1072,7 +1074,17 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
     if (!listed?.active && sellerAllowsNationwideAdvance(ctx.training)) s.paymentMethod = "anticipado";
   }
   else if(placeOnly && (s.awaiting==="city" || !s.cityVerified)) {
-    s.pendingPlace = text.trim(); askedPlaceNow = true;
+    // «Piquete cué - Limpio», «Piquete Cue, Limpio»: barrio y ciudad en el mismo mensaje.
+    // Solo vale si una de las partes es EXACTAMENTE una ciudad de la cobertura.
+    const parts=text.split(/\s*[-–—,/|]\s*/).map(t=>t.replace(/[().]/g,"").trim()).filter(Boolean);
+    const partCity=parts.length>1 ? parts.map(part=>{
+      const hit=cityIn(part,coverage);
+      return hit && [hit.city,...hit.aliases].some(a=>norm(a)===norm(part)) ? hit : null;
+    }).find(Boolean) ?? null : null;
+    if(partCity){
+      s.city=partCity.city;s.department=partCity.department;s.cityVerified=true;
+      s.coverageStatus=partCity.active?"covered":"uncovered";s.pendingPlace=null;
+    } else { s.pendingPlace = text.trim(); askedPlaceNow = true; }
   }
   else if(s.awaiting==="city" && !gpsUrl && !s.cityVerified && !personName) {
     // Mensaje multilínea (nombre, cédula, teléfono y ciudad juntos): la ciudad

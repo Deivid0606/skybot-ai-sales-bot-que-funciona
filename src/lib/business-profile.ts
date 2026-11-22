@@ -180,6 +180,7 @@ export function businessProfileInstruction(profile: BusinessProfile, saved: bool
         : `- HOY YA NO HAY ENTREGAS${profile.cutoff_time ? ` (la hora de corte de hoy, ${profile.cutoff_time}, ya pasó o hoy no se entrega)` : ""}. PROHIBIDO decir que sale, llega, se envía o se entrega hoy, y PROHIBIDO decir «si confirmás antes de las ${profile.cutoff_time ?? "…"}». Si el cliente lo quiere para hoy, decile con amabilidad que hoy ya no llegamos y ofrecé la próxima entrega.`,
       profile.no_holiday_delivery ? "- Feriados: no hay entregas." : "",
       next ? `- PRÓXIMA ENTREGA para un pedido confirmado AHORA: ${next}. Usá exactamente esto si preguntan cuándo llega; no inventes otras fechas.` : "",
+      "- Si el cliente pide recibirlo MÁS ADELANTE (por ejemplo «el miércoles 25, cuando cobro»), aceptalo con gusto y confirmá esa fecha: NUNCA digas que no es una fecha válida. Lo único que no se puede es ANTES de la próxima entrega.",
       profile.bot_always_on
         ? "- Atención por WhatsApp: todos los días; seguí tomando pedidos aunque no sea horario de entrega."
         : "- Fuera del horario de entrega avisá con amabilidad que el pedido se entrega en el próximo horario, y tomá el pedido igual.",
