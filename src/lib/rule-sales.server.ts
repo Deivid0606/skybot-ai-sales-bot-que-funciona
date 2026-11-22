@@ -1109,7 +1109,10 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
 
   if (!match && !personName && !askedPlaceNow && sellerAllowsNationwideAdvance(ctx.training) && !gpsUrl &&
       (s.awaiting === "city" || (s.city && !s.cityVerified))) {
-    const destination=declaredDestination(text);
+    const declared=declaredDestination(text);
+    // «Amigo después de Cobrar, voy a hacer mi pedido» no es «Ciudad, Departamento»:
+    // la ciudad declarada tiene que existir en Paraguay o en la cobertura del vendedor.
+    const destination=declared && (findParaguayPlace(declared.city) || verifiedCoverage(declared.city,declared.department,coverage) || cityIn(declared.city,coverage)) ? declared : null;
     if(destination) {
       const listed=verifiedCoverage(destination.city,destination.department,coverage);
       s.city=listed?.city ?? destination.city;
