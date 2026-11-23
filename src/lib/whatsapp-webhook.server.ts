@@ -1843,6 +1843,8 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       if (/\b(?:le dije|te dije|no es|ojo|equivoc\w*|esta mal|cambi\w*|corrig\w*|en realidad|mejor (?:a|en|para))\b/.test(t) &&
           declaredCityFromTexts(ctx.training, [body])) return "ciudad";
       if (/\bpor ?que\b.{0,30}\b(?:\d+|dos|tres|cuatro|cinco)\s+unidades\b|\byo (?:quiero|queria|pedi|ped[ií]) (?:una|uno|1|solo una|solo uno)\b|\b(?:me cobraron|me cobran|cobraste|esta mal el (?:total|precio|pedido))\b/.test(t)) return "corregir";
+      // «Necesito dos unidades», «quiero una más», «agregame otra»: cambiar la CANTIDAD del pedido ya registrado.
+      if (/\b(?:necesit\w*|nesecit\w*|quiero|quisiera|mejor|serian?|aument\w*)\b[^.?!]{0,20}\b(?:dos|tres|cuatro|cinco|[2-9])\s*(?:unidad\w*|en total|de (?:esos|esas))?\s*$|\b(?:dos|tres|cuatro|cinco|[2-9])\s+unidad\w*|\b(?:una|uno|otra|otro)\s+mas\b|\b(?:agreg\w*|sum\w*)\s+(?:otra|otro|una|uno)\b/.test(t)) return "cantidad";
       return null;
     })();
     let postSaleNote = "";
@@ -1854,17 +1856,22 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
         if (postSaleRequest === "ciudad" && newCity && normalizeIntentText(newCity.city) === normalizeIntentText(String(lastOrder.city ?? ""))) {
           // Ya es la ciudad registrada: nada que corregir.
         } else {
-        const marker = postSaleRequest === "anular" ? "CLIENTE PIDE ANULAR" : postSaleRequest === "ciudad" ? `CLIENTE CORRIGE LA CIUDAD A ${newCity?.city ?? "?"}` : "CLIENTE RECLAMA EL PEDIDO";
+        const marker = postSaleRequest === "anular" ? "CLIENTE PIDE ANULAR" : postSaleRequest === "ciudad" ? `CLIENTE CORRIGE LA CIUDAD A ${newCity?.city ?? "?"}`
+          : postSaleRequest === "cantidad" ? "CLIENTE PIDE CAMBIAR LA CANTIDAD" : "CLIENTE RECLAMA EL PEDIDO";
         if (!String(lastOrder.observations ?? "").includes(marker)) {
           await supabaseAdmin.from("orders").update({ observations: [lastOrder.observations, `${marker}: «${body.slice(0, 160)}»`].filter(Boolean).join(" | ") } as any)
             .eq("workspace_id",workspaceId).eq("id",lastOrder.id);
           await supabaseAdmin.from("notifications").insert({
             workspace_id: workspaceId, user_id: ownerId, type: "reclamo", audience: "user", link: "/inbox",
-            title: `${postSaleRequest === "anular" ? "⚠️ Piden ANULAR" : postSaleRequest === "ciudad" ? `⚠️ Corregir CIUDAD (${newCity?.city ?? "?"}) en` : "⚠️ Reclamo en"} el pedido ${lastOrder.order_number} · ${phone}`,
+            title: `${postSaleRequest === "anular" ? "⚠️ Piden ANULAR" : postSaleRequest === "ciudad" ? `⚠️ Corregir CIUDAD (${newCity?.city ?? "?"}) en`
+              : postSaleRequest === "cantidad" ? "⚠️ Cambiar CANTIDAD en" : "⚠️ Reclamo en"} el pedido ${lastOrder.order_number} · ${phone}`,
             body: `«${body.slice(0, 200)}». Pedido: ${lastOrder.quantity} u. · ${formatGs(lastOrder.total)}. Revisalo y corregilo en DCANP.`,
           } as any);
         }
         postSaleNote = `\nEL CLIENTE ${postSaleRequest === "anular" ? "PIDE ANULAR EL PEDIDO" : "RECLAMA EL PEDIDO (cantidad, precio o datos)"}. El sistema YA avisó a la tienda (esto sí es verdad). Respondé con empatía y en 1 o 2 frases: que ya le avisaste a la tienda y que una persona lo revisa y le confirma. NO digas que lo anulaste o corregiste vos, NO le pidas que confirme y NO afirmes datos distintos a los registrados (cantidad ${lastOrder.quantity}, total ${formatGs(lastOrder.total)}): si dice que pidió otra cantidad, reconocé que puede haber un error y que la tienda lo corrige.`;
+        if (postSaleRequest === "cantidad") {
+          postSaleNote = `\nEL CLIENTE QUIERE CAMBIAR LA CANTIDAD DE SU PEDIDO YA REGISTRADO (hoy: ${lastOrder.quantity} u., ${formatGs(lastOrder.total)}). El sistema YA avisó a la tienda (esto sí es verdad). Respondé en 1 o 2 frases: que le pasaste el cambio a la tienda y que te confirman el nuevo total (podés decir el precio del catálogo para esa cantidad). PROHIBIDO decir «actualizaré», «actualicé» o «ya está cambiado» y PROHIBIDO pedirle que confirme: el cambio lo hace una persona.`;
+        }
         if (postSaleRequest === "ciudad" && newCity) {
           const policy = deliveryPolicyForCity(newCity.city, newCity.department, ctx.training);
           postSaleNote = `\nEL CLIENTE CORRIGE LA CIUDAD DEL PEDIDO: es ${newCity.city} (no ${lastOrder.city}). El sistema YA avisó a la tienda para corregirla (esto sí es verdad). ${newCity.listed || policy ? `${newCity.city} SÍ tiene envío de esta tienda${policy?.paymentMethod === "contraentrega" ? " con pago al recibir" : ""}: NUNCA digas que no hay envío a ${newCity.city}.` : `${newCity.city} no figura en la cobertura: decí que la tienda lo revisa y le confirma; no lo niegues vos.`} Respondé con empatía en 1 o 2 frases: pedí disculpas por el error y decí que la tienda corrige la ciudad y le confirma. No digas que lo corregiste vos.`;
@@ -1983,6 +1990,29 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
   // An explicit multi-product purchase must reach the cart parser. A single
   // product catalog template must not consume the whole WhatsApp turn.
   const multiProductInquiry = /\b(?:quiero|quisiera|llevo|necesito|comprar|pedir|agrega|sumale)\b.{2,100}\by\b.{2,100}/i.test(normalizeIntentText(body));
+  // MENSAJES SEGUIDOS: si el mensaje anterior del cliente llegó hace segundos y todavía se está
+  // procesando (el producto aún no se guardó), esperar a que termine en vez de adivinar el
+  // producto. Caso real: «Quiero el Cortador…» y 5 s después «Costo xfgracias» → el segundo,
+  // sin producto guardado, eligió otro producto del catálogo.
+  if (!conversation.product_id) {
+    const { data: prevInbound } = await supabaseAdmin.from("messages").select("created_at")
+      .eq("workspace_id", workspaceId).eq("conversation_id", conversation.id)
+      .eq("direction", "inbound").lt("created_at", savedMessage?.created_at ?? new Date().toISOString())
+      .order("created_at", { ascending: false }).limit(1).maybeSingle();
+    const gapMs = prevInbound?.created_at ? Date.now() - new Date(prevInbound.created_at).getTime() : Infinity;
+    if (gapMs < 25_000) {
+      for (let waited = 0; waited < 10_000; waited += 1_000) {
+        await new Promise(resolve => setTimeout(resolve, 1_000));
+        const { data: fresh } = await supabaseAdmin.from("conversations").select("product_id")
+          .eq("workspace_id", workspaceId).eq("id", conversation.id).maybeSingle();
+        if (fresh?.product_id) {
+          conversation.product_id = fresh.product_id;
+          console.info("[BOT_SKY_BURST_WAIT_PRODUCT]", JSON.stringify({ conversationId: conversation.id, waitedMs: waited + 1_000 }));
+          break;
+        }
+      }
+    }
+  }
   // PRODUCTO POR EL ANUNCIO: si el cliente no nombra el producto, se usa el anuncio del que vino
   // (anuncio vinculado en la tabla de anuncios, o palabras clave en el título/copy del anuncio).
   const adProductHint = !conversation.product_id && attributedAdId && !isReceiptMedia && !multiProductInquiry
