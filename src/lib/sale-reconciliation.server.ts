@@ -59,6 +59,8 @@ export function isValidCustomerName(value: unknown): boolean {
 
   // Respuestas de tiempo o de intención («Cuando estoi mas trankilo», «Voy a pedir», «La próxima»).
   if (/\b(?:cuando|voy|vamos|proxima|proximo|pedir|pido|despues|luego|ahora|tranquilo|trankilo|estoi|pensar|pienso|aviso)\b/.test(n)) return false;
+  // Preguntas o frases de compra («Cómo puedo comprar», «Quisiera info», «Dónde queda») no son nombres.
+  if (/\b(?:como|puedo|podes|puede|comprar|compro|hago|hacer|quisiera|info|informacion|donde|queda|cuando|cual|interesa|interesado|interesada|consulta|pregunta|necesito|tienen|tenes|hay|envian|mandan|sirve|funciona)\b/.test(n)) return false;
   // «Che», «nde» o «loco» son muletillas, no nombres («Che Varea» salió de «Limitaría. Che Varea gril»).
   if (/\b(?:che|nde|loco|amigo|amiga|hermano|hermana|bro|mi amor)\b/.test(n)) return false;
   if (/\b(?:estoy|en|aeropuerto|trabajo|oficina|salgo|almorzar|almuerzo|horas?|hasta|desde|avisa|traigas|aca|aqui|cada|unidades?|cajas?)\b/.test(n)) return false;
