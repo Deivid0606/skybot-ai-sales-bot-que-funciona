@@ -18,6 +18,7 @@ import { advanceRuleSale, cityIn, sellerUsesFirstOffer, isEncomiendaAdvanceOrder
 import { classifyCustomerIntent, addVerifiedOrderContext, addPendingSaleContext } from "@/lib/hybrid-intent.server";
 import { coordinatesFromText, validCoords } from "@/lib/hybrid-intent.server";
 import { shippingFeeForCity, orderCharges, normalizeNoShipping, noShippingInstruction, declaredCityFromTexts, applyDeclaredCity, parseCoverage, verifiedCoverage, sellerAllowsNationwideAdvance, deliveryPolicyForCity, hasTemplatePlaceholder, stripBankDetailsForCod, enforceVerifiedPaymentReply, isNonCityPhrase, sellerBankText, cleanReplyForPolicy, codTransferAllowed, customerWantsTransfer } from "@/lib/rule-sales.server";
+import { findParaguayPlace } from "@/lib/py-cities";
 import { resolveDepartamento } from "@/lib/orders";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { sendWhatsAppText as sendWhatsAppTextNow } from "@/lib/whatsapp.server";
@@ -3278,6 +3279,11 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
     ].filter(n => n > 0));
     const inventsPostSaleAmount = (text: string) => Boolean(lastOrder) &&
       (text.match(/\d{1,3}(?:[.,]\d{3})+/g) ?? []).some(raw => !knownAmounts.has(Number(raw.replace(/[.,]/g, ""))));
+    // «Soy del interior» / «¿envían al interior?» sin ciudad: no se responde «nuestro delivery no
+    // llega hasta esa ciudad» ni se niega el envío; primero se pregunta la ciudad (caso real Qbic PY).
+    const cityStillUnknown = !conversation.sale_closed && !verifiedSaleState.city && !findParaguayPlace(body);
+    const verdictWithoutCity = (text: string) => cityStillUnknown &&
+      deniesCityNotGiven(text);
     const violatesVerifiedFacts = (text: string) => {
       const policy = verifiedSaleState.cityVerified
         ? deliveryPolicyForCity(verifiedSaleState.city, verifiedSaleState.department, ctx.training) : null;
@@ -3292,6 +3298,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         (WAITING_REPLY_RE.test(text) && !/[?¿]/.test(text)) ||
         // «No realizamos envíos a Reducto»: solo la pestaña de cobertura puede negar un envío.
         (deniesShipping(text) && verifiedSaleState.coverageStatus !== "none") ||
+        verdictWithoutCity(text) ||
         // «Te avisaremos cuando el pedido esté en camino» sin pedido registrado = venta perdida.
         (!conversation.sale_closed && promisesShipment(text)) ||
         (!conversation.sale_closed && Boolean(asksKnownData(text))) ||
@@ -3325,6 +3332,8 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         WAITING_REPLY_RE.test(text) ? "No digas «un momento», «voy a verificar» ni «te aviso»: el sistema ya revisó todo en este turno; respondé con el resultado y el siguiente paso." : "",
         deniesShipping(text) && verifiedSaleState.coverageStatus !== "none"
           ? `No está verificado que no haya envío${verifiedSaleState.city ? ` a ${verifiedSaleState.city}` : ""}: NO digas que no enviamos. Si el cliente nombró un barrio, zona o compañía, preguntale con amabilidad a qué ciudad pertenece; si no dio lugar, preguntá en qué ciudad quiere recibir el pedido.` : "",
+        verdictWithoutCity(text)
+          ? "El cliente todavía NO dijo su ciudad (solo dijo «interior» o nada): NO digas que no llegamos, que su ciudad está fuera de cobertura ni des el texto de encomienda todavía. Preguntale con amabilidad en qué ciudad quiere recibirlo para decirle cómo es el envío ahí." : "",
         !conversation.sale_closed && asksKnownData(text)
           ? `El cliente YA te dio ${asksKnownData(text)}: no se lo vuelvas a pedir. Pedí solo lo que de verdad falta${verifiedSaleState.awaiting ? ` (${verifiedSaleState.awaiting})` : ""}, o respondé lo que preguntó.` : "",
         asksCiEarly(text)
@@ -3354,6 +3363,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         out = stripWaitingSentences(out);
         return out.split("\n").filter(line => !hasTemplatePlaceholder(line) && !claimsRegisteredOrder(line) && !wrongSameDay(line) && !inventsPostSaleAmount(line) &&
           !(deniesShipping(line) && verifiedSaleState.coverageStatus !== "none") &&
+          !verdictWithoutCity(line) &&
           !(!conversation.sale_closed && promisesShipment(line))).join("\n").replace(/\n{3,}/g, "\n\n").trim();
       };
       let cleaned = scrub(again ?? text);
@@ -5472,6 +5482,11 @@ function promisesShipment(text: string): boolean {
   return /\b(?:te|le)\s+avis(?:aremos|amos|o)\s+cuando\s+(?:el|tu|su)\s+pedido\b|\b(?:tu|el|su)\s+pedido\s+(?:ya\s+)?(?:est[aá]|va|sale|sali[oó])\s+(?:en\s+camino|hoy|ma[ñn]ana)\b|\bte\s+lo\s+(?:enviamos|mandamos|llevamos)\s+(?:hoy|ma[ñn]ana)\b/i.test(text);
 }
 
+/** «Nuestro delivery no llega hasta esa ciudad»: veredicto de cobertura (o negación de envío). */
+function deniesCityNotGiven(text: string): boolean {
+  return /\b(?:no\s+(?:llega|llegamos|llegan)\s+(?:hasta|a)\s+(?:esa|tu|su)\s+(?:ciudad|zona|localidad)|(?:esa|tu|su)\s+(?:ciudad|zona|localidad)\s+(?:est[aá]|queda)\s+fuera|fuera\s+del?\s+(?:[aá]rea|zona)\s+de\s+cobertura)\b/i.test(text) || deniesShipping(text);
+}
+
 /** La respuesta niega el envío («no realizamos envíos a Reducto», «no llegamos a…»). */
 function deniesShipping(text: string): boolean {
   // «Concepción no está en esa lista», «solo hacemos envíos a las ciudades de contraentrega…».
@@ -5918,6 +5933,11 @@ async function sendSilenceFallback(args: {
       if (text && policyMethod === "contraentrega") text = cleanReplyForPolicy(text, "contraentrega");
       if (text && WAITING_REPLY_RE.test(text)) text = stripWaitingSentences(text);
       // El respaldo nunca anuncia un pedido confirmado: eso solo lo hace el registro real.
+      // «Soy del interior» sin ciudad: el respaldo tampoco dice «no llega hasta esa ciudad»; pregunta la ciudad.
+      if (text && !policyCity && !findParaguayPlace(String(sourceMessage?.body ?? "")) && deniesCityNotGiven(text)) {
+        const kept = text.split(/(?<=[.!?\n])\s*/).filter(part => !deniesCityNotGiven(part) && !/encomienda|transportadora|pago anticipado/i.test(part)).join(" ").trim();
+        text = `${kept ? `${kept} ` : ""}¿En qué ciudad te gustaría recibirlo? Así te digo cómo es el envío ahí 😊`;
+      }
       if (text) text = text.split(/(?<=[.!?\n])\s*/).filter(part =>
         !/(?:pedido|compra)[^.!?\n]{0,80}(?:confirmad|registrad|listo|agendad)|\bBS-[A-F0-9]{6,}|pedido\s+n\.?\s*[º°o]/i.test(part) &&
         !(!convInfo?.sale_closed && /recibir[aá]s (?:el|tu) (?:paquete|pedido)|(?:ser[aá]|va a ser) (?:enviado|entregado)|te (?:lo )?(?:llevamos|enviamos|entregamos)/i.test(part)))
