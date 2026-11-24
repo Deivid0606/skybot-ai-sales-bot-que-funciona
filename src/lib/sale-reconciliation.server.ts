@@ -1,6 +1,6 @@
 import type { AiContext, AiOrder } from "@/lib/ai.server";
 import type { SaleState } from "@/lib/rule-sales.server";
-import { isAmbiguousPlaceName, hasPlaceCue } from "@/lib/py-cities";
+import { isAmbiguousPlaceName, hasPlaceCue, findParaguayPlace, departmentIn } from "@/lib/py-cities";
 import { measureWordsToDigits } from "@/lib/rule-sales.server";
 import { looksLikePersonName, verifiedCoverage, parseCoverage, sellerAllowsNationwideAdvance, nationwideDestinationFromText, extractRecipientCiFromCustomerText, isValidRecipientCi, isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi } from "@/lib/rule-sales.server";
 
@@ -198,7 +198,11 @@ export function recoverSaleStateFromHistory(ctx: AiContext, previous: SaleState,
       const pair = bare.match(/^([\p{L}][\p{L} .'-]{2,50}?)\s*(?:,|\s+-\s+|\s+(?:del?\s+)?departamento\s+de\s+)\s*([\p{L}][\p{L} .'-]{2,40})$/iu);
       const asksDepartment = /(?:qu[eé] departamento|de qu[eé] departamento|departamento es|confirm[aá].*departamento)/i.test(lastQuestion);
       const asksCity = /(?:en qu[eé] ciudad|qu[eé] ciudad|ciudad.*recibir|d[oó]nde.*recibir)/i.test(lastQuestion);
-      if (pair && (asksCity || /^(?:soy de|vivo en|para|enviar a|mandar a)\s+/i.test(raw))) {
+      // «Buen día, que pasó de mi pedido» no es «Ciudad, Departamento»: la ciudad tiene que
+      // existir en Paraguay o el departamento tiene que ser uno real.
+      const realPair = pair && (findParaguayPlace(pair[1]) || departmentIn(pair[2])) &&
+        !/\b(?:pedido|paso|hola|buen|buenas|gracias|precio|cuanto|quiero)\b/i.test(pair[2].normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
+      if (pair && realPair && (asksCity || /^(?:soy de|vivo en|para|enviar a|mandar a)\s+/i.test(raw))) {
         state.city = pair[1].trim(); state.department = pair[2].trim();
         state.cityVerified = true; state.coverageStatus = "uncovered";
       } else if (asksDepartment && state.city && !state.cityVerified &&

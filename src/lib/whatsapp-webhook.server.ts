@@ -1929,7 +1929,7 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     // POSTVENTA: no prometer entrega «hoy» si el pedido se confirmó después del corte (o hoy no
     // se entrega), y no inventar precios ni «confirmar» cambios de cantidad/precio.
     if (reply) {
-      const { data: po } = await supabaseAdmin.from("orders").select("created_at,total,quantity,product_title")
+      const { data: po } = await supabaseAdmin.from("orders").select("created_at,total,quantity,product_title,status")
         .eq("workspace_id", workspaceId).eq("conversation_id", conversation.id)
         .order("created_at", { ascending: false }).limit(1).maybeSingle();
       const dp = ctx.deliveryProfile ?? null;
@@ -1940,15 +1940,21 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       const badAmount = (t: string) => Boolean(po) && (t.match(/\d{1,3}(?:[.,]\d{3})+/g) ?? [])
         .some(raw => !known.has(Number(raw.replace(/[.,]/g, ""))));
       const badToday = (t: string) => !sameDayOk && promisesSameDayDelivery(t);
-      if (badAmount(reply) || badToday(reply)) {
-        console.warn("[BOT_SKY_POSTSALE_FACTS_GUARD]", JSON.stringify({conversationId:conversation.id, amount:badAmount(reply), today:badToday(reply)}));
+      // Pedido todavía «nuevo»: nadie verificó el pago ni lo despachó. No decir «el pago está
+      // confirmado» ni «tu pedido está en camino» (caso real: pedido sin revisar, cliente esperando).
+      const fresh = !po?.status || /^(?:nuevo|pendiente|new)$/i.test(String(po.status));
+      const badStatus = (t: string) => fresh && (/\b(?:pago|transferencia|comprobante)\s+(?:ya\s+)?(?:est[aá]|fue|qued[oó])\s+(?:confirmad|verificad|acreditad|aprobad)[oa]\b/i.test(t) ||
+        /\b(?:pedido|paquete|encomienda|producto)\s+(?:ya\s+)?(?:est[aá]|va|sali[oó])\s+en\s+camino\b|\best[aá]\s+en\s+camino\b|\bya\s+(?:fue|sali[oó])\s+(?:enviad[oa]|despachad[oa])\b/i.test(t));
+      if (badAmount(reply) || badToday(reply) || badStatus(reply)) {
+        console.warn("[BOT_SKY_POSTSALE_FACTS_GUARD]", JSON.stringify({conversationId:conversation.id, amount:badAmount(reply), today:badToday(reply), status:badStatus(reply)}));
         const fact = [
           po ? `El pedido registrado es: ${po.product_title ?? "producto"}, cantidad ${po.quantity}, total ${formatGs(Number(po.total))}. NO inventes precios ni confirmes cambios: si el cliente quiere cambiar cantidad, precio o dirección, decile que se lo pasás a la tienda para que lo modifique y le confirme.` : "",
           badToday(reply) && dp ? `Este pedido NO se entrega hoy: la entrega es ${nextDeliveryText(dp, new Date(po!.created_at))}. No digas que llega o se entrega hoy.` : "",
+          badStatus(reply) ? "El pedido está REGISTRADO y la tienda todavía tiene que revisarlo: NO digas que el pago está confirmado ni que el pedido está en camino. Decí que ya está registrado y que la tienda lo revisa y le avisa la entrega." : "",
         ].filter(Boolean).join(" ");
         const rewritten = await aiCompose(safeCtx, fact);
-        reply = rewritten && !badAmount(rewritten) && !badToday(rewritten) ? rewritten
-          : reply.split(/(?<=[.!?\n])\s*/).filter(part => !badAmount(part) && !badToday(part)).join(" ").trim();
+        reply = rewritten && !badAmount(rewritten) && !badToday(rewritten) && !badStatus(rewritten) ? rewritten
+          : reply.split(/(?<=[.!?\n])\s*/).filter(part => !badAmount(part) && !badToday(part) && !badStatus(part)).join(" ").trim();
       }
     }
     // La depuración de modalidad pudo dejar la respuesta vacía: una sola
