@@ -2041,13 +2041,26 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
     if (activeProduct !== catalogResult.productId) {
       // A saved cycle boundary prevents historic product selections, names and
       // quantities from being replayed into this new sale.
+      // Cambiar de producto en MEDIO de la charla no borra los datos del cliente: si ya dijo
+      // «Soy de Asunción», su nombre o su dirección, se conservan (caso real Mellystore: el bot
+      // volvió a preguntar la ciudad 4 veces). Producto, variante, cantidad y comprobantes sí se reinician.
+      const prev = (!conversation.sale_closed ? (activeSale as any)?.state : null) as SaleState | null | undefined;
+      const keep: Partial<SaleState> = prev ? {
+        ...(prev.city ? { city: prev.city, department: prev.department ?? null, cityVerified: prev.cityVerified ?? false,
+          coverageStatus: prev.coverageStatus, paymentMethod: prev.paymentMethod ?? null } : {}),
+        ...(prev.customerName ? { customerName: prev.customerName } : {}),
+        ...(prev.street ? { street: prev.street } : {}),
+        ...(prev.locationUrl ? { locationUrl: prev.locationUrl } : {}),
+        ...(prev.recipientCi ? { recipientCi: prev.recipientCi } : {}),
+        ...(prev.alternatePhone ? { alternatePhone: prev.alternatePhone } : {}),
+      } : {};
       const { error: resetError } = await supabaseAdmin.from("bot_sale_states").upsert({
         workspace_id: workspaceId, conversation_id: conversation.id,
-        state: { productId: catalogResult.productId, cycleStartedAt: savedMessage?.created_at ?? new Date().toISOString() },
+        state: { ...keep, productId: catalogResult.productId, cycleStartedAt: savedMessage?.created_at ?? new Date().toISOString() },
         updated_at: new Date().toISOString(),
       }, { onConflict: "workspace_id,conversation_id" });
       if (resetError) throw resetError;
-      console.info("[BOT_SKY_PRODUCT_SWITCH]", JSON.stringify({conversationId: conversation.id}));
+      console.info("[BOT_SKY_PRODUCT_SWITCH]", JSON.stringify({conversationId: conversation.id, kept: Object.keys(keep)}));
     }
     conversation.product_id = catalogResult.productId;
     // An explicit different catalog product starts a fresh purchase even when
