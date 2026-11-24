@@ -327,7 +327,11 @@ export function orderCharges(args: {
 export function managedNoShipping(city: string | null | undefined, department: string | null | undefined, training: AiContext["training"]): boolean {
   if (!city || !training.some(t => t.category === COVERAGE_CATEGORY)) return false;
   const coverage = parseCoverage(training);
-  const place = (department ? verifiedCoverage(city, department, coverage) : null) ?? cityIn(city, coverage);
+  // «San Lorenzo Barcequillo» / «Ñemby, detrás de la Coca-Cola»: si el texto es un lugar real
+  // de Paraguay, se busca ESA ciudad en la cobertura antes de decir que no hay envío.
+  const real = findParaguayPlace(city);
+  const place = (department ? verifiedCoverage(city, department, coverage) : null) ?? cityIn(city, coverage) ??
+    (real ? verifiedCoverage(real.city, real.department, coverage) ?? cityIn(real.city, coverage) : null);
   return !place || !/contra ?entrega|encomienda|anticipad/i.test(norm(place.method));
 }
 
@@ -349,6 +353,16 @@ export function normalizeNoShipping(state: SaleState, training: AiContext["train
       state.city = null; state.department = null; state.cityVerified = false;
       state.coverageStatus = "unknown"; state.paymentMethod = null; state.awaiting = "city";
       return state;
+    }
+    // «San Lorenzo Barcequillo» + «detrás de la Coca-Cola» como ciudad/departamento: se guarda la
+    // ciudad de la cobertura (San Lorenzo, Central) con su modalidad, no el texto del cliente.
+    if (state.city && !(state.department && verifiedCoverage(state.city, state.department, coverage))) {
+      const py = findParaguayPlace(state.city);
+      const listed = cityIn(state.city, coverage) ?? (py ? verifiedCoverage(py.city, py.department, coverage) ?? cityIn(py.city, coverage) : null);
+      if (listed && norm(listed.city) !== norm(state.city ?? "")) {
+        state.city = listed.city; state.department = listed.department;
+        state.coverageStatus = listed.active ? "covered" : "uncovered";
+      }
     }
   }
   if (state.cityVerified && managedNoShipping(state.city, state.department, training)) {
@@ -533,7 +547,10 @@ export function cityIn(text:string, coverage:Coverage[]): Coverage | null {
   // apellidos o palabras comunes solo cuentan con una señal clara de lugar.
   // «Piquete cué - Limpio» / «Piquete Cue, Limpio»: la ciudad como parte separada también es señal clara.
   const separatedPart = (a: string) => text.split(/\s*[-–—,/|]\s*/).some(part => norm(part) === norm(a));
-  if (hit && isAmbiguousPlaceName(hit.city) && !hasPlaceCue(text) &&
+  // «San Lorenzo Barcequillo»: la ciudad junto a un barrio conocido de ESA ciudad es señal clara.
+  const padded = ` ${norm(text)} `;
+  const twoNames = hit ? [hit.city, ...hit.aliases].filter(a => norm(a).length >= 3 && padded.includes(` ${norm(a)} `)).length >= 2 : false;
+  if (hit && isAmbiguousPlaceName(hit.city) && !hasPlaceCue(text) && !twoNames &&
       ![hit.city, ...hit.aliases].some(a => norm(a) === norm(text) || separatedPart(a))) return null;
   return hit;
 }
