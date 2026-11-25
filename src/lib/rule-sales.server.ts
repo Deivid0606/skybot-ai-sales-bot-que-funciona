@@ -252,12 +252,13 @@ export function isValidRecipientCi(value: unknown): boolean {
 export function extractRecipientCiFromCustomerText(text: string, awaitingCi=false): string | null {
   if (/^\s*(?:\[imagen\]|COMPROBANTE|\[documento\]|\[audio\])/i.test(text)) return null;
   const raw=text.trim();
-  if (/\b(?:alias|cuenta|banco|titular|beneficiario|operaci[oó]n|celular|tel[eé]fono|whatsapp)\b/i.test(raw)) return null;
-  const explicit=raw.match(/(?:\bc[eé]dula\b|\bc\.?\s*i\.?(?=\s|[:=#-]|\d|$))(?:\s+(?:del\s+destinatario|de\s+identidad))?(?:\s*(?:n[uú]mero|nro\.?|es|ser[ií]a))?\s*[:#=-]?\s*(\S.*)$/im);
-  // An ID and a recipient name may arrive together, on separate lines.
-  // Extract only the digits immediately following CI, never a phone/account.
-  const candidate = explicit?.[1]?.match(/^\s*(\d[\d.\s-]{2,14}\d)(?=\s*(?:[.\n,;]|$))/)?.[1]
-    ?? (awaitingCi && /^[0-9.\s-]{4,16}$/.test(raw) ? raw : null);
+  // A customer can send: "Antonia Ysabel Ledezma..ci .1231069.. celu..0983191669..".
+  // Restrict the match to the digits directly after the explicit CI label;
+  // unrelated phone or banking numbers later in the SAME message are excluded.
+  const explicit=raw.match(/(?:\bc[eé]dula\b|\bc\s*\.?\s*i\s*\.?(?=\s|[:=#.-]|\d|$))(?:\s+(?:del\s+destinatario|de\s+identidad))?(?:\s*(?:n[uú]mero|nro\.?|es|ser[ií]a))?\s*[.:#=\s-]*([\d][\d.\s-]{2,17})/i);
+  const digitGroup=explicit?.[1]?.match(/^\s*(\d[\d.\s-]*\d)/)?.[1]??null;
+  const candidate = digitGroup ? digitGroup.replace(/[^0-9]/g,"")
+    : (awaitingCi && /^[0-9.\s-]{4,16}$/.test(raw) ? raw : null);
   if (!candidate || !isValidRecipientCi(candidate)) return null;
   return candidate.replace(/[^0-9]/g,"");
 }
@@ -886,6 +887,14 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   s.productId=p.id;
   const ci=extractRecipientCiFromCustomerText(text,s.awaiting==="recipient_ci");
   if (ci) s.recipientCi=ci;
+  // Customer name + CI + phone may arrive together as one WhatsApp message.
+  // Only the text BEFORE the explicit CI label can be treated as a name.
+  if(ci && !isValidCustomerName(s.customerName)){
+    const beforeCi=text.split(/\bc[eé]dula\b|\bc\s*\.?\s*i\s*\.?\s*[:#.-]?/i)[0]
+      .replace(/^(?:y\s+yo|soy|me\s+llamo|mi\s+nombre\s+es|nombre\s*:)\s*/i,"")
+      .replace(/[.,;:\s]+$/g,"").trim();
+    if(beforeCi && isValidCustomerName(beforeCi))s.customerName=beforeCi;
+  }
   // Encomienda: a single message can carry both CI and the recipient's full name.
   // A name on its own line following the CI is trustworthy; ignore locations and instructions.
   if (ci && !isValidCustomerName(s.customerName)) {
