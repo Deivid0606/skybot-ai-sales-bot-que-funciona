@@ -4535,7 +4535,7 @@ export async function createOrderFromAi(args: {
     }
   }
 
-  const product =
+  let product =
     args.products.find((candidate) => candidate.id === args.productId) ?? null;
 
   if (!product || !args.productId) {
@@ -4593,43 +4593,68 @@ export async function createOrderFromAi(args: {
     content: String(row.body ?? ""),
   }));
 
-  // FINAL SALE PRODUCT GATE: an old conversation.product_id / Gemini result can
-  // never override a more recent product whose catalog was actually sent to
-  // this customer. Check at the INSERT boundary, not only at message parsing.
-  // Only single-product orders are checked here; mixed carts have independent
-  // product/option verification below.
+  // FACTUAL CATALOG RECONCILIATION. The most recent product actually
+  // presented on WhatsApp wins over a stale conversation.product_id or model
+  // guess. Correct the product and price option BEFORE calculating the total.
+  // The order still must satisfy all normal payment/coverage/name validation.
   if (!args.multiProductLines?.length && args.productId) {
-    const { data: sourceMessage, error: sourceError } = await supabaseAdmin.from("messages")
+    const {data:sourceMessage,error:sourceError}=await supabaseAdmin.from("messages")
       .select("created_at").eq("workspace_id",args.workspaceId)
       .eq("conversation_id",args.conversationId).eq("wamid",args.sourceMessageId)
       .maybeSingle();
     if(sourceError)throw sourceError;
-    if(!sourceMessage?.created_at)throw new Error("No se pudo verificar el mensaje que confirma la compra; pedido pendiente de revisión.");
+    if(!sourceMessage?.created_at)throw new Error("Mensaje de confirmación no verificable; pedido pendiente.");
     const until=new Date(sourceMessage.created_at);
     const since=new Date(until.getTime()-48*60*60*1000).toISOString();
     const {data:lastCatalog,error:catalogError}=await supabaseAdmin.from("messages")
       .select("catalog_product_id,created_at")
-      .eq("workspace_id",args.workspaceId)
-      .eq("conversation_id",args.conversationId)
-      .eq("direction","outbound")
-      .not("catalog_product_id","is",null)
+      .eq("workspace_id",args.workspaceId).eq("conversation_id",args.conversationId)
+      .eq("direction","outbound").not("catalog_product_id","is",null)
       .gte("created_at",since).lte("created_at",until.toISOString())
       .order("created_at",{ascending:false}).limit(1).maybeSingle();
     if(catalogError)throw catalogError;
     if(lastCatalog?.catalog_product_id && lastCatalog.catalog_product_id!==args.productId) {
-      const {data:correctProduct}=await supabaseAdmin.from("products").select("name")
-        .eq("workspace_id",args.workspaceId).eq("id",lastCatalog.catalog_product_id).maybeSingle();
-      const reason=`BLOQUEADO: el cliente recibió catálogo de ${correctProduct?.name??"otro producto"}, pero el cierre intentó usar ${product.name}. Revisar variante y cantidad; no se registró venta.`;
-      console.error("[BOT_SKY_WRONG_PRODUCT_BLOCKED]",JSON.stringify({
-        conversationId:args.conversationId,expected:lastCatalog.catalog_product_id,attempted:args.productId,
+      const corrected= args.products.find(p=>p.id===lastCatalog.catalog_product_id);
+      if(!corrected)throw new Error("Producto presentado no pertenece al catálogo activo; no se puede registrar.");
+      const {data:cycleMessages,error:cycleError}=await supabaseAdmin.from("messages")
+        .select("body").eq("workspace_id",args.workspaceId)
+        .eq("conversation_id",args.conversationId).eq("direction","inbound")
+        .gte("created_at",lastCatalog.created_at).lte("created_at",until.toISOString())
+        .order("created_at",{ascending:true}).limit(40);
+      if(cycleError)throw cycleError;
+      const customerTexts=(cycleMessages??[]).map(m=>normalizeIntentText(String(m.body??"")));
+      const choices=(corrected.product_prices??[]).filter(o=>Number(o.price)>0&&Number(o.quantity)>0);
+      const explicitChoices=customerTexts.flatMap(msg=>{
+        const amounts=[...msg.matchAll(/\b(?:gs\.?\s*)?(\d{1,3}(?:[.,]\d{3})+|\d{2,6})\s*(?:gs|guaranies|mil)?\b/g)]
+          .filter(m=>/\b(?:gs|guaranies|mil|precio|sale|cuesta|total)\b/.test(msg))
+          .map(m=>Number(m[1].replace(/[.,]/g,"")));
+        const quantities=[...msg.matchAll(/\b(\d{1,2})\s*(?:unidad(?:es)?|plumeros?|piezas?|cajas?|pares?|combos?|packs?)\b/g)]
+          .map(m=>Number(m[1]));
+        const fromAmount=choices.filter(o=>amounts.includes(Number(o.price)));
+        const fromQuantity=choices.filter(o=>quantities.includes(Number(o.quantity)));
+        return fromAmount.length===1?fromAmount:fromQuantity.length===1?fromQuantity:[];
+      });
+      const chosen=explicitChoices.length?explicitChoices[explicitChoices.length-1]
+        : choices.length===1?choices[0]:null;
+      if(!chosen){
+        const why=`Producto de última presentación: ${corrected.name}. Falta identificar sin ambigüedad la presentación/cantidad seleccionada por el cliente.`;
+        await logOrderIssue({workspaceId:args.workspaceId,ownerId:args.ownerId,message:why});
+        throw new Error(why);
+      }
+      const previousName=product?.name??"producto anterior";
+      args.productId=corrected.id;
+      product=corrected;
+      args.cartLines=undefined;
+      args.order.product_price_id=chosen.id;
+      args.order.price_option_label=chosen.label;
+      // A bundle option is a single commercial package (3 plumeros at 129000),
+      // NOT three independent purchases at the unit price.
+      args.order.quantity=Number(chosen.quantity);
+      args.order.promo_quantity=1;
+      console.info("[BOT_SKY_PRODUCT_AUTO_RECONCILED]",JSON.stringify({
+        conversationId:args.conversationId,from:previousName,to:corrected.name,
+        option:chosen.label,quantity:chosen.quantity,price:chosen.price,
       }));
-      await logOrderIssue({workspaceId:args.workspaceId,ownerId:args.ownerId,message:reason});
-      await supabaseAdmin.from("notifications").insert({
-        workspace_id:args.workspaceId,user_id:args.ownerId,type:"reclamo",audience:"user",link:"/inbox",
-        title:"⚠️ Pedido bloqueado: producto incorrecto",
-        body:reason.slice(0,240),
-      } as any);
-      throw new Error("El producto de la compra no coincide con el último catálogo enviado; pedido bloqueado para evitar un envío equivocado.");
     }
   }
 
