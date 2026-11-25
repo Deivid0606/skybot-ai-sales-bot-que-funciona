@@ -142,3 +142,17 @@ export const retryAfterProductSkuSave = createServerFn({method:"POST"})
     const result=await retryDcanpForProductSku(product.workspace_id,product.id);
     return {...result,updated:(updated??[]).length};
   });
+
+/** Después de editar un pedido pendiente: intentar cargarlo YA en el E-commerce. */
+export const retryOrderLoadNow = createServerFn({method:"POST"})
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input:unknown)=>z.object({orderId:z.string().uuid()}).parse(input))
+  .handler(async ({data,context})=>{
+    const {supabase,userId}=context;
+    // Con la sesión del usuario: solo ve pedidos de su tienda (RLS).
+    const {data:order,error}=await supabase.from("orders").select("id,workspace_id,status").eq("id",data.orderId).maybeSingle();
+    if (error || !order) throw new Error("Pedido no encontrado");
+    if (!userId) throw new Error("Sesión no válida");
+    const {retryDcanpForOrders}=await import("@/lib/dcanp-auto-import.server");
+    return await retryDcanpForOrders(order.workspace_id, [order.id]);
+  });

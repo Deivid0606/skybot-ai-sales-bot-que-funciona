@@ -3376,6 +3376,23 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
     ].filter(n => n > 0));
     const inventsPostSaleAmount = (text: string) => Boolean(lastOrder) &&
       (text.match(/\d{1,3}(?:[.,]\d{3})+/g) ?? []).some(raw => !knownAmounts.has(Number(raw.replace(/[.,]/g, ""))));
+    // ANTES de la venta tampoco se inventa un precio (caso real MEGA TODO: «el cuchillo cuesta
+    // Gs. 25.000» con el producto a 129.000). Se aceptan: precios del catálogo, precio + envío
+    // (múltiplos de 5.000 hasta 60.000), sumas de dos opciones y montos chicos de envío/delivery.
+    const knownList = [...knownAmounts];
+    const priceIsKnown = (n: number) => knownAmounts.has(n) ||
+      knownList.some(k => n > k && n - k <= 60000 && (n - k) % 5000 === 0) ||
+      knownList.some(a => knownList.some(b => a + b === n));
+    const inventsPrice = (text: string) => !lastOrder && knownAmounts.size > 0 &&
+      text.split(/(?<=[.!?\n])\s*/).some(sentence => {
+        if (/\b(?:c\.?\s*i\.?|c[eé]dula|ruc|cuenta|alias|tel[eé]fono|celular|operaci[oó]n)\b/i.test(sentence)) return false;
+        const shipping = /\b(?:env[ií]o|delivery|flete|encomienda|transportadora|agencia|costo de env)\w*/i.test(sentence);
+        return (sentence.match(/\d{1,3}(?:[.,]\d{3})+/g) ?? []).some(raw => {
+          const n = Number(raw.replace(/[.,]/g, ""));
+          if (n < 1000 || priceIsKnown(n)) return false;
+          return !(shipping && n <= 60000);
+        });
+      });
     // «Soy del interior» / «¿envían al interior?» sin ciudad: no se responde «nuestro delivery no
     // llega hasta esa ciudad» ni se niega el envío; primero se pregunta la ciudad (caso real Qbic PY).
     // Producto ya elegido (catálogo enviado): «¿Qué producto te gustaría pedir?» o «¿En qué puedo
@@ -3412,6 +3429,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         asksCiEarly(text) ||
         wrongSameDay(text) ||
         inventsPostSaleAmount(text) ||
+        inventsPrice(text) ||
         repeatsPreviousReply(text);
     };
     // Solo el bloque posterior al INSERT puede confirmar; el resto nunca.
@@ -3454,6 +3472,8 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         claimsRegisteredOrder(text) ? "El pedido TODAVÍA NO está registrado en el sistema: no digas que está confirmado, no muestres número de pedido ni agradezcas la compra; pedí el dato que falte." : "",
         inventsPostSaleAmount(text) && lastOrder
           ? `El pedido YA registrado es: ${lastOrder.product_title ?? "producto"}, cantidad ${lastOrder.quantity}, total ${formatGs(Number(lastOrder.total))}. NO inventes precios ni confirmes cambios de cantidad o precio: usá solo precios del catálogo y decile al cliente que su pedido de cambio se lo pasás a la tienda para que lo modifique.` : "",
+        inventsPrice(text)
+          ? `Tu borrador tiene un precio que NO está en el catálogo. Usá SOLO los precios reales${knownOptions ? ` de ${knownProduct?.name}: ${knownOptions}` : " del catálogo"}. Nunca inventes ni redondees precios.` : "",
         wrongSameDay(text)
           ? `HOY YA NO HAY ENTREGAS (pasó la hora de corte${deliveryProfile?.cutoff_time ? ` de las ${deliveryProfile.cutoff_time}` : ""} o hoy no se entrega). La entrega es ${nextDeliveryNow ?? "en el próximo día de entrega"}. NO digas que sale, llega o se entrega hoy, ni «si confirmás antes de las…». Si el cliente lo quiere para hoy, decile con amabilidad que hoy ya no llegamos y ofrecé esa fecha.` : "",
       ].filter(Boolean).join(" ");
@@ -3470,7 +3490,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         if (policy?.paymentMethod === "contraentrega" && !codTransferActive) out = cleanReplyForPolicy(stripBankDetailsForCod(out), "contraentrega");
         else if (verifiedSaleState.awaiting === "variant") out = stripBankDetailsForCod(out);
         out = stripWaitingSentences(out);
-        return out.split("\n").filter(line => !hasTemplatePlaceholder(line) && !claimsRegisteredOrder(line) && !wrongSameDay(line) && !inventsPostSaleAmount(line) &&
+        return out.split("\n").filter(line => !hasTemplatePlaceholder(line) && !claimsRegisteredOrder(line) && !wrongSameDay(line) && !inventsPostSaleAmount(line) && !inventsPrice(line) &&
           !(deniesShipping(line) && verifiedSaleState.coverageStatus !== "none") &&
           !verdictWithoutCity(line) &&
           !ignoresKnownProduct(line) &&
@@ -5248,13 +5268,30 @@ async function productHintFromAd(workspaceId: string, ownerId: string, adId: str
     // mencionar al pasar palabras de otro producto («heladera», «lavarropas»).
     const wordRe = (k: string) => new RegExp(`(^|[^\\p{L}\\p{N}])${k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^\\p{L}\\p{N}]|$)`, "u");
     const scores = new Map<string, { score: number; keyword: string }>();
+    // Una palabra clave que tienen VARIOS productos («cortador» en el cortador de verduras y en el
+    // adaptador para taladro) vale menos que una propia («repollo»): se reparte entre ellos.
+    const owners = new Map<string, Set<string>>();
+    for (const row of (rows ?? []) as unknown as Array<{ keyword: string | null; product_id: string; products: { is_active: boolean } | null }>) {
+      if (row.products?.is_active === false) continue;
+      const k = norm(String(row.keyword ?? "").trim());
+      if (!owners.has(k)) owners.set(k, new Set());
+      owners.get(k)!.add(row.product_id);
+    }
+    const counted = new Set<string>();
     for (const row of (rows ?? []) as unknown as Array<{ keyword: string | null; product_id: string; products: { is_active: boolean; name: string | null } | null }>) {
       if (row.products?.is_active === false) continue;
       const k = norm(String(row.keyword ?? "").trim());
       if (k.length < 4 || !wordRe(k).test(hay)) continue;
+      // La misma palabra repetida en el mismo producto cuenta una sola vez.
+      if (counted.has(`${row.product_id}|${k}`)) continue;
+      counted.add(`${row.product_id}|${k}`);
       const entry = scores.get(row.product_id) ?? { score: 0, keyword: "" };
-      entry.score += k.length;
-      if (k.length > entry.keyword.length) entry.keyword = String(row.keyword).trim();
+      entry.score += k.length / Math.max(1, owners.get(k)?.size ?? 1);
+      // Palabra que se usa para buscar el catálogo: mejor una PROPIA del producto («repollo») que
+      // una compartida («cortador»), que podría traer otro producto.
+      const own = (owners.get(k)?.size ?? 1) === 1;
+      const prevOwn = entry.keyword ? (owners.get(norm(entry.keyword))?.size ?? 1) === 1 : false;
+      if (!entry.keyword || (own && !prevOwn) || (own === prevOwn && k.length > norm(entry.keyword).length)) entry.keyword = String(row.keyword).trim();
       scores.set(row.product_id, entry);
     }
     const named = new Set<string>();
