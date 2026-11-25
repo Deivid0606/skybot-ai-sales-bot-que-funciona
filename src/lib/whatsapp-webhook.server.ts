@@ -4593,6 +4593,46 @@ export async function createOrderFromAi(args: {
     content: String(row.body ?? ""),
   }));
 
+  // FINAL SALE PRODUCT GATE: an old conversation.product_id / Gemini result can
+  // never override a more recent product whose catalog was actually sent to
+  // this customer. Check at the INSERT boundary, not only at message parsing.
+  // Only single-product orders are checked here; mixed carts have independent
+  // product/option verification below.
+  if (!args.multiProductLines?.length && args.productId) {
+    const { data: sourceMessage, error: sourceError } = await supabaseAdmin.from("messages")
+      .select("created_at").eq("workspace_id",args.workspaceId)
+      .eq("conversation_id",args.conversationId).eq("wamid",args.sourceMessageId)
+      .maybeSingle();
+    if(sourceError)throw sourceError;
+    if(!sourceMessage?.created_at)throw new Error("No se pudo verificar el mensaje que confirma la compra; pedido pendiente de revisión.");
+    const until=new Date(sourceMessage.created_at);
+    const since=new Date(until.getTime()-48*60*60*1000).toISOString();
+    const {data:lastCatalog,error:catalogError}=await supabaseAdmin.from("messages")
+      .select("catalog_product_id,created_at")
+      .eq("workspace_id",args.workspaceId)
+      .eq("conversation_id",args.conversationId)
+      .eq("direction","outbound")
+      .not("catalog_product_id","is",null)
+      .gte("created_at",since).lte("created_at",until.toISOString())
+      .order("created_at",{ascending:false}).limit(1).maybeSingle();
+    if(catalogError)throw catalogError;
+    if(lastCatalog?.catalog_product_id && lastCatalog.catalog_product_id!==args.productId) {
+      const {data:correctProduct}=await supabaseAdmin.from("products").select("name")
+        .eq("workspace_id",args.workspaceId).eq("id",lastCatalog.catalog_product_id).maybeSingle();
+      const reason=`BLOQUEADO: el cliente recibió catálogo de ${correctProduct?.name??"otro producto"}, pero el cierre intentó usar ${product.name}. Revisar variante y cantidad; no se registró venta.`;
+      console.error("[BOT_SKY_WRONG_PRODUCT_BLOCKED]",JSON.stringify({
+        conversationId:args.conversationId,expected:lastCatalog.catalog_product_id,attempted:args.productId,
+      }));
+      await logOrderIssue({workspaceId:args.workspaceId,ownerId:args.ownerId,message:reason});
+      await supabaseAdmin.from("notifications").insert({
+        workspace_id:args.workspaceId,user_id:args.ownerId,type:"reclamo",audience:"user",link:"/inbox",
+        title:"⚠️ Pedido bloqueado: producto incorrecto",
+        body:reason.slice(0,240),
+      } as any);
+      throw new Error("El producto de la compra no coincide con el último catálogo enviado; pedido bloqueado para evitar un envío equivocado.");
+    }
+  }
+
   const priceOptions = [...(product.product_prices ?? [])]
     .map((option) => ({
       id: option.id,
