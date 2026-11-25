@@ -3225,8 +3225,15 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
           state:saveStep.state,updated_at:new Date().toISOString()},
           {onConflict:"workspace_id,conversation_id"});
       if(saveStateError) throw saveStateError;
+      // Complete a documented advance checkout with verified technical state,
+      // even when Gemini omits the order JSON. The receipt is documentary only:
+      // the saved order's payment status remains pending bank accreditation.
+      const documentedAdvance= /anticip|transfer|deposit|giro/i.test(String(saveStep.state.paymentMethod??"")) &&
+        Boolean(saveStep.state.receiptPath && !saveStep.state.receiptReview &&
+          saveStep.state.receiptDocuments?.some(doc=>doc.path===saveStep.state.receiptPath)) &&
+        (!sellerRequiresEncomiendaCi(ctx.training) || isValidRecipientCi(saveStep.state.recipientCi));
       if(saveStep.complete && !conversation.sale_closed && !bypassSale && !result.order &&
-        !/anticip|transfer|deposit|giro/i.test(String(saveStep.state.paymentMethod??""))) {
+        (!/anticip|transfer|deposit|giro/i.test(String(saveStep.state.paymentMethod??"")) || documentedAdvance)) {
         const st=saveStep.state;
         result = {reply:result.reply,product_id:saveStep.productId,sale_closed:true,
           order:{customer_name:st.customerName!,city:st.city!,departamento:st.department!,
@@ -3838,7 +3845,13 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
           ? "Encomienda con pago anticipado" : verifiedOrderCoverage?.method,
       });
       // Formato de cierre oficial (datos tal como quedaron registrados).
-      const confirmationText = confirmedMessage;
+      // Receipt recognition is NOT proof of bank accreditation; an advance
+      // order is recorded with pending payment until an authorised reviewer
+      // verifies bank funds. Avoid a "paid/confirmed" claim in WhatsApp.
+      const confirmationText = isAdvance && savedConfirmationOrder.payment_status!=="pagado"
+        ? confirmedMessage.replace(/^✅ PEDIDO CONFIRMADO 🎉/, "🧾 PEDIDO REGISTRADO — PAGO EN REVISIÓN")
+          .replace(/¡Muchas gracias por tu compra! 😊/,"Recibimos tu pedido y comprobante. El pago debe verificarse antes de despachar. 😊")
+        : confirmedMessage;
       try {
         const confirmationWamid = await sendWhatsAppText(conn, phone, confirmationText);
         await supabaseAdmin.from("messages").insert({
