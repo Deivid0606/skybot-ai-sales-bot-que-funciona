@@ -3385,7 +3385,9 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       .map((o: any) => `${o.label} a ${formatGs(Number(o.price))}`).join(", ") : "";
     const ignoresKnownProduct = (text: string) => Boolean(knownProduct) &&
       /(?:qu[eé]|cu[aá]l)\s+(?:producto|art[ií]culo)\s+(?:te\s+)?(?:gustar[ií]a|quer[eé]s|quisieras|te\s+interesa|busc[aá]s|necesit[aá]s)|\b(?:en\s+)?qu[eé]\s+(?:te\s+)?puedo\s+ayudar(?:te)?(?:\s+hoy)?\s*\?/i.test(text);
-    const cityStillUnknown = !conversation.sale_closed && !verifiedSaleState.city && !findParaguayPlace(body);
+    // «No estoy en Asunción», «no soy de acá»: nombrar una ciudad para NEGARLA no es dar la ciudad.
+    const bodyWithoutNegatedPlace = body.replace(/\b(?:no|ni)\s+(?:estoy|soy|vivo|es|queda|resido|trabajo)\s+(?:en|de|por)\s+[\p{L} .'-]{2,40}/giu, " ");
+    const cityStillUnknown = !conversation.sale_closed && !verifiedSaleState.city && !findParaguayPlace(bodyWithoutNegatedPlace);
     const verdictWithoutCity = (text: string) => cityStillUnknown &&
       deniesCityNotGiven(text);
     const violatesVerifiedFacts = (text: string) => {
@@ -5650,6 +5652,8 @@ function promisesShipment(text: string): boolean {
 
 /** «Nuestro delivery no llega hasta esa ciudad»: veredicto de cobertura (o negación de envío). */
 function deniesCityNotGiven(text: string): boolean {
+  // «Solo hacemos entregas en Asunción» con la ciudad del cliente sin saber: restricción inventada.
+  if (/\b[Ss]olo\s+(?:hacemos|realizamos|tenemos|hay|llegamos|enviamos|entregamos|contamos\s+con)\s+(?:(?:entregas?|env[ií]os?|delivery|cobertura)\s+)?(?:en|a|para|dentro\s+de)\s+\p{Lu}/u.test(text)) return true;
   return /\b(?:no\s+(?:llega|llegamos|llegan)\s+(?:hasta|a)\s+(?:esa|tu|su)\s+(?:ciudad|zona|localidad)|(?:esa|tu|su)\s+(?:ciudad|zona|localidad)\s+(?:est[aá]|queda)\s+fuera|fuera\s+del?\s+(?:[aá]rea|zona)\s+de\s+cobertura)\b/i.test(text) || deniesShipping(text);
 }
 
