@@ -29,7 +29,9 @@ export function normalizeCustomerName(value: unknown): string {
     // Títulos delante del nombre («Lic. Gricelda Quevedo», «Sra. Ana»).
     .replace(/^(?:(?:lic|lcda|lcdo|dr|dra|ing|prof|sr|sra|srta|don|doña|crio|cnel|tte|abg|abog)\.?\s+)+/i, "").trim()
     // «Favio Martínez soy» → «Favio Martínez».
-    .replace(/\s+(?:soy|es mi nombre)$/i, "").trim();
+    .replace(/\s+(?:soy|es mi nombre)$/i, "").trim()
+    // «Mi nombre es Juan Roman», «Me llamo Ana», «Soy Pedro Gómez» → solo el nombre.
+    .replace(/^(?:(?:hola|buenas|buen d[ií]a)\s+)?(?:mi\s+nombre\s+(?:es|completo\s+es)|me\s+llamo|soy|a\s+nombre\s+de|el\s+nombre\s+es|nombre\s*:?)\s+/i, "").trim();
 }
 
 /** Para el registro MANUAL: alcanza con un nombre de letras (el vendedor ya revisó el chat). */

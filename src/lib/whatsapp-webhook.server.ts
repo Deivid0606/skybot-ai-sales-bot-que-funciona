@@ -348,6 +348,26 @@ function isNewPurchaseIntent(text: string, hasReferral: boolean) {
  * ni crear otra orden. Usa la columna existente orders.observations.
  * Devuelve true únicamente cuando se ha comprobado que está almacenada.
  */
+/** Primer nombre usable del cliente («Elba Suarez» → «Elba»). */
+function firstNameOf(name: string | null | undefined): string {
+  const w = String(name ?? "").trim().split(/\s+/)[0] ?? "";
+  return /^\p{L}{2,20}$/u.test(w) && !/^(?:mi|soy|el|la|nombre)$/i.test(w) ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : "";
+}
+
+/** Pedido ya cargado/enviado: avisar a la tienda que el cliente mandó un dato de entrega nuevo. */
+async function notifyPostSaleDeliveryData(args: { workspaceId: string; ownerId: string;
+  order: { order_number?: string | null; status?: string | null } | null; what: string }) {
+  if (!args.order?.order_number) return;
+  if (!/cargad|enviad|despach|en camino|ruta/i.test(String(args.order.status ?? ""))) return;
+  const title = `Dato de entrega nuevo · ${args.order.order_number}`;
+  const { data: recent } = await supabaseAdmin.from("notifications").select("id").eq("workspace_id", args.workspaceId)
+    .eq("title", title).gte("created_at", new Date(Date.now() - 30 * 60 * 1000).toISOString()).limit(1);
+  if (recent?.length) return;
+  await supabaseAdmin.from("notifications").insert({ workspace_id: args.workspaceId, user_id: args.ownerId, type: "pedido",
+    title, body: `El cliente mandó ${args.what} después de cargar el pedido. Quedó en las observaciones: pasáselo al repartidor/E-commerce.`,
+    link: "/pedidos", audience: "user" } as any);
+}
+
 export async function attachPostSaleGpsToLatestOrder(args: {
   workspaceId: string;
   conversationId: string;
@@ -1771,7 +1791,24 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       } catch(error) {
         console.error("[BOT SKY postventa] No se pudo asociar el GPS al pedido",error);
       }
-      // GPS guardado: la IA contesta usando el resultado real, sin respuesta fija por código.
+      // GPS guardado: agradecer como una persona (caso real: la IA dijo «No puedo guardar la
+      // ubicación» cuando SÍ se guardó). Si el pedido ya está cargado, avisar a la tienda.
+      if (attached) {
+        const {data:gpsOrd}=await supabaseAdmin.from("orders").select("order_number,status,customer_name")
+          .eq("workspace_id",workspaceId).eq("conversation_id",conversation.id)
+          .order("created_at",{ascending:false}).limit(1).maybeSingle();
+        await notifyPostSaleDeliveryData({workspaceId,ownerId,order:gpsOrd,what:"la ubicación GPS"});
+        const first=firstNameOf(gpsOrd?.customer_name);
+        const thanks=`¡Gracias por la ubicación${first?`, ${first}`:""}! 😊 Ya la agregué a tu pedido para que el repartidor llegue sin problema.`;
+        const tw=await sendWhatsAppText(conn,phone,thanks);
+        await supabaseAdmin.from("messages").insert({workspace_id:workspaceId,user_id:ownerId,
+          conversation_id:conversation.id,ad_id:attributedAdId,direction:"outbound",sender:"ai",
+          response_origin:"code",body:thanks,wamid:tw,status:"sent"} as any);
+        await supabaseAdmin.from("conversations").update({last_message:thanks,
+          last_message_at:new Date().toISOString(),unread_count:0})
+          .eq("workspace_id",workspaceId).eq("id",conversation.id);
+        return;
+      }
       const {data:gpsHistory}=await supabaseAdmin.from("messages")
         .select("sender,body").eq("workspace_id",workspaceId)
         .eq("conversation_id",conversation.id)
@@ -1803,6 +1840,34 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
 
   // Si una dirección llega DESPUÉS de despachar, nunca editar la logística
   // silenciosamente: avisar al vendedor para que confirme la actualización.
+  // Dirección o referencia escrita DESPUÉS del pedido («Juan XXIII 2709 casi Laguna Grande»,
+  // «frente a la escuela»): se agrega a las observaciones del pedido y se agradece.
+  if(conversation.sale_closed && !media && !/[?¿]/.test(body) && body.length <= 300 &&
+     /\b(?:calle|avenida|avda|av\.|barrio|b[°º]|casa\s*(?:n[°º.]?\s*)?\d+|esquina|esq\.|casi|c\/|frente|al lado|detr[aá]s|referencia|domicilio|direcci[oó]n|port[oó]n|muralla|edificio|depto|piso)\b/i.test(body) &&
+     !/\b(?:cancel\w*|anul\w*|no quiero|cambi\w*|equivoc\w*|cuando|cu[aá]ndo|llega|reclamo)\b/i.test(body)) {
+    const {data:addrOrder}=await supabaseAdmin.from("orders")
+      .select("id,order_number,status,customer_name,observations,street").eq("workspace_id",workspaceId)
+      .eq("conversation_id",conversation.id).neq("status","cancelado")
+      .order("created_at",{ascending:false}).limit(1).maybeSingle();
+    const addrText=body.replace(/\s+/g," ").trim();
+    if(addrOrder && !String(addrOrder.observations??"").includes(addrText) && normalizeIntentText(String(addrOrder.street??""))!==normalizeIntentText(addrText)){
+      const obs=[String(addrOrder.observations??""),`DIRECCIÓN/REFERENCIA del cliente (después del pedido): ${addrText}`].filter(Boolean).join(" | ");
+      const {error:addrErr}=await supabaseAdmin.from("orders").update({observations:obs}).eq("workspace_id",workspaceId).eq("id",addrOrder.id);
+      if(!addrErr){
+        await notifyPostSaleDeliveryData({workspaceId,ownerId,order:addrOrder,what:"una dirección o referencia"});
+        const first=firstNameOf(addrOrder.customer_name);
+        const thanks=`¡Gracias${first?`, ${first}`:""}! 😊 Ya agregué esa dirección a tu pedido para el repartidor.`;
+        const tw=await sendWhatsAppText(conn,phone,thanks);
+        await supabaseAdmin.from("messages").insert({workspace_id:workspaceId,user_id:ownerId,
+          conversation_id:conversation.id,ad_id:attributedAdId,direction:"outbound",sender:"ai",
+          response_origin:"code",body:thanks,wamid:tw,status:"sent"} as any);
+        await supabaseAdmin.from("conversations").update({last_message:thanks,
+          last_message_at:new Date().toISOString(),unread_count:0})
+          .eq("workspace_id",workspaceId).eq("id",conversation.id);
+        return;
+      }
+    }
+  }
   if(conversation.sale_closed &&
      /\b(?:calle|avenida|avda|barrio|casa\s*\d+|esquina|casi|frente|referencia|domicilio|direcci[oó]n)\b/i.test(body)) {
     const {data:lastShipped}=await supabaseAdmin.from("orders")
@@ -2074,6 +2139,25 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
   // El copy y la foto ya constituyen la presentación del producto en este turno.
   // No enviar además una respuesta IA duplicada; IA asume los turnos siguientes.
   if (catalogResult?.sent) return;
+
+  // «Pasame foto», «tenés video?», «mandame una imagen»: reenviar las fotos REALES del producto
+  // (caso real Mellystore: la IA respondía «No puedo enviar fotos» varias veces).
+  if (!media && conversation.product_id &&
+      /\b(?:pas\w*|mand\w*|envi\w*|ten[eé]s|tienen|hay|quiero ver|puedo ver|mostr\w*|ver)\b[^.?!]{0,20}\b(?:fotos?|fotitos?|im[aá]gen(?:es)?|videos?|foto real)\b|^\s*(?:fotos?|im[aá]gen(?:es)?|videos?)\s*[?!.]*\s*$/i.test(normalizeIntentText(body))) {
+    const prod = await supabaseAdmin.from("products").select("name").eq("workspace_id", workspaceId).eq("id", conversation.product_id).maybeSingle();
+    const sentPhotos = await sendProductPhotos({ workspaceId, ownerId, conversationId: conversation.id, adId: attributedAdId,
+      conn, phone, productId: conversation.product_id, productName: String(prod.data?.name ?? "producto"),
+      wantVideo: /\bvideos?\b/i.test(normalizeIntentText(body)) });
+    if (sentPhotos > 0) {
+      const follow = conversation.sale_closed ? "Ahí te paso 😊" : "Ahí te paso las fotos 😊 ¿Cuántas te preparo?";
+      const fw = await sendWhatsAppText(conn, phone, follow);
+      await supabaseAdmin.from("messages").insert({ workspace_id: workspaceId, user_id: ownerId, conversation_id: conversation.id,
+        ad_id: attributedAdId, direction: "outbound", sender: "ai", response_origin: "code", body: follow, wamid: fw, status: "sent" } as any);
+      await supabaseAdmin.from("conversations").update({ last_message: follow, last_message_at: new Date().toISOString(), unread_count: 0 })
+        .eq("workspace_id", workspaceId).eq("id", conversation.id);
+      return;
+    }
+  }
 
   const { data: activeCycle } = await supabaseAdmin.from("bot_sale_states").select("state")
     .eq("workspace_id", workspaceId).eq("conversation_id", conversation.id).maybeSingle();
@@ -3294,6 +3378,13 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       (text.match(/\d{1,3}(?:[.,]\d{3})+/g) ?? []).some(raw => !knownAmounts.has(Number(raw.replace(/[.,]/g, ""))));
     // «Soy del interior» / «¿envían al interior?» sin ciudad: no se responde «nuestro delivery no
     // llega hasta esa ciudad» ni se niega el envío; primero se pregunta la ciudad (caso real Qbic PY).
+    // Producto ya elegido (catálogo enviado): «¿Qué producto te gustaría pedir?» o «¿En qué puedo
+    // ayudarte?» suena a bot que no escuchó (caso real Mellystore: «Quiero.» tras el anuncio).
+    const knownProduct = !conversation.sale_closed && detectedProduct ? ctx.products.find(p => p.id === detectedProduct) ?? null : null;
+    const knownOptions = knownProduct ? (knownProduct.product_prices ?? []).slice().sort((a: any, b: any) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+      .map((o: any) => `${o.label} a ${formatGs(Number(o.price))}`).join(", ") : "";
+    const ignoresKnownProduct = (text: string) => Boolean(knownProduct) &&
+      /(?:qu[eé]|cu[aá]l)\s+(?:producto|art[ií]culo)\s+(?:te\s+)?(?:gustar[ií]a|quer[eé]s|quisieras|te\s+interesa|busc[aá]s|necesit[aá]s)|\b(?:en\s+)?qu[eé]\s+(?:te\s+)?puedo\s+ayudar(?:te)?(?:\s+hoy)?\s*\?/i.test(text);
     const cityStillUnknown = !conversation.sale_closed && !verifiedSaleState.city && !findParaguayPlace(body);
     const verdictWithoutCity = (text: string) => cityStillUnknown &&
       deniesCityNotGiven(text);
@@ -3312,6 +3403,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         // «No realizamos envíos a Reducto»: solo la pestaña de cobertura puede negar un envío.
         (deniesShipping(text) && verifiedSaleState.coverageStatus !== "none") ||
         verdictWithoutCity(text) ||
+        ignoresKnownProduct(text) ||
         // «Te avisaremos cuando el pedido esté en camino» sin pedido registrado = venta perdida.
         (!conversation.sale_closed && promisesShipment(text)) ||
         (!conversation.sale_closed && Boolean(asksKnownData(text))) ||
@@ -3345,6 +3437,8 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         WAITING_REPLY_RE.test(text) ? "No digas «un momento», «voy a verificar» ni «te aviso»: el sistema ya revisó todo en este turno; respondé con el resultado y el siguiente paso." : "",
         deniesShipping(text) && verifiedSaleState.coverageStatus !== "none"
           ? `No está verificado que no haya envío${verifiedSaleState.city ? ` a ${verifiedSaleState.city}` : ""}: NO digas que no enviamos. Si el cliente nombró un barrio, zona o compañía, preguntale con amabilidad a qué ciudad pertenece; si no dio lugar, preguntá en qué ciudad quiere recibir el pedido.` : "",
+        ignoresKnownProduct(text) && knownProduct
+          ? `El cliente YA eligió el producto «${knownProduct.name}» (se le mandó el anuncio). NO preguntes qué producto quiere ni «en qué puedo ayudarte». Si saluda, saludá corto y seguí la venta: ofrecé las opciones (${knownOptions || "las del catálogo"}) y preguntá cuál prefiere, o pedí el siguiente dato que falta.` : "",
         verdictWithoutCity(text)
           ? "El cliente todavía NO dijo su ciudad (solo dijo «interior» o nada): NO digas que no llegamos, que su ciudad está fuera de cobertura ni des el texto de encomienda todavía. Preguntale con amabilidad en qué ciudad quiere recibirlo para decirle cómo es el envío ahí." : "",
         !conversation.sale_closed && asksKnownData(text)
@@ -3377,6 +3471,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         return out.split("\n").filter(line => !hasTemplatePlaceholder(line) && !claimsRegisteredOrder(line) && !wrongSameDay(line) && !inventsPostSaleAmount(line) &&
           !(deniesShipping(line) && verifiedSaleState.coverageStatus !== "none") &&
           !verdictWithoutCity(line) &&
+          !ignoresKnownProduct(line) &&
           !(!conversation.sale_closed && promisesShipment(line))).join("\n").replace(/\n{3,}/g, "\n\n").trim();
       };
       let cleaned = scrub(again ?? text);
@@ -3570,6 +3665,15 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         // Another webhook already inserted and confirmed the same checkout.
         // Do not emit a second "PEDIDO CONFIRMADO" or duplicate side effects.
         console.warn("[BOT_SKY_ORDER_DUPLICATE_TURN]", JSON.stringify({conversationId:conversation.id}));
+        if ((createdOrder as any).duplicate_recent) {
+          // Ya había un pedido igual en las últimas 72 h: cerrar la venta y avisar, sin otro pedido.
+          await supabaseAdmin.from("conversations").update({sale_closed:true,status:"vendida"}).eq("workspace_id",workspaceId).eq("id",conversation.id);
+          await (supabaseAdmin as any).from("bot_sale_states").delete().eq("workspace_id",workspaceId).eq("conversation_id",conversation.id);
+          const dupText = `Tu pedido ya está registrado 😊 (N.º ${(createdOrder as any).order_number}). No hace falta volver a pedirlo; la tienda te avisa la entrega.`;
+          const dw = await sendWhatsAppText(conn, phone, dupText);
+          await supabaseAdmin.from("messages").insert({workspace_id:workspaceId,user_id:ownerId,conversation_id:conversation.id,ad_id:attributedAdId,
+            direction:"outbound",sender:"ai",response_origin:"code",body:dupText,wamid:dw,status:"sent"} as any);
+        }
         return;
       }
       orderWasCreated = true;
@@ -4391,6 +4495,24 @@ export async function createOrderFromAi(args: {
     return { ...existingOrder, already_registered: true };
   }
 
+  // Barrera anti-duplicado: el mismo cliente con el mismo producto ya tiene un pedido de las
+  // últimas 72 h (caso real MEGA TODO: la venta se reabrió y se cargó dos veces en el E-commerce).
+  if (args.productId) {
+    const phoneDigits = String(args.phone ?? "").replace(/\D/g, "").slice(-9);
+    const since = new Date(Date.now() - 72 * 3600 * 1000).toISOString();
+    const { data: recentSame } = await supabaseAdmin.from("orders")
+      .select("id, order_number, ad_id, total, status, conversation_id, phone")
+      .eq("workspace_id", args.workspaceId).eq("product_id", args.productId).gte("created_at", since)
+      .order("created_at", { ascending: false }).limit(10);
+    const dup = (recentSame ?? []).find((o: any) =>
+      !/cancel|anul|elimin|devuel|rechaz/i.test(String(o.status ?? "")) &&
+      (o.conversation_id === args.conversationId || (phoneDigits.length === 9 && String(o.phone ?? "").replace(/\D/g, "").endsWith(phoneDigits))));
+    if (dup) {
+      console.warn("[BOT_SKY_DUPLICATE_ORDER_BLOCKED]", JSON.stringify({ conversationId: args.conversationId, existing: dup.order_number }));
+      return { ...dup, already_registered: true, duplicate_recent: true } as any;
+    }
+  }
+
   const product =
     args.products.find((candidate) => candidate.id === args.productId) ?? null;
 
@@ -5157,6 +5279,37 @@ async function productHintFromAd(workspaceId: string, ownerId: string, adId: str
   }
 }
 
+/** Reenvía hasta 4 fotos (o videos si los pide) del producto, sin repetir el copy de venta. */
+async function sendProductPhotos(args: { workspaceId: string; ownerId: string; conversationId: string; adId: string | null;
+  conn: Conn; phone: string; productId: string; productName: string; wantVideo?: boolean }): Promise<number> {
+  const { data: rows } = await supabaseAdmin.from("product_media").select("url, storage_path, media_type, position")
+    .eq("product_id", args.productId).order("position", { ascending: true });
+  const all = (rows ?? []).filter(r => /^(?:image|video)/i.test(String(r.media_type ?? "")));
+  const videos = all.filter(r => /^video/i.test(String(r.media_type)));
+  const pick = (args.wantVideo && videos.length ? videos : all.filter(r => /^image/i.test(String(r.media_type)))).slice(0, 4);
+  let sent = 0;
+  for (const m of pick.length ? pick : all.slice(0, 4)) {
+    let link = typeof m.url === "string" && m.url.trim() ? m.url.trim() : null;
+    if (m.storage_path) {
+      const { data: signed } = await supabaseAdmin.storage.from("product-media").createSignedUrl(m.storage_path, 60 * 60 * 24 * 7);
+      if (signed?.signedUrl) link = signed.signedUrl;
+    }
+    if (!link) continue;
+    const type = /^video/i.test(String(m.media_type)) ? "video" as const : "image" as const;
+    try {
+      const { sendWhatsAppMedia: sendMedia } = await import("@/lib/whatsapp.server");
+      const wamid = await sendMedia(args.conn, args.phone, link, type, undefined);
+      sent += 1;
+      await supabaseAdmin.from("messages").insert({ workspace_id: args.workspaceId, user_id: args.ownerId, conversation_id: args.conversationId,
+        ad_id: args.adId, direction: "outbound", sender: "ai", response_origin: "code", body: `[${type}] ${args.productName}`,
+        media_url: link, media_type: type, status: "sent", wamid } as any);
+    } catch (error) {
+      console.error("[BOT_SKY_PHOTO_RESEND]", String(error).slice(0, 200));
+    }
+  }
+  return sent;
+}
+
 async function sendCatalogByKeyword(args: {
   workspaceId: string;
   ownerId: string;
@@ -5794,7 +5947,14 @@ async function runEmergencySale(args:{
         sourceMessageId:args.wamid,order,cartLines:st.cartLines,multiProductLines:st.multiProductLines,
         products:ctx.products,training:ctx.training,deliveryNotes:st.deliveryNotes??null,
       });
-      if(created.already_registered)return true;
+      if(created.already_registered){
+        if((created as any).duplicate_recent){
+          await supabaseAdmin.from("conversations").update({sale_closed:true,status:"vendida"}).eq("workspace_id",args.workspaceId).eq("id",args.conversationId);
+          await (supabaseAdmin as any).from("bot_sale_states").delete().eq("workspace_id",args.workspaceId).eq("conversation_id",args.conversationId);
+          await sendEmergencyText({...args,text:`Tu pedido ya está registrado 😊 (N.º ${(created as any).order_number}). No hace falta volver a pedirlo; la tienda te avisa la entrega.`});
+        }
+        return true;
+      }
       const {data:saved}=await supabaseAdmin.from("orders").select("id,order_number,customer_name,phone,total,quantity,street,payment_method,payment_status,observations")
         .eq("workspace_id",args.workspaceId).eq("id",created.id).single();
       if(!saved)throw new Error("Pedido creado pero no disponible para confirmación");

@@ -257,6 +257,12 @@ async function transcribeAudioWithOpenAI({
 /**
  * Transcribe una nota de voz o audio recibido desde WhatsApp.
  */
+/** Frases que el transcriptor inventa con audios vacíos o ruido («Subtítulos realizados por la comunidad de Amara.org»). */
+export function isTranscriptHallucination(text: string): boolean {
+  const t = String(text ?? "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+  return /amara\.?org|subtitulos (?:realizados|hechos|creados) por|subtitulado por|gracias por ver el video|suscribete al canal|thanks for watching|transcripcion (?:realizada|hecha) por/.test(t);
+}
+
 export async function transcribeAudio(
   base64: string,
   mime: string,
@@ -284,6 +290,7 @@ export async function transcribeAudio(
       try {
         const transcript = await transcribeAudioWithGemini({ apiKey: provider.key, model, audioBase64: base64, mime: normalizedMime });
         const cleaned = clean(transcript);
+        if (cleaned && isTranscriptHallucination(cleaned)) break;
         if (cleaned && cleaned !== "__GEMINI_QUOTA_EXCEEDED__" && cleaned.toUpperCase() !== "AUDIO_INCOMPRENSIBLE") {
           return cleaned.replace(/^["']|["']$/g, "");
         }
@@ -295,7 +302,7 @@ export async function transcribeAudio(
   }
   for (const provider of openAiKeys) {
     const result = await transcribeAudioWithOpenAI({ audioBase64: base64, mime: normalizedMime, apiKey: provider.key });
-    if (result) return result;
+    if (result && !isTranscriptHallucination(result)) return result;
   }
   throw new Error("Ningún proveedor configurado pudo transcribir este audio; revisar logs de Media AI");
 }
