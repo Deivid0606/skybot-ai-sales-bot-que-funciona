@@ -14,7 +14,7 @@ import { resolveCartPricing, type MultiProductLine } from "@/lib/multi-product-c
 import { buildWorkspaceAiContext } from "@/lib/ai-context.server";
 import { generateAiReply, applyDynamicSellerTrainingReply, type AiContext } from "@/lib/ai.server";
 import { extractSaleWithAi, applyAiExtraction, vetoUnsupportedChanges } from "@/lib/ai-extract.server";
-import { advanceRuleSale, cityIn, sellerUsesFirstOffer, isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi, isValidRecipientCi, type SaleState } from "@/lib/rule-sales.server";
+import { advanceRuleSale, cityIn, sellerUsesFirstOffer, isEncomiendaAdvanceOrder, sellerRequiresEncomiendaCi, isValidRecipientCi, extractRecipientCiFromCustomerText, type SaleState } from "@/lib/rule-sales.server";
 import { classifyCustomerIntent, addVerifiedOrderContext, addPendingSaleContext } from "@/lib/hybrid-intent.server";
 import { coordinatesFromText, validCoords } from "@/lib/hybrid-intent.server";
 import { shippingFeeForCity, orderCharges, normalizeNoShipping, noShippingInstruction, declaredCityFromTexts, applyDeclaredCity, parseCoverage, verifiedCoverage, sellerAllowsNationwideAdvance, deliveryPolicyForCity, hasTemplatePlaceholder, stripBankDetailsForCod, enforceVerifiedPaymentReply, isNonCityPhrase, sellerBankText, cleanReplyForPolicy, codTransferAllowed, customerWantsTransfer } from "@/lib/rule-sales.server";
@@ -2231,6 +2231,24 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       .eq("workspace_id", workspaceId).eq("conversation_id", conversation.id).maybeSingle();
     if (saleReadError) throw saleReadError;
     const previousSale = recoverSaleStateFromHistory(ctx, (saleRow?.state ?? {}) as SaleState, chatHistory);
+    // Recover an explicitly declared recipient CI from prior CUSTOMER messages of
+    // this checkout. Never read a bank receipt, an AI reply, bank alias or phone as CI.
+    if(!isValidRecipientCi(previousSale.recipientCi) && previousSale.productId &&
+       previousSale.cycleStartedAt && previousSale.cityVerified) {
+      const {data:ciMessages,error:ciHistoryError}=await supabaseAdmin.from("messages")
+        .select("body").eq("workspace_id",workspaceId)
+        .eq("conversation_id",conversation.id).eq("direction","inbound")
+        .gte("created_at",previousSale.cycleStartedAt)
+        .order("created_at",{ascending:false}).limit(35);
+      if(ciHistoryError)throw ciHistoryError;
+      for(const row of ciMessages??[]){
+        const found=extractRecipientCiFromCustomerText(String(row.body??""),false);
+        if(!found)continue;
+        previousSale.recipientCi=found;
+        console.info("[BOT_SKY_RECIPIENT_CI_RECOVERED]",{conversationId:conversation.id});
+        break;
+      }
+    }
     // La IA lee la compra EN PARALELO mientras se revisan comprobantes y estado.
     const extractState: SaleState = {...previousSale, productId: previousSale.productId ?? conversation.product_id};
     // PRIMERO ANALIZAR: la IA lee cada mensaje (también antes de elegir producto)
@@ -2876,9 +2894,9 @@ RESULTADO TÉCNICO DE LA IMAGEN DE COMPROBANTE RECIBIDA AHORA (NO EQUIVALE A ACR
 - Total de la variante seleccionada según catálogo: ${expectedReceiptTotal ?? "pendiente de identificación inequívoca"} Gs.
 - Ciudad de destino conservada: ${verifiedSaleState.cityVerified ? verifiedSaleState.city : "aún no verificada"}.
 - Nombre y apellido del destinatario: ${verifiedSaleState.customerName ? "recibidos" : "faltantes"}.
-- Cédula de destinatario: ${requiresCiAfterReceipt ? "se pide SOLO DESPUÉS de que el backend confirme el pedido; NO la pidas ahora" : "no requerida"}.
+- Cédula de destinatario: ${requiresCiAfterReceipt ? (isValidRecipientCi(verifiedSaleState.recipientCi) ? "recibida" : "requisito pendiente del destinatario, antes de registrar la encomienda") : "no requerida"}.
 ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal ? `- PAGO MAYOR AL TOTAL: el cliente transfirió ${documentedReceiptTotal} Gs y el total es ${expectedReceiptTotal} Gs. El comprobante SE ACEPTA. NO pidas otro comprobante ni que lo reenvíe. Decí solamente que el comprobante quedó recibido, que tiene un SALDO A FAVOR de ${documentedReceiptTotal - expectedReceiptTotal} Gs, y pedí el siguiente dato faltante (nombre y apellido del destinatario).
-` : ""}INSTRUCCIÓN PARA ESTA ÚNICA RESPUESTA: la verificación DOCUMENTAL que puede hacer el backend YA SE EJECUTÓ; NO digas 'ahora voy a verificar', 'un momento', 'te aviso después' ni prometas que se ejecutará otra tarea. Respondé ahora al cliente con la IA y el entrenamiento ACTIVO del vendedor, según los hechos anteriores. Si el comprobante quedó en revisión o es ilegible, explicá que requiere revisión y NO pidas otra transferencia. Si quedó documentado como compatible y el monto es insuficiente frente al total OFICIAL, informá la diferencia exacta; si el total oficial aún no es comprobable, pedí únicamente el dato de producto/variante que falta. Si es suficiente y es encomienda, pedí solo nombre y apellido si faltan (la cédula NO se pide ahora: el backend la pide después de confirmar), sin dirección, barrio, GPS ni calle. Si ya está todo, no inventes número de pedido: el backend hace el INSERT y envía la confirmación. No confundas la cédula del beneficiario bancario con la del destinatario ni creas que una imagen acredita el dinero.`;
+` : ""}INSTRUCCIÓN PARA ESTA ÚNICA RESPUESTA: la verificación DOCUMENTAL que puede hacer el backend YA SE EJECUTÓ; NO digas 'ahora voy a verificar', 'un momento', 'te aviso después' ni prometas que se ejecutará otra tarea. Respondé ahora al cliente con la IA y el entrenamiento ACTIVO del vendedor, según los hechos anteriores. Si el comprobante quedó en revisión o es ilegible, explicá que requiere revisión y NO pidas otra transferencia. Si quedó documentado como compatible y el monto es insuficiente frente al total OFICIAL, informá la diferencia exacta; si el total oficial aún no es comprobable, pedí únicamente el dato de producto/variante que falta. Si es suficiente y es encomienda, pedí solo el dato realmente pendiente: nombre y apellido, o cédula si el vendedor la exige y aún no está registrada. No pidas nombre, cédula, comprobante ni dirección otra vez si ya los tenemos. Si ya está todo, no inventes número de pedido: el backend hace el INSERT y envía la confirmación. No confundas la cédula del beneficiario bancario con la del destinatario ni creas que una imagen acredita el dinero.`;
       console.info("[BOT_SKY_RECEIPT_TURN_STATUS]", JSON.stringify({
         conversationId: conversation.id, receiptInCurrentOrder,
         receiptReview: verifiedSaleState.receiptReview ?? null,
@@ -3653,8 +3671,8 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         || !sellerRequiresEncomiendaCi(ctx.training) || isValidRecipientCi(verifiedSaleState.recipientCi)) &&
       (Boolean(saveStep?.state.cartLines?.length) || Boolean(multiCartForPayment?.length) || stateExpectedTotal !== null || isUnambiguousPriceSelection(result.order, detectedProduct, ctx.products, chatHistory)) &&
       (!isAdvance || hasReceiptForOrder);
-    // La cédula del destinatario de encomienda se pide DESPUÉS de confirmar
-    // (shouldAskPostSaleCi). Nunca bloquea el registro del pedido.
+    // La cédula exigida por el vendedor forma parte del checkout antes del INSERT.
+    // No confirmar una orden con cédula requerida ausente.
 
     /*
      * No dependemos solamente de sale_closed.
@@ -4208,6 +4226,27 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
           const kept = outgoingText.split(/(?<=[!?\n])\s*|(?<=[a-záéíóúñ0-9)][.])\s+(?=[¿¡A-ZÁÉÍÓÚÑ📎💚😊🙏✅])/u)
             .filter(part => !RECEIPT_RESEND_RE.test(part)).join(" ").trim();
           if (/[a-záéíóúñ]{4,}/i.test(kept) && !/^[\d\s.,]/.test(kept)) outgoingText = kept;
+        }
+      }
+      // A compatible receipt is already saved in this checkout: never solicit
+      // another copy, a second transfer, or the same name/CI that is on file.
+      // This final filter also applies to generic AI replies after the receipt turn.
+      if(!conversation.sale_closed && /anticip|transfer|deposit|giro/i.test(String(paymentSaleState.paymentMethod??"")) &&
+          paymentSaleState.receiptDocuments?.length && !paymentSaleState.receiptReview) {
+        const asksReceipt=/\b(?:envi[aá]me|mand[aá]me|pas[aá]me|envi[aá]|mand[aá]|pas[aá]|necesito|falta|reenv[ií]a|sub[ií])\b[^.!?\n]{0,100}\b(?:comprobante|captura|foto\s+de\s+(?:la\s+)?transferencia)\b/i;
+        const asksKnownCi=isValidRecipientCi(paymentSaleState.recipientCi) &&
+          /(?:me\s+pas[aá]s?|envi[aá]me|necesito|falta|indic[aá]me|confirm[aá]me)[^.!?\n]{0,100}\b(?:c[eé]dula|c\.?\s*i\.?)\b/i.test(outgoingText);
+        const asksKnownName=isValidCustomerName(paymentSaleState.customerName) &&
+          /(?:me\s+pas[aá]s?|envi[aá]me|necesito|falta|indic[aá]me|confirm[aá]me)[^.!?\n]{0,100}\b(?:nombre|apellido)\b/i.test(outgoingText);
+        if(asksReceipt.test(outgoingText)||asksKnownCi||asksKnownName){
+          console.warn("[BOT_SKY_RECEIPT_REPEAT_BLOCKED]",{conversationId:conversation.id,
+            asksKnownCi,asksKnownName,asksReceipt:asksReceipt.test(outgoingText)});
+          const missing=!isValidCustomerName(paymentSaleState.customerName)?" tu nombre y apellido"
+            : sellerRequiresEncomiendaCi(ctx.training) && !isValidRecipientCi(paymentSaleState.recipientCi)
+              ?" la cédula del destinatario":null;
+          outgoingText=missing
+            ? `✅ Ya recibimos tu comprobante. Para continuar con el pedido solo falta${missing}. 😊`
+            : "✅ Ya recibimos tu comprobante y los datos que compartiste. La tienda revisará el registro sin pedirte que vuelvas a enviarlos. 😊";
         }
       }
       // Ráfaga de mensajes: si el cliente ya escribió algo más, ese turno responde
