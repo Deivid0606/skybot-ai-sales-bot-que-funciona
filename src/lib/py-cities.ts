@@ -142,7 +142,7 @@ const POPULAR: Record<string, string[]> = {
   "Asunción": ["asu", "asun", "asuncion py", "villa morra", "recoleta", "sajonia", "mburucuya", "carmelitas", "tembetary",
     "zeballos cue", "tablada nueva", "chacarita", "loma pyta", "ycua sati", "pinoza", "banado sur", "manora",
     "ytay", "villa aurelia"],
-  "Luque": ["mora cue", "itapuami"],
+  "Luque": ["mora cue", "itapuami", "luke", "luqe", "lucke"],
   // Abreviaturas y grafías que escriben los clientes (auditoría de chats reales).
   "Ypacaraí": ["ipacarai", "ipacaray", "ypacaray", "ypakarai", "ipakarai"],
   "Eusebio Ayala": ["barrero grande", "barrero"],
