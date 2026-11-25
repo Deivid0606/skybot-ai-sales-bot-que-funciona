@@ -2136,6 +2136,44 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
       .eq("workspace_id", workspaceId).eq("id", conversation.id);
     if (productUpdateError) throw productUpdateError;
   }
+  // Refresh the active product from the last catalog actually sent.
+  // This handles messages like "3 unidades" and "Angelina Grissetti" in which
+  // the customer never repeats the product name, but the catalog was just sent.
+  if(!conversation.sale_closed && !catalogResult?.productId && savedMessage?.created_at){
+    const {data:recentCatalog,error:recentCatalogError}=await supabaseAdmin.from("messages")
+      .select("catalog_product_id,created_at")
+      .eq("workspace_id",workspaceId).eq("conversation_id",conversation.id)
+      .eq("direction","outbound").not("catalog_product_id","is",null)
+      .gte("created_at",new Date(Date.parse(savedMessage.created_at)-48*60*60*1000).toISOString())
+      .lte("created_at",savedMessage.created_at)
+      .order("created_at",{ascending:false}).limit(1).maybeSingle();
+    if(recentCatalogError)throw recentCatalogError;
+    if(recentCatalog?.catalog_product_id && conversation.product_id!==recentCatalog.catalog_product_id){
+      const {data:savedState}=await supabaseAdmin.from("bot_sale_states")
+        .select("state").eq("workspace_id",workspaceId).eq("conversation_id",conversation.id).maybeSingle();
+      const prev=(savedState?.state??{}) as SaleState;
+      const keep:Partial<SaleState>={
+        city:prev.city,department:prev.department,cityVerified:prev.cityVerified,
+        coverageStatus:prev.coverageStatus,paymentMethod:prev.paymentMethod,
+        customerName:prev.customerName,street:prev.street,locationUrl:prev.locationUrl,
+        recipientCi:prev.recipientCi,alternatePhone:prev.alternatePhone,
+      };
+      const {error:stateError}=await supabaseAdmin.from("bot_sale_states").upsert({
+        workspace_id:workspaceId,conversation_id:conversation.id,
+        state:{...keep,productId:recentCatalog.catalog_product_id,cycleStartedAt:recentCatalog.created_at},
+        updated_at:new Date().toISOString(),
+      },{onConflict:"workspace_id,conversation_id"});
+      if(stateError)throw stateError;
+      const {error:convError}=await supabaseAdmin.from("conversations")
+        .update({product_id:recentCatalog.catalog_product_id})
+        .eq("workspace_id",workspaceId).eq("id",conversation.id);
+      if(convError)throw convError;
+      conversation.product_id=recentCatalog.catalog_product_id;
+      console.info("[BOT_SKY_PRODUCT_STATE_RECONCILED]",JSON.stringify({
+        conversationId:conversation.id,productId:conversation.product_id,
+      }));
+    }
+  }
   // El copy y la foto ya constituyen la presentación del producto en este turno.
   // No enviar además una respuesta IA duplicada; IA asume los turnos siguientes.
   if (catalogResult?.sent) return;
@@ -4517,25 +4555,8 @@ export async function createOrderFromAi(args: {
     return { ...existingOrder, already_registered: true };
   }
 
-  // Barrera anti-duplicado: el mismo cliente con el mismo producto ya tiene un pedido de las
-  // últimas 72 h (caso real MEGA TODO: la venta se reabrió y se cargó dos veces en el E-commerce).
-  if (args.productId) {
-    const phoneDigits = String(args.phone ?? "").replace(/\D/g, "").slice(-9);
-    const since = new Date(Date.now() - 72 * 3600 * 1000).toISOString();
-    const { data: recentSame } = await supabaseAdmin.from("orders")
-      .select("id, order_number, ad_id, total, status, conversation_id, phone")
-      .eq("workspace_id", args.workspaceId).eq("product_id", args.productId).gte("created_at", since)
-      .order("created_at", { ascending: false }).limit(10);
-    const dup = (recentSame ?? []).find((o: any) =>
-      !/cancel|anul|elimin|devuel|rechaz/i.test(String(o.status ?? "")) &&
-      (o.conversation_id === args.conversationId || (phoneDigits.length === 9 && String(o.phone ?? "").replace(/\D/g, "").endsWith(phoneDigits))));
-    if (dup) {
-      console.warn("[BOT_SKY_DUPLICATE_ORDER_BLOCKED]", JSON.stringify({ conversationId: args.conversationId, existing: dup.order_number }));
-      return { ...dup, already_registered: true, duplicate_recent: true } as any;
-    }
-  }
 
-  const product =
+  let product =
     args.products.find((candidate) => candidate.id === args.productId) ?? null;
 
   if (!product || !args.productId) {
@@ -4568,17 +4589,6 @@ export async function createOrderFromAi(args: {
    * - price = 125000 (precio unitario calculado)
    * - total = 250000
    */
-  const parsedPromoCount = Number(args.order.promo_quantity ?? 1);
-  if (!Number.isSafeInteger(parsedPromoCount) || parsedPromoCount < 1 || parsedPromoCount > 25) {
-    throw new Error("Cantidad de promociones inválida");
-  }
-  const promoCount = parsedPromoCount;
-  const parsedRequestedQuantity = Number(args.order.quantity);
-  const requestedQuantity =
-    Number.isFinite(parsedRequestedQuantity) &&
-    parsedRequestedQuantity > 0
-      ? Math.floor(parsedRequestedQuantity)
-      : 1;
 
   const { data: recentCustomerMessages } = await supabaseAdmin
     .from("messages")
@@ -4592,6 +4602,110 @@ export async function createOrderFromAi(args: {
     role: "user" as const,
     content: String(row.body ?? ""),
   }));
+
+  // FACTUAL CATALOG RECONCILIATION. The most recent product actually
+  // presented on WhatsApp wins over a stale conversation.product_id or model
+  // guess. Correct the product and price option BEFORE calculating the total.
+  // The order still must satisfy all normal payment/coverage/name validation.
+  if (!args.multiProductLines?.length && args.productId) {
+    let {data:sourceMessage,error:sourceError}=await supabaseAdmin.from("messages")
+      .select("created_at").eq("workspace_id",args.workspaceId)
+      .eq("conversation_id",args.conversationId).eq("wamid",args.sourceMessageId)
+      .maybeSingle();
+    if(sourceError)throw sourceError;
+    // Manual Inbox flows may pass an internal message UUID instead of a wamid.
+    // In that case the content is still validated by the normal product/option gates.
+    if(!sourceMessage?.created_at) {
+      const {data:manualSource}=await supabaseAdmin.from("messages")
+        .select("created_at").eq("workspace_id",args.workspaceId)
+        .eq("conversation_id",args.conversationId).eq("id",args.sourceMessageId).maybeSingle();
+      if(manualSource?.created_at)sourceMessage=manualSource;
+    }
+    if(!sourceMessage?.created_at)throw new Error("Mensaje de confirmación no verificable; pedido pendiente.");
+    const until=new Date(sourceMessage.created_at);
+    const since=new Date(until.getTime()-48*60*60*1000).toISOString();
+    const {data:lastCatalog,error:catalogError}=await supabaseAdmin.from("messages")
+      .select("catalog_product_id,created_at")
+      .eq("workspace_id",args.workspaceId).eq("conversation_id",args.conversationId)
+      .eq("direction","outbound").not("catalog_product_id","is",null)
+      .gte("created_at",since).lte("created_at",until.toISOString())
+      .order("created_at",{ascending:false}).limit(1).maybeSingle();
+    if(catalogError)throw catalogError;
+    if(lastCatalog?.catalog_product_id && lastCatalog.catalog_product_id!==args.productId) {
+      const corrected= args.products.find(p=>p.id===lastCatalog.catalog_product_id);
+      if(!corrected)throw new Error("Producto presentado no pertenece al catálogo activo; no se puede registrar.");
+      const {data:cycleMessages,error:cycleError}=await supabaseAdmin.from("messages")
+        .select("body").eq("workspace_id",args.workspaceId)
+        .eq("conversation_id",args.conversationId).eq("direction","inbound")
+        .gte("created_at",lastCatalog.created_at).lte("created_at",until.toISOString())
+        .order("created_at",{ascending:true}).limit(40);
+      if(cycleError)throw cycleError;
+      const customerTexts=(cycleMessages??[]).map(m=>String(m.body??"").toLowerCase().normalize("NFD").replace(/[\\u0300-\\u036f]/g,""));
+      const choices=(corrected.product_prices??[]).filter(o=>Number(o.price)>0&&Number(o.quantity)>0);
+      const explicitChoices=customerTexts.flatMap(msg=>{
+        const amounts=[...msg.matchAll(/\b(?:gs\.?\s*)?(\d{1,3}(?:[.,]\d{3})+|\d{2,6})\s*(?:gs|guaranies|mil)?\b/g)]
+          .filter(m=>/\b(?:gs|guaranies|mil|precio|sale|cuesta|total)\b/.test(msg))
+          .map(m=>Number(m[1].replace(/[.,]/g,"")));
+        const quantities=[...msg.matchAll(/\b(\d{1,2})\s*(?:unidad(?:es)?|plumeros?|piezas?|cajas?|pares?|combos?|packs?)\b/g)]
+          .map(m=>Number(m[1]));
+        const fromAmount=choices.filter(o=>amounts.includes(Number(o.price)));
+        const fromQuantity=choices.filter(o=>quantities.includes(Number(o.quantity)));
+        return fromAmount.length===1?fromAmount:fromQuantity.length===1?fromQuantity:[];
+      });
+      const chosen=explicitChoices.length?explicitChoices[explicitChoices.length-1]
+        : choices.length===1?choices[0]:null;
+      if(!chosen){
+        const why=`Producto de última presentación: ${corrected.name}. Falta identificar sin ambigüedad la presentación/cantidad seleccionada por el cliente.`;
+        await logOrderIssue({workspaceId:args.workspaceId,ownerId:args.ownerId,message:why});
+        throw new Error(why);
+      }
+      const previousName=product?.name??"producto anterior";
+      args.productId=corrected.id;
+      product=corrected;
+      args.cartLines=undefined;
+      args.order.product_price_id=chosen.id;
+      args.order.price_option_label=chosen.label;
+      // A bundle option is a single commercial package (3 plumeros at 129000),
+      // NOT three independent purchases at the unit price.
+      args.order.quantity=Number(chosen.quantity);
+      args.order.promo_quantity=1;
+      console.info("[BOT_SKY_PRODUCT_AUTO_RECONCILED]",JSON.stringify({
+        conversationId:args.conversationId,from:previousName,to:corrected.name,
+        option:chosen.label,quantity:chosen.quantity,price:chosen.price,
+      }));
+    }
+  }
+
+  // Barrera anti-duplicado: el mismo cliente con el mismo producto ya tiene un pedido de las
+  // últimas 72 h (caso real MEGA TODO: la venta se reabrió y se cargó dos veces en el E-commerce).
+  if (args.productId) {
+    const phoneDigits = String(args.phone ?? "").replace(/\D/g, "").slice(-9);
+    const since = new Date(Date.now() - 72 * 3600 * 1000).toISOString();
+    const { data: recentSame } = await supabaseAdmin.from("orders")
+      .select("id, order_number, ad_id, total, status, conversation_id, phone")
+      .eq("workspace_id", args.workspaceId).eq("product_id", args.productId).gte("created_at", since)
+      .order("created_at", { ascending: false }).limit(10);
+    const dup = (recentSame ?? []).find((o: any) =>
+      !/cancel|anul|elimin|devuel|rechaz/i.test(String(o.status ?? "")) &&
+      (o.conversation_id === args.conversationId || (phoneDigits.length === 9 && String(o.phone ?? "").replace(/\D/g, "").endsWith(phoneDigits))));
+    if (dup) {
+      console.warn("[BOT_SKY_DUPLICATE_ORDER_BLOCKED]", JSON.stringify({ conversationId: args.conversationId, existing: dup.order_number }));
+      return { ...dup, already_registered: true, duplicate_recent: true } as any;
+    }
+  }
+
+  const parsedPromoCount = Number(args.order.promo_quantity ?? 1);
+  if (!Number.isSafeInteger(parsedPromoCount) || parsedPromoCount < 1 || parsedPromoCount > 25) {
+    throw new Error("Cantidad de promociones inválida");
+  }
+  const promoCount = parsedPromoCount;
+  const parsedRequestedQuantity = Number(args.order.quantity);
+  const requestedQuantity =
+    Number.isFinite(parsedRequestedQuantity) &&
+    parsedRequestedQuantity > 0
+      ? Math.floor(parsedRequestedQuantity)
+      : 1;
+
 
   const priceOptions = [...(product.product_prices ?? [])]
     .map((option) => ({
