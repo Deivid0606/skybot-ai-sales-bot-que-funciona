@@ -419,11 +419,15 @@ function OrdersPage() {
    *
    * De esta forma podés ver pedidos atrasados de días anteriores.
    */
+  // Pago anticipado (transferencia): va en SU propia caja, no se mezcla con los de pago al recibir.
+  const isAdvanceOrder = (order: { payment_status?: string | null; payment_method?: string | null }) =>
+    order.payment_status === "anticipado" || /anticip|transfer/i.test(String(order.payment_method ?? ""));
   const pendingLoadOrders = useMemo(() => {
     return (orders ?? []).filter(
       (order) =>
-        order.status === "nuevo" ||
-        order.status === "confirmado",
+        (order.status === "nuevo" ||
+          order.status === "confirmado") &&
+        !isAdvanceOrder(order),
     );
   }, [orders]);
 
@@ -443,7 +447,7 @@ function OrdersPage() {
   const advancePaymentOrders = useMemo(() => {
     return (orders ?? []).filter(
       (order) =>
-        order.payment_status === "anticipado" &&
+        isAdvanceOrder(order) &&
         (
           order.status === "nuevo" ||
           order.status === "confirmado"
@@ -960,7 +964,7 @@ function OrdersPage() {
               </p>
 
               <p className="mt-1 text-[10px] text-muted-foreground">
-                Todas las fechas
+                Pago al recibir · todas las fechas
               </p>
             </button>
           )}
@@ -993,7 +997,7 @@ function OrdersPage() {
                 <CreditCard className="h-4 w-4 text-emerald-500" />
 
                 <p className="text-xs font-medium text-muted-foreground">
-                  Pagos anticipados
+                  Pendientes de cargar · pago anticipado
                 </p>
               </div>
 
@@ -1176,7 +1180,7 @@ function OrdersPage() {
               <p className="pb-2 text-xs text-muted-foreground">
                 {quickFilter ===
                 "pending-load"
-                  ? `${pendingLoadCount} pendientes de cargar en total`
+                  ? `${pendingLoadCount} pendientes de cargar con pago al recibir`
                   : quickFilter ===
                       "advance-payment"
                     ? `${advancePaymentCount} pagos anticipados pendientes`
@@ -1250,7 +1254,7 @@ function OrdersPage() {
               <p className="text-xs text-muted-foreground">
                 {quickFilter ===
                 "pending-load"
-                  ? "Mostrando pedidos pendientes de cargar de todas las fechas."
+                  ? "Mostrando pedidos pendientes de cargar con pago al recibir, de todas las fechas."
                   : quickFilter === "duplicates"
                     ? "Mostrando posibles pedidos repetidos del período (mismo teléfono y mismo producto)."
                     : "Mostrando pagos anticipados pendientes de todas las fechas."}
@@ -1316,7 +1320,7 @@ function OrdersPage() {
           description={
             quickFilter ===
             "pending-load"
-              ? "No existen pedidos nuevos o confirmados pendientes de cargar."
+              ? "No existen pedidos con pago al recibir pendientes de cargar."
               : quickFilter ===
                   "advance-payment"
                 ? "No existen pagos anticipados pendientes de cargar."
