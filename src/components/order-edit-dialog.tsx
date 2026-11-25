@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/select";
 import { PAYMENT_STATES, DEPARTAMENTOS_PY, resolveDepartamento } from "@/lib/orders";
 import type { Tables } from "@/integrations/supabase/types";
+import { retryOrderLoadNow } from "@/lib/product-share.functions";
 
 type Order = Tables<"orders"> & {order_items?: Array<{id:string;title:string;sku:string|null;quantity:number;price:number}>;
   unit_price?: number | null; ecommerce_synced_at?: string | null; dcanp_order_number?: string | null};
@@ -170,13 +171,25 @@ export function OrderEditDialog({ order, open, onOpenChange }: Props) {
           payment_method: form.payment_method,
           payment_status: form.payment_status,
           observations: form.observations,
+          // Datos corregidos (p. ej. el SKU): el error anterior ya no vale y se reintenta al instante.
+          ...(!loadedToEcommerce ? { ecommerce_sync_error: null, ecommerce_sync_attempted_at: null } : {}),
         } as any)
         .eq("id", order.id);
       if (error) throw error;
+      if (!loadedToEcommerce && ["nuevo", "confirmado"].includes(String(order.status))) {
+        try {
+          return await retryOrderLoadNow({ data: { orderId: order.id } });
+        } catch {
+          return null;
+        }
+      }
+      return null;
     },
-    onSuccess: () => {
+    onSuccess: (retry: any) => {
       toast.success(loadedToEcommerce
         ? "Pedido actualizado. Ya estaba cargado en el E-commerce: aplicá el mismo cambio allá."
+        : retry?.loaded ? "Pedido actualizado y cargado en el E-commerce ✅"
+        : retry?.failed ? "Pedido actualizado, pero el E-commerce lo rechazó: mirá el error en el pedido."
         : "Pedido actualizado");
       queryClient.invalidateQueries({ queryKey: ["orders"] });
       queryClient.invalidateQueries({ queryKey: ["order-edit-items", order.id] });

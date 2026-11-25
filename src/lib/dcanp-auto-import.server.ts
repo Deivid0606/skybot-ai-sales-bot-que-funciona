@@ -264,3 +264,18 @@ export async function retryDcanpForProductSku(workspaceId: string, productId: st
     failed: "failed" in result ? result.failed ?? 0 : 0,
     status: "status" in result ? result.status : undefined };
 }
+
+/** Reintenta YA la carga de pedidos puntuales (p. ej. después de corregir su SKU en «Editar pedido»). */
+export async function retryDcanpForOrders(workspaceId: string, orderIds: string[]) {
+  const { data: ws, error } = await supabaseAdmin.from("workspaces")
+    .select("id,dcanp_email,dcanp_auto_since,dcanp_auto_import,dcanp_verified_at" as never)
+    .eq("id", workspaceId).maybeSingle();
+  if (error) throw error;
+  if (!ws || !(ws as any).dcanp_auto_import || !(ws as any).dcanp_verified_at || !(ws as any).dcanp_email || !orderIds.length) {
+    return { enabled: false, sent: 0, loaded: 0, failed: 0 };
+  }
+  const result = await importWorkspace(ws as unknown as WorkspaceRow, undefined, orderIds.slice(0, 50));
+  return { enabled: true, sent: result.sent ?? 0,
+    loaded: "loaded" in result ? result.loaded ?? 0 : 0,
+    failed: "failed" in result ? result.failed ?? 0 : 0 };
+}
