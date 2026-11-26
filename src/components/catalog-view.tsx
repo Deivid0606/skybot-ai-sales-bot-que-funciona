@@ -388,6 +388,8 @@ function Media({
   const audios = media.filter(
     (item) => item.media_type === "audio",
   );
+  const [activeImage,setActiveImage]=useState(0);
+  const hero=images[Math.min(activeImage,Math.max(0,images.length-1))];
 
   return (
     <div className="space-y-2">
@@ -400,12 +402,17 @@ function Media({
               : "aspect-square rounded-2xl",
           ].join(" ")}
         >
-          <img
-            src={images[0].url}
-            alt={product.name}
-            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
-            loading="lazy"
-          />
+          <a href={hero.url} target="_blank" rel="noopener noreferrer"
+            aria-label={`Ampliar fotografía de ${product.name}`}
+            className="block h-full w-full cursor-zoom-in"
+          >
+            <img
+              src={hero.url}
+              alt={product.name}
+              className={`h-full w-full transition-transform duration-300 group-hover:scale-[1.02] ${compact?"object-cover":"object-contain"}`}
+              loading={compact?"lazy":"eager"}
+            />
+          </a>
         </div>
       ) : (
         <div
@@ -421,22 +428,18 @@ function Media({
       )}
 
       {!compact && images.length > 1 && (
-        <div className="grid grid-cols-4 gap-2">
-          {images
-            .slice(1, 5)
-            .map((item, index) => (
-              <div
-                key={`${item.url}-${index}`}
-                className="aspect-square overflow-hidden rounded-lg bg-muted"
-              >
-                <img
-                  src={item.url}
-                  alt={`${product.name} ${index + 2}`}
-                  className="h-full w-full object-cover"
-                  loading="lazy"
-                />
-              </div>
-            ))}
+        <div className="grid grid-cols-5 gap-2" aria-label="Fotos del producto">
+          {images.slice(0,10).map((item,index)=>(
+            <button type="button" key={item.id??item.url}
+              onClick={()=>setActiveImage(index)}
+              aria-label={`Ver imagen ${index+1} de ${images.length}`}
+              aria-pressed={activeImage===index}
+              className={`aspect-square overflow-hidden rounded-lg border-2 bg-muted transition hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary ${activeImage===index?"border-primary":"border-transparent"}`}
+            >
+              <img src={item.url} alt={`${product.name}, vista ${index+1}`}
+                className="h-full w-full object-contain" loading="lazy"/>
+            </button>
+          ))}
         </div>
       )}
 
@@ -822,6 +825,23 @@ function PriceSelector({
         selectedPrice={selectedPrice}
       />
 
+      {/* Acción siempre visible en celular, sincronizada con la opción elegida. */}
+      {phone && selectedPrice && (
+        <div className="fixed inset-x-0 bottom-0 z-40 border-t bg-background/95 px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 shadow-lg backdrop-blur lg:hidden">
+          <div className="mx-auto flex max-w-xl items-center gap-3">
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-xs text-muted-foreground">{selectedPrice.label}</p>
+              <p className="text-lg font-black">{formatGs(selectedPrice.price)}</p>
+            </div>
+            <Button asChild className="h-12 shrink-0 rounded-xl px-5 font-bold">
+              <a href={buyLink(phone,product,selectedPrice)??"#"} target="_blank" rel="noopener noreferrer">
+                <MessageCircle className="mr-2 h-5 w-5"/> Pedir ahora
+              </a>
+            </Button>
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center justify-center gap-1.5 text-center text-xs text-muted-foreground">
         <ShieldCheck className="h-4 w-4 shrink-0" />
         <span>La selección exacta se enviará a WhatsApp para confirmar tu pedido.</span>
@@ -1190,7 +1210,7 @@ export function CatalogDetail({
         </div>
       </header>
 
-      <main className="mx-auto max-w-6xl px-4 py-6 md:py-10">
+      <main className="mx-auto max-w-6xl px-4 py-6 pb-28 md:py-10 lg:pb-10">
         <div className="grid items-start gap-8 lg:grid-cols-[1.1fr_0.9fr]">
           <div className="min-w-0">
             <Media product={product} />
