@@ -70,6 +70,12 @@ function productSummary(product: CatalogProduct): string {
   return plainProductText(product.sales_copy,160);
 }
 
+function productHook(product: CatalogProduct): string {
+  const firstLine = String(product.sales_copy || "").split(/\n|(?<=[!?])\s+/).map(line => plainProductText(line, 115))
+    .find(line => line.length >= 18 && !/^(?:precio|gs\.?|env[ií]o|delivery|whatsapp|stock)/i.test(line));
+  return firstLine || "";
+}
+
 function productHighlights(product: CatalogProduct): string[] {
   const source=String(product.description||product.sales_copy||"");
   return source.split(/\n|[;]+/).map(line=>plainProductText(line,100))
@@ -1003,9 +1009,9 @@ function EditorialProductCard({product,workspaceId}:{product:CatalogProductWithP
         <span className="absolute bottom-3 right-3 flex h-10 w-10 items-center justify-center rounded-full bg-white text-[#1D2C25] shadow-sm transition group-hover:bg-[#DDF69B]"><ArrowUpRight className="h-5 w-5"/></span>
       </Link>
       <div className="flex flex-1 flex-col px-3 pb-4 pt-4 sm:px-5 sm:pb-5">
-        <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-[#75857B]">Selección de la tienda</p>
+        <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-[#75857B]">Descubrí lo que hace por vos</p>
         <Link to="/c/$workspaceId/$productId" params={{workspaceId,productId:product.id}} className="line-clamp-2 min-h-[44px] text-[16px] font-extrabold leading-[1.35] tracking-tight text-[#18251D] transition hover:text-[#597344] sm:text-[19px]">{plainProductText(product.name,110)}</Link>
-        {productSummary(product)&&<p className="mt-2 line-clamp-2 text-xs leading-relaxed text-[#6F786F] sm:text-[13px]">{productSummary(product)}</p>}
+        {(productHook(product)||productSummary(product))&&<p className="mt-2 line-clamp-3 text-xs font-medium leading-relaxed text-[#536956] sm:text-[13px]">{productHook(product)||productSummary(product)}</p>}
         <div className="mt-auto border-t border-[#EFF0E9] pt-4">
           <p className="text-[10px] font-medium uppercase tracking-wide text-[#829087]">{prices.length>1?"Presentaciones desde":"Precio"}</p>
           <p className="mt-1 text-[20px] font-black tracking-tight text-[#14201D] sm:text-[24px]">{lowest?formatGs(lowest):"Consultar"}</p>
@@ -1049,8 +1055,13 @@ export function CatalogGrid({data,workspaceId}:{data:CatalogData;workspaceId:str
             <div className="relative mx-auto grid max-w-[1240px] items-center gap-0 px-4 py-10 sm:px-7 sm:py-14 lg:min-h-[500px] lg:grid-cols-2 lg:py-16">
               <div className="relative z-10 max-w-xl space-y-5 pb-6 text-white lg:pb-0">
                 <p className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-4 py-2 text-[10px] font-extrabold uppercase tracking-[0.2em] text-[#E0F3B7]"><span className="h-2 w-2 rounded-full bg-[#DDF69B]"/> Catálogo de {data.workspaceName}</p>
-                <h1 className="max-w-[650px] text-[clamp(2.55rem,6vw,5.4rem)] font-black leading-[0.99] tracking-[-0.065em]">Lo bueno para tu <span className="text-[#DDF69B]">día a día.</span></h1>
-                <p className="max-w-md text-sm leading-7 text-[#C9D6C8] sm:text-base">Productos útiles, opciones claras y una compra sin complicaciones. Elegí lo que necesitás y pedilo directamente a la tienda.</p>
+                <h1 className="max-w-[650px] text-[clamp(2.4rem,5.5vw,5rem)] font-black leading-[1.02] tracking-[-0.055em]">Encontrá eso que <span className="text-[#DDF69B]">te facilita el día.</span></h1>
+                <p className="max-w-md text-sm leading-7 text-[#C9D6C8] sm:text-base">Descubrí productos, compará presentaciones y elegí cómo comprar. Todo claro, directo y sin vueltas.</p>
+                {(productHook(heroProduct)||productSummary(heroProduct))&&<Link to="/c/$workspaceId/$productId" params={{workspaceId,productId:heroProduct.id}} className="block max-w-md rounded-2xl border border-white/15 bg-white/10 p-4 transition hover:bg-white/15">
+                  <span className="mb-1 block text-[10px] font-extrabold uppercase tracking-[0.18em] text-[#DDF69B]">Producto destacado</span>
+                  <span className="block text-sm font-bold text-white">{plainProductText(heroProduct.name,90)}</span>
+                  <span className="mt-1 block line-clamp-2 text-xs leading-5 text-[#E0EBDD]">{productHook(heroProduct)||productSummary(heroProduct)}</span>
+                </Link>}
                 <div className="flex flex-wrap gap-3 pt-2">
                   <button type="button" onClick={()=>document.getElementById("catalog-products")?.scrollIntoView({behavior:"smooth"})} className="inline-flex h-12 items-center gap-2 rounded-full bg-[#DDF69B] px-6 text-sm font-extrabold text-[#15251C] transition hover:bg-[#EEFFBE]">Explorar productos <ArrowDownRight className="h-4 w-4"/></button>
                   {data.phone&&<a href={`https://wa.me/${String(data.phone).replace(/\D/g,"")}`} target="_blank" rel="noopener noreferrer" className="inline-flex h-12 items-center gap-2 rounded-full border border-white/25 px-5 text-sm font-semibold text-white transition hover:bg-white/10"><MessageCircle className="h-4 w-4"/> Hacer una consulta</a>}
@@ -1118,8 +1129,9 @@ export function CatalogDetail({data,workspaceId,product}:{data:CatalogData;works
             <div className="space-y-4">
               <p className="text-[11px] font-black uppercase tracking-[0.24em] text-[#789263]">Selección de {data.workspaceName}</p>
               <h1 className="text-[clamp(2rem,4.8vw,3.7rem)] font-black leading-[1.07] tracking-[-0.055em] text-[#14201D]">{plainProductText(product.name,110)}</h1>
+              {productHook(product)&&productHook(product)!==description&&<div className="rounded-2xl border-l-4 border-[#9AC56B] bg-[#EAF2DF] px-5 py-4 text-[16px] font-extrabold leading-relaxed text-[#263F2B]">{productHook(product)}</div>}
               {description&&<p className="max-w-xl text-[15px] leading-7 text-[#637267] sm:text-base">{description}</p>}
-              {highlights.length>0&&<div className="grid gap-2 border-t border-[#DDE3D7] pt-4">{highlights.map((h,i)=><div key={i} className="flex items-start gap-3 text-sm text-[#435549]"><span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#DAECB8]"><Check className="h-3.5 w-3.5"/></span><span>{h}</span></div>)}</div>}
+              {highlights.length>0&&<div className="rounded-2xl bg-[#EDF2E7] p-5"><p className="mb-4 text-[11px] font-black uppercase tracking-[0.16em] text-[#557446]">Por qué te puede servir</p><div className="grid gap-3">{highlights.map((h,i)=><div key={i} className="flex items-start gap-3 text-sm font-medium leading-6 text-[#354C39]"><span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#C8E5A5]"><Check className="h-3.5 w-3.5"/></span><span>{h}</span></div>)}</div></div>}
             </div>
             <div className="rounded-[26px] border border-[#DFE6DA] bg-white p-5 shadow-[0_15px_35px_-25px_rgba(20,32,29,0.3)] sm:p-7">
               <PriceSelector product={typedProduct} phone={data.phone}/>
