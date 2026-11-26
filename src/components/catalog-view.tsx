@@ -338,7 +338,7 @@ function BuyButton({
         type="button"
         disabled
         size="lg"
-        className="h-12 w-full rounded-xl text-base font-bold"
+        className="h-14 w-full rounded-xl bg-[#173b2b] text-base font-extrabold text-white shadow-lg shadow-[#173b2b]/15 hover:bg-[#255e43]"
       >
         <MessageCircle className="mr-2 h-5 w-5" />
         WhatsApp no disponible
@@ -727,10 +727,10 @@ function PriceSelector({
                 setSelectedPriceKey(key)
               }
               className={[
-                "relative w-full rounded-2xl border p-4 text-left transition-all",
+                "relative w-full rounded-2xl border-2 p-4 text-left transition-all",
                 active
-                  ? "border-primary bg-primary/5 shadow-sm ring-1 ring-primary"
-                  : "bg-background hover:border-primary/50 hover:bg-muted/20",
+                  ? "border-[#276543] bg-[#ecf6ee] shadow-sm"
+                  : "border-[#e5ebe3] bg-white hover:border-[#9aba9e] hover:bg-[#f7faf6]",
               ].join(" ")}
             >
               {isBest && (
@@ -746,8 +746,8 @@ function PriceSelector({
                   className={[
                     "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border",
                     active
-                      ? "border-primary bg-primary text-primary-foreground"
-                      : "border-muted-foreground/40",
+                      ? "border-[#23673f] bg-[#23673f] text-white"
+                      : "border-[#acbdad]",
                   ].join(" ")}
                 >
                   {active && (
@@ -795,7 +795,7 @@ function PriceSelector({
       </div>
 
       {selectedPrice && (
-        <div className="rounded-2xl border bg-muted/40 p-4">
+        <div className="rounded-2xl border border-[#dce9db] bg-[#f2f8f1] p-4">
           <div className="flex items-center justify-between gap-4">
             <div className="min-w-0">
               <p className="text-xs text-muted-foreground">
@@ -953,107 +953,54 @@ function ProductCard({
   product: CatalogProductWithPrices;
   workspaceId: string;
 }) {
-  const description = productSummary(product);
-
-  const prices =
-    getProductPrices(product);
-
-  const lowestUnitPrice =
-    prices.length > 0
-      ? Math.min(
-          ...prices.map((item) =>
-            getPricePerUnit(item),
-          ),
-        )
-      : 0;
-
+  const prices=getProductPrices(product);
+  const first=prices[0];
+  const basePrice=prices.length?Math.min(...prices.map(p=>p.price)):0;
+  const hasBundle=prices.some(p=>getSavings(product,prices,p)>0);
+  const linkParams={workspaceId,productId:product.id};
   return (
-    <Card className="group overflow-hidden rounded-2xl border bg-background shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg">
-      <CardContent className="flex h-full flex-col p-0">
-        <Link
-          to="/c/$workspaceId/$productId"
-          params={{
-            workspaceId,
-            productId: product.id,
-          }}
-          className="relative block p-3 pb-0"
-        >
-          <Media
-            product={product}
-            compact
-          />
-
-          {prices.length > 1 && prices.some(p=>getSavings(product,prices,p)>0) && (
-            <Badge className="absolute left-5 top-5 shadow-sm">
-              Combo disponible
-            </Badge>
-          )}
+    <article className="group flex min-w-0 flex-col overflow-hidden rounded-[1.65rem] border border-[#e8e6e0] bg-white shadow-[0_8px_32px_rgba(16,24,21,0.04)] transition-all duration-300 hover:-translate-y-1 hover:border-[#c9d7cc] hover:shadow-[0_20px_55px_rgba(16,24,21,0.12)]">
+      <Link to="/c/$workspaceId/$productId" params={linkParams}
+        className="relative block overflow-hidden bg-[#f4f5f1] p-4 sm:p-5">
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_65%_30%,#ffffff_0%,#f3f5f0_65%,#ecf0e9_100%)]"/>
+        <div className="relative aspect-[1.16/1] overflow-hidden rounded-2xl">
+          <Media product={product} compact />
+        </div>
+        <span className="absolute bottom-6 left-6 rounded-full border border-white/70 bg-white/90 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[.12em] text-[#304a3b] backdrop-blur">
+          {prices.length>1?"Varias opciones":"Elegí tu producto"}
+        </span>
+        {hasBundle&&(
+          <span className="absolute right-5 top-5 rounded-full bg-[#163b2a] px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-white">
+            Combo ahorro
+          </span>
+        )}
+      </Link>
+      <div className="flex flex-1 flex-col px-5 pb-5 pt-5 sm:px-6 sm:pb-6">
+        <div className="mb-2 text-[10px] font-bold uppercase tracking-[.21em] text-[#66766b]">Colección de la tienda</div>
+        <Link to="/c/$workspaceId/$productId" params={linkParams}
+          className="line-clamp-2 text-[18px] font-bold leading-snug tracking-tight text-[#14251c] transition-colors hover:text-[#24744c] sm:text-[20px]">
+          {plainProductText(product.name,100)}
         </Link>
-
-        <div className="flex flex-1 flex-col gap-4 p-4">
-          <div className="flex-1 space-y-2">
-            <Link
-              to="/c/$workspaceId/$productId"
-              params={{
-                workspaceId,
-                productId: product.id,
-              }}
-              className="line-clamp-2 text-lg font-black leading-tight transition hover:opacity-80"
-            >
-              {plainProductText(product.name,100)}
-            </Link>
-
-            {description && (
-              <p className="line-clamp-2 text-sm leading-relaxed text-muted-foreground">
-                {description}
-              </p>
-            )}
-          </div>
-
-          {lowestUnitPrice > 0 &&
-            prices.length > 1 && (
-              <p className="text-xs text-muted-foreground">
-                Desde{" "}
-                <span className="font-bold text-foreground">
-                  {formatGs(lowestUnitPrice)}
-                </span>{" "}
-                por unidad
-              </p>
-            )}
-
-          <ProductPricePreview
-            product={product}
-          />
-
-          {product.delivery_info && (
-            <div className="flex items-start gap-2 rounded-xl bg-muted/40 px-3 py-2.5">
-              <Truck className="mt-0.5 h-4 w-4 shrink-0" />
-
-              <p className="text-xs leading-relaxed text-muted-foreground">
-                {product.delivery_info}
+        {productSummary(product)&&(
+          <p className="mt-2 line-clamp-2 text-[13px] leading-relaxed text-[#718079]">{productSummary(product)}</p>
+        )}
+        <div className="mt-auto pt-5">
+          <div className="mb-4 flex items-end justify-between gap-2 border-t border-[#e8ece7] pt-4">
+            <div>
+              <p className="text-[11px] font-medium text-[#7a867f]">{prices.length>1?"Opciones desde":"Precio"}</p>
+              <p className="text-[23px] font-extrabold tracking-tight text-[#153c2a]">
+                {basePrice>0?formatGs(basePrice):"Consultar"}
               </p>
             </div>
-          )}
-
-          <Button
-            asChild
-            size="lg"
-            className="h-11 w-full rounded-xl font-bold"
-          >
-            <Link
-              to="/c/$workspaceId/$productId"
-              params={{
-                workspaceId,
-                productId: product.id,
-              }}
-            >
-              <ShoppingBag className="mr-2 h-4 w-4" />
-              Ver producto
-            </Link>
-          </Button>
+            <span className="text-[11px] text-[#809086]">{prices.length>1?`${prices.length} opciones`:first?.label??""}</span>
+          </div>
+          <Link to="/c/$workspaceId/$productId" params={linkParams}
+            className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#173b2b] px-4 py-3 text-sm font-bold text-white transition-colors hover:bg-[#255e43] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#173b2b]">
+            Ver detalles <ChevronLeft className="h-4 w-4 rotate-180"/>
+          </Link>
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    </article>
   );
 }
 
@@ -1084,53 +1031,82 @@ export function CatalogGrid({
   });
 
   return (
-    <div className="min-h-screen bg-muted/10">
-      <header className="sticky top-0 z-30 border-b bg-background/95 backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-4">
-          <div className="min-w-0">
-            <h1 className="truncate text-xl font-black">
-              {data.workspaceName}
-            </h1>
-
-            <p className="text-xs text-muted-foreground">
-              Catálogo online ·{" "}
-              {products.length}{" "}
-              {products.length === 1
-                ? "producto"
-                : "productos"}
-            </p>
-          </div>
-
-          <div className="hidden items-center gap-2 rounded-full border px-3 py-1.5 text-xs text-muted-foreground sm:flex">
-            <ShieldCheck className="h-3.5 w-3.5" />
-            Comprá directamente con la tienda
+    <div className="min-h-screen bg-[#f8f8f4] text-[#172a20]">
+      <div className="bg-[#153b2b] px-4 py-2.5 text-center text-[11px] font-semibold tracking-[.08em] text-[#ebf2e9] sm:text-xs">
+        Tu tienda online · Comprá fácil y consultá por WhatsApp
+      </div>
+      <header className="sticky top-0 z-30 border-b border-[#e6ece5] bg-white/95 backdrop-blur">
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-4 sm:px-7">
+          <Link to="/c/$workspaceId" params={{workspaceId}} className="flex min-w-0 items-center gap-3">
+            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[#153b2b] text-white shadow-sm">
+              <ShoppingBag className="h-5 w-5"/>
+            </span>
+            <span className="min-w-0">
+              <span className="block truncate text-lg font-black tracking-tight text-[#142c20] sm:text-xl">{data.workspaceName}</span>
+              <span className="block text-[10px] font-semibold uppercase tracking-[.16em] text-[#89978d]">Tienda online</span>
+            </span>
+          </Link>
+          <div className="hidden items-center gap-2 rounded-full border border-[#e3eae3] px-4 py-2 text-xs font-semibold text-[#496456] sm:flex">
+            <ShieldCheck className="h-4 w-4"/> Compra directa con la tienda
           </div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-6xl px-4 py-6 md:py-8">
-        <section className="mb-7 space-y-4 rounded-3xl border bg-background p-5 shadow-sm sm:p-7">
-          <div className="space-y-1">
-            <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Tu tienda, más cerca</p>
-            <h2 className="text-2xl font-black tracking-tight sm:text-3xl">Encontrá lo que necesitás</h2>
-            <p className="max-w-xl text-sm text-muted-foreground">Explorá productos, compará presentaciones y elegí la opción ideal para vos.</p>
+      <main className="mx-auto max-w-7xl px-4 py-6 sm:px-7 sm:py-8">
+        <section className="relative mb-8 overflow-hidden rounded-[2rem] bg-[#153b2b] text-white shadow-[0_20px_65px_rgba(21,59,43,.16)]">
+          <div className="pointer-events-none absolute -right-24 -top-36 h-[28rem] w-[28rem] rounded-full bg-[#3d8c63]/40 blur-3xl"/>
+          <div className="pointer-events-none absolute -bottom-48 left-1/3 h-[22rem] w-[22rem] rounded-full bg-[#d2b47a]/20 blur-3xl"/>
+          <div className="relative grid min-h-[300px] items-center gap-8 px-6 py-10 sm:min-h-[390px] sm:px-12 sm:py-12 lg:grid-cols-[1fr_0.9fr] lg:px-16">
+            <div className="max-w-xl space-y-5">
+              <p className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[.22em] text-[#cee7d4]">Colección disponible</p>
+              <h1 className="text-4xl font-black leading-[1.04] tracking-tight sm:text-5xl lg:text-[4rem]">
+                Descubrí algo <span className="text-[#c9dfbc]">bueno para vos.</span>
+              </h1>
+              <p className="max-w-lg text-sm leading-7 text-[#d5e1d7] sm:text-base">Productos seleccionados, precios claros y opciones para elegir. Todo en un solo lugar.</p>
+              <button type="button" onClick={()=>document.getElementById("catalog-products")?.scrollIntoView({behavior:"smooth"})}
+                className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-white px-6 py-3 text-sm font-extrabold text-[#153b2b] transition hover:bg-[#e9f4e8]">
+                Explorar productos <ChevronLeft className="h-4 w-4 rotate-180"/>
+              </button>
+            </div>
+            <div className="relative hidden items-center justify-center lg:flex">
+              {products[0]?.media?.find(m=>m.media_type==="image") ? (
+                <div className="relative flex h-72 w-72 items-center justify-center rounded-[2rem] border border-white/20 bg-white/95 p-5 shadow-[0_35px_70px_rgba(0,0,0,.2)] rotate-3">
+                  <img src={products[0].media.find(m=>m.media_type==="image")!.url}
+                    alt={products[0].name} className="h-full w-full object-contain" loading="lazy"/>
+                </div>
+              ) : (
+                <div className="flex h-64 w-64 items-center justify-center rounded-[2rem] border border-white/20 bg-white/10">
+                  <ShoppingBag className="h-24 w-24 text-white/70"/>
+                </div>
+              )}
+              <div className="absolute bottom-1 right-6 rounded-2xl border border-white/20 bg-white/95 px-5 py-3 text-[#183f2d] shadow-lg">
+                <p className="text-xs font-semibold text-[#65786b]">Explorá la colección</p>
+                <p className="text-2xl font-black">{products.length} <span className="text-sm font-semibold">productos</span></p>
+              </div>
+            </div>
           </div>
-          <div className="relative">
-            <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground" />
-            <input
-              type="search" value={search} onChange={e=>setSearch(e.target.value)}
-              placeholder="Buscar productos…" aria-label="Buscar productos"
-              className="h-12 w-full rounded-xl border bg-background pl-11 pr-4 text-base outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            />
+        </section>
+        <section id="catalog-products" className="mb-7 space-y-5 scroll-mt-24">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <p className="mb-1 text-[11px] font-bold uppercase tracking-[.22em] text-[#6b8878]">Explorá nuestra tienda</p>
+              <h2 className="text-[29px] font-black tracking-tight text-[#172f22] sm:text-[37px]">Todos los productos<span className="text-[#79a48b]">.</span></h2>
+            </div>
+            <p className="rounded-full border border-[#dee7dc] bg-white px-4 py-2 text-xs font-semibold text-[#5e7567]">{visible.length} disponibles para consultar</p>
           </div>
-          <div className="flex items-center gap-2">
-            <button type="button" onClick={()=>setDiscountOnly(false)}
-              aria-pressed={!discountOnly}
-              className={`rounded-full border px-4 py-2 text-sm font-semibold transition ${!discountOnly?"border-primary bg-primary text-primary-foreground":"bg-background hover:bg-muted"}`}>Todos</button>
-            <button type="button" onClick={()=>setDiscountOnly(true)}
-              aria-pressed={discountOnly}
-              className={`rounded-full border px-4 py-2 text-sm font-semibold transition ${discountOnly?"border-primary bg-primary text-primary-foreground":"bg-background hover:bg-muted"}`}>Combos con ahorro</button>
-            <span className="ml-auto text-xs text-muted-foreground">{visible.length} productos</span>
+          <div className="rounded-2xl border border-[#e4eae1] bg-white p-3 shadow-sm sm:p-4">
+            <div className="relative">
+              <Search aria-hidden="true" className="pointer-events-none absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-[#668473]" />
+              <input type="search" value={search} onChange={e=>setSearch(e.target.value)}
+                placeholder="¿Qué producto estás buscando?" aria-label="Buscar productos"
+                className="h-13 min-h-[52px] w-full rounded-xl border border-[#e7ece5] bg-[#f8faf7] pl-12 pr-4 text-sm text-[#172a20] outline-none placeholder:text-[#849588] focus-visible:ring-2 focus-visible:ring-[#4b9366]"/>
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <button type="button" onClick={()=>setDiscountOnly(false)} aria-pressed={!discountOnly}
+                className={`rounded-full border px-4 py-2 text-xs font-bold transition ${!discountOnly?"border-[#173b2b] bg-[#173b2b] text-white":"border-[#e1e8e0] bg-white text-[#4c6353] hover:bg-[#eff4ec]"}`}>Todos los productos</button>
+              <button type="button" onClick={()=>setDiscountOnly(true)} aria-pressed={discountOnly}
+                className={`rounded-full border px-4 py-2 text-xs font-bold transition ${discountOnly?"border-[#173b2b] bg-[#173b2b] text-white":"border-[#e1e8e0] bg-white text-[#4c6353] hover:bg-[#eff4ec]"}`}>Combos con ahorro</button>
+            </div>
           </div>
         </section>
         {products.length === 0 ? (
@@ -1157,7 +1133,7 @@ export function CatalogGrid({
             </Button>
           </div>
         ) : (
-          <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {visible.map((product) => (
               <ProductCard
                 key={product.id}
@@ -1169,10 +1145,11 @@ export function CatalogGrid({
         )}
       </main>
 
-      <footer className="mt-8 border-t py-8 text-center">
-        <p className="text-xs text-muted-foreground">
-          {data.workspaceName} · Atención directa por WhatsApp
-        </p>
+      <footer className="mt-14 border-t border-[#284a38] bg-[#143827] px-5 py-9 text-center text-white">
+        <div className="mx-auto max-w-7xl">
+          <p className="text-lg font-black tracking-tight">{data.workspaceName}</p>
+          <p className="mt-2 text-xs text-[#b7d0bd]">Tus productos, tu elección. Atención directa por WhatsApp.</p>
+        </div>
       </footer>
     </div>
   );
@@ -1191,101 +1168,75 @@ export function CatalogDetail({
   workspaceId: string;
   product: CatalogProduct;
 }) {
-  const typedProduct =
-    product as CatalogProductWithPrices;
-
-  const description = productSummary(product);
-
+  const typedProduct=product as CatalogProductWithPrices;
+  const description=productSummary(product);
+  const highlights=productHighlights(product);
   return (
-    <div className="min-h-screen bg-muted/10">
-      <header className="border-b bg-background">
-        <div className="mx-auto max-w-6xl px-4 py-4">
-          <Link
-            to="/c/$workspaceId"
-            params={{ workspaceId }}
-            className="inline-flex items-center gap-1 text-sm font-medium text-muted-foreground transition hover:text-foreground"
-          >
-            <ChevronLeft className="h-4 w-4" />
-
-            {data.workspaceName}
+    <div className="min-h-screen bg-[#f8f8f4] text-[#172a20]">
+      <div className="bg-[#153b2b] px-4 py-2.5 text-center text-[11px] font-semibold tracking-[.08em] text-[#ebf2e9]">
+        Elegí tu opción · Consultá disponibilidad · Comprá por WhatsApp
+      </div>
+      <header className="sticky top-0 z-30 border-b border-[#e6ece5] bg-white/95 backdrop-blur">
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-4 sm:px-7">
+          <Link to="/c/$workspaceId" params={{workspaceId}} className="flex min-w-0 items-center gap-3">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#173b2b] text-white">
+              <ShoppingBag className="h-5 w-5"/>
+            </span>
+            <span className="truncate text-lg font-black tracking-tight text-[#172a20]">{data.workspaceName}</span>
+          </Link>
+          <Link to="/c/$workspaceId" params={{workspaceId}}
+            className="inline-flex items-center gap-2 rounded-full border border-[#dce6dd] px-4 py-2 text-xs font-bold text-[#375641] hover:bg-[#edf5eb]">
+            <ChevronLeft className="h-4 w-4"/> <span className="hidden sm:inline">Volver al catálogo</span><span className="sm:hidden">Volver</span>
           </Link>
         </div>
       </header>
-
-      <main className="mx-auto max-w-6xl px-4 py-6 pb-28 md:py-10 lg:pb-10">
-        <div className="grid items-start gap-8 lg:grid-cols-[1.1fr_0.9fr]">
-          <div className="min-w-0">
-            <Media product={product} />
+      <main className="mx-auto max-w-7xl px-4 py-6 pb-28 sm:px-7 sm:py-9 lg:pb-12">
+        <nav aria-label="Ubicación dentro del catálogo" className="mb-6 flex items-center gap-2 text-xs text-[#75867a]">
+          <Link to="/c/$workspaceId" params={{workspaceId}} className="hover:text-[#173b2b]">Catálogo</Link>
+          <ChevronLeft className="h-3 w-3 rotate-180"/>
+          <span className="max-w-[220px] truncate font-semibold text-[#385f45]">{plainProductText(product.name,80)}</span>
+        </nav>
+        <div className="grid items-start gap-7 lg:grid-cols-[1.06fr_0.94fr] lg:gap-12">
+          <div className="overflow-hidden rounded-[2rem] border border-[#e3e9df] bg-[radial-gradient(circle_at_50%_35%,#ffffff_0%,#f2f5ee_75%)] p-4 shadow-[0_15px_55px_rgba(24,50,31,.06)] sm:p-7">
+            <Media product={product}/>
+            <div className="mt-5 flex items-center justify-center gap-2 text-xs font-medium text-[#728477]">
+              <ShieldCheck className="h-4 w-4 text-[#2d7750]"/> Fotografías del catálogo de la tienda
+            </div>
           </div>
-
-          <div className="space-y-6 lg:sticky lg:top-6">
-            <div className="space-y-3">
-              <Badge
-                variant="secondary"
-                className="rounded-full"
-              >
-                Consultá disponibilidad
-              </Badge>
-
-              <h1 className="text-2xl font-black leading-tight tracking-tight sm:text-3xl">
-                {plainProductText(product.name,100)}
+          <div className="space-y-6 lg:sticky lg:top-24">
+            <section className="space-y-4">
+              <p className="text-[11px] font-extrabold uppercase tracking-[.23em] text-[#538366]">Selección de {data.workspaceName}</p>
+              <h1 className="text-[32px] font-black leading-[1.09] tracking-tight text-[#142c20] sm:text-[43px]">
+                {plainProductText(product.name,110)}
               </h1>
-              {description && (
-                <p className="text-sm leading-6 text-muted-foreground sm:text-base">
-                  {description}
-                </p>
-              )}
-              {productHighlights(product).length>0 && (
-                <div className="grid gap-2 border-t pt-4">
-                  {productHighlights(product).map((line,index)=>(
-                    <div key={index} className="flex items-start gap-2 text-sm">
-                      <Check className="mt-0.5 h-4 w-4 shrink-0 text-primary"/>
-                      <span>{line}</span>
+              {description && <p className="max-w-xl text-[15px] leading-7 text-[#6d7e72] sm:text-base">{description}</p>}
+              {highlights.length>0 && (
+                <div className="grid gap-2 border-l-[3px] border-[#84b28d] pl-4">
+                  {highlights.map((line,index)=>(
+                    <div key={index} className="flex items-start gap-2 text-[13px] leading-6 text-[#45604d]">
+                      <Check className="mt-1 h-4 w-4 shrink-0 text-[#398757]"/><span>{line}</span>
                     </div>
                   ))}
                 </div>
               )}
-            </div>
-
-            <Card className="rounded-2xl shadow-sm">
-              <CardContent className="p-4 sm:p-5">
-                <PriceSelector
-                  product={typedProduct}
-                  phone={data.phone}
-                />
-              </CardContent>
-            </Card>
-
-            <TrustBenefits
-              deliveryInfo={
-                product.delivery_info
-              }
-            />
-
-            {product.keywords?.length >
-              0 && (
-              <div className="flex flex-wrap gap-1.5">
-                {product.keywords.map(
-                  (keyword, index) => (
-                    <Badge
-                      key={`${keyword}-${index}`}
-                      variant="outline"
-                      className="font-normal"
-                    >
-                      {keyword}
-                    </Badge>
-                  ),
-                )}
+            </section>
+            <div className="overflow-hidden rounded-[1.75rem] border border-[#dfe9dc] bg-white p-5 shadow-[0_15px_50px_rgba(24,50,31,.09)] sm:p-7">
+              <div className="mb-5 flex items-center justify-between gap-3 border-b border-[#edf0e9] pb-4">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-[.21em] text-[#74927b]">Configurá tu pedido</p>
+                  <p className="mt-1 text-lg font-black text-[#173b2b]">Elegí y comprá fácilmente</p>
+                </div>
+                <span className="rounded-full bg-[#ebf4eb] px-3 py-1.5 text-xs font-bold text-[#2e7849]">Compra directa</span>
               </div>
-            )}
+              <PriceSelector product={typedProduct} phone={data.phone}/>
+            </div>
+            <TrustBenefits deliveryInfo={product.delivery_info}/>
           </div>
         </div>
       </main>
-
-      <footer className="mt-8 border-t py-8 text-center">
-        <p className="text-xs text-muted-foreground">
-          Powered by BOT SKY
-        </p>
+      <footer className="mt-12 border-t border-[#284a38] bg-[#143827] px-5 py-9 text-center text-white">
+        <p className="text-lg font-black">{data.workspaceName}</p>
+        <p className="mt-2 text-xs text-[#b7d0bd]">Tu selección, directo a WhatsApp. Confirmá disponibilidad y entrega.</p>
       </footer>
     </div>
   );
