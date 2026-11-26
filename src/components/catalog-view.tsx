@@ -1,8 +1,11 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import {
   Check,
   ChevronLeft,
+  ArrowRight,
+  ArrowUpRight,
+  ArrowDownRight,
   MessageCircle,
   Music,
   Search,
@@ -942,351 +945,202 @@ export function CatalogDisabled({
   );
 }
 
+
 /* =========================================================
-   CARD DE PRODUCTO
+   CATÁLOGO EDITORIAL — DISEÑO PREMIUM 2026
+   La portada utiliza únicamente fotografías reales del catálogo.
+   Cada tienda conserva su propio nombre, productos y WhatsApp.
 ========================================================= */
 
-function ProductCard({
-  product,
-  workspaceId,
-}: {
-  product: CatalogProductWithPrices;
-  workspaceId: string;
-}) {
-  const description = productSummary(product);
+const storeColors = {
+  ink: "#14201D",
+  cream: "#F6F5F0",
+  lime: "#DDF69B",
+  muted: "#707A73",
+};
 
-  const prices =
-    getProductPrices(product);
+function StoreMark({name}:{name:string}) {
+  const initials=name.trim().split(/\s+/).slice(0,2).map(word=>word[0]?.toUpperCase()??"").join("")||"S";
+  return <span aria-hidden="true" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[15px] bg-[#14201D] text-sm font-black tracking-widest text-[#DDF69B] shadow-sm">{initials}</span>;
+}
 
-  const lowestUnitPrice =
-    prices.length > 0
-      ? Math.min(
-          ...prices.map((item) =>
-            getPricePerUnit(item),
-          ),
-        )
-      : 0;
-
+function StoreHeader({name,workspaceId,phone,onSearchClick}:{name:string;workspaceId:string;phone:string|null;onSearchClick?:()=>void}) {
   return (
-    <Card className="group overflow-hidden rounded-2xl border bg-background shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg">
-      <CardContent className="flex h-full flex-col p-0">
-        <Link
-          to="/c/$workspaceId/$productId"
-          params={{
-            workspaceId,
-            productId: product.id,
-          }}
-          className="relative block p-3 pb-0"
-        >
-          <Media
-            product={product}
-            compact
-          />
-
-          {prices.length > 1 && prices.some(p=>getSavings(product,prices,p)>0) && (
-            <Badge className="absolute left-5 top-5 shadow-sm">
-              Combo disponible
-            </Badge>
-          )}
+    <header className="sticky top-0 z-40 border-b border-[#E8E9E1] bg-[#FEFEFC]/95 backdrop-blur-xl">
+      <div className="mx-auto flex h-[76px] max-w-[1240px] items-center justify-between gap-3 px-4 sm:px-7">
+        <Link to="/c/$workspaceId" params={{workspaceId}} aria-label={`Ir al catálogo de ${name}`} className="flex min-w-0 items-center gap-3">
+          <StoreMark name={name}/>
+          <span className="min-w-0">
+            <span className="block truncate text-[15px] font-black tracking-tight text-[#14201D] sm:text-[18px]">{name}</span>
+            <span className="block text-[10px] font-bold uppercase tracking-[0.22em] text-[#829087]">Tienda online</span>
+          </span>
         </Link>
-
-        <div className="flex flex-1 flex-col gap-4 p-4">
-          <div className="flex-1 space-y-2">
-            <Link
-              to="/c/$workspaceId/$productId"
-              params={{
-                workspaceId,
-                productId: product.id,
-              }}
-              className="line-clamp-2 text-lg font-black leading-tight transition hover:opacity-80"
-            >
-              {plainProductText(product.name,100)}
-            </Link>
-
-            {description && (
-              <p className="line-clamp-2 text-sm leading-relaxed text-muted-foreground">
-                {description}
-              </p>
-            )}
-          </div>
-
-          {lowestUnitPrice > 0 &&
-            prices.length > 1 && (
-              <p className="text-xs text-muted-foreground">
-                Desde{" "}
-                <span className="font-bold text-foreground">
-                  {formatGs(lowestUnitPrice)}
-                </span>{" "}
-                por unidad
-              </p>
-            )}
-
-          <ProductPricePreview
-            product={product}
-          />
-
-          {product.delivery_info && (
-            <div className="flex items-start gap-2 rounded-xl bg-muted/40 px-3 py-2.5">
-              <Truck className="mt-0.5 h-4 w-4 shrink-0" />
-
-              <p className="text-xs leading-relaxed text-muted-foreground">
-                {product.delivery_info}
-              </p>
-            </div>
-          )}
-
-          <Button
-            asChild
-            size="lg"
-            className="h-11 w-full rounded-xl font-bold"
-          >
-            <Link
-              to="/c/$workspaceId/$productId"
-              params={{
-                workspaceId,
-                productId: product.id,
-              }}
-            >
-              <ShoppingBag className="mr-2 h-4 w-4" />
-              Ver producto
-            </Link>
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
+        <nav aria-label="Accesos de la tienda" className="flex shrink-0 items-center gap-2">
+          {onSearchClick&&<button type="button" onClick={onSearchClick} aria-label="Buscar productos" className="flex h-10 w-10 items-center justify-center rounded-full border border-[#E6E9E1] bg-white text-[#14201D] transition hover:bg-[#EEF3E5]"><Search className="h-5 w-5"/></button>}
+          <Link to="/c/$workspaceId" params={{workspaceId}} className="hidden rounded-full px-4 py-2 text-sm font-semibold text-[#34423B] transition hover:bg-[#F1F3EB] sm:inline-flex">Productos</Link>
+          {phone&&<a href={`https://wa.me/${String(phone).replace(/\D/g,"")}`} target="_blank" rel="noopener noreferrer" className="inline-flex h-10 items-center gap-2 rounded-full bg-[#14201D] px-4 text-xs font-bold text-white transition hover:bg-[#30463B] sm:text-sm"><MessageCircle className="h-4 w-4"/> <span className="hidden sm:inline">Consultanos</span><span className="sm:hidden">WhatsApp</span></a>}
+        </nav>
+      </div>
+    </header>
   );
 }
 
-/* =========================================================
-   CATÁLOGO PRINCIPAL
-========================================================= */
+function StoreFooter({name}:{name:string}) {
+  return (
+    <footer className="bg-[#14201D] text-white">
+      <div className="mx-auto flex max-w-[1240px] flex-col justify-between gap-6 px-5 py-10 sm:flex-row sm:items-center sm:px-7">
+        <div className="flex items-center gap-3"><span className="flex h-11 w-11 items-center justify-center rounded-xl bg-[#DDF69B] text-lg font-black text-[#14201D]">{name[0]?.toUpperCase()||"S"}</span><div><p className="text-lg font-bold">{name}</p><p className="text-xs text-[#B8C5BA]">Comprá fácil. Atención directa.</p></div></div>
+        <p className="text-xs text-[#B8C5BA]">Los precios y presentaciones se confirman con la tienda por WhatsApp.</p>
+      </div>
+    </footer>
+  );
+}
 
-export function CatalogGrid({
-  data,
-  workspaceId,
-}: {
-  data: CatalogData;
-  workspaceId: string;
-}) {
+function EditorialProductCard({product,workspaceId}:{product:CatalogProductWithPrices;workspaceId:string}) {
+  const prices=getProductPrices(product);
+  const lowest=prices.length?Math.min(...prices.map(p=>p.price)):0;
+  const image=product.media?.find(item=>item.media_type==="image")?.url;
+  const savings=prices.some(price=>getSavings(product,prices,price)>0);
+  return (
+    <article className="group relative flex h-full flex-col overflow-hidden rounded-[22px] border border-[#E5E8DD] bg-white transition-all duration-300 hover:-translate-y-1 hover:border-[#C3D1B8] hover:shadow-[0_22px_55px_-25px_rgba(20,32,29,0.25)]">
+      <Link to="/c/$workspaceId/$productId" params={{workspaceId,productId:product.id}} className="relative block aspect-[4/4.5] overflow-hidden bg-[#F0F1E9] sm:aspect-[4/4.25]" aria-label={`Ver ${product.name}`}>
+        {image
+          ? <img src={image} alt={plainProductText(product.name,120)} loading="lazy" className="h-full w-full object-contain p-3 transition-transform duration-500 group-hover:scale-105 sm:p-5"/>
+          : <div className="flex h-full w-full items-center justify-center"><ShoppingBag className="h-16 w-16 text-[#B8C4B5]"/></div>}
+        {savings&&<span className="absolute left-3 top-3 rounded-full bg-[#DDF69B] px-3 py-1.5 text-[10px] font-extrabold uppercase tracking-wider text-[#20321E]">Ahorrá en combo</span>}
+        <span className="absolute bottom-3 right-3 flex h-10 w-10 items-center justify-center rounded-full bg-white text-[#1D2C25] shadow-sm transition group-hover:bg-[#DDF69B]"><ArrowUpRight className="h-5 w-5"/></span>
+      </Link>
+      <div className="flex flex-1 flex-col px-3 pb-4 pt-4 sm:px-5 sm:pb-5">
+        <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-[#75857B]">Selección de la tienda</p>
+        <Link to="/c/$workspaceId/$productId" params={{workspaceId,productId:product.id}} className="line-clamp-2 min-h-[44px] text-[16px] font-extrabold leading-[1.35] tracking-tight text-[#18251D] transition hover:text-[#597344] sm:text-[19px]">{plainProductText(product.name,110)}</Link>
+        {productSummary(product)&&<p className="mt-2 line-clamp-2 text-xs leading-relaxed text-[#6F786F] sm:text-[13px]">{productSummary(product)}</p>}
+        <div className="mt-auto border-t border-[#EFF0E9] pt-4">
+          <p className="text-[10px] font-medium uppercase tracking-wide text-[#829087]">{prices.length>1?"Presentaciones desde":"Precio"}</p>
+          <p className="mt-1 text-[20px] font-black tracking-tight text-[#14201D] sm:text-[24px]">{lowest?formatGs(lowest):"Consultar"}</p>
+          <Link to="/c/$workspaceId/$productId" params={{workspaceId,productId:product.id}} className="mt-3 flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-[#14201D] text-[13px] font-bold text-white transition hover:bg-[#2A4335]">Elegir opción <ArrowRight className="h-4 w-4"/></Link>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+export function CatalogGrid({data,workspaceId}:{data:CatalogData;workspaceId:string}) {
   const products=data.products as CatalogProductWithPrices[];
   const [search,setSearch]=useState("");
   const [discountOnly,setDiscountOnly]=useState(false);
-  const normalized=search.normalize("NFD").replace(/[\\u0300-\\u036f]/g,"").toLowerCase().trim();
+  const searchRef=useRef<HTMLInputElement>(null);
+  const normalized=search.normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().trim();
   const visible=products.filter(p=>{
     const searchable=[p.name,p.description,p.sales_copy,...(p.keywords??[])].join(" ")
-      .normalize("NFD").replace(/[\\u0300-\\u036f]/g,"").toLowerCase();
-    if(normalized && !searchable.includes(normalized))return false;
+      .normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase();
+    if(normalized&&!searchable.includes(normalized))return false;
     if(discountOnly){
       const prices=getProductPrices(p);
       return prices.some(o=>getSavings(p,prices,o)>0);
     }
     return true;
   });
-
+  const heroProduct=products.find(p=>p.media?.some(m=>m.media_type==="image"))??products[0];
+  const heroPhoto=heroProduct?.media?.find(m=>m.media_type==="image")?.url;
+  const heroPrices=heroProduct?getProductPrices(heroProduct):[];
+  const heroPrice=heroPrices.length?Math.min(...heroPrices.map(p=>p.price)):null;
+  const focusSearch=()=>{searchRef.current?.focus();searchRef.current?.scrollIntoView({behavior:"smooth",block:"center"});};
   return (
-    <div className="min-h-screen bg-muted/10">
-      <header className="sticky top-0 z-30 border-b bg-background/95 backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-4">
-          <div className="min-w-0">
-            <h1 className="truncate text-xl font-black">
-              {data.workspaceName}
-            </h1>
-
-            <p className="text-xs text-muted-foreground">
-              Catálogo online ·{" "}
-              {products.length}{" "}
-              {products.length === 1
-                ? "producto"
-                : "productos"}
-            </p>
-          </div>
-
-          <div className="hidden items-center gap-2 rounded-full border px-3 py-1.5 text-xs text-muted-foreground sm:flex">
-            <ShieldCheck className="h-3.5 w-3.5" />
-            Comprá directamente con la tienda
-          </div>
-        </div>
-      </header>
-
-      <main className="mx-auto max-w-6xl px-4 py-6 md:py-8">
-        <section className="mb-7 space-y-4 rounded-3xl border bg-background p-5 shadow-sm sm:p-7">
-          <div className="space-y-1">
-            <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Tu tienda, más cerca</p>
-            <h2 className="text-2xl font-black tracking-tight sm:text-3xl">Encontrá lo que necesitás</h2>
-            <p className="max-w-xl text-sm text-muted-foreground">Explorá productos, compará presentaciones y elegí la opción ideal para vos.</p>
-          </div>
-          <div className="relative">
-            <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground" />
-            <input
-              type="search" value={search} onChange={e=>setSearch(e.target.value)}
-              placeholder="Buscar productos…" aria-label="Buscar productos"
-              className="h-12 w-full rounded-xl border bg-background pl-11 pr-4 text-base outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            />
-          </div>
-          <div className="flex items-center gap-2">
-            <button type="button" onClick={()=>setDiscountOnly(false)}
-              aria-pressed={!discountOnly}
-              className={`rounded-full border px-4 py-2 text-sm font-semibold transition ${!discountOnly?"border-primary bg-primary text-primary-foreground":"bg-background hover:bg-muted"}`}>Todos</button>
-            <button type="button" onClick={()=>setDiscountOnly(true)}
-              aria-pressed={discountOnly}
-              className={`rounded-full border px-4 py-2 text-sm font-semibold transition ${discountOnly?"border-primary bg-primary text-primary-foreground":"bg-background hover:bg-muted"}`}>Combos con ahorro</button>
-            <span className="ml-auto text-xs text-muted-foreground">{visible.length} productos</span>
-          </div>
-        </section>
-        {products.length === 0 ? (
-          <div className="py-20 text-center">
-            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-muted">
-              <ShoppingBag className="h-7 w-7 text-muted-foreground" />
+    <div className="min-h-screen bg-[#F6F5F0] text-[#14201D]">
+      <div className="bg-[#14201D] px-3 py-2 text-center text-[11px] font-semibold tracking-wide text-[#E4F5C0] sm:text-xs">Descubrí nuestros productos · Elegí tu opción · Comprá por WhatsApp</div>
+      <StoreHeader name={data.workspaceName} workspaceId={workspaceId} phone={data.phone} onSearchClick={focusSearch}/>
+      <main>
+        {products.length>0&&heroProduct&&(
+          <section className="relative overflow-hidden bg-[#172821]">
+            <div className="pointer-events-none absolute -left-24 top-10 h-96 w-96 rounded-full bg-[#4A6651]/25 blur-3xl"/>
+            <div className="pointer-events-none absolute -right-32 -top-32 h-96 w-96 rounded-full bg-[#A0C07C]/15 blur-3xl"/>
+            <div className="relative mx-auto grid max-w-[1240px] items-center gap-0 px-4 py-10 sm:px-7 sm:py-14 lg:min-h-[500px] lg:grid-cols-2 lg:py-16">
+              <div className="relative z-10 max-w-xl space-y-5 pb-6 text-white lg:pb-0">
+                <p className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-4 py-2 text-[10px] font-extrabold uppercase tracking-[0.2em] text-[#E0F3B7]"><span className="h-2 w-2 rounded-full bg-[#DDF69B]"/> Catálogo de {data.workspaceName}</p>
+                <h1 className="max-w-[650px] text-[clamp(2.55rem,6vw,5.4rem)] font-black leading-[0.99] tracking-[-0.065em]">Lo bueno para tu <span className="text-[#DDF69B]">día a día.</span></h1>
+                <p className="max-w-md text-sm leading-7 text-[#C9D6C8] sm:text-base">Productos útiles, opciones claras y una compra sin complicaciones. Elegí lo que necesitás y pedilo directamente a la tienda.</p>
+                <div className="flex flex-wrap gap-3 pt-2">
+                  <button type="button" onClick={()=>document.getElementById("catalog-products")?.scrollIntoView({behavior:"smooth"})} className="inline-flex h-12 items-center gap-2 rounded-full bg-[#DDF69B] px-6 text-sm font-extrabold text-[#15251C] transition hover:bg-[#EEFFBE]">Explorar productos <ArrowDownRight className="h-4 w-4"/></button>
+                  {data.phone&&<a href={`https://wa.me/${String(data.phone).replace(/\D/g,"")}`} target="_blank" rel="noopener noreferrer" className="inline-flex h-12 items-center gap-2 rounded-full border border-white/25 px-5 text-sm font-semibold text-white transition hover:bg-white/10"><MessageCircle className="h-4 w-4"/> Hacer una consulta</a>}
+                </div>
+              </div>
+              <div className="relative mx-auto flex w-full max-w-[540px] items-center justify-center lg:ml-auto">
+                <div className="absolute inset-x-10 bottom-6 top-3 rounded-full bg-[#B4D694]/20 blur-3xl"/>
+                <div className="relative aspect-[1.25/1] w-full overflow-hidden rounded-[32px] border border-white/10 bg-[#E9EDE2] shadow-[0_30px_65px_-25px_rgba(0,0,0,0.5)] sm:aspect-[1.3/1]">
+                  {heroPhoto?<img src={heroPhoto} alt={heroProduct.name} loading="eager" className="h-full w-full object-contain p-5 sm:p-8"/>:<div className="flex h-full items-center justify-center"><ShoppingBag className="h-20 w-20 text-[#A7B6A2]"/></div>}
+                  <div className="absolute inset-x-3 bottom-3 flex items-center justify-between gap-3 rounded-2xl bg-white/95 px-4 py-3 shadow-md backdrop-blur">
+                    <div className="min-w-0"><p className="truncate text-[12px] font-bold text-[#14201D] sm:text-sm">{plainProductText(heroProduct.name,70)}</p><p className="text-xs text-[#738176]">{heroPrice? `Desde ${formatGs(heroPrice)}`:"Consultá el precio"}</p></div>
+                    <Link to="/c/$workspaceId/$productId" params={{workspaceId,productId:heroProduct.id}} aria-label="Ver producto destacado" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#DDF69B] text-[#15251C]"><ArrowUpRight className="h-5 w-5"/></Link>
+                  </div>
+                </div>
+              </div>
             </div>
-
-            <h2 className="font-bold">
-              Todavía no hay productos publicados
-            </h2>
-
-            <p className="mt-1 text-sm text-muted-foreground">
-              Volvé pronto para ver las novedades.
-            </p>
-          </div>
-        ) : visible.length===0 ? (
-          <div className="rounded-2xl border bg-background px-5 py-12 text-center">
-            <Search className="mx-auto mb-3 h-8 w-8 text-muted-foreground"/>
-            <p className="font-bold">No encontramos productos con esos filtros</p>
-            <p className="mt-1 text-sm text-muted-foreground">Probá otra búsqueda o mirá todo el catálogo.</p>
-            <Button type="button" variant="outline" className="mt-4" onClick={()=>{setSearch("");setDiscountOnly(false)}}>
-              <X className="mr-2 h-4 w-4"/> Limpiar filtros
-            </Button>
-          </div>
-        ) : (
-          <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-            {visible.map((product) => (
-              <ProductCard
-                key={product.id}
-                product={product}
-                workspaceId={workspaceId}
-              />
-            ))}
-          </div>
+          </section>
         )}
+        <div className="mx-auto max-w-[1240px] px-4 pb-20 pt-9 sm:px-7 sm:pt-14">
+          <div className="mb-10 grid gap-3 sm:grid-cols-3">
+            {[
+              {icon:ShieldCheck,title:"Elegí con confianza",subtitle:"Precios y opciones a la vista"},
+              {icon:MessageCircle,title:"Atención directa",subtitle:"Consultá con la tienda por WhatsApp"},
+              {icon:ShoppingBag,title:"Sin vueltas",subtitle:"Elegí tu opción y hacé tu pedido"},
+            ].map(item=><div key={item.title} className="flex items-center gap-3 rounded-2xl border border-[#E6E8DF] bg-white px-4 py-4 sm:px-5"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#EFF4E5]"><item.icon className="h-5 w-5 text-[#47603D]"/></span><span><span className="block text-[13px] font-extrabold text-[#18251E]">{item.title}</span><span className="block text-[11px] text-[#758176]">{item.subtitle}</span></span></div>)}
+          </div>
+          <section id="catalog-products" className="scroll-mt-28">
+            <div className="mb-6 flex flex-col justify-between gap-4 md:flex-row md:items-end">
+              <div><p className="mb-2 text-[11px] font-black uppercase tracking-[0.22em] text-[#678051]">Explorá la colección</p><h2 className="text-[30px] font-black leading-tight tracking-[-0.045em] text-[#172620] sm:text-[42px]">Elegí tu próximo favorito<span className="text-[#A6C67A]">.</span></h2><p className="mt-2 text-sm text-[#748176]">{products.length} {products.length===1?"producto disponible en el catálogo":"productos disponibles en el catálogo"}</p></div>
+              <div className="relative w-full max-w-md"><Search className="pointer-events-none absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-[#718070]"/><input ref={searchRef} type="search" value={search} onChange={e=>setSearch(e.target.value)} placeholder="¿Qué estás buscando?" aria-label="Buscar productos" className="h-[54px] w-full rounded-2xl border border-[#DCE2D5] bg-white pl-12 pr-5 text-sm text-[#172620] shadow-sm outline-none placeholder:text-[#849184] focus:border-[#9DBD77] focus:ring-2 focus:ring-[#DDF69B]"/></div>
+            </div>
+            <div className="mb-7 flex items-center gap-2">
+              <button type="button" onClick={()=>setDiscountOnly(false)} aria-pressed={!discountOnly} className={`rounded-full px-5 py-2.5 text-xs font-extrabold transition ${discountOnly?"border border-[#DDE3D8] bg-white text-[#354639]":"bg-[#14201D] text-white"}`}>Todos</button>
+              <button type="button" onClick={()=>setDiscountOnly(true)} aria-pressed={discountOnly} className={`rounded-full px-5 py-2.5 text-xs font-extrabold transition ${discountOnly?"bg-[#14201D] text-white":"border border-[#DDE3D8] bg-white text-[#354639]"}`}>Combos con ahorro</button>
+              <span className="ml-auto text-xs font-semibold text-[#778479]">{visible.length} resultados</span>
+            </div>
+            {products.length===0?<div className="rounded-3xl bg-white p-16 text-center"><ShoppingBag className="mx-auto mb-4 h-10 w-10 text-[#8DA48C]"/><h3 className="text-xl font-bold">Todavía no hay productos publicados</h3><p className="mt-2 text-sm text-[#6B786E]">Volvé pronto para conocer nuestras novedades.</p></div>
+            :visible.length===0?<div className="rounded-3xl bg-white p-14 text-center"><Search className="mx-auto mb-3 h-10 w-10 text-[#9AAC98]"/><h3 className="text-lg font-extrabold">No encontramos coincidencias</h3><p className="mt-2 text-sm text-[#788279]">Probá otra búsqueda.</p><button type="button" onClick={()=>{setSearch("");setDiscountOnly(false)}} className="mt-5 rounded-full bg-[#DDF69B] px-6 py-3 text-xs font-extrabold">Ver todos los productos</button></div>
+            :<div className="grid grid-cols-2 gap-3 sm:gap-5 md:grid-cols-3 xl:grid-cols-4">{visible.map(p=><EditorialProductCard key={p.id} product={p} workspaceId={workspaceId}/>)}</div>}
+          </section>
+        </div>
       </main>
-
-      <footer className="mt-8 border-t py-8 text-center">
-        <p className="text-xs text-muted-foreground">
-          {data.workspaceName} · Atención directa por WhatsApp
-        </p>
-      </footer>
+      <StoreFooter name={data.workspaceName}/>
     </div>
   );
 }
 
-/* =========================================================
-   DETALLE DEL PRODUCTO
-========================================================= */
-
-export function CatalogDetail({
-  data,
-  workspaceId,
-  product,
-}: {
-  data: CatalogData;
-  workspaceId: string;
-  product: CatalogProduct;
-}) {
-  const typedProduct =
-    product as CatalogProductWithPrices;
-
-  const description = productSummary(product);
-
+export function CatalogDetail({data,workspaceId,product}:{data:CatalogData;workspaceId:string;product:CatalogProduct}) {
+  const typedProduct=product as CatalogProductWithPrices;
+  const description=productSummary(product);
+  const highlights=productHighlights(product).filter(h=>h.toLowerCase()!==description.toLowerCase());
   return (
-    <div className="min-h-screen bg-muted/10">
-      <header className="border-b bg-background">
-        <div className="mx-auto max-w-6xl px-4 py-4">
-          <Link
-            to="/c/$workspaceId"
-            params={{ workspaceId }}
-            className="inline-flex items-center gap-1 text-sm font-medium text-muted-foreground transition hover:text-foreground"
-          >
-            <ChevronLeft className="h-4 w-4" />
-
-            {data.workspaceName}
-          </Link>
+    <div className="min-h-screen bg-[#F6F5F0] text-[#14201D]">
+      <div className="bg-[#14201D] px-3 py-2 text-center text-[11px] font-semibold tracking-wide text-[#E4F5C0]">Atención directa por WhatsApp · Elegí tu presentación</div>
+      <StoreHeader name={data.workspaceName} workspaceId={workspaceId} phone={data.phone}/>
+      <main className="mx-auto max-w-[1240px] px-4 pb-28 pt-6 sm:px-7 sm:pt-9 lg:pb-14">
+        <div className="mb-7 flex items-center gap-2 text-xs font-semibold text-[#6F7F73]">
+          <Link to="/c/$workspaceId" params={{workspaceId}} className="transition hover:text-[#14201D]">Productos</Link><ChevronLeft className="h-3 w-3 rotate-180"/><span className="max-w-[70%] truncate text-[#14201D]">{plainProductText(product.name,100)}</span>
         </div>
-      </header>
-
-      <main className="mx-auto max-w-6xl px-4 py-6 pb-28 md:py-10 lg:pb-10">
-        <div className="grid items-start gap-8 lg:grid-cols-[1.1fr_0.9fr]">
-          <div className="min-w-0">
-            <Media product={product} />
-          </div>
-
-          <div className="space-y-6 lg:sticky lg:top-6">
-            <div className="space-y-3">
-              <Badge
-                variant="secondary"
-                className="rounded-full"
-              >
-                Consultá disponibilidad
-              </Badge>
-
-              <h1 className="text-2xl font-black leading-tight tracking-tight sm:text-3xl">
-                {plainProductText(product.name,100)}
-              </h1>
-              {description && (
-                <p className="text-sm leading-6 text-muted-foreground sm:text-base">
-                  {description}
-                </p>
-              )}
-              {productHighlights(product).length>0 && (
-                <div className="grid gap-2 border-t pt-4">
-                  {productHighlights(product).map((line,index)=>(
-                    <div key={index} className="flex items-start gap-2 text-sm">
-                      <Check className="mt-0.5 h-4 w-4 shrink-0 text-primary"/>
-                      <span>{line}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
+        <div className="grid items-start gap-8 lg:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)] lg:gap-12">
+          <section aria-label="Galería de producto" className="min-w-0 rounded-[28px] bg-[#E8EDE4] p-3 shadow-[0_15px_35px_-25px_rgba(20,32,29,0.3)] sm:p-5">
+            <Media product={product}/>
+          </section>
+          <section className="min-w-0 space-y-6">
+            <div className="space-y-4">
+              <p className="text-[11px] font-black uppercase tracking-[0.24em] text-[#789263]">Selección de {data.workspaceName}</p>
+              <h1 className="text-[clamp(2rem,4.8vw,3.7rem)] font-black leading-[1.07] tracking-[-0.055em] text-[#14201D]">{plainProductText(product.name,110)}</h1>
+              {description&&<p className="max-w-xl text-[15px] leading-7 text-[#637267] sm:text-base">{description}</p>}
+              {highlights.length>0&&<div className="grid gap-2 border-t border-[#DDE3D7] pt-4">{highlights.map((h,i)=><div key={i} className="flex items-start gap-3 text-sm text-[#435549]"><span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#DAECB8]"><Check className="h-3.5 w-3.5"/></span><span>{h}</span></div>)}</div>}
             </div>
-
-            <Card className="rounded-2xl shadow-sm">
-              <CardContent className="p-4 sm:p-5">
-                <PriceSelector
-                  product={typedProduct}
-                  phone={data.phone}
-                />
-              </CardContent>
-            </Card>
-
-            <TrustBenefits
-              deliveryInfo={
-                product.delivery_info
-              }
-            />
-
-            {product.keywords?.length >
-              0 && (
-              <div className="flex flex-wrap gap-1.5">
-                {product.keywords.map(
-                  (keyword, index) => (
-                    <Badge
-                      key={`${keyword}-${index}`}
-                      variant="outline"
-                      className="font-normal"
-                    >
-                      {keyword}
-                    </Badge>
-                  ),
-                )}
-              </div>
-            )}
-          </div>
+            <div className="rounded-[26px] border border-[#DFE6DA] bg-white p-5 shadow-[0_15px_35px_-25px_rgba(20,32,29,0.3)] sm:p-7">
+              <PriceSelector product={typedProduct} phone={data.phone}/>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex items-center gap-3 rounded-2xl border border-[#E1E7DD] bg-white p-4"><MessageCircle className="h-5 w-5 shrink-0 text-[#477A50]"/><span className="text-xs font-semibold text-[#405145]">Atención directa por WhatsApp</span></div>
+              <div className="flex items-center gap-3 rounded-2xl border border-[#E1E7DD] bg-white p-4"><ShieldCheck className="h-5 w-5 shrink-0 text-[#477A50]"/><span className="text-xs font-semibold text-[#405145]">Confirmación de tu pedido</span></div>
+            </div>
+            {product.delivery_info&&<div className="flex gap-3 rounded-2xl border border-[#E1E7DD] bg-white p-4"><Truck className="mt-0.5 h-5 w-5 shrink-0 text-[#477A50]"/><div><p className="text-sm font-bold">Información de entrega</p><p className="mt-1 text-xs leading-6 text-[#6B7A6F]">{plainProductText(product.delivery_info,260)}</p></div></div>}
+          </section>
         </div>
       </main>
-
-      <footer className="mt-8 border-t py-8 text-center">
-        <p className="text-xs text-muted-foreground">
-          Powered by BOT SKY
-        </p>
-      </footer>
+      <StoreFooter name={data.workspaceName}/>
     </div>
   );
 }
