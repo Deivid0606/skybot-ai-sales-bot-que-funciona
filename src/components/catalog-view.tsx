@@ -341,7 +341,7 @@ function BuyButton({
         type="button"
         disabled
         size="lg"
-        className="h-12 w-full rounded-xl text-base font-bold"
+        className="h-14 w-full rounded-2xl bg-[#14201D] text-base font-bold text-white shadow-lg shadow-[#15251C]/10 transition hover:bg-[#304B38]"
       >
         <MessageCircle className="mr-2 h-5 w-5" />
         WhatsApp no disponible
@@ -732,8 +732,8 @@ function PriceSelector({
               className={[
                 "relative w-full rounded-2xl border p-4 text-left transition-all",
                 active
-                  ? "border-primary bg-primary/5 shadow-sm ring-1 ring-primary"
-                  : "bg-background hover:border-primary/50 hover:bg-muted/20",
+                  ? "border-[#567548] bg-[#F0F8E1] shadow-sm ring-1 ring-[#B6D391]"
+                  : "border-[#E3E9DE] bg-[#FBFCF8] hover:border-[#B1C8A6] hover:bg-[#F5F9EF]",
               ].join(" ")}
             >
               {isBest && (
@@ -749,8 +749,8 @@ function PriceSelector({
                   className={[
                     "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border",
                     active
-                      ? "border-primary bg-primary text-primary-foreground"
-                      : "border-muted-foreground/40",
+                      ? "border-[#14201D] bg-[#14201D] text-white"
+                      : "border-[#A2B3A1]",
                   ].join(" ")}
                 >
                   {active && (
@@ -786,7 +786,7 @@ function PriceSelector({
                   </div>
 
                   <div className="shrink-0 text-right">
-                    <p className="text-xl font-black">
+                    <p className="text-xl font-black text-[#14201D]">
                       {formatGs(item.price)}
                     </p>
                   </div>
@@ -798,7 +798,7 @@ function PriceSelector({
       </div>
 
       {selectedPrice && (
-        <div className="rounded-2xl border bg-muted/40 p-4">
+        <div className="rounded-2xl border border-[#D5E2D0] bg-[#F2F7EB] p-4 sm:p-5">
           <div className="flex items-center justify-between gap-4">
             <div className="min-w-0">
               <p className="text-xs text-muted-foreground">
@@ -817,7 +817,7 @@ function PriceSelector({
               </p>
             </div>
 
-            <p className="shrink-0 text-2xl font-black">
+            <p className="shrink-0 text-2xl font-black text-[#14201D]">
               {formatGs(selectedPrice.price)}
             </p>
           </div>
@@ -832,13 +832,13 @@ function PriceSelector({
 
       {/* Acción siempre visible en celular, sincronizada con la opción elegida. */}
       {phone && selectedPrice && (
-        <div className="fixed inset-x-0 bottom-0 z-40 border-t bg-background/95 px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 shadow-lg backdrop-blur lg:hidden">
+        <div className="fixed inset-x-0 bottom-0 z-40 border-t border-[#DDE5D4] bg-[#FEFEFC]/95 px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 shadow-lg backdrop-blur lg:hidden">
           <div className="mx-auto flex max-w-xl items-center gap-3">
             <div className="min-w-0 flex-1">
               <p className="truncate text-xs text-muted-foreground">{selectedPrice.label}</p>
               <p className="text-lg font-black">{formatGs(selectedPrice.price)}</p>
             </div>
-            <Button asChild className="h-12 shrink-0 rounded-xl px-5 font-bold">
+            <Button asChild className="h-12 shrink-0 rounded-xl bg-[#14201D] px-5 font-bold text-white hover:bg-[#304B38]">
               <a href={buyLink(phone,product,selectedPrice)??"#"} target="_blank" rel="noopener noreferrer">
                 <MessageCircle className="mr-2 h-5 w-5"/> Pedir ahora
               </a>
@@ -951,13 +951,6 @@ export function CatalogDisabled({
    La portada utiliza únicamente fotografías reales del catálogo.
    Cada tienda conserva su propio nombre, productos y WhatsApp.
 ========================================================= */
-
-const storeColors = {
-  ink: "#14201D",
-  cream: "#F6F5F0",
-  lime: "#DDF69B",
-  muted: "#707A73",
-};
 
 function StoreMark({name}:{name:string}) {
   const initials=name.trim().split(/\s+/).slice(0,2).map(word=>word[0]?.toUpperCase()??"").join("")||"S";
