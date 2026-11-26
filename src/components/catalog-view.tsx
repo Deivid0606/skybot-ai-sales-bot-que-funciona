@@ -402,17 +402,19 @@ function Media({
               : "aspect-square rounded-2xl",
           ].join(" ")}
         >
-          <a href={hero.url} target="_blank" rel="noopener noreferrer"
-            aria-label={`Ampliar fotografía de ${product.name}`}
-            className="block h-full w-full cursor-zoom-in"
-          >
-            <img
-              src={hero.url}
-              alt={product.name}
-              className={`h-full w-full transition-transform duration-300 group-hover:scale-[1.02] ${compact?"object-cover":"object-contain"}`}
-              loading={compact?"lazy":"eager"}
-            />
-          </a>
+          {          compact ? (
+            <img src={hero.url} alt={product.name}
+              className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
+              loading="lazy" />
+          ) : (
+            <a href={hero.url} target="_blank" rel="noopener noreferrer"
+              aria-label={`Ampliar fotografía de ${product.name}`}
+              className="block h-full w-full cursor-zoom-in">
+              <img src={hero.url} alt={product.name}
+                className="h-full w-full object-contain transition-transform duration-300"
+                loading="eager" />
+            </a>
+          )}
         </div>
       ) : (
         <div
