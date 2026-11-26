@@ -5,6 +5,8 @@ import {
   ChevronLeft,
   MessageCircle,
   Music,
+  Search,
+  X,
   ShieldCheck,
   ShoppingBag,
   Sparkles,
@@ -36,6 +38,43 @@ type CatalogPrice = {
 type CatalogProductWithPrices = CatalogProduct & {
   product_prices?: CatalogPrice[] | null;
 };
+
+/* =========================================================
+   PRESENTACIÓN COMERCIAL LIMPIA
+   Reutiliza datos reales; no inventa beneficios ni reseñas.
+========================================================= */
+
+function plainProductText(value: string | null | undefined, max = 650): string {
+  const cleaned=String(value??"")
+    .replace(/<[^>]*>/g," ")
+    .replace(/&(?:nbsp|#x20);/gi," ")
+    .replace(/&amp;/gi,"&")
+    .replace(/\\([*_~])/g,"$1")
+    .replace(/\*{1,3}|_{2,3}|#{1,6}\s*/g,"")
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu,"")
+    .replace(/(?:🔥|✅|💥|👉|✔|•|▶)\s*/gu,"")
+    .replace(/(?:\b(?:stock limitado|apurate|últimas unidades|ultimas unidades)\b[!.]*)/gi,"")
+    .replace(/[ \t]+/g," ")
+    .replace(/\n\s*\n\s*\n/g,"\n\n")
+    .trim();
+  const clipped=cleaned.slice(0,max);
+  return cleaned.length>max?clipped.replace(/\s+\S*$/,"").trimEnd()+"…":clipped;
+}
+
+function productSummary(product: CatalogProduct): string {
+  const description=plainProductText(product.description,200);
+  if(description)return description;
+  return plainProductText(product.sales_copy,160);
+}
+
+function productHighlights(product: CatalogProduct): string[] {
+  const source=String(product.description||product.sales_copy||"");
+  return source.split(/\n|[;]+/).map(line=>plainProductText(line,100))
+    .filter(line=>line.length>=12 && line.length<=100)
+    .filter(line=>!/(?:^precio|^gs\.?|^pago|^envi|^delivery|^whatsapp|^stock|^compr[aá])/i.test(line))
+    .filter((line,index,all)=>all.findIndex(other=>other.toLowerCase()===line.toLowerCase())===index)
+    .slice(0,3);
+}
 
 /* =========================================================
    PRECIOS
@@ -128,18 +167,9 @@ function getReferenceUnitPrice(
     return oneUnit.price;
   }
 
-  /*
-   * Si no existe una opción de cantidad 1,
-   * usamos el precio unitario de la primera opción
-   * únicamente como referencia.
-   */
-  const first = prices[0];
-
-  if (first) {
-    return getPricePerUnit(first);
-  }
-
-  return getLegacyPrice(product);
+  // Sin precio unitario real NO anunciar un ahorro ficticio.
+  // Si solo hay combos, se pueden elegir sin mostrar descuentos inventados.
+  return 0;
 }
 
 function getSavings(
@@ -172,20 +202,9 @@ function getSavings(
 function getPopularPriceIndex(
   prices: CatalogPrice[],
 ) {
-  /*
-   * Para una oferta con:
-   *
-   * 1 unidad
-   * 2 unidades
-   * 3 unidades
-   *
-   * marcamos la segunda como MÁS ELEGIDO.
-   */
-  if (prices.length >= 2) {
-    return 1;
-  }
-
-  return 0;
+  // La posición de una opción NO prueba que sea "la más elegida".
+  // Mantener la primera como selección predeterminada transparente.
+  return prices.length ? 0 : -1;
 }
 
 function getBestPriceIndex(
@@ -469,18 +488,9 @@ function PriceBadges({
 }) {
   return (
     <>
-      {isPopular && (
-        <Badge className="h-5 px-1.5 text-[9px]">
-          MÁS ELEGIDO
-        </Badge>
-      )}
-
       {isBest && (
-        <Badge
-          variant="secondary"
-          className="h-5 px-1.5 text-[9px]"
-        >
-          MEJOR PRECIO
+        <Badge variant="secondary" className="h-5 px-1.5 text-[9px]">
+          Mejor precio por unidad
         </Badge>
       )}
     </>
@@ -519,10 +529,10 @@ function ProductPricePreview({
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2">
-        <Sparkles className="h-4 w-4" />
+        <ShoppingBag className="h-4 w-4 text-muted-foreground" />
 
-        <p className="text-xs font-bold uppercase tracking-wide">
-          Ofertas disponibles
+        <p className="text-xs font-semibold tracking-wide">
+          Elegí tu presentación
         </p>
       </div>
 
@@ -533,14 +543,12 @@ function ProductPricePreview({
           item,
         );
 
-        const isPopular =
-          prices.length > 1 &&
-          index === popularIndex;
+        const isPopular = false;
 
         const isBest =
+          prices.some(option=>option.quantity>1) &&
           prices.length > 1 &&
-          index === bestIndex &&
-          index !== popularIndex;
+          index === bestIndex;
 
         return (
           <div
@@ -624,12 +632,8 @@ function PriceSelector({
   const bestIndex =
     getBestPriceIndex(prices);
 
-  /*
-   * Si hay más de una opción, dejamos seleccionada
-   * la segunda porque será la opción "Más elegido".
-   *
-   * Si solo existe una, seleccionamos esa.
-   */
+  // Seleccionar la primera opción publicada por el vendedor.
+  // Nunca cambiar a un combo automáticamente por una suposición de ventas.
   const defaultPrice =
     prices[popularIndex] ??
     prices[0];
@@ -677,10 +681,10 @@ function PriceSelector({
     <div className="space-y-5">
       <div>
         <div className="flex items-center gap-2">
-          <Sparkles className="h-5 w-5" />
+          <ShoppingBag className="h-5 w-5" />
 
           <h2 className="text-lg font-black">
-            Elegí tu oferta
+            Elegí la opción que querés
           </h2>
         </div>
 
@@ -703,14 +707,12 @@ function PriceSelector({
             item,
           );
 
-          const isPopular =
-            prices.length > 1 &&
-            index === popularIndex;
+          const isPopular = false;
 
           const isBest =
+            prices.some(option=>option.quantity>1) &&
             prices.length > 1 &&
-            index === bestIndex &&
-            index !== popularIndex;
+            index === bestIndex;
 
           return (
             <button
@@ -726,21 +728,10 @@ function PriceSelector({
                   : "bg-background hover:border-primary/50 hover:bg-muted/20",
               ].join(" ")}
             >
-              {isPopular && (
-                <div className="absolute -top-2.5 left-4">
-                  <Badge className="shadow-sm">
-                    MÁS ELEGIDO
-                  </Badge>
-                </div>
-              )}
-
               {isBest && (
                 <div className="absolute -top-2.5 left-4">
-                  <Badge
-                    variant="secondary"
-                    className="shadow-sm"
-                  >
-                    MEJOR PRECIO
+                  <Badge variant="secondary" className="shadow-sm">
+                    Mejor precio por unidad
                   </Badge>
                 </div>
               )}
@@ -831,13 +822,9 @@ function PriceSelector({
         selectedPrice={selectedPrice}
       />
 
-      <div className="flex items-center justify-center gap-1.5 text-center text-[11px] text-muted-foreground">
-        <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
-
-        <span>
-          Enviaremos producto, opción, cantidad y precio
-          automáticamente.
-        </span>
+      <div className="flex items-center justify-center gap-1.5 text-center text-xs text-muted-foreground">
+        <ShieldCheck className="h-4 w-4 shrink-0" />
+        <span>La selección exacta se enviará a WhatsApp para confirmar tu pedido.</span>
       </div>
     </div>
   );
@@ -944,10 +931,7 @@ function ProductCard({
   product: CatalogProductWithPrices;
   workspaceId: string;
 }) {
-  const description =
-    product.sales_copy ||
-    product.description ||
-    "";
+  const description = productSummary(product);
 
   const prices =
     getProductPrices(product);
@@ -977,9 +961,9 @@ function ProductCard({
             compact
           />
 
-          {prices.length > 1 && (
+          {prices.length > 1 && prices.some(p=>getSavings(product,prices,p)>0) && (
             <Badge className="absolute left-5 top-5 shadow-sm">
-              OFERTA
+              Combo disponible
             </Badge>
           )}
         </Link>
@@ -994,7 +978,7 @@ function ProductCard({
               }}
               className="line-clamp-2 text-lg font-black leading-tight transition hover:opacity-80"
             >
-              {product.name}
+              {plainProductText(product.name,100)}
             </Link>
 
             {description && (
@@ -1042,7 +1026,7 @@ function ProductCard({
               }}
             >
               <ShoppingBag className="mr-2 h-4 w-4" />
-              Ver ofertas
+              Ver producto
             </Link>
           </Button>
         </div>
@@ -1062,8 +1046,20 @@ export function CatalogGrid({
   data: CatalogData;
   workspaceId: string;
 }) {
-  const products =
-    data.products as CatalogProductWithPrices[];
+  const products=data.products as CatalogProductWithPrices[];
+  const [search,setSearch]=useState("");
+  const [discountOnly,setDiscountOnly]=useState(false);
+  const normalized=search.normalize("NFD").replace(/[\\u0300-\\u036f]/g,"").toLowerCase().trim();
+  const visible=products.filter(p=>{
+    const searchable=[p.name,p.description,p.sales_copy,...(p.keywords??[])].join(" ")
+      .normalize("NFD").replace(/[\\u0300-\\u036f]/g,"").toLowerCase();
+    if(normalized && !searchable.includes(normalized))return false;
+    if(discountOnly){
+      const prices=getProductPrices(p);
+      return prices.some(o=>getSavings(p,prices,o)>0);
+    }
+    return true;
+  });
 
   return (
     <div className="min-h-screen bg-muted/10">
@@ -1085,12 +1081,36 @@ export function CatalogGrid({
 
           <div className="hidden items-center gap-2 rounded-full border px-3 py-1.5 text-xs text-muted-foreground sm:flex">
             <ShieldCheck className="h-3.5 w-3.5" />
-            Compra fácil y segura
+            Comprá directamente con la tienda
           </div>
         </div>
       </header>
 
       <main className="mx-auto max-w-6xl px-4 py-6 md:py-8">
+        <section className="mb-7 space-y-4 rounded-3xl border bg-background p-5 shadow-sm sm:p-7">
+          <div className="space-y-1">
+            <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Tu tienda, más cerca</p>
+            <h2 className="text-2xl font-black tracking-tight sm:text-3xl">Encontrá lo que necesitás</h2>
+            <p className="max-w-xl text-sm text-muted-foreground">Explorá productos, compará presentaciones y elegí la opción ideal para vos.</p>
+          </div>
+          <div className="relative">
+            <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground" />
+            <input
+              type="search" value={search} onChange={e=>setSearch(e.target.value)}
+              placeholder="Buscar productos…" aria-label="Buscar productos"
+              className="h-12 w-full rounded-xl border bg-background pl-11 pr-4 text-base outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={()=>setDiscountOnly(false)}
+              aria-pressed={!discountOnly}
+              className={`rounded-full border px-4 py-2 text-sm font-semibold transition ${!discountOnly?"border-primary bg-primary text-primary-foreground":"bg-background hover:bg-muted"}`}>Todos</button>
+            <button type="button" onClick={()=>setDiscountOnly(true)}
+              aria-pressed={discountOnly}
+              className={`rounded-full border px-4 py-2 text-sm font-semibold transition ${discountOnly?"border-primary bg-primary text-primary-foreground":"bg-background hover:bg-muted"}`}>Combos con ahorro</button>
+            <span className="ml-auto text-xs text-muted-foreground">{visible.length} productos</span>
+          </div>
+        </section>
         {products.length === 0 ? (
           <div className="py-20 text-center">
             <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-muted">
@@ -1105,9 +1125,18 @@ export function CatalogGrid({
               Volvé pronto para ver las novedades.
             </p>
           </div>
+        ) : visible.length===0 ? (
+          <div className="rounded-2xl border bg-background px-5 py-12 text-center">
+            <Search className="mx-auto mb-3 h-8 w-8 text-muted-foreground"/>
+            <p className="font-bold">No encontramos productos con esos filtros</p>
+            <p className="mt-1 text-sm text-muted-foreground">Probá otra búsqueda o mirá todo el catálogo.</p>
+            <Button type="button" variant="outline" className="mt-4" onClick={()=>{setSearch("");setDiscountOnly(false)}}>
+              <X className="mr-2 h-4 w-4"/> Limpiar filtros
+            </Button>
+          </div>
         ) : (
           <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-            {products.map((product) => (
+            {visible.map((product) => (
               <ProductCard
                 key={product.id}
                 product={product}
@@ -1120,7 +1149,7 @@ export function CatalogGrid({
 
       <footer className="mt-8 border-t py-8 text-center">
         <p className="text-xs text-muted-foreground">
-          Powered by BOT SKY
+          {data.workspaceName} · Atención directa por WhatsApp
         </p>
       </footer>
     </div>
@@ -1143,10 +1172,7 @@ export function CatalogDetail({
   const typedProduct =
     product as CatalogProductWithPrices;
 
-  const description =
-    product.sales_copy ||
-    product.description ||
-    "";
+  const description = productSummary(product);
 
   return (
     <div className="min-h-screen bg-muted/10">
@@ -1176,17 +1202,26 @@ export function CatalogDetail({
                 variant="secondary"
                 className="rounded-full"
               >
-                Disponible
+                Consultá disponibilidad
               </Badge>
 
               <h1 className="text-2xl font-black leading-tight tracking-tight sm:text-3xl">
-                {product.name}
+                {plainProductText(product.name,100)}
               </h1>
-
               {description && (
-                <p className="whitespace-pre-wrap text-sm leading-6 text-muted-foreground sm:text-base">
+                <p className="text-sm leading-6 text-muted-foreground sm:text-base">
                   {description}
                 </p>
+              )}
+              {productHighlights(product).length>0 && (
+                <div className="grid gap-2 border-t pt-4">
+                  {productHighlights(product).map((line,index)=>(
+                    <div key={index} className="flex items-start gap-2 text-sm">
+                      <Check className="mt-0.5 h-4 w-4 shrink-0 text-primary"/>
+                      <span>{line}</span>
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
 
