@@ -338,7 +338,7 @@ function BuyButton({
         type="button"
         disabled
         size="lg"
-        className="h-12 w-full rounded-xl text-base font-bold"
+        className="h-14 w-full rounded-xl bg-[#173b2b] text-base font-extrabold text-white shadow-lg shadow-[#173b2b]/15 hover:bg-[#255e43]"
       >
         <MessageCircle className="mr-2 h-5 w-5" />
         WhatsApp no disponible
@@ -727,10 +727,10 @@ function PriceSelector({
                 setSelectedPriceKey(key)
               }
               className={[
-                "relative w-full rounded-2xl border p-4 text-left transition-all",
+                "relative w-full rounded-2xl border-2 p-4 text-left transition-all",
                 active
-                  ? "border-primary bg-primary/5 shadow-sm ring-1 ring-primary"
-                  : "bg-background hover:border-primary/50 hover:bg-muted/20",
+                  ? "border-[#276543] bg-[#ecf6ee] shadow-sm"
+                  : "border-[#e5ebe3] bg-white hover:border-[#9aba9e] hover:bg-[#f7faf6]",
               ].join(" ")}
             >
               {isBest && (
@@ -746,8 +746,8 @@ function PriceSelector({
                   className={[
                     "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border",
                     active
-                      ? "border-primary bg-primary text-primary-foreground"
-                      : "border-muted-foreground/40",
+                      ? "border-[#23673f] bg-[#23673f] text-white"
+                      : "border-[#acbdad]",
                   ].join(" ")}
                 >
                   {active && (
@@ -795,7 +795,7 @@ function PriceSelector({
       </div>
 
       {selectedPrice && (
-        <div className="rounded-2xl border bg-muted/40 p-4">
+        <div className="rounded-2xl border border-[#dce9db] bg-[#f2f8f1] p-4">
           <div className="flex items-center justify-between gap-4">
             <div className="min-w-0">
               <p className="text-xs text-muted-foreground">
@@ -1168,101 +1168,75 @@ export function CatalogDetail({
   workspaceId: string;
   product: CatalogProduct;
 }) {
-  const typedProduct =
-    product as CatalogProductWithPrices;
-
-  const description = productSummary(product);
-
+  const typedProduct=product as CatalogProductWithPrices;
+  const description=productSummary(product);
+  const highlights=productHighlights(product);
   return (
-    <div className="min-h-screen bg-muted/10">
-      <header className="border-b bg-background">
-        <div className="mx-auto max-w-6xl px-4 py-4">
-          <Link
-            to="/c/$workspaceId"
-            params={{ workspaceId }}
-            className="inline-flex items-center gap-1 text-sm font-medium text-muted-foreground transition hover:text-foreground"
-          >
-            <ChevronLeft className="h-4 w-4" />
-
-            {data.workspaceName}
+    <div className="min-h-screen bg-[#f8f8f4] text-[#172a20]">
+      <div className="bg-[#153b2b] px-4 py-2.5 text-center text-[11px] font-semibold tracking-[.08em] text-[#ebf2e9]">
+        Elegí tu opción · Consultá disponibilidad · Comprá por WhatsApp
+      </div>
+      <header className="sticky top-0 z-30 border-b border-[#e6ece5] bg-white/95 backdrop-blur">
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-4 sm:px-7">
+          <Link to="/c/$workspaceId" params={{workspaceId}} className="flex min-w-0 items-center gap-3">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#173b2b] text-white">
+              <ShoppingBag className="h-5 w-5"/>
+            </span>
+            <span className="truncate text-lg font-black tracking-tight text-[#172a20]">{data.workspaceName}</span>
+          </Link>
+          <Link to="/c/$workspaceId" params={{workspaceId}}
+            className="inline-flex items-center gap-2 rounded-full border border-[#dce6dd] px-4 py-2 text-xs font-bold text-[#375641] hover:bg-[#edf5eb]">
+            <ChevronLeft className="h-4 w-4"/> <span className="hidden sm:inline">Volver al catálogo</span><span className="sm:hidden">Volver</span>
           </Link>
         </div>
       </header>
-
-      <main className="mx-auto max-w-6xl px-4 py-6 pb-28 md:py-10 lg:pb-10">
-        <div className="grid items-start gap-8 lg:grid-cols-[1.1fr_0.9fr]">
-          <div className="min-w-0">
-            <Media product={product} />
+      <main className="mx-auto max-w-7xl px-4 py-6 pb-28 sm:px-7 sm:py-9 lg:pb-12">
+        <nav aria-label="Ubicación dentro del catálogo" className="mb-6 flex items-center gap-2 text-xs text-[#75867a]">
+          <Link to="/c/$workspaceId" params={{workspaceId}} className="hover:text-[#173b2b]">Catálogo</Link>
+          <ChevronLeft className="h-3 w-3 rotate-180"/>
+          <span className="max-w-[220px] truncate font-semibold text-[#385f45]">{plainProductText(product.name,80)}</span>
+        </nav>
+        <div className="grid items-start gap-7 lg:grid-cols-[1.06fr_0.94fr] lg:gap-12">
+          <div className="overflow-hidden rounded-[2rem] border border-[#e3e9df] bg-[radial-gradient(circle_at_50%_35%,#ffffff_0%,#f2f5ee_75%)] p-4 shadow-[0_15px_55px_rgba(24,50,31,.06)] sm:p-7">
+            <Media product={product}/>
+            <div className="mt-5 flex items-center justify-center gap-2 text-xs font-medium text-[#728477]">
+              <ShieldCheck className="h-4 w-4 text-[#2d7750]"/> Fotografías del catálogo de la tienda
+            </div>
           </div>
-
-          <div className="space-y-6 lg:sticky lg:top-6">
-            <div className="space-y-3">
-              <Badge
-                variant="secondary"
-                className="rounded-full"
-              >
-                Consultá disponibilidad
-              </Badge>
-
-              <h1 className="text-2xl font-black leading-tight tracking-tight sm:text-3xl">
-                {plainProductText(product.name,100)}
+          <div className="space-y-6 lg:sticky lg:top-24">
+            <section className="space-y-4">
+              <p className="text-[11px] font-extrabold uppercase tracking-[.23em] text-[#538366]">Selección de {data.workspaceName}</p>
+              <h1 className="text-[32px] font-black leading-[1.09] tracking-tight text-[#142c20] sm:text-[43px]">
+                {plainProductText(product.name,110)}
               </h1>
-              {description && (
-                <p className="text-sm leading-6 text-muted-foreground sm:text-base">
-                  {description}
-                </p>
-              )}
-              {productHighlights(product).length>0 && (
-                <div className="grid gap-2 border-t pt-4">
-                  {productHighlights(product).map((line,index)=>(
-                    <div key={index} className="flex items-start gap-2 text-sm">
-                      <Check className="mt-0.5 h-4 w-4 shrink-0 text-primary"/>
-                      <span>{line}</span>
+              {description && <p className="max-w-xl text-[15px] leading-7 text-[#6d7e72] sm:text-base">{description}</p>}
+              {highlights.length>0 && (
+                <div className="grid gap-2 border-l-[3px] border-[#84b28d] pl-4">
+                  {highlights.map((line,index)=>(
+                    <div key={index} className="flex items-start gap-2 text-[13px] leading-6 text-[#45604d]">
+                      <Check className="mt-1 h-4 w-4 shrink-0 text-[#398757]"/><span>{line}</span>
                     </div>
                   ))}
                 </div>
               )}
-            </div>
-
-            <Card className="rounded-2xl shadow-sm">
-              <CardContent className="p-4 sm:p-5">
-                <PriceSelector
-                  product={typedProduct}
-                  phone={data.phone}
-                />
-              </CardContent>
-            </Card>
-
-            <TrustBenefits
-              deliveryInfo={
-                product.delivery_info
-              }
-            />
-
-            {product.keywords?.length >
-              0 && (
-              <div className="flex flex-wrap gap-1.5">
-                {product.keywords.map(
-                  (keyword, index) => (
-                    <Badge
-                      key={`${keyword}-${index}`}
-                      variant="outline"
-                      className="font-normal"
-                    >
-                      {keyword}
-                    </Badge>
-                  ),
-                )}
+            </section>
+            <div className="overflow-hidden rounded-[1.75rem] border border-[#dfe9dc] bg-white p-5 shadow-[0_15px_50px_rgba(24,50,31,.09)] sm:p-7">
+              <div className="mb-5 flex items-center justify-between gap-3 border-b border-[#edf0e9] pb-4">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-[.21em] text-[#74927b]">Configurá tu pedido</p>
+                  <p className="mt-1 text-lg font-black text-[#173b2b]">Elegí y comprá fácilmente</p>
+                </div>
+                <span className="rounded-full bg-[#ebf4eb] px-3 py-1.5 text-xs font-bold text-[#2e7849]">Compra directa</span>
               </div>
-            )}
+              <PriceSelector product={typedProduct} phone={data.phone}/>
+            </div>
+            <TrustBenefits deliveryInfo={product.delivery_info}/>
           </div>
         </div>
       </main>
-
-      <footer className="mt-8 border-t py-8 text-center">
-        <p className="text-xs text-muted-foreground">
-          Powered by BOT SKY
-        </p>
+      <footer className="mt-12 border-t border-[#284a38] bg-[#143827] px-5 py-9 text-center text-white">
+        <p className="text-lg font-black">{data.workspaceName}</p>
+        <p className="mt-2 text-xs text-[#b7d0bd]">Tu selección, directo a WhatsApp. Confirmá disponibilidad y entrega.</p>
       </footer>
     </div>
   );
