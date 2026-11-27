@@ -3722,7 +3722,15 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       // Encomienda anticipada nacional autorizada: ciudad y departamento bastan como destino.
       (isEncomiendaAdvanceOrder(ctx.training,result.order.city,result.order.departamento,result.order.payment_method) ||
        !verifiedOrderCoverage?.addressRequired ||
-       Boolean(isValidDeliveryAddress(result.order.street) || isValidDeliveryAddress(saveStep?.state.locationUrl) || isValidDeliveryAddress(previousSale.locationUrl)))) {
+       Boolean(isValidDeliveryAddress(saveStep?.state.street) || isValidDeliveryAddress(previousSale.street) ||
+         isValidDeliveryAddress(saveStep?.state.locationUrl) || isValidDeliveryAddress(previousSale.locationUrl)))) {
+      // La dirección debe venir de un estado de venta validado, nunca del JSON
+      // libre de la IA (que podría contener una transcripción completa).
+      if (!isEncomiendaAdvanceOrder(ctx.training,result.order.city,result.order.departamento,result.order.payment_method)) {
+        const verifiedAddress = [saveStep?.state.street,previousSale.street,saveStep?.state.locationUrl,previousSale.locationUrl]
+          .find(address=>isValidDeliveryAddress(address));
+        if (verifiedAddress) result.order.street=verifiedAddress;
+      }
       const completedOrder = {
         ...result.order,
         phone,
