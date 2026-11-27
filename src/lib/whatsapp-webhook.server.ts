@@ -2180,8 +2180,10 @@ async function processMessage(conn: Conn, profileName: string | null, message: I
 
   // «Pasame foto», «tenés video?», «mandame una imagen»: reenviar las fotos REALES del producto
   // (caso real Mellystore: la IA respondía «No puedo enviar fotos» varias veces).
-  if (!media && conversation.product_id &&
-      /\b(?:pas\w*|mand\w*|envi\w*|ten[eé]s|tienen|hay|quiero ver|puedo ver|mostr\w*|ver)\b[^.?!]{0,20}\b(?:fotos?|fotitos?|im[aá]gen(?:es)?|videos?|foto real)\b|^\s*(?:fotos?|im[aá]gen(?:es)?|videos?)\s*[?!.]*\s*$/i.test(normalizeIntentText(body))) {
+  // También por AUDIO («¿me podés pasar la foto?» dicho en voz): el texto es la transcripción.
+  if ((!media || media.type === "audio") && conversation.product_id &&
+      !/\b(?:comprobante|transfer\w*|pago|pague|deposit\w*|captura|recibo|factura|ubicaci[oó]n|direcci[oó]n)\b/i.test(normalizeIntentText(body)) &&
+      /\b(?:pas\w*|mand\w*|envi\w*|ten[eé]s|tienen|hay|quiero ver|puedo ver|mostr\w*|ver|con)\b[^.?!]{0,45}\b(?:fotos?|fotitos?|im[aá]gen(?:es)?|videos?|foto real)\b|^\s*(?:fotos?|im[aá]gen(?:es)?|videos?)\s*[?!.]*\s*$/i.test(normalizeIntentText(body))) {
     const prod = await supabaseAdmin.from("products").select("name").eq("workspace_id", workspaceId).eq("id", conversation.product_id).maybeSingle();
     const sentPhotos = await sendProductPhotos({ workspaceId, ownerId, conversationId: conversation.id, adId: attributedAdId,
       conn, phone, productId: conversation.product_id, productName: String(prod.data?.name ?? "producto"),
