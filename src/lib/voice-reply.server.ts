@@ -212,7 +212,7 @@ export async function tryVoiceReply(args: {
   phone: string;
   text: string;
   customerSentAudio: boolean;
-}): Promise<{ wamid: string | null; spoken: string } | null> {
+}): Promise<{ wamid: string | null; spoken: string; storagePath: string | null } | null> {
   // Precios, cuentas o links: siempre en texto para que se puedan leer.
   if (!args.customerSentAudio || !args.text.trim() || hasDataToRead(args.text)) return null;
   try {
@@ -226,7 +226,20 @@ export async function tryVoiceReply(args: {
       spoken = summary;
     }
     const audio = await synthesizeSpeech(settings, spoken);
-    return { wamid: await sendWhatsAppVoice(args.conn, args.phone, audio), spoken };
+    const wamid = await sendWhatsAppVoice(args.conn, args.phone, audio);
+    // Copia del audio en el chat (Inbox): así la tienda puede escuchar lo que dijo el bot.
+    let storagePath: string | null = null;
+    try {
+      const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+      const path = `${args.workspaceId}/outbound/${Date.now()}-voz-bot.ogg`;
+      const { error } = await supabaseAdmin.storage.from("chat-media")
+        .upload(path, new Uint8Array(audio), { contentType: "audio/ogg", upsert: false });
+      if (!error) storagePath = path;
+      else console.warn("[BOT_SKY_VOICE] No se guardó la copia del audio", error.message);
+    } catch (e) {
+      console.warn("[BOT_SKY_VOICE] No se guardó la copia del audio", e instanceof Error ? e.message : String(e));
+    }
+    return { wamid, spoken, storagePath };
   } catch (e) {
     console.warn("[BOT_SKY_VOICE] Se responde en texto", e instanceof Error ? e.message.slice(0, 200) : String(e));
     return null;
