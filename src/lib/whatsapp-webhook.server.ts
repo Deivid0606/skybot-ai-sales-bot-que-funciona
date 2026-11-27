@@ -4317,6 +4317,7 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
         ad_id: attributedAdId, direction: "outbound", sender: "ai",
         response_origin: "ai",
         body: voice ? `🎤 (audio) ${voice.spoken}` : outgoingText, wamid: outgoingWamid, status: "sent",
+        ...(voice?.storagePath ? { media_url: voice.storagePath, media_type: "audio" } : {}),
       } as any);
       await supabaseAdmin.from("conversations").update({
         last_message: outgoingText, last_message_at: new Date().toISOString(),
