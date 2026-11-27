@@ -84,6 +84,17 @@ export function isValidDeliveryAddress(value: unknown): boolean {
   const address = value.trim();
   const n = normal(address);
   if (!address || address.length > 600) return false;
+  // Las transcripciones de voz pueden mencionar un lugar en medio de una
+  // conversación. Eso NO significa que toda la frase sea un domicilio.
+  // Ej.: "Hola, qué tal, yo trabajo en el panel... mañana... en Petrobras".
+  // Pedir ubicación o dirección concreta antes de confirmar la compra.
+  const conversational = /\\b(?:hola|que tal|yo trabajo|si tienen|pues|puede ser|me traen|me llevan|me entregan|mañana|pasado mañana|pasado manana|ah[ií] me|ah[ií] en)\\b/i.test(n);
+  const explicitAddress = /\\b(?:mi direccion es|direccion:|calle|avenida|avda|ruta|esquina|casi|frente a|al lado de|entre calles|numero|nro|manzana|lote)\\b/i.test(n) ||
+    /\\b(?:\d{1,5}\\s*(?:casi|esq\\.?|sobre)|(?:calle|avda|avenida)\\s+[^,]{3,60}\\s+\\d{1,5})\\b/i.test(n);
+  if (conversational && !explicitAddress) return false;
+  // Una referencia comercial aislada requiere más detalle (sucursal, calle,
+  // barrio o ubicación GPS). No convertir "en Petrobras" en dirección válida.
+  if (/^(?:en|ahi en|aca en|frente a)?\\s*(?:petrobras|copetrol|shell|estacion de servicio)\\s*[.!]?$/i.test(n)) return false;
   // Texto leído de una imagen/audio o de un comprobante no es una dirección.
   if (/^\s*\[(?:imagen|audio|video|documento|sticker)\]|\b(?:PRODUCTO|COMPROBANTE|MONTO_GS|BENEFICIARIO)\s*:/i.test(address)) return false;
   if (/^https:\/\/(?:www\.)?(?:google\.[^\s/]+\/maps|maps\.app\.goo\.gl\/|goo\.gl\/maps\/)/i.test(address)) return true;
