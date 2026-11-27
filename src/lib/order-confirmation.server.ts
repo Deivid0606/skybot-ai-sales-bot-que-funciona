@@ -54,6 +54,7 @@ export function buildRegisteredOrderConfirmation(args: ConfirmationArgs): string
   const obsFee = obs.match(/ENVÍO:\s*([\d.]+)\s*Gs/);
   const shippingFee = obsFee ? Number(obsFee[1].replace(/\D/g, "")) : Number(args.shippingFee) || 0;
   const productDelivery = /delivery del producto/i.test(obs);
+  const requestedDelivery = obs.match(/ENTREGA:\s*(?:para\s+)?([^|\n]+)/i)?.[1]?.trim();
   const obsDiscount = obs.match(/DESCUENTO\s+(\d+(?:[.,]\d+)?)%\s+POR PAGO ANTICIPADO:\s*−?([\d.]+)\s*Gs/);
   const discountPct = obsDiscount ? obsDiscount[1] : "";
   const discount = obsDiscount ? Number(obsDiscount[2].replace(/\D/g, "")) : 0;
@@ -84,6 +85,7 @@ export function buildRegisteredOrderConfirmation(args: ConfirmationArgs): string
     `📱 Teléfono: ${created.phone}`,
     `💵 Pago: ${payment}`,
     `🚚 Envío: ${shipping}`,
+    ...(requestedDelivery ? [`📅 Fecha solicitada: ${requestedDelivery} (sujeta a confirmación de la tienda)`] : []),
     ...(isAdvance ? [`📎 Comprobante: ${args.paymentStatus === "pagado" ? "Pago acreditado" : "Recibido, pendiente de verificación bancaria"}`] : []),
     ...(isAdvance && Number.isSafeInteger(args.pendingCreditGs) && Number(args.pendingCreditGs) > 0
       ? [`💚 Excedente documentado: ${formatGs(Number(args.pendingCreditGs))}, pendiente de acreditación para futuras compras.`] : []),
