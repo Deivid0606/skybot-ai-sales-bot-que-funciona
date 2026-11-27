@@ -15,6 +15,8 @@ export type FollowupWriterInput = {
   pain: string;
   discoveryQuestion: string;
   sellerText: string; // texto propio del vendedor ('' si es el genérico)
+  /** Venta a medio camino: lo que el cliente YA dio y lo que falta para registrar el pedido. */
+  progress?: { city?: string | null; option?: string | null; missing: string[] } | null;
 };
 
 const AI_TIMEOUT_MS = 9_000;
@@ -56,6 +58,15 @@ const lower = (s: string) => (s ? s.charAt(0).toLowerCase() + s.slice(1) : s);
 export function templateFollowup(i: FollowupWriterInput): string {
   const n = i.firstName;
   const p = friendlyProductName(i.productName) || "el producto que consultaste";
+  if (i.progress && (i.progress.city || i.progress.option)) {
+    const where = i.progress.city ? ` para ${i.progress.city}` : "";
+    const need = i.progress.missing.length ? joinEs(i.progress.missing) : "";
+    const closing = [
+      `¡Hola${n ? ` ${n}` : ""}! 😊 Tengo casi listo tu pedido de ${p}${where}. ${need ? `Solo me falta ${need} y te lo registro. ¿Me lo pasás?` : "¿Te lo confirmo así?"}`,
+      `${n ? `${n}, ` : ""}¿seguimos con tu ${p}${where}? 🙌 ${need ? `Me falta nada más ${need} para dejarlo registrado.` : "Ya tengo todo, solo decime si lo confirmamos."}`,
+    ];
+    return closing[hash(i.conversationId + i.phase) % closing.length];
+  }
   const pain = i.pain.replace(/[.!]+$/, "");
   const first = [
     `¡Hola${n ? ` ${n}` : ""}! 😊 Me quedé pensando en tu consulta por ${p}.${pain ? ` Si ${lower(pain)}, de verdad te va a cambiar el día a día.` : ""} ¿Te quedó alguna duda que te pueda aclarar?`,
@@ -72,11 +83,15 @@ export function templateFollowup(i: FollowupWriterInput): string {
   return pool[hash(i.conversationId + i.phase) % pool.length];
 }
 
+function joinEs(items: string[]): string {
+  return items.length <= 1 ? (items[0] ?? "") : `${items.slice(0, -1).join(", ")} y ${items[items.length - 1]}`;
+}
+
 /** Rechaza datos que la IA podría inventar (lo que el vendedor escribió sí se permite). */
 export function followupLooksSafe(text: string, i: FollowupWriterInput): boolean {
   const t = text.trim();
   if (t.length < 25 || t.length > 420) return false;
-  const allowed = `${i.productName} ${i.sellerText}`.toLowerCase();
+  const allowed = `${i.productName} ${i.sellerText} ${i.progress?.option ?? ""} ${i.progress?.city ?? ""}`.toLowerCase();
   const withoutAllowedNumbers = t.replace(/\d[\d.,]*/g, (num) => (allowed.includes(num) ? "" : num));
   if (/\d/.test(withoutAllowedNumbers)) return false;
   const risky = /\b(?:gs\.?|guaran[ií]|descuento|gratis|regalo|obsequio|oferta|promo\w*|stock|[uú]ltimas? unidades?|quedan pocos|env[ií]o sin costo|te llega (?:hoy|mañana)|llega (?:hoy|mañana)|garant[ií]a)\b|%|https?:\/\//i;
@@ -119,6 +134,9 @@ function buildPrompt(i: FollowupWriterInput, chat: string): string {
     i.discoveryQuestion ? `Pregunta útil para conocer al cliente: ${i.discoveryQuestion}` : "",
     i.firstName ? `Nombre del cliente: ${i.firstName}` : "Nombre del cliente: (desconocido, no inventes uno)",
     i.sellerText ? `Mensaje base del vendedor (podés usar SUS datos, reescribilo con tu estilo): ${i.sellerText}` : "",
+    i.progress && (i.progress.city || i.progress.option)
+      ? `VENTA A MEDIO CAMINO: el cliente ya eligió${i.progress.option ? ` ${i.progress.option}` : " el producto"}${i.progress.city ? ` para ${i.progress.city}` : ""}. ${i.progress.missing.length ? `Para registrar el pedido SOLO falta: ${joinEs(i.progress.missing)}. Recordale en una frase lo que ya eligió y pedile ÚNICAMENTE eso (no vuelvas a preguntar lo que ya dio).` : "Ya están todos los datos: preguntale si confirma el pedido."} El objetivo es CERRAR la venta, no hacer preguntas de descubrimiento.`
+      : "",
     i.phase === 2
       ? "Es el ÚLTIMO intento: tono liviano, sin presión; preguntá qué lo frenó (precio, entrega, cómo se usa) y ofrecé ayuda."
       : "Es el primer seguimiento: retomá lo último que habló el cliente si sirve, conectá con su problema y terminá con una pregunta fácil de responder.",

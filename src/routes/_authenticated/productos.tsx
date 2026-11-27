@@ -283,6 +283,28 @@ function ProductsPage() {
         followup_enabled: values.followup_enabled,
         no_repeat_template: values.no_repeat_template,
       };
+      // Palabras clave ÚNICAS por tienda: si otro producto ya usa la misma palabra, el bot no sabe
+      // cuál mandar (caso real: «cortador» en el cortador de verduras y en el adaptador para taladro).
+      {
+        const simple = (k: string) => k.trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ");
+        const wanted = [...new Set(values.keywords.split(",").map(simple).filter(Boolean))];
+        if (wanted.length) {
+          const { data: others, error: othersError } = await (supabase as any).from("product_keywords")
+            .select("keyword, product_id, products!inner(name)")
+            .eq("workspace_id", targetWorkspace);
+          if (othersError) throw othersError;
+          const taken = new Map<string, string>();
+          for (const row of (others ?? []) as Array<{ keyword: string | null; product_id: string; products: { name: string | null } | null }>) {
+            if (row.product_id === values.id) continue;
+            taken.set(simple(String(row.keyword ?? "")), String(row.products?.name ?? "otro producto"));
+          }
+          const clashes = wanted.filter(k => taken.has(k));
+          if (clashes.length) {
+            throw new Error(clashes.map(k => `«${k}» ya es palabra clave de «${taken.get(k)}»`).join(" · ") +
+              ". Usá palabras que sean solo de este producto, o quitásela al otro primero.");
+          }
+        }
+      }
       let productId = values.id;
       const oldSku = productId ? String((products ?? []).find(p=>p.id===productId)?.sku ?? "").trim() : "";
       const shouldRetrySku = Boolean(productId && payload.sku && oldSku !== payload.sku);
