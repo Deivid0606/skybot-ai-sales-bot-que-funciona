@@ -1216,7 +1216,8 @@ export function advanceRuleSale(ctx:AiContext, text:string, existing:SaleState={
   }
   // Lugar de entrega dicho en cualquier momento («Estoy en el aeropuerto…», «traémelo a mi trabajo…»).
   if(s.cityVerified && !gpsUrl && isPlaceReference(text) && !/[¿?]/.test(text) && (!s.street || s.street===s.locationUrl)) {
-    s.street=text.trim().replace(/[,;.]?\s*(?:me\s+avis\w*|avisame|avisas)\b.*$/i,"").replace(/^(?:y\s+)?(?:estoy\s+en|quiero\s+que\s+me\s+traigas\s+(?:en|a))\s+/i,"").trim() || text.trim();
+    const placeCandidate=text.trim().replace(/[,;.]?\s*(?:me\s+avis\w*|avisame|avisas)\b.*$/i,"").replace(/^(?:y\s+)?(?:estoy\s+en|quiero\s+que\s+me\s+traigas\s+(?:en|a))\s+/i,"").trim() || text.trim();
+    if (isValidDeliveryAddress(placeCandidate)) s.street=placeCandidate;
   }
   if(s.cityVerified && s.awaiting==="address" && !isScheduleOnly(text) && !match && !gpsUrl && !/ubicaci[oó]n compartida/i.test(text) && n.length>=6 && !/^(?:si|no|hola|gracias|si por favor|dale|ok)$/.test(n) && !/\b(?:ubicacion|maps|pedido|precio|llega|ya te|ya le|pase|comparti|envie|mand[eé])\b/.test(n) && isValidDeliveryAddress(text.trim()))s.street=text.trim();
   if(/\b(?:transferencia|transferir|anticipado|deposito|giro)\b/.test(n))s.paymentMethod="anticipado";
