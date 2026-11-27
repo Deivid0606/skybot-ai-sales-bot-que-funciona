@@ -23,12 +23,24 @@ function isFalseConfirmation(text: string) {
   return /(?:pedido|compra)\s+(?:ya\s+)?(?:confirmad|registrad)|(?:✅\s*)?PEDIDO CONFIRMADO|\bBS-[A-F0-9]{6,}|pago\s+(?:acreditad|confirmad|verificad)|recibimos\s+tu\s+dinero|(?:tu|su)\s+pedido\s+(?:ya\s+)?(?:qued[oó]|est[aá])\s+(?:listo|confirmado|registrado)/i.test(text);
 }
 function reasonIsProviderFailure(reason: string) {
-  return /gemini_error|gemini_key_unavailable|openai HTTP|todos los proveedores fallaron|insufficient_quota|resource_exhausted|quota exceeded|credit_balance_exhausted|\b(?:401|402|403|429|500|502|503|504)\b/i.test(reason);
+  return /gemini_error|gemini_key_unavailable|openai HTTP|todos los proveedores fallaron|insufficient_quota|resource_exhausted|quota exceeded|credit_balance_exhausted|service temporarily unavailable|fetch failed|\b(?:401|402|403|429|500|502|503|504)\b/i.test(reason) ||
+    // Turnos donde la IA no dio una respuesta usable y el cliente quedó con el aviso neutro.
+    /respuesta vac[ií]a|neg[oó] la encomienda|no pudo (?:redactar|corregir)|ia sin respuesta/i.test(reason);
 }
 const NEUTRAL_FAILURE_NOTICE="Recibimos tu mensaje. En este momento no podemos darte una respuesta automática. Tu consulta necesita revisión de la tienda. Gracias por tu paciencia.";
+/**
+ * La conversación «avanzó» solo si el cliente volvió a escribir, si una persona de la tienda
+ * respondió o si la IA ya contestó. Los mensajes automáticos por CÓDIGO del respaldo de
+ * emergencia («Para registrar tu pedido me falta…», lista de precios, aviso neutro) NO cuentan:
+ * antes cerraban el caso y el cliente nunca recibía la respuesta de la IA al volver el crédito.
+ */
 function hasAdvancedSinceFailure(items: Array<{ direction?: string|null; body?: string|null; response_origin?: string|null; sender?: string|null; }> | null | undefined) {
-  return Boolean(items?.some(x=>!(x.direction==="outbound" &&
-    x.response_origin==="code" && String(x.body??"").trim()===NEUTRAL_FAILURE_NOTICE)));
+  return Boolean(items?.some(x => {
+    if (x.direction !== "outbound") return true;
+    if (x.sender !== "ai") return true;
+    if (/PEDIDO CONFIRMADO/i.test(String(x.body ?? ""))) return true;
+    return x.response_origin !== "code";
+  }));
 }
 function isCustomerOptOut(text: string) {
   return /\b(?:no me (?:escribas|escriban|contactes|contacten)|no quiero (?:mas|más) mensajes|no me contacten|no me molesten|dejen de escribirme|cancelar pedido)\b/i.test(text);
@@ -111,10 +123,12 @@ export async function processAiRecoveryBatch() {
       const hasReceipt=Boolean(st.emergencyReceiptPending||st.receiptPath||st.receiptDocuments?.length);
       const recoveryPrompt=hasReceipt
         ? "RECUPERACIÓN TRAS ERROR DE API: Hay un comprobante recibido de una compra anticipada. Respondé únicamente con IA, en español paraguayo y usando el entrenamiento vigente. No asegures que el dinero se acreditó ni que el pedido se registró. Si no existe una revisión bancaria verificable, indicá brevemente que el comprobante quedó recibido y requiere revisión de la tienda. No pidas otra transferencia ni inventes importes, número de pedido o saldo a favor. No confirmes venta."
-        : "RECUPERACIÓN TRAS ERROR DE API: Respondé con el contexto del último mensaje de este cliente y el entrenamiento ACTIVO. No repitas copy, imagen o promociones ya enviadas ni preguntes datos que el cliente dio. Si falta algún dato concreto para el checkout, preguntá solo por eso. No confirmes ni registres pedidos: no se ha ejecutado la validación ni el INSERT en este turno. No inventes número de pedido ni condiciones de pago.";
+        : "RECUPERACIÓN TRAS ERROR DE API: mientras la IA no funcionaba, el cliente pudo recibir mensajes automáticos (lista de precios, «para registrar tu pedido me falta…» o «recibimos tu mensaje»). Retomá la charla como una vendedora: respondé lo que el cliente preguntó y no repitas esos mensajes con las mismas palabras. Respondé con el contexto del último mensaje de este cliente y el entrenamiento ACTIVO. No repitas copy, imagen o promociones ya enviadas ni preguntes datos que el cliente dio. Si falta algún dato concreto para el checkout, preguntá solo por eso. No confirmes ni registres pedidos: no se ha ejecutado la validación ni el INSERT en este turno. No inventes número de pedido ni condiciones de pago.";
       const result=await generateAiReply({...ctx,systemInstruction:ctx.systemInstruction+"\n\n"+recoveryPrompt});
       const response=String(result.reply??"").trim();
-      if(!response || isFalseConfirmation(response) || /\b(?:te aviso|un momento|voy a verificar)\b/i.test(response)){
+      // Tampoco se manda una negación de envío sin control de cobertura (eso lo valida el webhook).
+      if(!response || isFalseConfirmation(response) || /\b(?:te aviso|un momento|voy a verificar)\b/i.test(response) ||
+         /\bno\s+(?:hacemos|realizamos|tenemos)\s+(?:env[ií]os?|cobertura|entregas?)\b|\bsolo\s+(?:hacemos|realizamos)\s+(?:entregas|env[ií]os)\b|no\s+puedo\s+enviar(?:te)?\s+(?:fotos|im[aá]genes|videos)/i.test(response)){
         // Unsafe drafts never leave the server; let a seller inspect the saved case.
         await supabaseAdmin.from("notifications").insert({
           workspace_id:item.workspace_id,user_id:item.user_id,type:"ia",
