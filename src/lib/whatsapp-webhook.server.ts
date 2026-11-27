@@ -4285,6 +4285,22 @@ ${expectedReceiptTotal !== null && documentedReceiptTotal > expectedReceiptTotal
       }
       // Sin muletillas de bot («¡Estoy aquí para ayudarte!»…).
       outgoingText = stripBotFillers(outgoingText);
+      // «¿En qué puedo ayudarte hoy?» suena a bot: antes de la venta, un vendedor pregunta qué busca.
+      if (!conversation.sale_closed)
+        outgoingText = outgoingText.replace(/¿\s*(?:en\s+)?qu[eé]\s+(?:te\s+)?puedo\s+ayudar(?:te)?(?:\s+hoy)?\s*\?/gi, "¿Qué producto te interesa?")
+          .replace(/(¿Qué producto te interesa\?)([\s\S]*?)¿Cuál te interesa\?/, "$1$2").trim();
+      // «No puedo enviar fotos» con fotos cargadas en el producto: se mandan las fotos y se quita esa frase.
+      const deniesPhotos = /no\s+(?:te\s+)?puedo\s+(?:enviar|mandar|pasar)(?:te)?\s+(?:fotos?|im[aá]gen(?:es)?|videos?)/i;
+      if (conversation.product_id && deniesPhotos.test(outgoingText)) {
+        const prod = await supabaseAdmin.from("products").select("name").eq("workspace_id", workspaceId).eq("id", conversation.product_id).maybeSingle();
+        const sentPhotos = await sendProductPhotos({ workspaceId, ownerId, conversationId: conversation.id, adId: attributedAdId,
+          conn, phone, productId: conversation.product_id, productName: String(prod.data?.name ?? "producto") });
+        if (sentPhotos > 0) {
+          const kept = outgoingText.split(/(?<=[.!?\n])\s*/).filter(part => !deniesPhotos.test(part))
+            .join(" ").replace(/^\s*(?:pero|sin embargo)\s*,?\s*/i, "").trim();
+          outgoingText = kept ? `Ahí te paso las fotos 😊 ${kept.charAt(0).toUpperCase()}${kept.slice(1)}` : "Ahí te paso las fotos 😊";
+        }
+      }
       // Nota de voz (Configuraciones → «Responder con audio»): si el cliente mandó un audio y la
       // respuesta no lleva precios, datos bancarios ni links, se contesta hablando. Si la voz
       // falla o la respuesta no es apta para audio, sale en texto como siempre.
@@ -4743,10 +4759,14 @@ export async function createOrderFromAi(args: {
   if (args.productId) {
     const phoneDigits = String(args.phone ?? "").replace(/\D/g, "").slice(-9);
     const since = new Date(Date.now() - 72 * 3600 * 1000).toISOString();
+    // Se busca directo por ESTE chat o ESTE teléfono (antes se miraban solo los 10 pedidos más
+    // nuevos del producto: con un producto que vende mucho, el pedido del cliente quedaba afuera).
+    const phoneFilter = phoneDigits.length === 9 ? `,phone.like.%${phoneDigits}` : "";
     const { data: recentSame } = await supabaseAdmin.from("orders")
       .select("id, order_number, ad_id, total, status, conversation_id, phone")
       .eq("workspace_id", args.workspaceId).eq("product_id", args.productId).gte("created_at", since)
-      .order("created_at", { ascending: false }).limit(10);
+      .or(`conversation_id.eq.${args.conversationId}${phoneFilter}`)
+      .order("created_at", { ascending: false }).limit(20);
     const dup = (recentSame ?? []).find((o: any) =>
       !/cancel|anul|elimin|devuel|rechaz/i.test(String(o.status ?? "")) &&
       (o.conversation_id === args.conversationId || (phoneDigits.length === 9 && String(o.phone ?? "").replace(/\D/g, "").endsWith(phoneDigits))));

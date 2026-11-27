@@ -67,9 +67,26 @@ async function handleJob(job: Job, baseUrl: string) {
   const custom=job.phase === 2 ? product.followup_second_message : product.followup_message;
   const isGeneric=(text:string|null|undefined)=>!text?.trim() || text.trim()===defaultFirst || text.trim()===defaultSecond ||
     /^¡hola( de nuevo)?! 😊 ¿(te gustar[ií]a continuar con tu pedido|todav[ií]a te interesa el producto que consultaste)/i.test(text.trim());
+  // Venta a medio camino: lo que ya dio el cliente y lo que falta para registrar el pedido.
+  const {data:saleRow}=await (supabaseAdmin as any).from('bot_sale_states').select('state')
+    .eq('workspace_id',job.workspace_id).eq('conversation_id',job.conversation_id).maybeSingle();
+  const st=(saleRow?.state ?? {}) as Record<string, any>;
+  let progress: { city?: string|null; option?: string|null; missing: string[] } | null = null;
+  if(st.productId===job.product_id && (st.cityVerified || st.optionId)){
+    const {data:opt}=st.optionId ? await (supabaseAdmin as any).from('product_prices').select('label').eq('id',st.optionId).maybeSingle() : {data:null};
+    const advance=/anticip|transfer/i.test(String(st.paymentMethod ?? ''));
+    const missing:string[]=[];
+    if(!st.optionId && !st.quantity) missing.push('cuántas unidades querés');
+    if(!st.cityVerified) missing.push('la ciudad de entrega');
+    if(!/\p{L}{2,}\s+\p{L}{2,}/u.test(String(st.customerName ?? ''))) missing.push('tu nombre y apellido');
+    if(st.cityVerified && !advance && !String(st.street ?? '').trim() && !String(st.locationUrl ?? '').trim()) missing.push('la dirección o tu ubicación');
+    if(advance && !st.receiptPath && !(st.receiptDocuments?.length)) missing.push('el comprobante de la transferencia');
+    progress={ city: st.cityVerified ? String(st.city ?? '') || null : null, option: opt?.label ? String(opt.label) : null, missing };
+  }
   const written=await writeFollowup({
     workspaceId:job.workspace_id,conversationId:job.conversation_id,phase:job.phase,firstName,productName,pain,discoveryQuestion,
     sellerText:isGeneric(custom)?'':String(custom).trim().slice(0,800),
+    progress,
   });
   const followup=stripBotFillers(written.text).trim();
   if(!followup) {await setDelivery(job.delivery_id,'skipped','Mensaje vacío');return;}
